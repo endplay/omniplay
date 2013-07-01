@@ -1,0 +1,18 @@
+
+config ALX
+       tristate "Qualcomm Atheros L1F Gigabit Ethernet support"
+       depends on PCI
+       select CRC32
+       select NET_CORE
+       select MII
+       ---help---
+         This driver supports the Qualcomm Atheros L1F ethernet adapter.
+         This driver supports following chipsets:
+
+         1969:1091 - AR8161 Gigabit Ethernet
+         1969:1090 - AR8162 Fast Ethernet
+         1969:10A1 - AR8171 Gigabit Ethernet
+         1969:10A0 - AR8172 Fast Ethernet
+
+         To compile this driver as a module, choose M here.  The module
+         will be called alx.

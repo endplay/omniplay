@@ -1,0 +1,8 @@
+arch="armel armhf"
+supported="TI OMAP3"
+desc="TI OMAP3-based =HUMAN= systems"
+target="Targeted towards boards such as Beagleboard, Gumstix, IGEPv2, etc."
+bootloader="flash-kernel"
+provides=""
+section_image="universe/base"
+do_debug="Yes"

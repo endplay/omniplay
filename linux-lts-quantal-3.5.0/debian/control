@@ -1,0 +1,484 @@
+Source: linux-lts-quantal
+Section: devel
+Priority: optional
+Maintainer: Ubuntu Kernel Team <kernel-team@lists.ubuntu.com>
+Standards-Version: 3.8.4.0
+Build-Depends: debhelper (>= 5), cpio, module-init-tools, kernel-wedge (>= 2.24ubuntu1), makedumpfile [amd64 i386], device-tree-compiler [powerpc], libelf-dev, libnewt-dev, binutils-dev, rsync, libdw-dev, dpkg (>= 1.16.0~ubuntu4), util-linux, pkg-config, flex, bison
+Build-Depends-Indep: xmlto, docbook-utils, ghostscript, transfig, bzip2, sharutils, asciidoc
+Build-Conflicts: findutils (= 4.4.1-1ubuntu1)
+Vcs-Git: http://kernel.ubuntu.com/git-repos/ubuntu/ubuntu-precise.git
+
+Package: linux-headers-3.5.0-34
+Architecture: all
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, coreutils | fileutils (>= 4.0)
+Description: Header files related to Linux kernel version 3.5.0
+ This package provides kernel header files for version 3.5.0, for sites
+ that want the latest kernel headers. Please read
+ /usr/share/doc/linux-lts-quantal-headers-3.5.0-34/debian.README.gz for details
+
+Package: linux-tools-3.5.0-34
+Architecture: i386 amd64
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, ${shlibs:Depends}, linux-tools-common
+Description: Linux kernel version specific tools for version 3.5.0-34
+ This package provides the architecture dependant parts for kernel
+ version locked tools (such as perf and x86_energy_perf_policy) for
+ version 3.5.0-34 on
+ 32 bit x86.
+
+
+
+Package: linux-image-3.5.0-34-generic
+Architecture: i386 amd64
+Section: kernel
+Priority: optional
+Pre-Depends: dpkg (>= 1.10.24)
+Depends: ${misc:Depends}, ${shlibs:Depends}, initramfs-tools (>= 0.36ubuntu6), module-init-tools (>= 3.3-pre11-4ubuntu3), crda (>=1.1.1-1ubuntu2) | wireless-crda
+Conflicts: hotplug (<< 0.0.20040105-1)
+Recommends: grub-pc | grub-efi-amd64 | grub-efi-ia32 | grub | lilo (>= 19.1)
+Suggests: fdutils, linux-lts-quantal-doc-3.5.0 | linux-lts-quantal-source-3.5.0, linux-lts-quantal-tools
+Description: Linux kernel image for version 3.5.0 on 32 bit x86 SMP
+ This package contains the Linux kernel image for version 3.5.0 on
+ 32 bit x86 SMP.
+ .
+ Also includes the corresponding System.map file, the modules built by the
+ packager, and scripts that try to ensure that the system is not left in an
+ unbootable state after an update.
+ .
+ Supports Generic processors.
+ .
+ Geared toward desktop and server systems.
+ .
+ You likely do not want to install this package directly. Instead, install
+ the linux-generic meta-package, which will ensure that upgrades work
+ correctly, and that supporting packages are also installed.
+
+Package: linux-image-extra-3.5.0-34-generic
+Architecture: i386 amd64
+Section: kernel
+Priority: optional
+Depends: ${misc:Depends}, ${shlibs:Depends}, linux-image-3.5.0-34-generic
+Description: Linux kernel image for version 3.5.0 on 32 bit x86 SMP
+ This package contains the Linux kernel image for version 3.5.0 on
+ 32 bit x86 SMP.
+ .
+ Also includes the corresponding System.map file, the modules built by the
+ packager, and scripts that try to ensure that the system is not left in an
+ unbootable state after an update.
+ .
+ Supports Generic processors.
+ .
+ Geared toward desktop and server systems.
+ .
+ You likely do not want to install this package directly. Instead, install
+ the linux-generic meta-package, which will ensure that upgrades work
+ correctly, and that supporting packages are also installed.
+
+Package: linux-headers-3.5.0-34-generic
+Architecture: i386 amd64
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, linux-headers-3.5.0-34, ${shlibs:Depends}
+Description: Linux kernel headers for version 3.5.0 on 32 bit x86 SMP
+ This package provides kernel header files for version 3.5.0 on
+ 32 bit x86 SMP.
+ .
+ This is for sites that want the latest kernel headers.  Please read
+ /usr/share/doc/linux-lts-quantal-headers-3.5.0-34/debian.README.gz for details.
+
+Package: linux-image-3.5.0-34-generic-dbgsym
+Architecture: i386 amd64
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}
+Description: Linux kernel debug image for version 3.5.0 on 32 bit x86 SMP
+ This package provides a kernel debug image for version 3.5.0 on
+ 32 bit x86 SMP.
+ .
+ This is for sites that wish to debug the kernel.
+ .
+ The kernel image contained in this package is NOT meant to boot from. It
+ is uncompressed, and unstripped. This package also includes the
+ unstripped modules.
+
+Package: kernel-image-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: kernel-image
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: extra
+Description: Linux kernel binary image for the Debian installer
+ This package contains the kernel image for the Debian installer
+ boot images. It does _not_ provide a usable kernel for your full
+ Debian system.
+
+Package: nic-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: nic-modules
+Depends: kernel-image-3.5.0-34-generic-di, nic-shared-modules-3.5.0-34-generic-di, virtio-modules-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: Network interface support
+
+Package: nic-shared-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: nic-shared-modules
+Depends: kernel-image-3.5.0-34-generic-di, crypto-modules-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: nic shared modules
+  This package contains modules which support nic modules
+
+Package: serial-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: serial-modules
+Depends: kernel-image-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: Serial port support
+
+Package: ppp-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: ppp-modules
+Depends: kernel-image-3.5.0-34-generic-di, nic-shared-modules-3.5.0-34-generic-di, serial-modules-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: PPP (serial port) networking support
+
+Package: pata-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: pata-modules
+Depends: kernel-image-3.5.0-34-generic-di, storage-core-modules-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: PATA support modules
+
+Package: firewire-core-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: firewire-core-modules
+Depends: kernel-image-3.5.0-34-generic-di, storage-core-modules-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: Firewire (IEEE-1394) Support
+
+Package: scsi-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: scsi-modules
+Depends: kernel-image-3.5.0-34-generic-di, storage-core-modules-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: SCSI storage support
+
+Package: plip-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: plip-modules
+Depends: kernel-image-3.5.0-34-generic-di, nic-shared-modules-3.5.0-34-generic-di, parport-modules-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: PLIP (parallel port) networking support
+
+Package: floppy-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: floppy-modules
+Depends: kernel-image-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: Floppy driver support
+
+Package: fat-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: fat-modules
+Depends: kernel-image-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: FAT filesystem support
+ This includes Windows FAT and VFAT support.
+
+Package: nfs-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: nfs-modules
+Depends: kernel-image-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: NFS filesystem drivers
+ Includes the NFS client driver, and supporting modules.
+
+Package: md-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: md-modules
+Depends: kernel-image-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: Multi-device support (raid, device-mapper, lvm)
+
+Package: multipath-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: multipath-modules
+Depends: kernel-image-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: extra
+Description: DM-Multipath support
+  This package contains modules for device-mapper multipath support.
+
+Package: usb-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: usb-modules
+Depends: kernel-image-3.5.0-34-generic-di, storage-core-modules-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: Core USB support
+
+Package: pcmcia-storage-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: pcmcia-storage-modules
+Depends: kernel-image-3.5.0-34-generic-di, scsi-modules-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: PCMCIA storage support
+
+Package: fb-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: fb-modules
+Depends: kernel-image-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: Framebuffer modules
+
+Package: input-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: input-modules
+Depends: kernel-image-3.5.0-34-generic-di, usb-modules-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: Support for various input methods
+
+Package: mouse-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: mouse-modules
+Depends: kernel-image-3.5.0-34-generic-di, input-modules-3.5.0-34-generic-di, usb-modules-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: extra
+Description: Mouse support
+ This package contains mouse drivers for the Linux kernel.
+
+Package: irda-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: irda-modules
+Depends: kernel-image-3.5.0-34-generic-di, nic-shared-modules-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: Support for Infrared protocols
+
+Package: parport-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: parport-modules
+Depends: kernel-image-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: Parallel port support
+
+Package: nic-pcmcia-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: nic-pcmcia-modules
+Depends: kernel-image-3.5.0-34-generic-di, nic-shared-modules-3.5.0-34-generic-di, nic-modules-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: PCMCIA network interface support
+
+Package: pcmcia-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: pcmcia-modules
+Depends: kernel-image-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: PCMCIA Modules
+
+Package: nic-usb-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: nic-usb-modules
+Depends: kernel-image-3.5.0-34-generic-di, nic-shared-modules-3.5.0-34-generic-di, usb-modules-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: USB network interface support
+
+Package: sata-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: sata-modules
+Depends: kernel-image-3.5.0-34-generic-di, storage-core-modules-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: SATA storage support
+
+Package: crypto-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: crypto-modules
+Depends: kernel-image-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: extra
+Description: crypto modules
+ This package contains crypto modules.
+
+Package: squashfs-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: squashfs-modules
+Depends: kernel-image-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: extra
+Description: squashfs modules
+ This package contains squashfs modules.
+
+Package: speakup-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: speakup-modules
+Depends: kernel-image-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: extra
+Description: speakup modules
+ This package contains speakup modules.
+
+Package: virtio-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: virtio-modules
+Depends: kernel-image-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: VirtIO Modules
+ Includes modules for VirtIO (virtual machine, generally kvm guests)
+
+Package: fs-core-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: fs-core-modules, jfs-modules, reiserfs-modules, xfs-modules
+Depends: kernel-image-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: Base filesystem modules
+ This includes jfs, reiserfs and xfs.
+
+Package: fs-secondary-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: fs-secondary-modules, ntfs-modules, hfs-modules
+Depends: kernel-image-3.5.0-34-generic-di, fat-modules-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: Extra filesystem modules
+ This includes support for Windows NTFS and MacOS HFS/HFSPlus
+
+Package: storage-core-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: storage-core-modules, loop-modules
+Depends: kernel-image-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: Core storage support
+ Includes core SCSI, LibATA, USB-Storage. Also includes related block
+ devices for CD, Disk and Tape medium (and IDE Floppy).
+
+Package: block-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: block-modules
+Depends: kernel-image-3.5.0-34-generic-di, storage-core-modules-3.5.0-34-generic-di, parport-modules-3.5.0-34-generic-di, virtio-modules-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: Block storage devices
+ This package contains the block storage devices, including DAC960 and
+ paraide.
+
+Package: message-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: message-modules
+Depends: kernel-image-3.5.0-34-generic-di, storage-core-modules-3.5.0-34-generic-di, scsi-modules-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: Fusion and i2o storage modules
+ This package containes the fusion and i2o storage modules.
+
+Package: vlan-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: vlan-modules
+Depends: kernel-image-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: extra
+Description: vlan modules
+ This package contains vlan (8021.Q) modules.
+
+Package: ipmi-modules-3.5.0-34-generic-di
+XC-Package-Type: udeb
+Provides: ipmi-modules
+Depends: kernel-image-3.5.0-34-generic-di
+Architecture: i386
+XB-Kernel-Version: 3.5.0-34-generic
+Section: debian-installer
+Priority: standard
+Description: ipmi modules

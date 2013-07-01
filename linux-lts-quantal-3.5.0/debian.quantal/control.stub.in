@@ -1,0 +1,32 @@
+Source: SRCPKGNAME
+Section: devel
+Priority: optional
+Maintainer: Ubuntu Kernel Team <kernel-team@lists.ubuntu.com>
+Standards-Version: 3.8.4.0
+Build-Depends: debhelper (>= 5), cpio, module-init-tools, kernel-wedge (>= 2.24ubuntu1), makedumpfile [amd64 i386], device-tree-compiler [powerpc], libelf-dev, libnewt-dev, binutils-dev, rsync, libdw-dev, dpkg (>= 1.16.0~ubuntu4), util-linux, pkg-config, flex, bison
+Build-Depends-Indep: xmlto, docbook-utils, ghostscript, transfig, bzip2, sharutils, asciidoc
+Build-Conflicts: findutils (= 4.4.1-1ubuntu1)
+Vcs-Git: http://kernel.ubuntu.com/git-repos/ubuntu/ubuntu-precise.git
+
+Package: linux-headers-PKGVER-ABINUM
+Architecture: all
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, coreutils | fileutils (>= 4.0)
+Description: Header files related to Linux kernel version PKGVER
+ This package provides kernel header files for version PKGVER, for sites
+ that want the latest kernel headers. Please read
+ /usr/share/doc/SRCPKGNAME-headers-PKGVER-ABINUM/debian.README.gz for details
+
+Package: linux-tools-PKGVER-ABINUM
+Architecture: i386 amd64
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, ${shlibs:Depends}, linux-tools-common
+Description: Linux kernel version specific tools for version PKGVER-ABINUM
+ This package provides the architecture dependant parts for kernel
+ version locked tools (such as perf and x86_energy_perf_policy) for
+ version PKGVER-ABINUM on
+ =HUMAN=.
+
+

@@ -1,0 +1,8 @@
+arch="armhf"
+supported="Calxeda highbank"
+desc="Calxeda highbank ARM Server"
+target="Targeted towards Calxeda highbank ARM Server"
+bootloader="flash-kernel"
+provides=""
+section_image="universe/base"
+do_debug="Yes"

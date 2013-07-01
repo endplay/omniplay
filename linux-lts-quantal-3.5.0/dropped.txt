@@ -1,0 +1,13 @@
+This is the list of patches which have been dropped from Q after the
+3.5-rc2 rebase:
+
+UBUNTU: SAUCE: dell-laptop: rfkill blacklist Dell XPS 13z, 15
+ - Rfkill code was removed in v3.5-rc1, this SAUCE patch no longer applies
+    commit a6c2390cd6d2083d27a2359658e08f2d3df375ac
+    Author: Matthew Garrett <mjg@redhat.com>
+    Date:   Fri Jun 1 12:46:56 2012 -0400
+
+      dell-laptop: Remove rfkill code
+
+UBUNTU: SAUCE: (no-up) swap: Add notify_swap_entry_free callback for compcache
+ - We no longer carry the ubuntu/compcache driver, drop this no-up SAUCE patch

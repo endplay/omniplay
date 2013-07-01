@@ -1,0 +1,14 @@
+# arch	version		flavour		installedname			suffix	bdep
+amd64	PKGVER-ABINUM	generic		PKGVER-ABINUM-generic		-	
+
+i386	PKGVER-ABINUM	generic		PKGVER-ABINUM-generic		-	
+
+armel	PKGVER-ABINUM	omap		PKGVER-ABINUM-omap		-
+
+armhf	PKGVER-ABINUM	omap		PKGVER-ABINUM-omap		-
+armhf	PKGVER-ABINUM	highbank	PKGVER-ABINUM-highbank		-
+
+# Ports
+# arch	version		flavour		installedname			suffix	bdep
+powerpc	PKGVER-ABINUM	powerpc-smp	PKGVER-ABINUM-powerpc-smp	-	
+powerpc	PKGVER-ABINUM	powerpc64-smp	PKGVER-ABINUM-powerpc64-smp	-	

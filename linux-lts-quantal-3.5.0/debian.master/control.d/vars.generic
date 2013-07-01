@@ -1,0 +1,6 @@
+arch="i386 amd64"
+supported="Generic"
+target="Geared toward desktop and server systems."
+desc="=HUMAN= SMP"
+bootloader="grub-pc | grub-efi-amd64 | grub-efi-ia32 | grub | lilo (>= 19.1)"
+provides="kvm-api-4, redhat-cluster-modules, ivtv-modules"

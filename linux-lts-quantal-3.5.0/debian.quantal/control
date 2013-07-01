@@ -1,0 +1,105 @@
+Source: linux-lts-quantal
+Section: devel
+Priority: optional
+Maintainer: Ubuntu Kernel Team <kernel-team@lists.ubuntu.com>
+Standards-Version: 3.8.4.0
+Build-Depends: debhelper (>= 5), cpio, module-init-tools, kernel-wedge (>= 2.24ubuntu1), makedumpfile [amd64 i386], device-tree-compiler [powerpc], libelf-dev, libnewt-dev, binutils-dev, rsync, libdw-dev, dpkg (>= 1.16.0~ubuntu4), util-linux, pkg-config, flex, bison
+Build-Depends-Indep: xmlto, docbook-utils, ghostscript, transfig, bzip2, sharutils, asciidoc
+Build-Conflicts: findutils (= 4.4.1-1ubuntu1)
+Vcs-Git: http://kernel.ubuntu.com/git-repos/ubuntu/ubuntu-precise.git
+
+Package: linux-headers-3.5.0-34
+Architecture: all
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, coreutils | fileutils (>= 4.0)
+Description: Header files related to Linux kernel version 3.5.0
+ This package provides kernel header files for version 3.5.0, for sites
+ that want the latest kernel headers. Please read
+ /usr/share/doc/linux-lts-quantal-headers-3.5.0-34/debian.README.gz for details
+
+Package: linux-tools-3.5.0-34
+Architecture: i386 amd64
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, ${shlibs:Depends}, linux-tools-common
+Description: Linux kernel version specific tools for version 3.5.0-34
+ This package provides the architecture dependant parts for kernel
+ version locked tools (such as perf and x86_energy_perf_policy) for
+ version 3.5.0-34 on
+ 32 bit x86.
+
+
+
+Package: linux-image-3.5.0-34-generic
+Architecture: i386 amd64
+Section: kernel
+Priority: optional
+Pre-Depends: dpkg (>= 1.10.24)
+Depends: ${misc:Depends}, ${shlibs:Depends}, initramfs-tools (>= 0.36ubuntu6), module-init-tools (>= 3.3-pre11-4ubuntu3), crda (>=1.1.1-1ubuntu2) | wireless-crda
+Conflicts: hotplug (<< 0.0.20040105-1)
+Recommends: grub-pc | grub-efi-amd64 | grub-efi-ia32 | grub | lilo (>= 19.1)
+Suggests: fdutils, linux-lts-quantal-doc-3.5.0 | linux-lts-quantal-source-3.5.0, linux-lts-quantal-tools
+Description: Linux kernel image for version 3.5.0 on 32 bit x86 SMP
+ This package contains the Linux kernel image for version 3.5.0 on
+ 32 bit x86 SMP.
+ .
+ Also includes the corresponding System.map file, the modules built by the
+ packager, and scripts that try to ensure that the system is not left in an
+ unbootable state after an update.
+ .
+ Supports Generic processors.
+ .
+ Geared toward desktop and server systems.
+ .
+ You likely do not want to install this package directly. Instead, install
+ the linux-generic meta-package, which will ensure that upgrades work
+ correctly, and that supporting packages are also installed.
+
+Package: linux-image-extra-3.5.0-34-generic
+Architecture: i386 amd64
+Section: kernel
+Priority: optional
+Depends: ${misc:Depends}, ${shlibs:Depends}, linux-image-3.5.0-34-generic
+Description: Linux kernel image for version 3.5.0 on 32 bit x86 SMP
+ This package contains the Linux kernel image for version 3.5.0 on
+ 32 bit x86 SMP.
+ .
+ Also includes the corresponding System.map file, the modules built by the
+ packager, and scripts that try to ensure that the system is not left in an
+ unbootable state after an update.
+ .
+ Supports Generic processors.
+ .
+ Geared toward desktop and server systems.
+ .
+ You likely do not want to install this package directly. Instead, install
+ the linux-generic meta-package, which will ensure that upgrades work
+ correctly, and that supporting packages are also installed.
+
+Package: linux-headers-3.5.0-34-generic
+Architecture: i386 amd64
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, linux-headers-3.5.0-34, ${shlibs:Depends}
+Description: Linux kernel headers for version 3.5.0 on 32 bit x86 SMP
+ This package provides kernel header files for version 3.5.0 on
+ 32 bit x86 SMP.
+ .
+ This is for sites that want the latest kernel headers.  Please read
+ /usr/share/doc/linux-lts-quantal-headers-3.5.0-34/debian.README.gz for details.
+
+Package: linux-image-3.5.0-34-generic-dbgsym
+Architecture: i386 amd64
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}
+Description: Linux kernel debug image for version 3.5.0 on 32 bit x86 SMP
+ This package provides a kernel debug image for version 3.5.0 on
+ 32 bit x86 SMP.
+ .
+ This is for sites that wish to debug the kernel.
+ .
+ The kernel image contained in this package is NOT meant to boot from. It
+ is uncompressed, and unstripped. This package also includes the
+ unstripped modules.

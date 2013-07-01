@@ -1,0 +1,127 @@
+#!/bin/bash
+
+#
+# This script is intended as a helper when updating from
+# Lucid mvl-dove. When complete you should have a copy of
+# the mvl-dove changelog with the correct release names.
+#
+SOURCE_RELEASE=quantal
+SOURCE_RELEASE_BRANCH=master
+DEBIAN_SOURCE=debian.master
+
+TARGET_RELEASE=precise
+TARGET_RELEASE_BRANCH=quantal
+DEBIAN_TARGET=debian.${TARGET_RELEASE_BRANCH}
+
+DEF_REPO=git://kernel.ubuntu.com/ubuntu/ubuntu-${SOURCE_RELEASE}.git
+RELEASE_REPO="${DEF_REPO}"
+DEF_ARCHES="i386 amd64"
+FOREIGN_ARCHES="armel ia64 powerpc sparc config.common.ports"
+
+#
+# PPAs do not have a proposed pocket. The default assumes the
+# real archive is the upload target.
+#
+POCKET=""
+IGNORE_ABI=""
+IGNORE_MODULES=""
+
+usage="$0 [-r RELEASE_REPO] [-p]"
+
+#
+# command line options:
+# [-r RELEASE_REPO] - override default ${SOURCE_RELEASE} git repository.
+# [-p] - Assume the upload target is a PPA
+
+while getopts ":r:pim" opt; do
+	case $opt in
+	r ) RELEASE_REPO="$OPTARG" ;;
+	p ) POCKET="" ;;
+	\? ) echo usage: ${usage}; exit ;;
+	esac
+done
+shift $(($OPTIND - 1))
+
+if [ ! -d ${DEBIAN_TARGET} ]
+then
+	echo You must run this sript from the top directory of this repository.
+	exit 1
+fi
+
+#
+# Fetch the upstream branch.
+#
+git fetch ${RELEASE_REPO} || exit 1
+git fetch ${RELEASE_REPO} ${SOURCE_RELEASE_BRANCH} || exit 1
+
+#
+# Find the most recent tag on ${SOURCE_RELEASE} ${SOURCE_RELEASE_BRANCH}, then
+# rebase against it. This avoids the case where there have been some
+# commits since the last official tag.
+#
+MASTER_COMMIT=`git log --pretty=one FETCH_HEAD | \
+    awk '
+	/Ubuntu-/ {
+		if (match($0, /UBUNTU: Ubuntu-[0-9]/)) {
+				print $1
+				exit
+                        }
+                }
+        '
+`
+#
+# Find the current merge point where ${SOURCE_RELEASE} was based.
+#
+BASE_COMMIT=`git log --pretty=one | \
+    awk '
+	/Ubuntu-/ {
+		if (match($0, /UBUNTU: Ubuntu-[0-9]/)) {
+				print $1
+				exit
+                        }
+                }
+        '
+`
+if [ "${MASTER_COMMIT}" = "${BASE_COMMIT}" ]
+then
+	echo Already up to date.
+	exit 1
+fi
+
+if ! git rebase --onto ${MASTER_COMMIT} ${BASE_COMMIT}
+then
+	exit 1
+fi
+
+#
+# Pick up any master branch changes to udeb modules or firmware.
+#
+rsync -av --delete ${DEBIAN_SOURCE}/d-i/ ${DEBIAN_TARGET}/d-i
+
+#
+# Update configs from master
+#
+rsync -av --delete ${DEBIAN_SOURCE}/config/ ${DEBIAN_TARGET}/config
+fakeroot debian/rules clean updateconfigs
+
+#
+# Get the master branch ABI files, which can be mostly ignored since
+# the build is skipabi and skipmodule.
+# We can ignore ABI changes with the assurance that Maverick upstream
+# will change ABI when required.
+#
+rsync -av --delete ${DEBIAN_SOURCE}/abi/ ${DEBIAN_TARGET}/abi
+for i in ${FOREIGN_ARCHES}
+do
+        rm -rf ${DEBIAN_TARGET}/abi/*/${i}
+done
+git add ${DEBIAN_TARGET}/abi
+
+#
+# Update changelog from the source release changelog. Change the release pocket and ABI.
+# The lucid source ABI is in the 200 range, and the maverick ABI is in the 400 range, so
+# just extract the source ABI and add 200.
+#
+cp ${DEBIAN_SOURCE}/changelog ${DEBIAN_TARGET}/changelog
+sed -i -e '1s/'${SOURCE_RELEASE}'.*;/'${TARGET_RELEASE}${POCKET}';/' -e '1s/^linux /linux-lts-'${SOURCE_RELEASE}' /' -e '1s/)/~'${TARGET_RELEASE}'1)/' ${DEBIAN_TARGET}/changelog
+git add ${DEBIAN_TARGET}/changelog

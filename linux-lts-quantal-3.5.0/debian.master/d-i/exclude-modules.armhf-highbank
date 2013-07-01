@@ -1,0 +1,13 @@
+serial-modules
+firewire-core-modules
+floppy-modules
+pcmcia-storage-modules
+fb-modules
+nic-pcmcia-modules
+pcmcia-modules
+pata-modules
+message-modules
+virtio-modules
+multipath-modules
+sata-modules
+ipmi-modules

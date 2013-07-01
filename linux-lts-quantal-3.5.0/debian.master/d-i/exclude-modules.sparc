@@ -1,0 +1,9 @@
+efi-modules
+nic-pcmcia-modules
+pcmcia-modules
+pcmcia-storage-modules
+irda-modules
+floppy-modules
+fb-modules
+acpi-modules
+virtio-modules

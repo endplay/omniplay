@@ -1,0 +1,471 @@
+# Default filesystems are generally built-in
+CONFIG_EXT3_FS y note<default filesystem>
+CONFIG_EXT4_FS y note<default filesystem>
+
+# Some modules have no clear way to autoload them.
+#  filesystems:
+CONFIG_FUSE_FS y note<not autoloadable>
+CONFIG_ECRYPT_FS y note<not autoloadable>
+#  AGP drivers:
+CONFIG_AGP y note<not autoloadable>
+CONFIG_AGP_AMD64 y note<not autoloadable>
+CONFIG_AGP_INTEL y note<not autoloadable>
+CONFIG_AGP_VIA y note<not autoloadable>
+CONFIG_AGP_AMD y note<not autoloadable>
+CONFIG_AGP_NVIDIA y note<not autoloadable>
+#  cpu governers:
+CONFIG_CPU_FREQ_GOV_CONSERVATIVE y note<not autoloadable>
+CONFIG_CPU_FREQ_GOV_ONDEMAND y note<not autoloadable>
+CONFIG_CPU_FREQ_GOV_PERFORMANCE y note<not autoloadable>
+CONFIG_CPU_FREQ_GOV_POWERSAVE y note<not autoloadable>
+CONFIG_CPU_FREQ_GOV_USERSPACE y note<not autoloadable>
+#  cpufreq drivers
+CONFIG_X86_ACPI_CPUFREQ y note<not autoloadable>
+CONFIG_X86_POWERNOW_K8 y note<not autoloadable>
+CONFIG_X86_SPEEDSTEP_CENTRINO y note<not autoloadable>
+CONFIG_X86_SPEEDSTEP_ICH y note<not autoloadable>
+CONFIG_X86_SPEEDSTEP_SMI y note<not autoloadable>
+#  devices:
+CONFIG_CHR_DEV_SG y note<not autoloadable>
+
+# Boot essential items are always =y
+#  subsystems:
+CONFIG_ATA y note<core subsystem>
+CONFIG_USB y note<core subsystem>
+CONFIG_RFKILL y note<core subsystem>
+CONFIG_INPUT y note<core subsystem>
+CONFIG_SCSI y note<core subsystem>
+CONFIG_HOTPLUG_PCI y note<core subsystem>
+CONFIG_HOTPLUG_PCI_PCIE y note<core subsystem>
+CONFIG_HWMON y note<core subsystem>
+CONFIG_HW_RANDOM y note<core subsystem>
+CONFIG_MMC y note<core subsystem>
+CONFIG_CRYPTO y note<core subsystem>
+CONFIG_FB y note<core subsystem>
+CONFIG_PHYLIB y note<core subsystem>
+CONFIG_I2C y note<core subsystem>
+CONFIG_CONNECTOR y note<core subsystem>
+CONFIG_THERMAL y note<core subsystem>
+CONFIG_POWER_SUPPLY y note<core subsystem>
+CONFIG_TCG_TPM y note<core subsystem>
+#  networking:
+CONFIG_INET_LRO y note<core networking>
+CONFIG_MII y note<core networking>
+CONFIG_TUN y note<core networking>
+CONFIG_TCP_CONG_CUBIC y note<core networking>
+#  network protocols:
+CONFIG_UNIX y note<core protocol>
+CONFIG_PACKET y note<core protocol>
+CONFIG_FDDI y note<core protocol>
+CONFIG_PPP y note<core protocol>
+# IPv6 packets trigger auto-loading of this module and it is easy to trigger
+# a DOS unless this is builtin.  It is also a critical protocol going forward
+# and will become boot essential.
+CONFIG_IPV6 y note<core protocol>
+#  input devices
+CONFIG_INPUT_EVDEV y note<core input device>
+CONFIG_INPUT_MOUSEDEV y note<core input device>
+CONFIG_INPUT_UINPUT y note<core input device>
+#  ACPI drivers
+CONFIG_ACPI_AC y note<core ACPI driver>
+CONFIG_ACPI_BATTERY y note<core ACPI driver>
+CONFIG_ACPI_BUTTON y note<core ACPI driver>
+CONFIG_ACPI_FAN y note<core ACPI driver>
+CONFIG_ACPI_PROCESSOR y note<core ACPI driver>
+CONFIG_ACPI_THERMAL y note<core ACPI driver>
+CONFIG_ACPI_HED y note<core ACPI driver>
+CONFIG_ACPI_CONTAINER y note<dependancy ACPI_HOTPLUG_CPU>
+
+# IPv6 configuration.
+CONFIG_INET6_XFRM_MODE_ROUTEOPTIMIZATION m note<enable IPv6 experimental features>
+
+# Boot essential disk devices
+CONFIG_IOSCHED_CFQ y note<core disk support>
+CONFIG_IOSCHED_DEADLINE y note<core disk support>
+CONFIG_EDD y note<core disk support>
+
+# Core devices
+CONFIG_LEDS_CLASS y note<core driver>
+
+# Core CPU drivers
+CONFIG_FW_LOADER y note<core CPU firmware updater>
+
+# Core debugging support
+CONFIG_KGDB_SERIAL_CONSOLE y note<early debugging support>
+
+# Common boot essential
+CONFIG_SERIAL_8250 p policy<(arch i386 amd64 armel armhf &/ value y) | value m> note<boot essential -- serial consoles>
+CONFIG_SERIAL_8250_PCI p policy<(arch i386 amd64 armel armhf &/ value y) | value m> note<boot essential -- serial consoles>
+CONFIG_SERIAL_8250_PNP p policy<(arch i386 amd64 armel armhf &/ value y) | value m> note<boot essential -- serial consoles>
+CONFIG_XZ_DEC y note<boot essential -- initramfs decompressor>
+CONFIG_KEYBOARD_ATKBD y note<boot essential -- input device>
+CONFIG_SERIO y note<boot essential -- input devices>
+CONFIG_SERIO_I8042 y note<boot essential -- input devices>
+CONFIG_SERIO_LIBPS2 y note<boot essential -- input devices> 
+
+# XEN
+CONFIG_XEN_BLKDEV_FRONTEND y note<not autoloadable -- XEN paravirt support>
+CONFIG_XEN_NETDEV_FRONTEND y note<not autoloadable -- XEN paravirt support>
+
+# KVM
+CONFIG_VIRTIO_BLK p policy<(arch i386 amd64 &/ value y) | (arch armel armhf &/ value n) | value m> note<KVM paravirt support -- not autoloadable>
+CONFIG_VIRTIO_NET p policy<(arch i386 amd64 &/ value y) | (arch armel armhf &/ value n) | value m> note<KVM paravirt support -- not autoloadable>
+CONFIG_VIRTIO_PCI p policy<(arch i386 amd64 &/ value y) | (arch armel armhf &/ value n) | value m> note<KVM paravirt support -- not autoloadable>
+CONFIG_VIRTIO_MMIO p policy<(arch armel armhf &/ value n) | value m> note<KVM paravirt support>
+CONFIG_VIRTIO_BALLOON p policy<(arch armel armhf &/ value n) | value m> note<KVM paravirt support>
+
+# VIRT
+CONFIG_SCSI_VIRTIO m note<tech preview of new feature>
+
+# Boot essential dependancies
+CONFIG_BLK_CGROUP y note<dependancy of boot essential>
+CONFIG_BLK_DEV_DM y note<dependancy of boot essential>
+CONFIG_BLK_DEV_LOOP y note<dependancy of boot essential>
+CONFIG_BLK_DEV_MD y note<dependancy of boot essential>
+CONFIG_BLK_DEV_RAM y note<dependancy of boot essential>
+CONFIG_BLK_DEV_SD y note<dependancy of boot essential>
+CONFIG_BLK_DEV_SR y note<dependancy of boot essential>
+CONFIG_DNS_RESOLVER y note<dependancy of boot essential>
+CONFIG_CRC_T10DIF y note<dependancy of boot essential>
+CONFIG_ZSMALLOC y note<dependancy of boot essential>
+#  CONFIG_ECRYPTFS or CONFIG_DM
+CONFIG_CRYPTO_CRC32C y note<dependancy of boot essential>
+CONFIG_CRYPTO_CRC32C_INTEL y note<dependancy of boot essential>
+CONFIG_CRYPTO_DEV_PADLOCK y note<dependancy of boot essential>
+CONFIG_CRYPTO_CRC32C y note<dependancy of boot essential>
+CONFIG_CRYPTO_AES y note<dependancy of boot essential>
+CONFIG_CRYPTO_CBC y note<dependancy of boot essential>
+CONFIG_CRYPTO_ECB y note<dependancy of boot essential>
+CONFIG_CRYPTO_HMAC y note<dependancy of boot essential>
+CONFIG_CRYPTO_MANAGER y note<dependancy of boot essential>
+CONFIG_CRYPTO_MD5 y note<dependancy of boot essential>
+CONFIG_CRYPTO_SHA1 y note<dependancy of boot essential>
+CONFIG_CRYPTO_SHA256 y note<dependancy of boot essential>
+CONFIG_CRYPTO_LZO p policy<(arch i386 amd64 &/ value y) | value m> note<dependancy of x86 boot essential>
+CONFIG_CRC16 y note<dependancy of boot essential>
+CONFIG_CRC32 y note<dependancy of boot essential>
+CONFIG_ENCRYPTED_KEYS y note<dependancy of boot essential>
+CONFIG_TRUSTED_KEYS y note<dependancy of boot essential>
+# DRM
+CONFIG_BACKLIGHT_CLASS_DEVICE y note<dependancy of boot essential>
+# cpu freq
+CONFIG_CPU_FREQ_STAT p policy<(arch i386 amd64 armel armhf &/ value y) | value m> note<dependancy of boot essential>
+
+# Interesting new subsystems
+CONFIG_NFC m note<experimental subsystem -- opt-in>
+CONFIG_NFC_NCI m note<experimental protocol -- opt-in>
+
+# EXPERIMENTAL Network protocols are generally enabled to allow testing.
+CONFIG_ECONET m note<network protocol -- opt-in>
+CONFIG_IEEE802154 m note<network protocol -- opt-in>
+CONFIG_LAPB m note<network protocol -- opt-in>
+CONFIG_NET_DSA m note<network protocol -- opt-in>
+CONFIG_RDS m note<network protocol -- opt-in>
+CONFIG_TIPC m note<network protocol -- opt-in>
+CONFIG_X25 m note<network protocol -- opt-in>
+
+# ATA controolers: some are boot essential on specific architectures
+CONFIG_ATA_GENERIC p policy<(arch i386 amd64 &/ value y) | value m> note<boot essential on i386/amd64>
+CONFIG_ATA_PIIX p policy<(arch i386 amd64 &/ value y) | value m> note<boot essential on i386/amd64>
+CONFIG_PATA_ACPI p policy<(arch i386 amd64 &/ value y) | value m> note<boot essential on i386/amd64>
+CONFIG_PATA_SIS p policy<(arch i386 amd64 &/ value y) | value m> note<boot essential on i386/amd64>
+CONFIG_SATA_SVW p policy<(arch powerpc &/ value y) | value m> note<boot essential on powerpc>
+CONFIG_SATA_AHCI p policy<(arch i386 amd64 powerpc &/ value y) | value m> note<boot essential on i386/amd64/powerpc>
+
+# x86 boot essential
+CONFIG_PCI_IOAPIC p policy<(arch i386 amd64 &/ value y) | value m> note<boot essential on i386/amd64>
+CONFIG_RTC_DRV_CMOS p policy<(arch i386 amd64 &/ value y) | value m> note<boot essential on i386/amd64>
+CONFIG_SCSI_SPI_ATTRS p policy<(arch i386 amd64 &/ value y) | value m> note<dependancy of boot essential>
+
+# ARM/EFI requires FAT for kernel installation.
+CONFIG_FAT_FS p policy<(arch armel armhf i386 amd64 &/ value y) | value m> note<installation essential on ARM and EFI systems>
+CONFIG_VFAT_FS p policy<(arch armel armhf i386 amd64 &/ value y) | value m> note<installation essential on ARM and EFI systems>
+CONFIG_NLS_CODEPAGE_437 p policy<((flavour omap omap4 | arch i386 amd64) &/ value y) | value m> note<installation essential on ARM and EFI systems>
+CONFIG_NLS y note<dependancy of boot essential>
+
+# ARM boot essential devices
+CONFIG_MMC_BLOCK p policy<(arch armel armhf &/ value y) | value m> note<boot essential on arm>
+CONFIG_MMC_OMAP_HS p policy<(arch armel armhf &/ value y) | value m> note<boot essential on arm>
+CONFIG_FB_OMAP2 p policy<(arch armel armhf &/ value y) | value m> note<boot essential on arm>
+CONFIG_I2C_OMAP p policy<(arch armel armhf &/ value y) | value m> note<boot essential on arm>
+CONFIG_NOP_USB_XCEIV p policy<(flavour omap highbank &/ value y) | value m> note<boot essential on omap/highbank>
+CONFIG_PANEL_GENERIC_DPI p policy<(arch armel armhf &/ value y) | value m> note<boot essential on arm>
+CONFIG_REGULATOR_FIXED_VOLTAGE p policy<(arch armel armhf &/ value y) | value m> note<boot essential on arm>
+CONFIG_SERIAL_OMAP p policy<(arch armel armhf &/ value y) | value m> note<boot essential on arm>
+CONFIG_GPIO_TWL4030 p policy<(arch armel armhf &/ value y) | value m> note<boot essential on arm>
+CONFIG_OMAP2_DSS p policy<(arch armel armhf &/ value y) | value m> note<boot essential on arm>
+
+# omap3/omap4 boot essential
+CONFIG_MTD p policy<(flavour omap &/ value y) | value m> note<boot essential on arm>
+CONFIG_MTD_BLKDEVS p policy<(flavour omap &/ value y) | value m> note<boot essential on arm>
+CONFIG_MTD_BLOCK p policy<(flavour omap &/ value y) | value m> note<boot essential on arm>
+CONFIG_MTD_CHAR p policy<(flavour omap &/ value y) | value m> note<boot essential on arm>
+CONFIG_MTD_NAND p policy<(flavour omap &/ value y) | value m> note<boot essential on arm>
+CONFIG_MTD_NAND_OMAP2 p policy<(flavour omap &/ value y) | value m> note<boot essential on arm>
+CONFIG_MTD_OF_PARTS p policy<(flavour omap &/ value y) | value m> note<boot essential on arm>
+CONFIG_RTC_DRV_TWL4030 p policy<(flavour omap omap4 &/ value y) | value m> note<boot essential on OMAP3/OMAP4>
+CONFIG_KEYBOARD_OMAP4 p policy<(flavour omap4 &/ value y) | value m> note<boot essential on OMAP4>
+CONFIG_KEYBOARD_TWL4030 p policy<(flavour omap4 &/ value y) | value m> note<boot essential on OMAP4>
+CONFIG_USB_NET_SMSC95XX p policy<(flavour omap4 &/ value y) | value m> note<boot essential on OMAP4>
+CONFIG_USB_USBNET p policy<(flavour omap4 &/ value y) | value m> note<boot essential on OMAP4>
+CONFIG_DRM p policy<(flavour omap4 &/ value y) | value m> note<boot essential on OMAP4>
+CONFIG_HWSPINLOCK_OMAP y note<boot essential on OMAP4>
+CONFIG_HWSPINLOCK_ATMEL n note<depends on CONFIG_ARCH_AT91SAM9G45>
+CONFIG_HW_RANDOM_ATMEL n note<depends on CONFIG_ARCH_AT91SAM9G45>
+CONFIG_LEDS_GPIO p policy<(flavour omap4 &/ value y) | value m> note<enables early heartbeat LEDs>
+CONFIG_LEDS_PWM p policy<(flavour omap4 &/ value y) | value m> note<enables early heartbeat LEDs>
+CONFIG_LEDS_TRIGGER_HEARTBEAT p policy<(flavour omap4 &/ value y) | value m> note<enables early heartbeat LEDs>
+CONFIG_LIB80211 p policy<(flavour omap4 &/ value y) | value m> note<boot essential on OMAP4>
+CONFIG_MMC_OMAP p policy<(flavour omap4 &/ value y) | value m> note<boot essential on OMAP4>
+CONFIG_MEDIA_SUPPORT p policy<(flavour omap4 &/ value y) | value m> note<boot essential on OMAP4>
+CONFIG_MFD_SM501 p policy<(flavour omap4 &/ value y) | value m> note<boot essential on OMAP4>
+CONFIG_USB_INVENTRA_DMA p policy<(flavour omap &/ value y) | value n> note<OMAP2 specific feature>
+
+# highbank boot essential
+CONFIG_SATA_AHCI_PLATFORM p policy<(flavour highbank &/ value y) | (flavour omap4 &/ value n) | value m> note<boot essential on highbank/build failure on ti-omap4> flag<BUILD FAILURE>
+CONFIG_EXT2_FS p policy<(flavour highbank &/ value y) | value m> note<boot essential on highbank>
+CONFIG_KEYBOARD_HIGHBANK p policy<(flavour highbank &/ value y) | value m> note<boot essential on highbank>
+CONFIG_I2C_DESIGNWARE_PLATFORM p policy<(flavour highbank &/ value y) | value m> note<boot essential on highbank>
+
+# POWERPC boot essential devices
+CONFIG_FB_VOODOO1 p policy<(arch powerpc &/ value y) | value m> note<boot essential on powerpc>
+CONFIG_FB_3DFX p policy<(arch powerpc &/ value y) | value m> note<boot essential on powerpc>
+CONFIG_FB_PS3 p policy<(arch powerpc &/ value y) | value m> note<boot essential on powerpc>
+CONFIG_FB_ATY128 p policy<(arch powerpc &/ value y) | value m> note<boot essential on powerpc>
+CONFIG_FB_RADEON p policy<(arch powerpc &/ value y) | value m> note<boot essential on powerpc>
+CONFIG_I2C_POWERMAC p policy<(arch powerpc &/ value y) | value m> note<boot essential on powerpc>
+CONFIG_NVRAM p policy<(arch powerpc &/ value y) | value m> note<boot essential on powerpc>
+CONFIG_HW_RANDOM_PASEMI p policy<(arch powerpc &/ value y) | value m> note<dependancy HW_RANDOM>
+CONFIG_PS3_PS3AV p policy<(arch powerpc &/ value y) | value m> note<dependancy HW_RANDOM>
+CONFIG_PS3_SYS_MANAGER p policy<(arch powerpc &/ value y) | value m> note<dependancy HW_RANDOM>
+CONFIG_SERIAL_PMACZILOG p policy<(arch powerpc &/ value y) | value m> note<boot essential -- serial consoles>
+CONFIG_THERM_ADT746X p policy<(arch powerpc &/ value y) | value m> note<boot essential -- cooling support>
+
+# XEN host boot essential
+CONFIG_XEN_ACPI_PROCESSOR p policy<(arch i386 amd64 &/ value y) | value m> <boot essential on XEN host>
+
+# devices which make no sense on some platforms
+CONFIG_PCCARD p policy<(arch armel armhf &/ value n) | value m> note<not a supported interface on arm>
+
+# GRUB2 boot requirement
+CONFIG_FRAMEBUFFER_CONSOLE y note<boot essential for grub2 console>
+
+# TESTING options
+CONFIG_DMATEST n flag<TESTING>
+CONFIG_DEBUG_NX_TEST n flag<TESTING>
+CONFIG_BACKTRACE_SELF_TEST n flag<TESTING>
+CONFIG_FB_VIRTUAL n flag<TESTING>
+CONFIG_MMC_TEST n flag<TESTING>
+CONFIG_MMIOTRACE_TEST n flag<TESTING>
+CONFIG_RCU_TORTURE_TEST n flag<TESTING>
+CONFIG_IEEE802154_FAKEHARD n flag<TESTING>
+CONFIG_LKDTM n flag<TESTING>
+CONFIG_WL12XX_SDIO_TEST n flag<TESTING>
+CONFIG_RING_BUFFER_BENCHMARK n flag<TESTING>
+CONFIG_RTC_DRV_TEST n flag<TESTING>
+CONFIG_USB_DUMMY_HCD n flag<TESTING>
+CONFIG_PCIEAER_INJECT n flag<TESTING>
+CONFIG_PPS_CLIENT_KTIMER n flag<TESTING>
+CONFIG_CRC32_SELFTEST n flag<TESTING>
+CONFIG_OF_SELFTEST n flag<TESTING>
+CONFIG_USB_ZERO_HNPTEST n flag<TEST DEVICE>
+
+# DEBUGGING option
+CONFIG_BRCMDBG - flag<DEBUG>
+CONFIG_USB_XHCI_HCD_DEBUGGING n flag<DEBUG>
+
+# USB
+CONFIG_USB_EHCI_HCD y note<ensures USB 2.0/1.1 probe ordering>
+CONFIG_USB_OHCI_HCD y note<ensures USB 2.0/1.1 probe ordering>
+CONFIG_USB_UHCI_HCD y note<ensures USB 2.0/1.1 probe ordering>
+CONFIG_USB_XHCI_HCD y note<ensures USB 2.0/1.1 probe ordering>
+
+# ARM commonly use sd cards as root disks.
+CONFIG_MMC_SDHCI p policy<(flavour omap highbank &/ value y) | value m> note<installation essential on omap/highbank>
+
+# Security risk.
+CONFIG_ACPI_CUSTOM_METHOD n note<Security: allows arbitrary execution>
+
+# DM_RAID45 only appears in PC BIOS based systems
+CONFIG_DM_RAID45 p policy<(arch i386 amd64 &/ value m) | value n>  note<PC BIOS specific>
+
+# EFI_VARS is required for EFI boot
+CONFIG_EFI_VARS y note<EFI boot requirement (d-i)>
+
+# OLD/DEPRECATED things
+CONFIG_BLK_DEV_HD n note<very old disk device support>
+CONFIG_IA32_AOUT n note<IDE is deprecated>
+CONFIG_BLK_DEV_SR_VENDOR n note<very old tape device support>
+CONFIG_MOUSE_INPORT n note<very old ISA based mouse support>
+CONFIG_OMAP_IOVMM n note<deprecated OMAP support>
+
+# Debugging options are off by default, we want those below.
+CONFIG_DEBUG_FS y note<required debug option>
+CONFIG_DEBUG_KERNEL y note<required debug option>
+
+# IKCONFIG not required
+CONFIG_IKCONFIG n note<not required as configs in /boot>
+
+# POWERPC
+CONFIG_PATA_MACIO y note<boot essential for QEMU on powerpc>
+CONFIG_I2C_ALGOBIT p policy<(arch powerpc &/ value y) | value m>  note<boot essential dependancy on powerpc>
+
+# Non-obvious filesystems.
+CONFIG_USB_FUNCTIONFS m note<filesystems are opt-in>
+CONFIG_USB_GADGETFS m note<filesystems are opt-in>
+CONFIG_LOGFS n note<highly discouraged for use>
+CONFIG_USB_OTG_BLACKLIST_HUB n note<OTG white/blacklists are disabled>
+CONFIG_USB_OTG_WHITELIST n note<OTG white/blacklists are disabled>
+
+# filesystem misc
+CONFIG_AUFS_PROC_MAP n note<causes build failures>
+CONFIG_SQUASHFS_4K_DEVBLK_SIZE n note<non-default block size>
+
+# ARM omap3
+CONFIG_PANEL_DVI y note<required for omap3 video>
+CONFIG_PANEL_SHARP_LS037V7DW01 p policy<(flavour omap &/ value y) | value m> note<required for omap3 video>
+CONFIG_PANEL_TPO_TD043MTEA1 p policy<(flavour omap &/ value y) | value m> note<required for omap3 video>
+CONFIG_SND_OMAP_SOC p policy<(flavour omap &/ value y) | value m> note<required for omap3 sound>
+CONFIG_SND_OMAP_SOC_MCBSP p policy<(flavour omap &/ value y) | value m> note<required for omap3 sound>
+CONFIG_SND_OMAP_SOC_OMAP3_BEAGLE p policy<(flavour omap &/ value y) | value m> note<required for omap3 sound>
+CONFIG_USB_MUSB_TUSB6010 p policy<(flavour omap highbank &/ value n) | value m> note<USB_MUSB choice>
+CONFIG_USB_OMAP n note<not used for our OMAP3/4 h/w>
+
+# ARM gadget mode
+CONFIG_USB_GADGET p policy<(flavour omap omap4 &/ value y) | value m> note<not autoprobable -- only present commonly on omap>
+CONFIG_USB_OTG y note<dependancy of a boot essential>
+CONFIG_USB_G_MULTI p policy<(flavour omap omap4 &/ value m) | value n> note<omap3/omap4 specific feature>
+CONFIG_USB_M66592 n note<gadget device>
+
+# powerpc64-smp requires this as CONFIG_MAPLE is enabled
+CONFIG_ATA_NONSTANDARD p policy<(flavour powerpc64-smp &/ value y) | value n> note<required for powerpc64-smp dep of CONFIG_MAPLE>
+
+# APM Emulation is deliberately off on ARM to prevent new use.
+CONFIG_APM_EMULATION p policy<(arch armel armhf &/ value n) | value m> note<deliberatly forced off for ARM>
+
+# BLK_DEV_XD -- ancient drives
+CONFIG_BLK_DEV_XD n note<ancient drives from pre-history>
+
+# Geode specific, should be enabled by drivers that need it not manually.
+CONFIG_CS5535_MFGPT n note<should be disabled by default>
+CONFIG_GPIO_CS5535 p policy<(value CONFIG_OLPC_X01_SCI y &/ value y) | value m> note<dependancy OLPC_X01_SCI=y>
+
+# DVB_DUMMY_FE only recommended for experts
+CONFIG_DVB_DUMMY_FE n note<expert use only>
+
+# ARM unsupported SOC
+CONFIG_FTGMAC100 n note<unsupported ARM device>
+CONFIG_FTMAC100 n note<unsupported ARM device>
+CONFIG_ARCH_EXYNOS n note<unsupported ARM arch>
+CONFIG_ARCH_HIGHBANK n note<unsupported ARM arch>
+CONFIG_ARCH_PICOXCELL n note<unsupported ARM arch>
+CONFIG_ARCH_PRIMA2 n note<unsupported ARM arch>
+CONFIG_ARCH_ZYNQ n note<unsupported ARM arch>
+
+# Options which really should not have an option at all.
+CONFIG_SIGMA n note<unused common driver infrastructure>
+CONFIG_DM9000_FORCE_SIMPLE_PHY_POLL n
+
+# Items which are simply miss identified
+CONFIG_DEBUG_LL_UART_NONE y note<not actually debug>
+CONFIG_USB_SERIAL_DEBUG m note<not actually debug>
+
+# Experimental
+CONFIG_DM_THIN_PROVISIONING m note<experimental DM target -- opt-in>
+CONFIG_RTL8192DE m note<experimental wireless driver -- opt-in>
+CONFIG_BLK_DEV_UMEM m note<experimental NVRAM disk driver -- opt-in>
+
+# PHY device with non-standard naming.
+CONFIG_B43_PHY_HT y note<experimental PHY support -- opt-in>
+CONFIG_B43_PHY_N y note<experimental PHY support -- opt-in>
+CONFIG_STE10XP y note<PHY drivers are not autoloadable>
+
+# Optional scheduling control
+CONFIG_CFS_BANDWIDTH y note<optional scheduling control -- opt-in>
+
+# Hardware specific experimental options.
+CONFIG_EDAC_SBRIDGE m note<h/w specific experimental option -- opt-in>
+CONFIG_SM_FTL m note<h/w specific experimental option -- opt-in>
+CONFIG_SPI_SPIDEV m note<h/w specific experimental option -- opt-in>
+CONFIG_ATH6KL_USB m note<h/w specific experimental option -- opt-in>
+CONFIG_USB_KC2190 y note<h/w specific experimental option -- opt-in>
+
+# Dummy drivers
+CONFIG_IIO_SIMPLE_DUMMY_BUFFER n note<dummy driver>
+CONFIG_IIO_SIMPLE_DUMMY_EVENTS n note<dummy driver>
+
+# Options where the default is simply too broad:
+#  INPUT_KXTJ9_POLLED_MODE -- polling is bad generally
+CONFIG_INPUT_KXTJ9_POLLED_MODE n
+
+# The intel IOMMU being on by default causes a slew of issues with
+# machines.  We therefore enable its use, but default it off.
+CONFIG_INTEL_IOMMU_DEFAULT_ON n note<the IOMMU can trigger boot failures>
+
+# H/W specific options
+CONFIG_PATA_HPT3X3_DMA n note<DMA mode is documented problematic>
+CONFIG_B43_BCMA_EXTRA n note<BRCMSMAC is enabled disable to avoid ID overlaps>
+
+# XXX: temporarily disabled options -- build failures.
+CONFIG_TI_CPSW - flag<BUILD FAILURE>
+CONFIG_USB_EHCI_HCD_PLATFORM - flag<BUILD FAILURE>
+CONFIG_LIS3L02DQ - flag<BUILD FAILURE>
+CONFIG_EZX_PCAP - flag<BUILD FAILURE>
+CONFIG_TOUCHSCREEN_EGALAX - flag<BUILD FAILURE>
+CONFIG_TOUCHSCREEN_EETI - flag<BUILD FAILURE>
+CONFIG_SPI_PL022 - flag<BUILD FAILURE>
+CONFIG_SPI_DW_MMIO - flag<BUILD FAILURE>
+CONFIG_SENSORS_AK8975 - flag<BUILD FAILURE> note<FTBS on ti-omap4>
+CONFIG_IIO p policy<(flavour omap4 &/ value n) | value m> flag<BUILD FAILURE>
+
+# Valid y/n options which are in a sensible position.
+CONFIG_PPC_ICSWX_USE_SIGILL n note<reviewed 05/2012>
+#  forces padding mode, without this we can select at runtime
+CONFIG_USB_SERIAL_SAFE_PADDED n note<reviewed 07/2012>
+#  allows the console to move to an external USB device
+CONFIG_USB_SISUSBVGA_CON n note<reviewed 07/2012>
+
+# Old/Deprecated
+CONFIG_SCSI_AIC7XXX_OLD n note<deprecated in favour of aic7xxx>
+
+# OSS is handled via pulseaudio
+CONFIG_SND_PCM_OSS n note<deprecated in favour of pulseaudio emulation>
+
+# Poulsbo is handled by DRM_GMA500
+CONFIG_STUB_POULSBO n note<deprecated in favour of CONFIG_DRM_GMA500>
+
+# Risky
+CONFIG_RTAS_FLASH n note<potentially risky allowing flash updates>
+
+# Only valid on fully certified platforms
+CONFIG_ATH9K_DFS_CERTIFIED n note<only valid for kernels for certified platforms only>
+
+# CONFIG_AUDIT_LOGINUID_IMMUTABLE is not compatible with upstart
+CONFIG_AUDIT_LOGINUID_IMMUTABLE n note<incompatible with upstart>
+
+# Machine specific on systems we cannot encounter.
+CONFIG_GPIO_EM n note<h/w not encounted>
+
+# Standard options.
+CONFIG_PANIC_ON_OOPS n note<keep working if at all possible>
+
+# CEPHs dependancies
+CONFIG_BLK_DEV_RBD m note<CEPH client side support>
+
+# CGROUP modifications.
+CONFIG_BLK_DEV_THROTTLING y note<CGROUP disk consumption control>
+
+# Not a thing
+CONFIG_USB_OHCI_HCD_PLATFORM - flag<IGNORE>
+CONFIG_USB_EHCI_HCD_PLATFORM - flag<IGNORE>
+CONFIG_USB_OHCI_HCD_PPC_OF_LE - flag<IGNORE>
+CONFIG_SENSORS_SCH56XX_COMMON - flag<IGNORE>
+
+# Block Dev
+CONFIG_BLK_DEV_XIP n note<prevents use of HIGHMEM for ram disks>
+
+# This option allows bridging between non-IP and IP networks, but is
+# effectivly deprecated.  We _may_ just _may_ have users on older arches
+# so keep it there, but do not spread the pain to systems without these
+# other networks.
+CONFIG_WAN_ROUTER p policy<(arch i386 amd64 powerpc &/ value m) | value n>
