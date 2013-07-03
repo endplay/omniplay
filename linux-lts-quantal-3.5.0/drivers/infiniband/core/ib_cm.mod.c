@@ -19,9 +19,9 @@ MODULE_INFO(intree, "Y");
 static const struct modversion_info ____versions[]
 __used
 __attribute__((section("__versions"))) = {
-	{ 0xee584c90, "module_layout" },
+	{ 0xab5c8523, "module_layout" },
 	{ 0x7406f5c5, "kobject_put" },
-	{ 0x440a4045, "kmalloc_caches" },
+	{ 0x57f98c4b, "kmalloc_caches" },
 	{ 0x12da5bb2, "__kmalloc" },
 	{ 0xe1aac1c3, "ib_find_cached_gid" },
 	{ 0x44887d81, "ib_create_ah_from_wc" },
@@ -54,7 +54,7 @@ __attribute__((section("__versions"))) = {
 	{ 0xc0580937, "rb_erase" },
 	{ 0xb4390f9a, "mcount" },
 	{ 0x8c03d20c, "destroy_workqueue" },
-	{ 0x99d4dc24, "device_create" },
+	{ 0xcef62c7b, "device_create" },
 	{ 0x40f402b6, "ib_init_ah_from_wc" },
 	{ 0x4fa75363, "__class_register" },
 	{ 0xb91507bc, "ib_set_client_data" },
@@ -75,7 +75,7 @@ __attribute__((section("__versions"))) = {
 	{ 0x703b4352, "_raw_read_unlock_irqrestore" },
 	{ 0x551f9246, "ib_cancel_mad" },
 	{ 0x96ce6c46, "rdma_node_get_transport" },
-	{ 0x7807eace, "kmem_cache_alloc_trace" },
+	{ 0x8acb2c4e, "kmem_cache_alloc_trace" },
 	{ 0x67f7403e, "_raw_spin_lock" },
 	{ 0x21fb443e, "_raw_spin_lock_irqsave" },
 	{ 0xa6dcc773, "rb_insert_color" },
@@ -83,7 +83,7 @@ __attribute__((section("__versions"))) = {
 	{ 0xdccda88b, "ib_modify_port" },
 	{ 0x37a0cba, "kfree" },
 	{ 0x2e60bace, "memcpy" },
-	{ 0x5bf6fdcd, "device_unregister" },
+	{ 0x27f9e856, "device_unregister" },
 	{ 0x19a9e62b, "complete" },
 	{ 0xcb451e56, "idr_init" },
 	{ 0xf12a5c83, "idr_find" },

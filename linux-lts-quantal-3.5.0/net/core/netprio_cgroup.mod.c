@@ -19,16 +19,16 @@ MODULE_INFO(intree, "Y");
 static const struct modversion_info ____versions[]
 __used
 __attribute__((section("__versions"))) = {
-	{ 0xee584c90, "module_layout" },
+	{ 0xab5c8523, "module_layout" },
 	{ 0xc2cdbf1, "synchronize_sched" },
-	{ 0xcf1f9cb4, "cgroup_unload_subsys" },
+	{ 0x6cdd9c98, "cgroup_unload_subsys" },
 	{ 0xfe769456, "unregister_netdevice_notifier" },
 	{ 0x63ecad53, "register_netdevice_notifier" },
-	{ 0x684fbea5, "cgroup_load_subsys" },
+	{ 0xbe20c712, "cgroup_load_subsys" },
 	{ 0xf11543ff, "find_first_zero_bit" },
-	{ 0x7807eace, "kmem_cache_alloc_trace" },
-	{ 0x440a4045, "kmalloc_caches" },
-	{ 0x57d7aa89, "dev_get_by_name" },
+	{ 0x8acb2c4e, "kmem_cache_alloc_trace" },
+	{ 0x57f98c4b, "kmalloc_caches" },
+	{ 0x1ef631d1, "dev_get_by_name" },
 	{ 0x54a9db5f, "_kstrtoul" },
 	{ 0x1e6d26a8, "strstr" },
 	{ 0xd0d8621b, "strlen" },
@@ -41,7 +41,7 @@ __attribute__((section("__versions"))) = {
 	{ 0xc7a4fbed, "rtnl_lock" },
 	{ 0xf97456ea, "_raw_spin_unlock_irqrestore" },
 	{ 0x21fb443e, "_raw_spin_lock_irqsave" },
-	{ 0x95f3164e, "init_net" },
+	{ 0x4554df3d, "init_net" },
 	{ 0x4b56cd2e, "net_prio_subsys_id" },
 	{ 0xb4390f9a, "mcount" },
 };

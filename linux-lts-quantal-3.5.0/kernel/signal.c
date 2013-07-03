@@ -30,6 +30,7 @@
 #include <linux/nsproxy.h>
 #include <linux/user_namespace.h>
 #include <linux/uprobes.h>
+#include <linux/replay.h> // REPLAY
 #define CREATE_TRACE_POINTS
 #include <trace/events/signal.h>
 
@@ -154,7 +155,7 @@ void recalc_sigpending(void)
 {
 	if (!recalc_sigpending_tsk(current) && !freezing(current))
 		clear_thread_flag(TIF_SIGPENDING);
-
+	if (current->replay_thrd && replay_has_pending_signal()) set_thread_flag(TIF_SIGPENDING); // REPLAY
 }
 
 /* Given the mask, find the first available signal that should be serviced. */
@@ -1706,6 +1707,17 @@ bool do_notify_parent(struct task_struct *tsk, int sig)
 		if (psig->action[SIGCHLD-1].sa.sa_handler == SIG_IGN)
 			sig = 0;
 	}
+	/* Begin REPLAY */
+	if (tsk->replay_thrd) {
+		if (tsk->parent->replay_thrd) {
+			printk ("Pid %d in replay thread so don't send SIGCHLD\n", tsk->pid);
+			tsk->exit_signal = -1;
+			sig = 0;
+		} else {
+			printk ("JNF - sending signal from replay thrd to non-replay parent - check if this is OK?\n");
+		}
+	}
+	/* End REPLAY */
 	if (valid_signal(sig) && sig)
 		__group_send_sig_info(sig, &info, tsk->parent);
 	__wake_up_parent(tsk, tsk->parent);
@@ -2255,7 +2267,36 @@ relock:
 			goto relock;
 		}
 
-		signr = dequeue_signal(current, &current->blocked, info);
+		/* Begin REPLAY */
+		signr = 0;
+		if (current->replay_thrd) {
+			replay_signal_delivery(&signr, info);
+			// check current->blocked to see if the signal is currently blocked (by Pin)
+			// if it is, then instead of delivering the signal, we add it the pending queue
+			// and set signr = 0.
+			if (signr) {
+				if (sigismember(&current->blocked, signr)) {
+					// signal is current blocked so place it on the private pending queue to be delivered 
+					// when it is unblocked.
+					send_signal (signr, info, current, 1);
+					signr = 0; // we added it already
+				}
+			}
+#ifdef REP_SIG_DEBUG
+			printk ("Replaying pid %d gets signal %d\n", current->pid, signr);
+#endif									
+		}
+		if (signr == 0) {
+			/* End REPLAY */
+			signr = dequeue_signal(current, &current->blocked, info);
+			// Begin REPLAY again */
+			if (current->record_thrd && signr > 0) {
+				if (!(signr == 9 && SI_FROMKERNEL(info))) {
+					record_signal_delivery(signr, info, &sighand->action[signr-1]);
+				}
+			}
+		}
+		/* End REPLAY */
 
 		if (!signr)
 			break; /* will return 0 */

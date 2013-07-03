@@ -19,8 +19,8 @@ MODULE_INFO(intree, "Y");
 static const struct modversion_info ____versions[]
 __used
 __attribute__((section("__versions"))) = {
-	{ 0xee584c90, "module_layout" },
-	{ 0x440a4045, "kmalloc_caches" },
+	{ 0xab5c8523, "module_layout" },
+	{ 0x57f98c4b, "kmalloc_caches" },
 	{ 0x12da5bb2, "__kmalloc" },
 	{ 0xe1aac1c3, "ib_find_cached_gid" },
 	{ 0x76ebea8, "pv_lock_ops" },
@@ -63,7 +63,7 @@ __attribute__((section("__versions"))) = {
 	{ 0xf1faac3a, "_raw_spin_lock_irq" },
 	{ 0x551f9246, "ib_cancel_mad" },
 	{ 0x96ce6c46, "rdma_node_get_transport" },
-	{ 0x7807eace, "kmem_cache_alloc_trace" },
+	{ 0x8acb2c4e, "kmem_cache_alloc_trace" },
 	{ 0x67f7403e, "_raw_spin_lock" },
 	{ 0x21fb443e, "_raw_spin_lock_irqsave" },
 	{ 0xa6dcc773, "rb_insert_color" },

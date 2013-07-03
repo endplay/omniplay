@@ -32,6 +32,7 @@
 #include <linux/elf.h>
 #include <linux/utsname.h>
 #include <linux/coredump.h>
+#include <linux/replay.h> // REPLAY
 #include <asm/uaccess.h>
 #include <asm/param.h>
 #include <asm/page.h>
@@ -543,6 +544,13 @@ static unsigned long randomize_stack_top(unsigned long stack_top)
 		!(current->personality & ADDR_NO_RANDOMIZE)) {
 		random_variable = get_random_int() & STACK_RND_MASK;
 		random_variable <<= PAGE_SHIFT;
+		/* Begin REPLAY */
+		if (current->record_thrd) {
+			record_randomness (random_variable);
+		} else if (current->replay_thrd) {
+			random_variable = replay_randomness();
+		} 
+		/* End REPLAY */
 	}
 #ifdef CONFIG_STACK_GROWSUP
 	return PAGE_ALIGN(stack_top) + random_variable;
@@ -650,6 +658,18 @@ static int load_elf_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 			}
 			/* make sure path is NULL terminated */
 			retval = -ENOEXEC;
+
+			/* Begin REPLAY */
+			if (current->record_thrd || current->replay_thrd) {
+				char* linker = get_linker();
+				if (linker[0]) {
+					kfree (elf_interpreter);
+					elf_interpreter = kmalloc(MAX_LOGDIR_STRLEN+1, GFP_KERNEL);
+					if (elf_interpreter) strcpy (elf_interpreter, linker);
+				}
+			}			
+                        /* End REPLAY */		
+
 			if (elf_interpreter[elf_ppnt->p_filesz - 1] != '\0')
 				goto out_free_interp;
 
@@ -945,6 +965,7 @@ static int load_elf_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 	if ((current->flags & PF_RANDOMIZE) && (randomize_va_space > 1)) {
 		current->mm->brk = current->mm->start_brk =
 			arch_randomize_brk(current->mm);
+		if (current->record_thrd || current->replay_thrd) printk ("arch_randomize_brk returns %lx\n", current->mm->brk); // REPLAY - need to handle this?
 #ifdef CONFIG_COMPAT_BRK
 		current->brk_randomized = 1;
 #endif

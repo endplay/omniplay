@@ -298,6 +298,21 @@ ENTRY(ret_from_fork)
 	CFI_ENDPROC
 END(ret_from_fork)
 
+/* Begin REPLAY */
+ENTRY(ret_from_fork_2)
+	CFI_STARTPROC
+	pushl_cfi %eax
+	call schedule_tail
+	GET_THREAD_INFO(%ebp)
+	popl_cfi %eax
+	call ret_from_fork_replay
+	pushl_cfi $0x0202		# Reset kernel eflags
+	popfl_cfi
+	jmp syscall_exit
+	CFI_ENDPROC
+END(ret_from_fork_2)
+/* End REPLAY */
+	
 /*
  * Interrupt exit functions should be protected against kprobes
  */

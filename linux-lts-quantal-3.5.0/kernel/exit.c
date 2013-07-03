@@ -53,6 +53,7 @@
 #include <linux/oom.h>
 #include <linux/writeback.h>
 #include <linux/shm.h>
+#include <linux/replay.h> /* REPLAY */
 
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
@@ -927,6 +928,8 @@ void do_exit(long code)
 
 	ptrace_event(PTRACE_EVENT_EXIT, code);
 
+	if (current->record_thrd || current->replay_thrd) recplay_exit_start (); /* REPLAY */
+
 	validate_creds_for_do_exit(tsk);
 
 	/*
@@ -986,6 +989,7 @@ void do_exit(long code)
 	taskstats_exit(tsk, group_dead);
 
 	exit_mm(tsk);
+	if (current->record_thrd || current->replay_thrd) recplay_exit_middle (); /* REPLAY */
 
 	if (group_dead)
 		acct_process();
@@ -1049,6 +1053,8 @@ void do_exit(long code)
 		__free_pipe_info(tsk->splice_pipe);
 
 	validate_creds_for_do_exit(tsk);
+
+	if (current->replay_thrd || current->record_thrd) recplay_exit_finish (); /* REPLAY */
 
 	preempt_disable();
 	if (tsk->nr_dirtied)

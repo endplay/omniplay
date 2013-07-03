@@ -70,6 +70,7 @@
 #include <linux/khugepaged.h>
 #include <linux/signalfd.h>
 #include <linux/uprobes.h>
+#include <linux/replay.h> /* REPLAY */
 
 #include <asm/pgtable.h>
 #include <asm/pgalloc.h>
@@ -802,6 +803,11 @@ void mm_release(struct task_struct *tsk, struct mm_struct *mm)
 	if (tsk->clear_child_tid) {
 		if (!(tsk->flags & PF_SIGNALED) &&
 		    atomic_read(&mm->mm_users) > 1) {
+
+			struct syscall_result* psr; /* REPLAY */
+			if (current->record_thrd) new_syscall_enter_external (TID_WAKE_CALL);                                /* REPLAY */
+			else if (current->replay_thrd) get_next_syscall_enter_external (TID_WAKE_CALL, NULL, NULL, &psr);    /* REPLAY */
+
 			/*
 			 * We don't check the error code - if userspace has
 			 * not set up a proper pointer then tough luck.
@@ -809,6 +815,9 @@ void mm_release(struct task_struct *tsk, struct mm_struct *mm)
 			put_user(0, tsk->clear_child_tid);
 			sys_futex(tsk->clear_child_tid, FUTEX_WAKE,
 					1, NULL, NULL, 0);
+
+			if (current->record_thrd) new_syscall_exit_external (TID_WAKE_CALL, 0, NULL);  /* REPLAY */
+			else if (current->replay_thrd && psr) get_next_syscall_exit_external (psr);    /* REPLAY */
 		}
 		tsk->clear_child_tid = NULL;
 	}
@@ -1150,7 +1159,8 @@ static void posix_cpu_timers_init(struct task_struct *tsk)
  * parts of the process environment (as per the clone
  * flags). The actual kick-off is left to the caller.
  */
-static struct task_struct *copy_process(unsigned long clone_flags,
+/* static REPLAY */
+struct task_struct *copy_process(unsigned long clone_flags,
 					unsigned long stack_start,
 					struct pt_regs *regs,
 					unsigned long stack_size,
@@ -1637,10 +1647,13 @@ long do_fork(unsigned long clone_flags,
 		if (clone_flags & CLONE_VFORK) {
 			p->vfork_done = &vfork;
 			init_completion(&vfork);
+			if (current->record_thrd) record_vfork_handler(p); /* REPLAY */
+			if (current->replay_thrd) replay_vfork_handler(p); /* REPLAY */
 			get_task_struct(p);
 		}
 
-		wake_up_new_task(p);
+		if (!(current->record_thrd || current->replay_thrd)) /* REPLAY */
+			wake_up_new_task(p);
 
 		/* forking complete and child started to run, tell ptracer */
 		if (unlikely(trace))

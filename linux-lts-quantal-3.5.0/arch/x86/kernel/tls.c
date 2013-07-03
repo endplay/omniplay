@@ -27,8 +27,9 @@ static int get_free_idx(void)
 	return -ESRCH;
 }
 
-static void set_tls_desc(struct task_struct *p, int idx,
-			 const struct user_desc *info, int n)
+/* static REPLAY */
+void set_tls_desc(struct task_struct *p, int idx,
+		  const struct user_desc *info, int n)
 {
 	struct thread_struct *t = &p->thread;
 	struct desc_struct *desc = &t->tls_array[idx - GDT_ENTRY_TLS_MIN];
@@ -101,7 +102,8 @@ asmlinkage int sys_set_thread_area(struct user_desc __user *u_info)
  * Get the current Thread-Local Storage area:
  */
 
-static void fill_user_desc(struct user_desc *info, int idx,
+/* static REPLAY */
+void fill_user_desc(struct user_desc *info, int idx,
 			   const struct desc_struct *desc)
 
 {

@@ -17,6 +17,7 @@
 #include <linux/cpuidle.h>
 #include <trace/events/power.h>
 #include <linux/hw_breakpoint.h>
+#include <linux/replay.h> // REPLAY
 #include <asm/cpu.h>
 #include <asm/apic.h>
 #include <asm/syscalls.h>
@@ -336,6 +337,11 @@ int kernel_thread(int (*fn)(void *), void *arg, unsigned long flags)
 }
 EXPORT_SYMBOL(kernel_thread);
 
+/* Begin REPLAY */
+int shim_execve(const char *filename, const char __user *const __user *__argv,
+		const char __user *const __user *__envp, struct pt_regs *regs);
+/* End REPLAY */
+
 /*
  * sys_execve() executes a new program.
  */
@@ -350,7 +356,7 @@ long sys_execve(const char __user *name,
 	error = PTR_ERR(filename);
 	if (IS_ERR(filename))
 		return error;
-	error = do_execve(filename, argv, envp, regs);
+	error = shim_execve(filename, argv, envp, regs); // REPLAY
 
 #ifdef CONFIG_X86_32
 	if (error == 0) {
@@ -748,8 +754,17 @@ early_param("idle", idle_setup);
 
 unsigned long arch_align_stack(unsigned long sp)
 {
-	if (!(current->personality & ADDR_NO_RANDOMIZE) && randomize_va_space)
+	/* Begin REPLAY */
+	if (!(current->personality & ADDR_NO_RANDOMIZE) && randomize_va_space) {
+		unsigned int rand = get_random_int();
+		if (current->record_thrd) {
+			record_randomness(rand);
+		} else if (current->replay_thrd) {
+			rand = replay_randomness();
+		}
 		sp -= get_random_int() % 8192;
+	}
+	/* End REPLAY */
 	return sp & ~0xf;
 }
 
