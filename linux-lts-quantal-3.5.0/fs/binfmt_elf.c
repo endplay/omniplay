@@ -963,9 +963,14 @@ static int load_elf_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 
 #ifdef arch_randomize_brk
 	if ((current->flags & PF_RANDOMIZE) && (randomize_va_space > 1)) {
-		current->mm->brk = current->mm->start_brk =
-			arch_randomize_brk(current->mm);
-		if (current->record_thrd || current->replay_thrd) printk ("arch_randomize_brk returns %lx\n", current->mm->brk); // REPLAY - need to handle this?
+		/* Begin REPLAY */
+		if (current->record_thrd) {
+			current->mm->brk = current->mm->start_brk = arch_randomize_brk(current->mm);
+			record_randomness (current->mm->brk);
+		} else if (current->replay_thrd) {
+			current->mm->brk = replay_randomness();
+		} 
+		/* End REPLAY */
 #ifdef CONFIG_COMPAT_BRK
 		current->brk_randomized = 1;
 #endif

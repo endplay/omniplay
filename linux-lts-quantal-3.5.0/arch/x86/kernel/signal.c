@@ -63,6 +63,10 @@
 	regs->seg = GET_SEG(seg) | 3;			\
 } while (0)
 
+/* Begin REPLAY */
+long shim_rt_sigreturn(struct pt_regs* regs);
+/* End REPLAY */
+
 int restore_sigcontext(struct pt_regs *regs, struct sigcontext __user *sc,
 		       unsigned long *pax)
 {
@@ -568,7 +572,14 @@ badframe:
 }
 #endif /* CONFIG_X86_32 */
 
+/* Begin REPLAY */
 long sys_rt_sigreturn(struct pt_regs *regs)
+{
+	return shim_rt_sigreturn(regs);
+}
+/* End REPLAY */
+
+long dummy_rt_sigreturn(struct pt_regs *regs) /* REPLAY */
 {
 	struct rt_sigframe __user *frame;
 	unsigned long ax;

@@ -312,8 +312,6 @@ long replay_resume_from_disk (char* filename, u_long* app_syscall_addr)
 			if (!strcmp(pvmas->vmas_file, "/dev/zero//deleted")) {
 				printk ("special vma for /dev/zero!\n");
 				pvmas->vmas_file[9] = '\0';
-				/* Special mapping was used below - not sure why? */
-				/* addr = do_mmap (map_file, pvmas->vmas_start, pvmas->vmas_end - pvmas->vmas_start, VM_READ|VM_WRITE, MAP_PRIVATE, pvmas->vmas_pgoff << PAGE_SHIFT); */
 			}
 			map_file = filp_open (pvmas->vmas_file, O_RDONLY, 0);
 			if (IS_ERR(map_file)) {
@@ -327,12 +325,10 @@ long replay_resume_from_disk (char* filename, u_long* app_syscall_addr)
 		DPRINT ("About to do mmap: map_file %p start %lx len %lx flags %x shar %x pgoff %lx\n", 
 			map_file, pvmas->vmas_start, pvmas->vmas_end-pvmas->vmas_start, 
 			(pvmas->vmas_flags&(VM_READ|VM_WRITE|VM_EXEC)), 
-			((pvmas->vmas_flags&VM_MAYSHARE) ? MAP_SHARED : MAP_PRIVATE)|MAP_FIXED, 
-			pvmas->vmas_pgoff << PAGE_SHIFT);
+			((pvmas->vmas_flags&VM_MAYSHARE) ? MAP_SHARED : MAP_PRIVATE)|MAP_FIXED, pvmas->vmas_pgoff);
 		addr = do_mmap_pgoff(map_file, pvmas->vmas_start, pvmas->vmas_end - pvmas->vmas_start, 
 				     (pvmas->vmas_flags&(VM_READ|VM_WRITE|VM_EXEC)), 
-				     ((pvmas->vmas_flags&VM_MAYSHARE) ? MAP_SHARED : MAP_PRIVATE)|MAP_FIXED, 
-				     pvmas->vmas_pgoff << PAGE_SHIFT);
+				     ((pvmas->vmas_flags&VM_MAYSHARE) ? MAP_SHARED : MAP_PRIVATE)|MAP_FIXED, pvmas->vmas_pgoff);
 		if (map_file) filp_close (map_file, NULL);
 		if (IS_ERR((char *) addr)) {
 			printk ("replay_resume_from_disk: mmap error %ld\n", PTR_ERR((char *) addr));
@@ -345,6 +341,7 @@ long replay_resume_from_disk (char* filename, u_long* app_syscall_addr)
 		if (!(pvmas->vmas_flags&VM_WRITE)) rc = sys_mprotect (pvmas->vmas_start, pvmas->vmas_end - pvmas->vmas_start, PROT_WRITE); // force it to writable temproarilly
 
 		set_fs(old_fs);
+		DPRINT ("Reading from file position %lu\n", (u_long) pos);
 		copyed = vfs_read (file, (char *) pvmas->vmas_start, pvmas->vmas_end - pvmas->vmas_start, &pos);
 		set_fs(KERNEL_DS);
 		if (copyed != pvmas->vmas_end - pvmas->vmas_start) {
@@ -356,6 +353,13 @@ long replay_resume_from_disk (char* filename, u_long* app_syscall_addr)
 		if (!(pvmas->vmas_flags&VM_WRITE)) rc = sys_mprotect (pvmas->vmas_start, pvmas->vmas_end - pvmas->vmas_start, pvmas->vmas_flags&(VM_READ|VM_WRITE|VM_EXEC)); // restore old protections
 		
 	}
+
+	{
+	  u_long foo;
+	  get_user(foo, (char *) 0xbfab44c8);
+	  DPRINT ("Value at address 0xbfab44c8 is %lx\n", foo);
+	}
+
 
 	// Process-specific info in the mm struct
 	pmminfo = KMALLOC (sizeof(struct mm_info), GFP_KERNEL);

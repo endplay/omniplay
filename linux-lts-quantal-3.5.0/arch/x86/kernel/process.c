@@ -28,6 +28,14 @@
 #include <asm/debugreg.h>
 #include <asm/nmi.h>
 
+/* Begin REPLAY */
+long shim_fork(unsigned long clone_flags, unsigned long stack_start, struct pt_regs *regs, unsigned long stack_size, int __user *parent_tidptr, int __user *child_tidptr);
+int shim_execve(const char *filename, const char __user *const __user *__argv, const char __user *const __user *__envp, struct pt_regs *regs);
+long shim_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_regs *regs, unsigned long stack_size, int __user *parent_tidptr, int __user *child_tidptr);
+long shim_vfork(unsigned long clone_flags, unsigned long stack_start, struct pt_regs *regs, unsigned long stack_size, int __user *parent_tidptr, int __user *child_tidptr);
+/* End REPLAY */
+
+
 /*
  * per-CPU TSS segments. Threads are completely 'soft' on Linux,
  * no more per-task TSS's. The TSS size is kept cacheline-aligned
@@ -271,7 +279,7 @@ void __switch_to_xtra(struct task_struct *prev_p, struct task_struct *next_p,
 
 int sys_fork(struct pt_regs *regs)
 {
-	return do_fork(SIGCHLD, regs->sp, regs, 0, NULL, NULL);
+	return shim_fork(SIGCHLD, regs->sp, regs, 0, NULL, NULL);
 }
 
 /*
@@ -286,8 +294,7 @@ int sys_fork(struct pt_regs *regs)
  */
 int sys_vfork(struct pt_regs *regs)
 {
-	return do_fork(CLONE_VFORK | CLONE_VM | SIGCHLD, regs->sp, regs, 0,
-		       NULL, NULL);
+	return shim_vfork(CLONE_VFORK | CLONE_VM | SIGCHLD, regs->sp, regs, 0, NULL, NULL); /* REPLAY */
 }
 
 long
@@ -296,7 +303,7 @@ sys_clone(unsigned long clone_flags, unsigned long newsp,
 {
 	if (!newsp)
 		newsp = regs->sp;
-	return do_fork(clone_flags, newsp, regs, 0, parent_tid, child_tid);
+	return shim_clone(clone_flags, newsp, regs, 0, parent_tid, child_tid); /* REPLAY */
 }
 
 /*
@@ -336,11 +343,6 @@ int kernel_thread(int (*fn)(void *), void *arg, unsigned long flags)
 	return do_fork(flags | CLONE_VM | CLONE_UNTRACED, 0, &regs, 0, NULL, NULL);
 }
 EXPORT_SYMBOL(kernel_thread);
-
-/* Begin REPLAY */
-int shim_execve(const char *filename, const char __user *const __user *__argv,
-		const char __user *const __user *__envp, struct pt_regs *regs);
-/* End REPLAY */
 
 /*
  * sys_execve() executes a new program.
