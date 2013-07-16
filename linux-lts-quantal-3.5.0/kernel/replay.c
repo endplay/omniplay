@@ -373,8 +373,8 @@ rm_cmp (void* rm1, void* rm2)
 // Only used for the execve system call right now - is it needed elsewhere?
 #define REPLAY_MAX_RANDOM_VALUES 6
 struct rvalues {
-	int cnt;
-	long val[REPLAY_MAX_RANDOM_VALUES];
+	int    cnt;
+	u_long val[REPLAY_MAX_RANDOM_VALUES];
 };
 
 //This has record thread specific data
@@ -470,6 +470,8 @@ static void delete_sysv_mappings (struct replay_thread* prt);
 static void write_and_free_kernel_log_async(struct record_thread *prect);
 static void write_and_free_handler (struct work_struct *work);
 #endif
+static int record_execve(const char *filename, const char __user *const __user *__argv, const char __user *const __user *__envp, struct pt_regs *regs);
+static int replay_execve(const char *filename, const char __user *const __user *__argv, const char __user *const __user *__envp, struct pt_regs *regs);
 
 /* Return values for complex system calls */
 struct gettimeofday_retvals {
@@ -1530,16 +1532,18 @@ EXPORT_SYMBOL(get_log_id);
 
 /* This function forks off a separate process which replays the
    foreground task.*/
-int fork_replay (u_long app_syscall_addr, char* logdir)
+int fork_replay (char* logdir, const char __user *const __user *args, const char __user *const __user *env, u_int uid, char __user * linker, int fd)
 {
 	struct record_group* prg;
 	long retval;
 	char ckpt[MAX_LOGDIR_STRLEN+10];
+	const char __user * pc;
+	char* filename;
 #ifdef USE_ARGSALLOC
 	void* slab;
 #endif
 
-	MPRINT ("in fork_replay for pid %d and the app_syscall_addr is %lu\n", current->pid, app_syscall_addr);
+	MPRINT ("in fork_replay for pid %d\n", current->pid);
 
 	if (atomic_read (&current->mm->mm_users) > 1) {
 		printk ("fork with multiple threads is not currently supported\n");
@@ -1571,28 +1575,45 @@ int fork_replay (u_long app_syscall_addr, char* logdir)
 	current->replay_thrd = NULL;
 	MPRINT ("Record-Pid %d, tsk %p, prp %p\n", current->pid, current, current->record_thrd);
 
-	sprintf (ckpt, "%s/ckpt", prg->rg_logdir);
-	retval = replay_checkpoint_to_disk (ckpt, app_syscall_addr);
-	if (retval) printk ("replay_checkpoint_to_disk returns %ld\n", retval);
+	if (linker) {
+		strncpy (current->record_thrd->rp_group->rg_linker, linker, MAX_LOGDIR_STRLEN);
+		MPRINT ("Set linker for record process to %s\n", linker);
+	}
 
+	if (uid) {
+		retval = sys_setuid (uid);
+		if (retval < 0) {
+			printk ("replay_fork: unable to setuid to %d, rc=%ld\n", uid, retval);
+		} else {
+			MPRINT ("Set uid to %d\n", uid);
+		}
+	}
+
+	retval = sys_close (fd);
+	if (retval < 0) printk ("replay_fork: unable to close fd %d, rc=%ld\n", fd, retval);
+
+	// Save reduced-size checkpoint with info needed for exec
+	sprintf (ckpt, "%s/ckpt", prg->rg_logdir);
+	retval = replay_checkpoint_to_disk (ckpt, args, env);
+	if (retval) {
+		printk ("replay_checkpoint_to_disk returns %ld\n", retval);
+		return retval;
+	}
+
+	// Finally do exec from which we should not return
+	get_user (pc, args);
+	filename = getname(pc);
+	if (IS_ERR(filename)) {
+		printk ("fork_replay: unable to copy exec filname\n");
+		return -EINVAL;
+	}
+
+	retval = record_execve (filename, args, env, get_pt_regs (NULL));
+	if (retval) printk ("fork_replay: execve returns %ld\n", retval);
 	return retval;
 }
-EXPORT_SYMBOL(fork_replay);
 
-void
-set_linker (char* linker)
-{
-	if (current->record_thrd) {
-		strncpy (current->record_thrd->rp_group->rg_linker, linker, MAX_LOGDIR_STRLEN);
-		DPRINT ("Set linker for record process to %s\n", linker);
-	} else if (current->replay_thrd) {
-		strncpy (current->replay_thrd->rp_group->rg_rec_group->rg_linker, linker, MAX_LOGDIR_STRLEN);
-		DPRINT ("Set linker for replay process to %s\n", linker);
-	} else {
-		printk ("Cannot set linker for non record/replay process\n");
-	}
-}
-EXPORT_SYMBOL(set_linker);
+EXPORT_SYMBOL(fork_replay);
 
 char*
 get_linker (void)
@@ -1608,15 +1629,17 @@ get_linker (void)
 }
 
 long
-replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker)
+replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd)
 {
 	struct record_group* precg; 
 	struct record_thread* prect;
 	struct replay_group* prepg;
 	struct replay_thread* prept;
 	long record_pid, rc;
-	u_long app_syscall_addr;
 	char ckpt[MAX_LOGDIR_STRLEN+10];
+	char** args;
+	char** env;
+	mm_segment_t old_fs = get_fs();
 
 	MPRINT ("In replay_ckpt_wakeup\n");
 
@@ -1649,7 +1672,8 @@ replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker)
 	// Restore the checkpoint
 	strcpy (ckpt, logdir);
 	strcat (ckpt, "/ckpt");
-	record_pid = replay_resume_from_disk(ckpt, &app_syscall_addr);
+
+	record_pid = replay_resume_from_disk(ckpt, &args, &env);
 	if (record_pid < 0) return record_pid;
 
 	// Read in the log records 
@@ -1657,12 +1681,14 @@ replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker)
 	rc = read_log_data (prect);
 	if (rc < 0) return rc;
 
-
 	// Create a replay group and thread for this process
 	current->replay_thrd = prept;
 	current->record_thrd = NULL;
 
-	if (linker) set_linker (linker);
+	if (linker) {
+		strncpy (current->replay_thrd->rp_group->rg_rec_group->rg_linker, linker, MAX_LOGDIR_STRLEN);
+		DPRINT ("Set linker for replay process to %s\n", linker);
+	}
 
 	// XXX mcc: if pin, set the process to sleep, so that we can manually attach pin
 	// We would then have to wake up the process after pin has been attached.
@@ -1677,7 +1703,18 @@ replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker)
 		schedule();
 	}
 
-	return 0;
+	rc = sys_close (fd);
+	if (rc < 0) {
+		printk ("replay_ckpt_wakeup: unable to close fd %d, rc=%ld\n", fd, rc);
+	} else {
+		MPRINT ("replay_ckpt_wakeup: closed fd %d\n", fd);
+	}
+
+	set_fs(KERNEL_DS);
+	rc = replay_execve (args[0], (const char* const *) args, (const char* const *) env, get_pt_regs (NULL));
+	set_fs(old_fs);
+	if (rc < 0) printk ("replay_ckpt_wakeup: replay_execve returns %ld\n", rc);
+	return rc;
 }
 EXPORT_SYMBOL(replay_ckpt_wakeup);
 
@@ -2370,7 +2407,7 @@ void consume_remaining_records (void)
 	DPRINT ("Pid %d recpid %d done consuming unused records clock now %ld\n", current->pid, prt->rp_record_thread->rp_record_pid, *prt->rp_preplay_clock);
 }
 
-void record_randomness (long value)
+void record_randomness (u_long value)
 {
 	if (current->record_thrd->random_values.cnt < REPLAY_MAX_RANDOM_VALUES) {
 		current->record_thrd->random_values.val[current->record_thrd->random_values.cnt++] = value;
@@ -2379,7 +2416,7 @@ void record_randomness (long value)
 	}
 }
 
-long replay_randomness (void)
+u_long replay_randomness (void)
 {
 	if (current->replay_thrd->random_values.cnt < REPLAY_MAX_RANDOM_VALUES) {
 		return current->replay_thrd->random_values.val[current->replay_thrd->random_values.cnt++];
@@ -3429,7 +3466,7 @@ shim_unlink (const char __user *pathname)
 SHIM_CALL(unlink, 10, pathname);
 
 // Simply recording the fact that an execve takes place, we won't replay it
-static asmlinkage int 
+static int 
 record_execve(const char *filename, const char __user *const __user *__argv, const char __user *const __user *__envp, struct pt_regs *regs) 
 {
 	struct ravlues* pretval;
@@ -3487,7 +3524,7 @@ record_execve(const char *filename, const char __user *const __user *__argv, con
 // need to advance the record log past the execve, but we don't replay it
 // We need to record that an exec happened in the log for knowing when to clear
 // preallocated memory in a forked process
-static asmlinkage int
+static int
 replay_execve(const char *filename, const char __user *const __user *__argv, const char __user *const __user *__envp, struct pt_regs *regs) 
 {
 	struct replay_thread* prt = current->replay_thrd;
@@ -3501,7 +3538,7 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 	prp = current->replay_thrd;
 
 	get_next_syscall_enter (prt, prg, 11, (char **) &retparams, NULL, &psr);  // Need to split enter/exit because of vfork/exec wait
-	MPRINT ("Replay pid %d performing execve\n", current->pid);
+	DPRINT("Replay pid %d performing execve of %s\n", current->pid, filename);
 	memcpy (&current->replay_thrd->random_values, retparams, sizeof(struct rvalues));
 	current->replay_thrd->random_values.cnt = 0;
 	rc = do_execve(filename, __argv, __envp, regs);
@@ -5337,17 +5374,12 @@ asmlinkage long
 shim_reboot (int magic1, int magic2, unsigned int cmd, void __user * arg)
 SHIM_NOOP(reboot, magic1, magic2, cmd, arg)
 
-//struct old_linux_dirent; /* Forward definition */
-//asmlinkage long old_readdir (unsigned int fd, /* No prototype */
-//			     struct old_linux_dirent __user * dirent, 
-//			     unsigned int count);
 asmlinkage long 
 shim_old_readdir (unsigned int fd, struct old_linux_dirent __user * dirent, 
 		  unsigned int count)
 SHIM_NOOP(old_readdir, fd, dirent, count)
 
-asmlinkage int 
-shim_old_mmap (struct mmap_arg_struct __user *arg) SHIM_NOOP(old_mmap, arg)
+// old_mmap is a shim that calls sys_mmap_pgoff - we handle record/replay there instead
 
 static asmlinkage long 
 record_munmap (unsigned long addr, size_t len)
@@ -8612,8 +8644,8 @@ record_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, un
 {
 	long rc;
 	struct mmap_pgoff_retvals* recbuf = NULL;
-	
 	struct mmap_pgoff_args* args = ARGSKMALLOC (sizeof(struct mmap_pgoff_args), GFP_KERNEL);
+
 	if (args == NULL) {
 		printk ("record_mmap_pgoff: can't allocate args\n");
 		return -ENOMEM;
@@ -10947,8 +10979,8 @@ static ssize_t write_log_data (struct file* file, loff_t* ppos, struct record_th
 			case 211: size = (psr->retval >= 0) ? sizeof(gid_t)*3 : 0; break;
 			case 220: size = psr->retval; break;
 			case 221: size = sizeof(struct flock64); break;
-			case 229: size = psr->retval; break;
-			case 230: size = psr->retval; break;
+			case 229: size = (psr->retval >= 0) ? psr->retval : 0; break;
+			case 230: size = (psr->retval >= 0) ? psr->retval : 0; break;
 			case 239: size = sizeof(struct sendfile64_retvals); break;
 			case 242: size = sizeof(cpumask_t); break;
 			case 243: size = sizeof(struct set_thread_area_retvals); break;
@@ -11291,14 +11323,14 @@ int read_log_data_internal (struct record_thread* prect, struct syscall_result* 
 			        case 192: size = sizeof(struct mmap_pgoff_retvals); break;
 				case 195: size = sizeof(struct stat64); break;
 				case 196: size = sizeof(struct stat64); break;
-				case 197: size = sizeof(struct stat64); break;
+			case 197: size = sizeof(struct stat64); printk ("size of stat64 is %d\n", sizeof(struct stat64)); break;
 			        case 205: size = (psr[cnt].retval > 0) ? sizeof(gid_t)*psr[cnt].retval : 0; break;
 			        case 209: size = (psr[cnt].retval >= 0) ? sizeof(uid_t)*3 : 0; break;
 			        case 211: size = (psr[cnt].retval >= 0) ? sizeof(gid_t)*3 : 0; break;
 				case 220: size = psr[cnt].retval; break;
  			        case 221: size = sizeof(struct flock64); break;
-				case 229: size = psr[cnt].retval; break;
-				case 230: size = psr[cnt].retval; break;
+			        case 229: size = (psr[cnt].retval >= 0) ? psr[cnt].retval : 0; break;
+			        case 230: size = (psr[cnt].retval >= 0) ? psr[cnt].retval : 0; break;
 				case 239: size = sizeof(struct sendfile64_retvals); break;
 			        case 242: size = sizeof(cpumask_t); break;
 				case 243: size = sizeof(struct set_thread_area_retvals); break;

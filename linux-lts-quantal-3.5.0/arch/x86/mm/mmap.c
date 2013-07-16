@@ -29,6 +29,7 @@
 #include <linux/random.h>
 #include <linux/limits.h>
 #include <linux/sched.h>
+#include <linux/replay.h> // REPLAY
 #include <asm/elf.h>
 
 struct __read_mostly va_alignment va_align = {
@@ -79,6 +80,14 @@ static unsigned long mmap_rnd(void)
 		else
 			rnd = get_random_int() % (1<<28);
 	}
+	/* Begin REPLAY */
+	if (current->record_thrd) {
+		record_randomness (rnd);
+	} else if (current->replay_thrd) {
+		rnd = replay_randomness();
+	} 
+	/* End REPLAY */
+	
 	return rnd << PAGE_SHIFT;
 }
 

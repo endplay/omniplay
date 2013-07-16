@@ -23,7 +23,7 @@
 14	i386	mknod			shim_mknod
 15	i386	chmod			shim_chmod
 16	i386	lchown			shim_lchown16
-17	i386	break
+17	i386	pthread_print		sys_pthread_print
 18	i386	oldstat			shim_stat
 19	i386	lseek			shim_lseek			sys32_lseek
 20	i386	getpid			shim_getpid
@@ -95,8 +95,8 @@
 86	i386	uselib			shim_uselib
 87	i386	swapon			shim_swapon
 88	i386	reboot			shim_reboot
-89	i386	readdir			shim_old_readdir			compat_sys_old_readdir
-90	i386	mmap			shim_old_mmap			sys32_mmap
+89	i386	readdir			shim_old_readdir		compat_sys_old_readdir
+90	i386	mmap			sys_old_mmap			sys32_mmap
 91	i386	munmap			shim_munmap
 92	i386	truncate		shim_truncate
 93	i386	ftruncate		shim_ftruncate

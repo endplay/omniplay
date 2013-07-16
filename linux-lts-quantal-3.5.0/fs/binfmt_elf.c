@@ -667,7 +667,7 @@ static int load_elf_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 					elf_interpreter = kmalloc(MAX_LOGDIR_STRLEN+1, GFP_KERNEL);
 					if (elf_interpreter) strcpy (elf_interpreter, linker);
 				}
-			}			
+			} else			
                         /* End REPLAY */		
 
 			if (elf_interpreter[elf_ppnt->p_filesz - 1] != '\0')

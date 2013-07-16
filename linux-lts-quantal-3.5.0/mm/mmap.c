@@ -1154,6 +1154,8 @@ struct mmap_arg_struct {
 	unsigned long offset;
 };
 
+asmlinkage long shim_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, unsigned long flags, unsigned long fd, unsigned long pgoff); /* REPLAY */
+
 SYSCALL_DEFINE1(old_mmap, struct mmap_arg_struct __user *, arg)
 {
 	struct mmap_arg_struct a;
@@ -1163,8 +1165,7 @@ SYSCALL_DEFINE1(old_mmap, struct mmap_arg_struct __user *, arg)
 	if (a.offset & ~PAGE_MASK)
 		return -EINVAL;
 
-	return sys_mmap_pgoff(a.addr, a.len, a.prot, a.flags, a.fd,
-			      a.offset >> PAGE_SHIFT);
+	return shim_mmap_pgoff(a.addr, a.len, a.prot, a.flags, a.fd, a.offset >> PAGE_SHIFT); /* REPLAY */
 }
 #endif /* __ARCH_WANT_SYS_OLD_MMAP */
 

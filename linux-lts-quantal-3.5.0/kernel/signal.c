@@ -1713,8 +1713,6 @@ bool do_notify_parent(struct task_struct *tsk, int sig)
 			printk ("Pid %d in replay thread so don't send SIGCHLD\n", tsk->pid);
 			tsk->exit_signal = -1;
 			sig = 0;
-		} else {
-			printk ("JNF - sending signal from replay thrd to non-replay parent - check if this is OK?\n");
 		}
 	}
 	/* End REPLAY */
