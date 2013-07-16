@@ -49,6 +49,7 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 	u_long app_syscall_addr;
 	char logdir[MAX_LOGDIR_STRLEN+1];
 	char* tmp = NULL;
+	const char __user * pc;
 	long rc;
 
 	pckpt_proc = new_ckpt_proc = NULL;
@@ -60,14 +61,17 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 			printk ("ioctl SPECI_FORK_REPLAY fails, len %d\n", len);
 			return -EINVAL;
 		}
-		if (copy_from_user (&rdata, (void *) data, sizeof(rdata)))
+		if (copy_from_user (&rdata, (void *) data, sizeof(rdata))) {
+			printk ("ioctl SPECI_FORK_REPLAY fails, inavlid data\n");
 			return -EFAULT;
-		retval = strncpy_from_user(logdir, rdata.logdir, MAX_LOGDIR_STRLEN);
+		}
+		get_user (pc, rdata.args);
+		retval = strncpy_from_user(logdir, pc, MAX_LOGDIR_STRLEN);
 		if (retval < 0 || retval >= MAX_LOGDIR_STRLEN) {
 			printk ("ioctl SPECI_FOR_REPLAY fails, strcpy returns %d\n", retval);
 			return -EINVAL;
 		}
-                return fork_replay(rdata.app_syscall_addr, logdir);
+                return fork_replay (logdir, &rdata.args[1], rdata.env, rdata.uid, rdata.linkpath, rdata.fd);
 	case SPECI_RESUME:
 		if (len != sizeof(wdata)) {
 			printk ("ioctl SPECI_RESUME fails, len %d\n", len);
@@ -89,7 +93,7 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 		} else {
 			tmp = NULL;
 		}
-		rc = replay_ckpt_wakeup (wdata.pin, logdir, tmp);
+		rc = replay_ckpt_wakeup (wdata.pin, logdir, tmp, wdata.fd);
 		if (tmp) putname (tmp);
 		return rc;
 
@@ -122,20 +126,6 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 			return -EFAULT;
 		
 		return get_used_addresses (udata.plist, udata.nlist);
-	case SPECI_SET_LINKER:
-		if (len != sizeof(char *)) {
-			printk ("ioctl SPECI_SET_LINKER fails, len %d\n", len);
-			return -EINVAL;
-		}
-		tmp = getname((char __user *) data);
-		if (tmp) {
-			set_linker (tmp);
-			putname (tmp);
-			return 0;
-		} else {
-			printk ("SPECI_SET_LINKER: cannot get linker name\n");
-			return -EFAULT;
-		}
 	default:
 		return -EINVAL;
 	}

@@ -6,14 +6,17 @@
 #include <stdlib.h>
 #include "util.h"
 
+extern char** environ;
+
 int main (int argc, char* argv[])
 {
     int fd, rc, i;
-    unsigned int uid;
-    int have_uid = 0; // flag to see if we should change the uid
+    unsigned int uid = 0; // set to non-zero if uid changed by command line
     int link_debug = 0; // flag if we should debug linking
     char* libdir = NULL;
     int base;
+    char ldpath[4096];
+    char* linkpath = NULL;
 
     for (base = 1; base < argc; base++) {
 	if (argc > base+1 && !strncmp(argv[base], "--uid", 5)) {
@@ -23,7 +26,6 @@ int main (int argc, char* argv[])
 		fprintf (stderr, "invalid uid\n");
 		return -1;
 	    }
-	    have_uid = 1;
 	    base++;
 	} else if (argc > base+1 && !strncmp(argv[base], "--pthread", 8)) {
 	    libdir = argv[base+1];
@@ -47,7 +49,36 @@ int main (int argc, char* argv[])
 	perror ("open /dev/spec0");
 	return -1;
     }
-    rc = replay_fork (fd, 0, argv[base]);
+
+    if (libdir) { 
+	strcpy (ldpath, libdir);
+	for (i = 0; i < strlen(ldpath); i++) {
+	    if (ldpath[i] == ':') {
+		ldpath[i] = '\0';
+		break;
+	    }
+	}
+	strcat (ldpath, "/");
+	strcat (ldpath, "ld-linux.so.2");
+	argv[base-1] = ldpath;
+	linkpath = ldpath;
+#if 0
+	if (set_linker (fd, ldpath) < 0) {
+	    fprintf (stderr, "Cannot set linker path\n");
+	    return -1;
+	}
+#endif
+	setenv("LD_LIBRARY_PATH", libdir, 1);
+    }
+    if (link_debug) setenv("LD_DEBUG", "libs", 1);
+
+    rc = replay_fork (fd, (const char**) &argv[base], (const char **) environ, uid, linkpath);
+
+    // replay_fork should never return if it succeeds
+    fprintf (stderr, "replay_fork failed, rc = %d\n", rc);
+    return rc;
+
+#if 0
     if (rc < 0) {
 	perror ("replay_fork");
 	return -1;
@@ -61,27 +92,10 @@ int main (int argc, char* argv[])
             return -1;
         }
     }
+#endif
 
-    printf ("Execing %s\n", argv[base+1]);
-    if (libdir) { 
-	char ldpath[4096];
-	strcpy (ldpath, libdir);
-	for (i = 0; i < strlen(ldpath); i++) {
-	    if (ldpath[i] == ':') {
-		ldpath[i] = '\0';
-		break;
-	    }
-	}
-	strcat (ldpath, "/");
-	strcat (ldpath, "ld-linux.so.2");
-	argv[base-1] = ldpath;
-	if (set_linker (fd, ldpath) < 0) {
-	    fprintf (stderr, "Cannot set linker path\n");
-	    return -1;
-	}
-	if (link_debug) setenv("LD_DEBUG", "libs", 1);
-	setenv("LD_LIBRARY_PATH", libdir, 1);
-    }
+#if 0
+    //    printf ("Execing %s\n", argv[base+1]);
     close (fd);
 
     rc = execv (argv[base+1], &argv[base+1]);
@@ -90,4 +104,5 @@ int main (int argc, char* argv[])
 	return -1;
     }
     return 0;
+#endif
 }

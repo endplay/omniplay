@@ -8,14 +8,19 @@
 #define ROLLED_BACK 1
 
 struct record_data {
-	u_long        app_syscall_addr;
-	char __user * logdir;
+	u_long                           app_syscall_addr;
+	const char __user *const __user *args;
+	const char __user *const __user *env;
+	u_int                            uid;
+	char *                           linkpath;
+	int                              fd;
 };
 
 struct wakeup_data {
-	int pin;
+	int           pin;
 	char __user * logdir;
 	char __user * linker;
+	int           fd;
 };
 	
 struct get_used_addr_data {
@@ -31,6 +36,5 @@ struct get_used_addr_data {
 #define SPECI_CHECK_AFTER _IOR('u',4,int)
 #define SPECI_GET_LOG_ID _IO('u',5)
 #define SPECI_GET_USED_ADDR _IOR('u',6,struct get_used_addr_data)
-#define SPECI_SET_LINKER _IOR('u',7,char *)
 
 #endif

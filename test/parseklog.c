@@ -554,7 +554,8 @@ int main (int argc, char* argv[])
 				case 211: size = (psr.retval >= 0) ? sizeof(gid_t)*3 : 0; break;
 				case 220: size = psr.retval; break;
 				case 221: size = sizeof(struct flock64); break;
-				case 229: size = sizeof(struct getxattr_retvals) + ((psr.retval)-1); break;
+				case 229: size = (psr.retval > 0) ? psr.retval : 0; break;
+				case 230: size = (psr.retval > 0) ? psr.retval : 0; break;
 				case 239: size = sizeof(struct sendfile64_retvals); break;
 				case 242: size = sizeof(cpu_set_t); break;
 				case 243: size = sizeof(struct set_thread_area_retvals); break;
@@ -658,14 +659,6 @@ int main (int argc, char* argv[])
 					printf ("\tmtime is %lx.%lx\n", ((struct mmap2_retvals *)buf)->mtime.tv_sec, ((struct mmap2_retvals *)buf)->mtime.tv_nsec);
 				}
 			}
-			/*
-			if (psr.sysnum == 3) {
-				printf ("\tbuf has %d bytes\n", size);
-				if (size > 0) {
-					printf ("\tbuf is %s\n", buf);
-				}
-			}
-			*/
 			
 			
 			
