@@ -1,6 +1,5 @@
 #include <sys/socket.h>
 #include <sys/time.h>
-#include <sys/resource.h>
 #include <sys/times.h>
 #include <sys/types.h>
 #include <sys/sysinfo.h>
@@ -22,6 +21,7 @@
 #include <asm/ldt.h>
 #define __USE_LARGEFILE64
 #include <fcntl.h>
+#include <sys/resource.h>
 
 #define REPLAY_MAX_THREADS 16
 //#define USE_HPC
@@ -53,7 +53,7 @@ struct syscall_result {
         long                    stop_clock;     // and stop of all system calls
 };
 
-#define REPLAY_MAX_RANDOM_VALUES 5
+#define REPLAY_MAX_RANDOM_VALUES 6
 struct rvalues {
 	int cnt;
 	long val[REPLAY_MAX_RANDOM_VALUES];
@@ -81,7 +81,7 @@ struct select_retvals {
 	struct timeval tv;
 };
 
-struct mmap2_args {
+struct mmap_pgoff_args {
 	unsigned long addr;
 	unsigned long len;
 	unsigned long prot;
@@ -192,7 +192,7 @@ struct set_thread_area_retvals {
 	struct user_desc u_info;
 };
 
-struct mmap2_retvals {
+struct mmap_pgoff_retvals {
 	u_long          dev;
 	u_long          ino;
 	struct timespec mtime; 
@@ -342,7 +342,7 @@ int main (int argc, char* argv[])
 				// in user-space so we need to hard-code the size to be 40 
 				case 174: size = 20 /* sizeof(struct sigaction)*/; break;
 				case 175: size = sizeof (struct rt_sigprocmask_args); break;
-                                case 192: size = sizeof (struct mmap2_args); break;
+                                case 192: size = sizeof (struct mmap_pgoff_args); break;
 				default: 
 					size = 0;
 					printf ("write_log_data: unrecognized syscall %d\n", psr.sysnum);
@@ -357,9 +357,9 @@ int main (int argc, char* argv[])
 				}
 				printf ("\t%d bytes of args included\n", size);
 				if (psr.sysnum == 192) {
-					struct mmap2_args *args;
-					args = (struct mmap2_args *) buf;
-					printf ("\tmmap2_args: addr %lx, len %lu, fd %lu, pgoff %lu\n", args->addr, args->len, args->fd, args->pgoff);
+					struct mmap_pgoff_args *args;
+					args = (struct mmap_pgoff_args *) buf;
+					printf ("\tmmap_pgoff_args: addr %lx, len %lu, fd %lu, pgoff %lu\n", args->addr, args->len, args->fd, args->pgoff);
 				}
                         }
 			if (psr.retparams) {
@@ -545,7 +545,7 @@ int main (int argc, char* argv[])
 				case 183: size = psr.retval; break;
 				case 187: size = sizeof(off_t); break;
 				case 191: size = sizeof(struct rlimit); break;
-				case 192: size = sizeof(struct mmap2_retvals); break;
+				case 192: size = sizeof(struct mmap_pgoff_retvals); break;
 				case 195: size = sizeof(struct stat64); break;
 				case 196: size = sizeof(struct stat64); break;
 				case 197: size = sizeof(struct stat64); break;
@@ -561,9 +561,11 @@ int main (int argc, char* argv[])
 				case 243: size = sizeof(struct set_thread_area_retvals); break;
 				case 256: size = sizeof(struct epoll_wait_retvals) + ((psr.retval)-1)*sizeof(struct epoll_event); break;
 				case 265: size = sizeof(struct timespec); break;
+				case 266: size = sizeof(struct timespec); break;
 				//case 268: size = sizeof(struct statfs64); break; 
 				case 268: size = 84; break; 
 				case 300: size = sizeof(struct stat64); break;
+			        case 340: size = sizeof(struct rlimit64); break;
 				default: 
 					size = 0;
 					printf ("write_log_data: unrecognized syscall %d\n", psr.sysnum);
@@ -654,9 +656,9 @@ int main (int argc, char* argv[])
 			}
 			if (psr.sysnum == 192) {
 				if (psr.retparams) {
-					printf ("\tdev is %lx\n", ((struct mmap2_retvals *)buf)->dev);
-					printf ("\tino is %lx\n", ((struct mmap2_retvals *)buf)->ino);
-					printf ("\tmtime is %lx.%lx\n", ((struct mmap2_retvals *)buf)->mtime.tv_sec, ((struct mmap2_retvals *)buf)->mtime.tv_nsec);
+					printf ("\tdev is %lx\n", ((struct mmap_pgoff_retvals *)buf)->dev);
+					printf ("\tino is %lx\n", ((struct mmap_pgoff_retvals *)buf)->ino);
+					printf ("\tmtime is %lx.%lx\n", ((struct mmap_pgoff_retvals *)buf)->mtime.tv_sec, ((struct mmap_pgoff_retvals *)buf)->mtime.tv_nsec);
 				}
 			}
 			
