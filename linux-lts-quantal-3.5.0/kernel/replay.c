@@ -2967,15 +2967,15 @@ recplay_exit_middle(void)
 		// So, find a thead that has not exited, map the shared page, and read it from there (bleah)
 		tmp = current->replay_thrd->rp_next_thread;
 		while (tmp != current->replay_thrd) {
-			DPRINT ("Pid %d: Replay pid %d record pid %d has status %d\n", current->pid, tmp->rp_replay_pid, tmp->rp_record_thread->rp_record_pid, tmp->rp_status);
+			MPRINT ("Pid %d: Replay pid %d record pid %d has status %d\n", current->pid, tmp->rp_replay_pid, tmp->rp_record_thread->rp_record_pid, tmp->rp_status);
 			if (tmp->rp_status != REPLAY_STATUS_DONE) {
-				tsk = find_task_by_vpid(pid);
+				tsk = find_task_by_vpid(tmp->rp_replay_pid);
 				if (tsk == NULL) {
-					DPRINT ("recplay_exit_middle: cannot find replay task %d\n", pid);
+					MPRINT ("recplay_exit_middle: cannot find replay task %d\n", pid);
 				} else {
 					task_lock (tsk);
 					if (tsk->mm == NULL) {
-						DPRINT ("replay_exit_middle: task %d has no mm\n", pid);
+						MPRINT ("replay_exit_middle: task %d has no mm\n", pid);
 						task_unlock (tsk);
 					} else {
 						// Make sure that mm doesn't go away on us
@@ -3441,9 +3441,7 @@ replay_waitpid (pid_t pid, int __user *stat_addr, int options)
 	return rc;
 }
 
-asmlinkage long 
-shim_waitpid (pid_t pid, int __user *stat_addr, int options)
-SHIM_CALL(waitpid, 7, pid, stat_addr, options);
+asmlinkage long shim_waitpid (pid_t pid, int __user *stat_addr, int options) SHIM_CALL(waitpid, 7, pid, stat_addr, options);
 
 static asmlinkage long 
 record_creat(const char __user * pathname, int mode)
@@ -4633,6 +4631,10 @@ record_ioctl (unsigned int fd, unsigned int cmd, unsigned long arg)
 		break;
 	case TIOCGPGRP:
 		dir = _IOC_WRITE;
+		size = sizeof(struct pid);
+		break;
+	case TIOCSPGRP:
+		dir = _IOC_READ;
 		size = sizeof(struct pid);
 		break;
 	case TIOCGWINSZ:
@@ -6291,10 +6293,74 @@ void shim_vm86old(struct kernel_vm86_struct *info, struct task_struct *tsk)
 	return do_sys_vm86(info, tsk);
 }
 
-asmlinkage long 
-shim_wait4 (pid_t upid, int __user *stat_addr, int options, 
-	    struct rusage __user *ru)
-SHIM_NOOP(wait4, upid, stat_addr, options, ru)
+struct wait4_retvals {
+	int           stat_addr;
+	struct rusage ru;
+};
+
+static asmlinkage long 
+record_wait4 (pid_t upid, int __user *stat_addr, int options, struct rusage __user *ru) 
+{
+	long rc;
+	struct wait4_retvals* retvals = NULL;
+
+	new_syscall_enter (114, NULL);
+	rc = sys_wait4 (upid, stat_addr, options, ru);
+	DPRINT ("Pid %d records wait4 returning %ld\n", current->pid, rc);
+
+	if (rc >= 0) {
+		retvals = ARGSKMALLOC(sizeof(struct wait4_retvals), GFP_KERNEL);
+		if (retvals == NULL) {
+			printk("record_wait4: can't allocate buffer\n");
+			return -ENOMEM;
+		}
+
+		if (stat_addr) {
+			if (copy_from_user (&retvals->stat_addr, stat_addr, sizeof(int))) {
+				printk ("record_wait4: unable to copy status from user\n");
+				ARGSKFREE (retvals, sizeof(struct wait4_retvals));
+				return -EFAULT;
+			}
+		}
+		if (ru) {
+			if (copy_from_user (&retvals->ru, ru, sizeof(struct rusage))) {
+				printk ("record_wait4: unable to copy rusage from user\n");
+				ARGSKFREE (retvals, sizeof(struct wait4_retvals));
+				return -EFAULT;
+			}
+		}
+	}
+
+	new_syscall_exit (114, rc, retvals);
+
+	return rc;
+}
+
+static asmlinkage long 
+replay_wait4 (pid_t upid, int __user *stat_addr, int options, struct rusage __user *ru) 
+{
+	struct wait4_retvals* pretvals;
+	long rc = get_next_syscall (114, (char **) &pretvals, NULL);
+	if (rc >= 0) {
+		if (stat_addr) {
+			if (copy_to_user (stat_addr, &pretvals->stat_addr, sizeof(int))) {
+				printk ("Pid %d replay_wait4 cannot copy status to user\n", current->pid);
+				return syscall_mismatch();
+			}
+		}
+		if (ru) {
+			if (copy_to_user (ru, &pretvals->ru, sizeof(struct rusage))) {
+				printk ("Pid %d replay_wait4 cannot copy status to user\n", current->pid);
+				return syscall_mismatch();
+			}
+		}
+	}
+
+	DPRINT ("Pid %d replays wait4 returning %ld\n", current->pid, rc);
+	return rc;
+}
+
+asmlinkage long shim_wait4 (pid_t upid, int __user *stat_addr, int options, struct rusage __user *ru) SHIM_CALL(wait4, 114, upid, stat_addr, options, ru);
 
 asmlinkage long 
 shim_swapoff (const char __user * specialfile) SHIM_NOOP(swapoff, specialfile)
@@ -8206,10 +8272,29 @@ shim_rt_sigqueueinfo (int pid, int sig, siginfo_t __user *uinfo)
 SHIM_NOOP(rt_sigqueueinfo, pid, sig, uinfo)
 
 /* No prototype for sys_rt_sigsuspend */
-asmlinkage long sys_rt_sigsuspend(sigset_t __user *unewset, size_t sigsetsize);
-asmlinkage long 
-shim_rt_sigsuspend (sigset_t __user *unewset, size_t sigsetsize)
-SHIM_NOOP(rt_sigsuspend, unewset, sigsetsize)
+//asmlinkage long sys_rt_sigsuspend(sigset_t __user *unewset, size_t sigsetsize);
+
+static asmlinkage long 
+record_rt_sigsuspend (sigset_t __user *unewset, size_t sigsetsize) 
+{
+	long rc;
+
+	new_syscall_enter (179, NULL);
+	rc = sys_rt_sigsuspend (unewset, sigsetsize);
+	new_syscall_exit (179, rc, NULL);
+	DPRINT ("Pid %d records getpid returning %ld\n", current->pid, rc);
+
+	return rc;
+}
+
+static asmlinkage long 
+replay_rt_sigsuspend (sigset_t __user *unewset, size_t sigsetsize) 
+{
+	// No need to suspend, I think, since we are faking the signal
+	return get_next_syscall (179, NULL, NULL);
+}
+
+asmlinkage long shim_rt_sigsuspend (sigset_t __user *unewset, size_t sigsetsize) SHIM_CALL(rt_sigsuspend, 179, unewset, sigsetsize);
 
 static asmlinkage ssize_t 
 record_pread64 (unsigned int fd, char __user * buf, size_t count, loff_t pos)
@@ -8394,7 +8479,7 @@ record_vfork_handler (struct task_struct* tsk)
 	void* slab;
 #endif
 
-	printk ("In record_vfork_handler\n");
+	DPRINT ("In record_vfork_handler\n");
 	rg_lock(prg);
 	tsk->record_thrd = new_record_thread (prg, tsk->pid, -1);
 	if (tsk->record_thrd == NULL) {
@@ -8432,7 +8517,7 @@ record_vfork_handler (struct task_struct* tsk)
 	}
 #endif
 	rg_unlock(prg);
-	printk ("Done with record_vfork_handler\n");
+	DPRINT ("Done with record_vfork_handler\n");
 }
 
 static long
@@ -9931,10 +10016,10 @@ replay_exit_group (int error_code)
 	prg = current->replay_thrd->rp_group;
 	rg_lock(prg->rg_rec_group);
 	for (t = next_thread(current); t != current; t = next_thread(t)) {
-		DPRINT ("exit_group considering thread %d\n", t->pid);
+		MPRINT ("exit_group considering thread %d\n", t->pid);
 		if (t->replay_thrd) {
 			t->replay_thrd->rp_replay_exit = 1;
-			DPRINT ("told it to exit\n");
+			MPRINT ("told it to exit\n");
 		} else {
 			printk ("cannot tell thread %d to exit because it is not a replay thread???\n", t->pid);
 		}
@@ -10284,13 +10369,28 @@ replay_tgkill (int tgid, int pid, int sig)
 	return get_next_syscall (270, NULL, NULL);
 }
 
-asmlinkage long 
-shim_tgkill(int tgid, int pid, int sig) 
-SHIM_CALL (tgkill, 270, tgid, pid, sig)
+asmlinkage long shim_tgkill(int tgid, int pid, int sig) SHIM_CALL (tgkill, 270, tgid, pid, sig);
 
-asmlinkage long 
-shim_utimes(char __user *filename, struct timeval __user *utimes)
-SHIM_NOOP (utimes, filename, utimes)
+static asmlinkage long 
+record_utimes (char __user *filename, struct timeval __user *utimes)
+{
+	long rc;
+
+	new_syscall_enter (271, NULL);
+	rc = sys_utimes (filename, utimes);
+	DPRINT ("Pid %d records utimes returning %ld\n", current->pid, rc);
+	new_syscall_exit (271, rc, NULL);
+
+	return rc;
+}
+
+static asmlinkage long 
+replay_utimes (char __user *filename, struct timeval __user *utimes)
+{
+	return get_next_syscall (271, NULL, NULL);
+}
+
+asmlinkage long shim_utimes (char __user *filename, struct timeval __user *utimes) SHIM_CALL (utimes, 271, filename, utimes);
 
 static asmlinkage long
 record_fadvise64_64 (int fd, loff_t offset, loff_t len, int advice)
@@ -11076,6 +11176,7 @@ static ssize_t write_log_data (struct file* file, loff_t* ppos, struct record_th
 				break;
 			}
 			case 104: size = sizeof(struct itimerval); break;
+			case 114: size = sizeof(struct wait4_retvals); break;
 			case 116: size = sizeof(struct sysinfo); break;
 			case 117: 
 			{
@@ -11399,6 +11500,7 @@ int read_log_data_internal (struct record_thread* prect, struct syscall_result* 
 						  break;
 					  }
 				case 104: size = sizeof(struct itimerval); break;
+			        case 114: size = sizeof(struct wait4_retvals); break;
 			        case 116: size = sizeof(struct sysinfo); break;
 				case 117: 
 					  {

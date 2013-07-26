@@ -1710,7 +1710,7 @@ bool do_notify_parent(struct task_struct *tsk, int sig)
 	/* Begin REPLAY */
 	if (tsk->replay_thrd) {
 		if (tsk->parent->replay_thrd) {
-			printk ("Pid %d in replay thread so don't send SIGCHLD\n", tsk->pid);
+			printk ("Pid %d and parent pid %d are replay threads so don't send SIGCHLD\n", tsk->pid, tsk->parent->pid);
 			tsk->exit_signal = -1;
 			sig = 0;
 		}
