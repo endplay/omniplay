@@ -155,7 +155,7 @@ void recalc_sigpending(void)
 {
 	if (!recalc_sigpending_tsk(current) && !freezing(current))
 		clear_thread_flag(TIF_SIGPENDING);
-	if (current->replay_thrd && replay_has_pending_signal()) set_thread_flag(TIF_SIGPENDING); // REPLAY
+	if ((current->replay_thrd || current->record_thrd) && replay_has_pending_signal()) set_thread_flag(TIF_SIGPENDING); // REPLAY
 }
 
 /* Given the mask, find the first available signal that should be serviced. */
@@ -2285,12 +2285,19 @@ relock:
 #endif									
 		}
 		if (signr == 0) {
-			/* End REPLAY */
-			signr = dequeue_signal(current, &current->blocked, info);
-			// Begin REPLAY again */
+			if (current->record_thrd && replay_has_pending_signal()) {
+				signr = get_record_pending_signal (info);
+			} else {
+				/* End REPLAY */
+				signr = dequeue_signal(current, &current->blocked, info);
+				/* Begin REPLAY (again) */
+			}
 			if (current->record_thrd && signr > 0) {
 				if (!(signr == 9 && SI_FROMKERNEL(info))) {
-					record_signal_delivery(signr, info, &sighand->action[signr-1]);
+					if (record_signal_delivery(signr, info, &sighand->action[signr-1]) == -1) {
+						signr = 0; // Delay signal to safe point
+						break; 
+					}
 				}
 			}
 		}

@@ -42,6 +42,7 @@
 #include <linux/utsname.h>
 #include <asm/atomic.h>
 #include <asm/ldt.h>
+#include <asm/syscall.h>
 #include <linux/statfs.h>
 #include <linux/workqueue.h>
 #include <linux/ipc_namespace.h>
@@ -60,10 +61,6 @@
 #define MPRINT if(replay_debug || replay_min_debug) printk
 //#define MPRINT(x,...)
 #define MCPRINT
-
-// for debugging: show the output of record_/replay_write
-//#define PRINT_STDOUT
-//#define PRINT_STDERR
 
 //#define KFREE(x) my_kfree(x, __LINE__)
 //#define KMALLOC(size, flags) my_kmalloc(size, flags, __LINE__)
@@ -404,12 +401,13 @@ struct record_thread {
 
 	struct rvalues random_values;   // Tracks kernel randomness during syscalls (currently execve only) 
 
-	atomic_t* rp_precord_clock;  // Points to the recording clock in use
+	atomic_t* rp_precord_clock;     // Points to the recording clock in use
 
-	int rp_ulog_opened;			// Flag that says whether or not the user log has been opened 
-	loff_t rp_read_ulog_pos;		// The current position in the ulog file that is being read
+	int rp_ulog_opened;		// Flag that says whether or not the user log has been opened 
+	loff_t rp_read_ulog_pos;	// The current position in the ulog file that is being read
 	struct repsignal_context* rp_repsignal_context_stack;  // Saves replay context on signal delivery
 	u_long rp_record_hook;          // Used for dumbass linking in glibc
+	struct repsignal *rp_signals;   // Stores delayed signals
 };
 
 #define REPLAY_STATUS_RUNNING         0 // I am the running thread - should only be one of these per group
@@ -891,6 +889,7 @@ new_record_thread (struct record_group* prg, u_long recpid, int logid)
 	prp->rp_read_ulog_pos = 0;	
 	prp->rp_repsignal_context_stack = NULL;
 	prp->rp_record_hook = 0;
+	prp->rp_signals = NULL;
 
 	// XXX refcounts are probably buggy!
 	get_record_group(prg);
@@ -957,8 +956,7 @@ static void
 __destroy_record_thread (struct record_thread* prp)
 {
 	struct record_thread* prev;
-	//struct syscall_result *psr;
-	//u_long i;
+	struct repsignal* psig;
 
 	DPRINT ("      Pid %d __destroy_record_thread: %p\n", current->pid, prp);
 
@@ -972,11 +970,15 @@ __destroy_record_thread (struct record_thread* prp)
 		current->pid, prp->rp_record_pid, prp, atomic_read(&prp->rp_refcnt));
 
 	DPRINT (" destroy_record_thread freeing log %p: start\n", prp->rp_log);
-
 	free_kernel_log (prp);
 	VFREE (prp->rp_log); 
-
 	DPRINT ("       destroy_record_thread freeing log %p: end\n", prp->rp_log);
+
+	while (prp->rp_signals) {
+		psig = prp->rp_signals;
+		prp->rp_signals = psig->next;
+		KFREE (psig);
+	}
 
 	for (prev = prp; prev->rp_next_thread != prp;
 	     prev = prev->rp_next_thread);
@@ -1009,8 +1011,6 @@ __destroy_replay_thread (struct replay_thread* prp)
 	     prev = prev->rp_next_thread);
 	prev->rp_next_thread = prp->rp_next_thread;
 
-	// XXX Should I be freeing rp_signals?
-	       
 	// remove sys mappings
 	delete_sysv_mappings (prp);
 
@@ -1034,11 +1034,59 @@ asmlinkage void ret_from_fork_2(void) __asm__("ret_from_fork_2");
 void set_tls_desc(struct task_struct *p, int idx, const struct user_desc *info, int n); /* In tls.c */
 void fill_user_desc(struct user_desc *info, int idx, const struct desc_struct *desc); /* In tls.c */
 
+struct pt_regs* 
+get_pt_regs(struct task_struct* tsk)
+{
+	u_long regs;
+
+	if (tsk == NULL) {
+		regs = (u_long) &tsk;
+	} else {
+		regs = (u_long) (tsk->thread.sp);
+	}
+	regs &= (~(THREAD_SIZE - 1));
+	regs += THREAD_SIZE;
+	regs -= (8 + sizeof(struct pt_regs));
+	return (struct pt_regs *) regs;
+}
+
+void
+dump_user_stack (void)
+{
+	u_long __user * p;
+	u_long a, v;
+	int i = 0;
+
+	struct pt_regs* regs = get_pt_regs (NULL);
+	printk ("sp is %lx\n", regs->sp);
+	p = (u_long __user *) regs->sp;
+	do {
+		get_user (v, p);
+		get_user (a, p+1);
+		printk ("frame %d (%p) address 0x%08lx\n", i, p, a);
+		if (v <= (u_long) p) {
+			printk ("ending stack trace, v=0x%07lx\n", v);
+			p = 0;
+		} else {
+			p = (u_long __user *) v;
+			i++;
+		}
+	} while (p);
+	p = (u_long __user *) regs->sp;
+	for (i = 0; i < 250; i++) {
+		get_user (v, p);
+		printk ("value at address %p is 0x%08lx\n", p, v);
+		p++;
+	}
+}
+
 static void 
 __syscall_mismatch (struct record_group* precg)
 {
 	precg->rg_mismatch_flag = 1;
 	rg_unlock (precg);
+	// Try to dump user stack
+	//dump_user_stack ();
 	printk ("SYSCALL MISMATCH\n");
 	sys_exit_group(0);
 }
@@ -1106,23 +1154,6 @@ void ret_from_fork_replay (void)
 	}
 	MPRINT ("Pid %d-done with ret_from_fork_replay\n", current->pid);
 }
-
-struct pt_regs* 
-get_pt_regs(struct task_struct* tsk)
-{
-	u_long regs;
-
-	if (tsk == NULL) {
-		regs = (u_long) &tsk;
-	} else {
-		regs = (u_long) (tsk->thread.sp);
-	}
-	regs &= (~(THREAD_SIZE - 1));
-	regs += THREAD_SIZE;
-	regs -= (8 + sizeof(struct pt_regs));
-	return (struct pt_regs *) regs;
-}
-
 
 long
 get_used_addresses (struct used_address __user * plist, int listsize)
@@ -1713,7 +1744,7 @@ replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd)
 	set_fs(KERNEL_DS);
 	rc = replay_execve (args[0], (const char* const *) args, (const char* const *) env, get_pt_regs (NULL));
 	set_fs(old_fs);
-	if (rc < 0) printk ("replay_ckpt_wakeup: replay_execve returns %ld\n", rc);
+	if (rc < 0) printk ("replay_ckpt_wakeup: replay_execve of <%s> returns %ld\n", args[0], rc);
 	return rc;
 }
 EXPORT_SYMBOL(replay_ckpt_wakeup);
@@ -1780,6 +1811,7 @@ new_syscall_exit (long sysnum, long retval, void* retparams)
 	psr->hpc_end = rdtsc();
 #endif
 	psr->stop_clock = atomic_add_return (1, prt->rp_precord_clock) - 1;
+	if (prt->rp_signals) signal_wake_up (current, 0); // we want to deliver signals when this syscall exits
 
 #ifdef MCPRINT
 	if (replay_min_debug || replay_debug) {
@@ -1795,17 +1827,38 @@ long new_syscall_exit_external (long sysnum, long retval, void* retparams)
 	return new_syscall_exit (sysnum, retval, retparams);
 }
 
-// PARSPEC: Note DY found a deadlock that needs to be fixed in signal.c
+int
+get_record_pending_signal (siginfo_t* info)
+{
+	struct record_thread* prt = current->record_thrd;
+	struct repsignal* psignal;
+	int signr;
+
+	if (!prt->rp_signals) {
+		printk ("get_record_pending_signal: no signal to return\n");
+		return 0;
+	}
+	MPRINT ("Delivering deferred signal now\n");
+	psignal = prt->rp_signals;
+	prt->rp_signals = psignal->next;
+	memcpy (info, &psignal->info, sizeof (siginfo_t));
+	signr = psignal->signr;
+	KFREE(psignal);
+
+	return signr;
+}
+
 // mcc: Called with current->sighand->siglock held and local interrupts disabled
-void 
+long
 record_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 {
 	struct record_thread* prt = current->record_thrd;
 	struct repsignal* psignal, *tmp;
-	struct syscall_result* psr;
+	struct syscall_result* psr = &prt->rp_log[(prt->rp_in_ptr-1)]; 
 	struct repsignal_context* pcontext;
 	struct pthread_log_head* phead = (struct pthread_log_head __user *) prt->rp_user_log_addr;
 	int ignore_flag, need_fake_calls;
+	int sysnum = syscall_get_nr(current, get_pt_regs(NULL));
 
 	get_user (ignore_flag, current->record_thrd->rp_ignore_flag_addr); 
         MPRINT ("Pid %d recording signal delivery signr %d - clock is currently %d ignore flag %d handler %p\n", current->pid, signr, atomic_read(prt->rp_precord_clock), ignore_flag, ka->sa.sa_handler);
@@ -1822,13 +1875,28 @@ record_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 		MPRINT ("record_signal inserts fake syscall - ignore_flag now %d, need_fake_calls now %d\n", ignore_flag, need_fake_calls); 
 	}
 
-	psr = &prt->rp_log[(prt->rp_in_ptr-1)]; 
-	BUG_ON(signr < 0 || !valid_signal(signr));
+	if (signr != 9 && sysnum != psr->sysnum) {
+		// This is an unrecorded system call or a trap.  Since we cannot guarantee that the signal will not delivered
+		// at this same place on replay, delay the delivery until we reach such a safe place.  Signals that immediately
+		// terminate the program do not need to be delayed, however.
+		MPRINT ("Not a safe place to record a signal - syscall is %d but last recorded syscall is %d\n", sysnum, psr->sysnum);
+		psignal = KMALLOC(sizeof(struct repsignal), GFP_KERNEL); // XXX: this can block
+		if (psignal == NULL) {
+			printk ("Cannot allocate replay signal\n");
+			return 0;  // Replay broken - but might as well let recording proceed
+		}
+		psignal->signr = signr;
+		memcpy (&psignal->info, info, sizeof(siginfo_t));
+		psignal->next = prt->rp_signals;
+		prt->rp_signals = psignal;
+		return -1;
+	}
+
 	// mcc: KMALLOC with REPLAY_PARANOID on grabs a mutex...
 	psignal = ARGSKMALLOC(sizeof(struct repsignal), GFP_KERNEL); // XXX: this can block
 	if (psignal == NULL) {
 		printk ("Cannot allocate replay signal\n");
-		return;
+		return 0;  // Replay broken - but might as well let recording proceed
 	}
 	psignal->signr = signr;
 	memcpy (&psignal->info, info, sizeof(siginfo_t));
@@ -1836,9 +1904,8 @@ record_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 	psignal->blocked = current->blocked;
 	psignal->real_blocked = current->real_blocked;
 	psignal->next = NULL;
-
+	
 	// Add signal to last record in log - will be delivered after syscall on replay
-	psr = &prt->rp_log[(prt->rp_in_ptr-1)]; 
 	if (psr->signal == NULL) 
 		psr->signal = psignal;
 	else {
@@ -1858,18 +1925,15 @@ record_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 		put_user (0, prt->rp_ignore_flag_addr); 
 	}
 
-	MPRINT ("Pid %d end record_signal_delivery of signal %d\n", current->pid, psignal->signr);
+	return 0;
 }
 
 void
 replay_signal_delivery (int* signr, siginfo_t* info)
 {
 	struct replay_thread* prt = current->replay_thrd;
-	//struct record_group* prg = prt->rp_group->rg_rec_group;
 	struct repsignal* psignal;
 	
-	DPRINT ("Pid %d replaying signal delivery\n", current->pid);
-
 	if (prt->rp_signals == NULL) {
 		MPRINT ("pid %d replay_signal called but no signals, signr is %d\n", 
 			current->pid, *signr);
@@ -1877,8 +1941,7 @@ replay_signal_delivery (int* signr, siginfo_t* info)
 		return;
 	}
 	psignal = prt->rp_signals;
-	MPRINT ("Pid %d replaying signal delivery signo %d\n", current->pid, psignal->signr);
-	BUG_ON(psignal->signr < 0 || !valid_signal(psignal->signr));
+	MPRINT ("Pid %d replaying signal delivery signo %d, clock %lu\n", current->pid, psignal->signr, *(prt->rp_preplay_clock));
 	prt->rp_signals = psignal->next;
 
 	*signr = psignal->signr;
@@ -1891,14 +1954,25 @@ replay_signal_delivery (int* signr, siginfo_t* info)
 		current->blocked = psignal->blocked;
 		current->real_blocked = psignal->real_blocked;
 	}
-
-	MPRINT ("Pid %d replaying signal delivery signr %d\n", current->pid, psignal->signr);
 }
 
 int replay_has_pending_signal (void) {
-	if (current->replay_thrd->rp_signals) {
-		DPRINT ("Pid %d replay_has_pending_signals", current->pid);
-		return 1;
+	if (current->replay_thrd) {
+		if (current->replay_thrd->rp_signals) {
+			DPRINT ("Pid %d replay_has_pending_signals", current->pid);
+			return 1;
+		}
+	} else if (current->record_thrd) { // recording
+		struct record_thread* prt = current->record_thrd;
+		int sysnum = syscall_get_nr(current, get_pt_regs(NULL));
+		if (current->record_thrd->rp_signals && (sysnum == prt->rp_log[(prt->rp_in_ptr-1)].sysnum)) {
+			if (sysnum == 17 || sysnum == 110 || sysnum == 119 || sysnum == 186) {
+				printk ("replay_has_pending_signal: non-intercepted syscall is not safe\n");
+			} else {
+				DPRINT ("safe to return pending signal\n");
+				return 1;
+			}
+		}
 	}
 	return 0;
 }
@@ -2352,7 +2426,7 @@ get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, stru
 	}
 
 	if (unlikely(psr->signal)) {
-		MPRINT ("Pid %d set deliver signal flag\n", current->pid);
+		MPRINT ("Pid %d set deliver signal flag before clock %ld incrment\n", current->pid, *(prt->rp_preplay_clock));
 		prt->rp_signals = psr->signal;
 		signal_wake_up (current, 0);
 	}
@@ -3215,27 +3289,20 @@ static asmlinkage ssize_t
 record_write (unsigned int fd, const char __user * buf, size_t count)
 {
 	ssize_t size;
+	char kbuf[80];
+
+	if (fd == 99999) {
+		new_syscall_enter (4, NULL);
+		memset (kbuf, 0, sizeof(kbuf));
+		if (copy_from_user (kbuf, buf, count < 80 ? count : 79)) {
+			printk ("record_write: cannot copy kstring\n");
+		}
+		printk ("Pid %d records: %s", current->pid, kbuf);
+		new_syscall_exit (4, count, NULL);
+		return count;
+	}
 
 	new_syscall_enter (4, NULL);
-
-#ifdef PRINT_STDERR
-	if (fd == 2) {
-		int i;
-		printk ("Pid %d records: ", current->pid);
-		for (i = 0; i < count; i++)
-			printk ("%c", buf[i]);
-		printk ("\n");
-	}
-#endif
-#ifdef PRINT_STDOUT
-	if (fd == 1) {
-		int i;
-		printk ("Pid %d records at clock %d: ", current->pid, atomic_read(current->record_thrd->rp_precord_clock));
-		for (i = 0; i < count; i++)
-			printk ("%c", buf[i]);
-		printk ("\n");
-	}
-#endif
 	size = sys_write (fd, buf, count);
 	DPRINT ("Pid %d records write returning %d\n", current->pid,size);
 	new_syscall_exit (4, size, NULL);
@@ -3248,31 +3315,19 @@ static asmlinkage ssize_t
 replay_write (unsigned int fd, const char __user * buf, size_t count)
 {
 	ssize_t rc;
+	char kbuf[80];
 
-#ifdef PRINT_STDERR
-	if (fd == 2) {
-		int i;
-		printk ("Pid %d replays write: ", current->pid);
-		for (i = 0; i < count; i++)
-			printk ("%c", buf[i]);
-		printk ("\n");
-		printk ("  ## record pid was %d\n", current->replay_thrd->rp_record_thread->rp_record_pid);
+	if (fd == 99999) {
+		memset (kbuf, 0, sizeof(kbuf));
+		if (copy_from_user (kbuf, buf, count < 80 ? count : 79)) {
+			printk ("record_write: cannot copy kstring\n");
+		}
+		printk ("Pid %d (recpid %d) replays: %s", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid, kbuf);
 	}
-#endif
-#ifdef PRINT_STDOUT
-	if (fd == 1) {
-		int i;
-		printk ("Pid %d replays write: ", current->pid);
-		for (i = 0; i < count; i++)
-			printk ("%c", buf[i]);
-		printk ("\n");
-		printk ("  ## record pid was %d\n", current->replay_thrd->rp_record_thread->rp_record_pid);
-	}
-#endif
 
 	rc = get_next_syscall (4, NULL, NULL);
-
 	DPRINT ("Pid %d replays write returning %d\n", current->pid,rc);
+
 	return rc;
 }
 
@@ -5097,10 +5152,8 @@ record_setrlimit (unsigned int resource, struct rlimit __user *rlim)
 	long rc;
 
 	new_syscall_enter (75, NULL);
-
 	rc = sys_setrlimit (resource, rlim);
 	DPRINT ("Pid %d records setrlimit returning %ld\n", current->pid, rc);
-		
 	new_syscall_exit (75, rc, NULL);
 	return rc;
 }
@@ -5597,37 +5650,27 @@ struct sendto_args {
 	char* to;
 };
 
-static long
-socketcall_enter (int call, unsigned long __user * args, unsigned long* a)
-{
-	unsigned int len = nargs[call];
-	if (len > sizeof(a))
-		return -EINVAL;
-
-	if (copy_from_user (a, args, len)) {
-		printk ("socketcall_enter: cannot copy arguments\n");
-		return -EFAULT;
-	}
-
-	new_syscall_enter (102, NULL);
-	
-	return 0;
-}
-
 static asmlinkage long 
 record_socketcall(int call, unsigned long __user *args)
 {
 	long rc;
 	unsigned long a[6];
+	unsigned int len;
 
-	DPRINT("Pid %d In record_socketcall(%d)\n", current->pid, call);
+	DPRINT ("Pid %d in record_socketcall(%d)\n", current->pid, call);
 
 	if (call < 1 || call > SYS_RECVMSG) return -EINVAL;
 
-	// mcc: Potential optimization, we don't need to copy args for socketcalls that don't need it necessarily
-	rc = socketcall_enter (call, args, a);
-	DPRINT ("Pid %d socketcall_enter %d returning %ld\n", current->pid, call, rc);
-	if (rc < 0) return rc;
+	len = nargs[call];
+	if (len > sizeof(a))
+		return -EINVAL;
+
+	if (copy_from_user (a, args, len)) {
+		printk ("record_socketcall: cannot copy arguments\n");
+		return -EFAULT;
+	}
+
+	new_syscall_enter (102, NULL);
 
 	rc = sys_socketcall (call, args);
 
@@ -6007,6 +6050,8 @@ replay_socketcall (int call, unsigned long __user *args)
 	long rc;
 	unsigned long kargs[6];
 	unsigned int len;
+
+	DPRINT ("Pid %d in replay_socketcall(%d)\n", current->pid, call);
 
 	if (call < 1 || call > SYS_RECVMSG) return -EINVAL;
 
@@ -6581,8 +6626,6 @@ replay_fsync (unsigned int fd) {
 asmlinkage long
 shim_fsync (unsigned int fd)
 SHIM_CALL (fsync, 118, fd)
-
-unsigned long sys_sigreturn(struct pt_regs *regs); /* No prototype */
 
 /* We do not intercept sigreturn because we believe it to be deterministic */
 
@@ -7386,36 +7429,6 @@ record_writev (unsigned long fd, const struct iovec __user *vec, unsigned long v
 static asmlinkage ssize_t
 replay_writev (unsigned long fd, const struct iovec __user *vec, unsigned long vlen)
 {
-#ifdef PRINT_STDERR
-	if (fd == 2) {
-		int i, j;
-		printk ("Pid %d replays write: ", current->pid);
-		for (i = 0; i < vlen; i++) {
-			char* p = vec[i].iov_base;
-			for (j = 0; j < vec[i].iov_len; j++) {
-				printk ("%c", p[j]);
-			}
-		}
-		printk ("\n");
-		printk ("  ## record pid was %d\n", current->replay_thrd->rp_record_thread->rp_record_pid);
-	}
-#endif
-#ifdef PRINT_STDOUT
-	if (fd == 1) {
-		int i, j;
-		printk ("Pid %d replays write: ", current->pid);
-		for (i = 0; i < vlen; i++) {
-			char* p = vec[i].iov_base;
-			for (j = 0; j < vec[i].iov_len; j++) {
-				printk ("%c", p[j]);
-			}
-		}
-		printk ("\n");
-		printk ("  ## record pid was %d\n", current->replay_thrd->rp_record_thread->rp_record_pid);
-	}
-#endif
-
-
 	return get_next_syscall (146, NULL, NULL);
 }
 
@@ -8770,7 +8783,7 @@ record_stat64 (char __user * filename, struct stat64 __user * statbuf)
 	new_syscall_enter (195, NULL);
 
 	rc = sys_stat64 (filename, statbuf);
-	DPRINT ("Pid %d records stat64 returning %ld\n", current->pid, rc);
+	DPRINT ("Pid %d records stat64 of %s returning %ld\n", current->pid, filename, rc);
 
 	if (rc == 0) {
 		pretval = ARGSKMALLOC(sizeof(struct stat64), GFP_KERNEL);
@@ -8794,6 +8807,7 @@ replay_stat64 (char __user * filename, struct stat64 __user * statbuf)
 {
 	struct stat* retparams = NULL;
 	long rc = get_next_syscall (195, (char **) &retparams, NULL);
+	DPRINT ("Pid %d replays stat64 of %s returning %ld\n", current->pid, filename, rc);
 	if (retparams) {
 		if (copy_to_user (statbuf, retparams, sizeof(struct stat64))) printk ("Pid %d cannot copy statbuf to user\n", current->pid);
 	}
@@ -10146,9 +10160,51 @@ asmlinkage long
 shim_clock_gettime (const clockid_t which_clock, struct timespec __user *tp)
 SHIM_CALL(clock_gettime, 265, which_clock, tp);
 
-asmlinkage long
-shim_clock_getres (const clockid_t which_clock, struct timespec __user *tp)
-SHIM_NOOP (clock_getres, which_clock, tp)
+static asmlinkage long 
+record_clock_getres (const clockid_t which_clock, struct timespec __user *tp)
+{
+	long rc;
+	struct timespec* pretvals = NULL;
+
+	new_syscall_enter (266, NULL);
+
+	rc = sys_clock_getres (which_clock, tp);
+	DPRINT ("Pid %d records clock_getres returning %ld\n", current->pid, rc);
+	if (rc == 0) {
+		pretvals = ARGSKMALLOC(sizeof(struct timespec), GFP_KERNEL);
+		if (pretvals == NULL) {
+			printk("record_clock_getres: can't alloc buffer\n");
+			return -ENOMEM;
+		}
+		if (copy_from_user (pretvals, tp, sizeof(struct timespec))) {
+			printk ("Pid %d cannot copy tp from user\n", current->pid);
+			ARGSKFREE (pretvals, sizeof(struct timespec));
+			return -EFAULT;
+		}
+	}
+
+	new_syscall_exit (265, rc, pretvals);
+
+	return rc;
+}
+
+static asmlinkage long 
+replay_clock_getres (const clockid_t which_clock, struct timespec __user *tp)
+{
+	struct timespec* retparams = NULL;
+	long rc = get_next_syscall (266, (char **) &retparams, NULL);
+	DPRINT ("Pid %d replays clock_getres returning %ld\n", current->pid, rc);
+	if (rc == 0) {
+		if (retparams) {
+			if (copy_to_user (tp, retparams, sizeof(struct timespec))) printk ("Pid %d cannot copy tp to user\n", current->pid);
+		} else {
+			printk ("replay_clock_getres: no timespec to copy\n");
+		}
+	}
+	return rc;
+}
+
+asmlinkage long shim_clock_getres (const clockid_t which_clock, struct timespec __user *tp) SHIM_CALL(clock_getres, 266, which_clock, tp);
 
 asmlinkage long
 shim_clock_nanosleep (const clockid_t which_clock, int flags, const struct timespec __user *rqtp, struct timespec __user *rmtp)
@@ -10568,7 +10624,26 @@ asmlinkage long
 shim_timerfd_create (int clockid, int flags)
 SHIM_NOOP(timerfd_create, clockid, flags)
 
-asmlinkage long shim_eventfd (unsigned int count) SHIM_NOOP (eventfd, count)
+static asmlinkage long 
+record_eventfd (unsigned int count)
+{
+	long rc;
+
+	new_syscall_enter (323, NULL);
+	rc = sys_eventfd (count);
+	new_syscall_exit (323, rc, NULL);
+	DPRINT ("Pid %d records eventfd returning %ld\n", current->pid, rc);
+
+	return rc;
+}
+
+static asmlinkage long 
+replay_eventfd (unsigned int count)
+{
+	return get_next_syscall (323, NULL, NULL);
+}
+
+asmlinkage long shim_eventfd (unsigned int count) SHIM_CALL (eventfd, 323, count)
 
 asmlinkage long 
 shim_fallocate (int fd, int mode, loff_t offset, loff_t len)
@@ -10586,9 +10661,26 @@ asmlinkage long
 shim_signalfd4(int ufd, sigset_t __user *user_mask, size_t sizemask, int flags)
 SHIM_NOOP(signalfd4, ufd, user_mask, sizemask, flags)
 
-asmlinkage long 
-shim_eventfd2(unsigned int count, int flags) 
-SHIM_NOOP(eventfd2, count, flags)
+static asmlinkage long 
+record_eventfd2 (unsigned int count, int flags)
+{
+	long rc;
+
+	new_syscall_enter (328, NULL);
+	rc = sys_eventfd2 (count, flags);
+	new_syscall_exit (328, rc, NULL);
+	DPRINT ("Pid %d records eventfd2 returning %ld\n", current->pid, rc);
+
+	return rc;
+}
+
+static asmlinkage long 
+replay_eventfd2 (unsigned int count, int flags)
+{
+	return get_next_syscall (328, NULL, NULL);
+}
+
+asmlinkage long shim_eventfd2(unsigned int count, int flags) SHIM_CALL(eventfd2, 328, count, flags)
 
 asmlinkage long 
 shim_epoll_create1(int flags)
@@ -10639,10 +10731,55 @@ shim_fanotify_mark(int fanotify_fd, unsigned int flags, u64 mask, int fd,
 		  const char  __user *pathname)
 SHIM_NOOP(fanotify_mark, fanotify_fd, flags, mask, fd, pathname)
 
-asmlinkage long 
-shim_prlimit64(pid_t pid, unsigned int resource, const struct rlimit64 __user *new_rlim,
-	       struct rlimit64 __user *old_rlim)
-SHIM_NOOP(prlimit64, pid, resource, new_rlim, old_rlim)
+static asmlinkage long 
+record_prlimit64 (pid_t pid, unsigned int resource, const struct rlimit64 __user *new_rlim, struct rlimit64 __user *old_rlim)
+{
+	long rc;
+	struct rlimit64 *pretval = NULL;
+
+	new_syscall_enter (340, NULL);
+
+	rc = sys_prlimit64 (pid, resource, new_rlim, old_rlim);
+	DPRINT ("Pid %d records prlimit64 pid %d resource %u new_rlim %p old_rlim %p returning %ld\n", current->pid, pid, resource, new_rlim, old_rlim, rc);
+	if (rc == 0 && old_rlim) {
+		pretval = ARGSKMALLOC(sizeof(struct rlimit64), GFP_KERNEL);
+		if (pretval == NULL) {
+			printk("record_prlimit: can't allocate buffer\n");
+			return -ENOMEM;
+		}
+		if (copy_from_user (pretval, old_rlim, sizeof(struct rlimit64))) { 
+			printk("record_prlimit: can't copy old value from user\n");
+			ARGSKFREE (pretval, sizeof(struct rlimit64));
+			pretval = NULL;
+			rc = -EFAULT;
+		}
+	}
+		
+	new_syscall_exit (340, rc, pretval);
+
+	return rc;
+}
+
+static asmlinkage long 
+replay_prlimit64 (pid_t pid, unsigned int resource, const struct rlimit64 __user *new_rlim, struct rlimit64 __user *old_rlim)
+{
+	struct rlimit64 *retparams = NULL;
+	long rc_orig, rc;
+
+	rc_orig = get_next_syscall (340, (char **) &retparams, NULL);
+	if (new_rlim) {
+		rc = sys_prlimit64 (pid, resource, new_rlim, old_rlim);
+		if (rc != rc_orig) printk ("Pid %d: prlimit64 pid %d resource %u changed its return in replay, rec %ld rep %ld\n", current->pid, pid, resource, rc_orig, rc);
+	}
+	if (retparams) {
+		if (copy_to_user (old_rlim, retparams, sizeof(struct rlimit64))) printk ("Pid %d replay_prlimit cannot copy to user\n", current->pid);
+	}
+	DPRINT ("replay_prlimit64 pid %d resource %u returns %ld\n", pid, resource, rc_orig);
+
+	return rc_orig;
+}
+
+asmlinkage long shim_prlimit64 (pid_t pid, unsigned int resource, const struct rlimit64 __user *new_rlim, struct rlimit64 __user *old_rlim) SHIM_CALL(prlimit64, 340, pid, resource, new_rlim, old_rlim)
 
 asmlinkage long 
 shim_name_to_handle_at(int dfd, const char __user *name, struct file_handle __user *handle,
@@ -10986,8 +11123,10 @@ static ssize_t write_log_data (struct file* file, loff_t* ppos, struct record_th
 			case 243: size = sizeof(struct set_thread_area_retvals); break;
 			case 256: size = sizeof(struct epoll_wait_retvals) + ((psr->retval)-1)*sizeof(struct epoll_event); break;
 			case 265: size = sizeof(struct timespec); break;
+			case 266: size = sizeof(struct timespec); break;
 			case 268: size = sizeof(struct statfs64); break;
 			case 300: size = sizeof(struct stat64); break;
+			case 340: size = sizeof(struct rlimit64); break;
 			default: 
 				size = 0;
 				printk ("write_log_data: unrecognized syscall %d\n", psr->sysnum);
@@ -11323,7 +11462,7 @@ int read_log_data_internal (struct record_thread* prect, struct syscall_result* 
 			        case 192: size = sizeof(struct mmap_pgoff_retvals); break;
 				case 195: size = sizeof(struct stat64); break;
 				case 196: size = sizeof(struct stat64); break;
-			case 197: size = sizeof(struct stat64); printk ("size of stat64 is %d\n", sizeof(struct stat64)); break;
+			        case 197: size = sizeof(struct stat64); break;
 			        case 205: size = (psr[cnt].retval > 0) ? sizeof(gid_t)*psr[cnt].retval : 0; break;
 			        case 209: size = (psr[cnt].retval >= 0) ? sizeof(uid_t)*3 : 0; break;
 			        case 211: size = (psr[cnt].retval >= 0) ? sizeof(gid_t)*3 : 0; break;
@@ -11336,8 +11475,10 @@ int read_log_data_internal (struct record_thread* prect, struct syscall_result* 
 				case 243: size = sizeof(struct set_thread_area_retvals); break;
 				case 256: size = sizeof(struct epoll_wait_retvals) + ((psr[cnt].retval)-1)*sizeof(struct epoll_event); break;
 				case 265: size = sizeof(struct timespec); break;
+				case 266: size = sizeof(struct timespec); break;
 				case 268: size = sizeof(struct statfs64); break;
 				case 300: size = sizeof(struct stat64); break;
+			        case 340: size = sizeof(struct rlimit64); break;
 				default: 
 					  size = 0;
 					  printk ("read_log_data: unrecognized syscall %d\n", psr[cnt].sysnum);
