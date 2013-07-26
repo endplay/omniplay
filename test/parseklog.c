@@ -236,6 +236,11 @@ struct __old_kernel_stat {
 #endif
 };
 
+struct wait4_retvals {
+	int           stat_addr;
+	struct rusage ru;
+};
+
 int main (int argc, char* argv[])
 {
 	struct syscall_result psr;
@@ -460,6 +465,7 @@ int main (int argc, char* argv[])
 					break;
 				}
 				case 104: size = sizeof(struct itimerval); break;
+				case 114: size = sizeof(struct wait4_retvals); break;
 				case 116: size = sizeof(struct sysinfo); break;
 				case 117:
 				{
