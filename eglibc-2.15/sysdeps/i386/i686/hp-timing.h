@@ -76,10 +76,13 @@
 */
 
 /* We always assume having the timestamp register.  */
-#define HP_TIMING_AVAIL		(1)
+/* REPLAY - this is a source of non-determinism.  Do not allow it so that
+   time must go through kernel and be logged there.  We could log this at
+   user level if we wanted to be a little more efficient, tho. */
+#define HP_TIMING_AVAIL		(0)
 
 /* We indeed have inlined functions.  */
-#define HP_TIMING_INLINE	(1)
+#define HP_TIMING_INLINE	(0)
 
 /* We use 64bit values for the times.  */
 typedef unsigned long long int hp_timing_t;
@@ -97,20 +100,6 @@ typedef unsigned long long int hp_timing_t;
 /* Use two 'rdtsc' instructions in a row to find out how long it takes.  */
 #define HP_TIMING_DIFF_INIT() \
   do {									      \
-    if (GLRO(dl_hp_timing_overhead) == 0)				      \
-      {									      \
-	int __cnt = 5;							      \
-	GLRO(dl_hp_timing_overhead) = ~0ull;				      \
-	do								      \
-	  {								      \
-	    hp_timing_t __t1, __t2;					      \
-	    HP_TIMING_NOW (__t1);					      \
-	    HP_TIMING_NOW (__t2);					      \
-	    if (__t2 - __t1 < GLRO(dl_hp_timing_overhead))		      \
-	      GLRO(dl_hp_timing_overhead) = __t2 - __t1;		      \
-	  }								      \
-	while (--__cnt > 0);						      \
-      }									      \
   } while (0)
 
 /* It's simple arithmetic for us.  */

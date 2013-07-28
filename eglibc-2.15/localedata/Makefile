@@ -26,8 +26,10 @@ include ../option-groups.mak
 
 # List with all available character set descriptions.
 all-charmaps := $(wildcard charmaps/[A-I]*) $(wildcard charmaps/[J-Z]*)
+all-charmaps := $(filter-out charmaps/CVS,$(all-charmaps))
 
 all-locales := $(wildcard locales/*)
+all-locales := $(filter-out locales/CVS,$(all-locales))
 
 # If the EGLIBC_LOCALES option group is not enabled, trim the
 # list of charmap and locale source files.
