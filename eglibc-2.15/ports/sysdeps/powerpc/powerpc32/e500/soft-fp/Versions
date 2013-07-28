@@ -1,0 +1,19 @@
+libc {
+  GLIBC_2.3.3 {
+    __feraiseexcept_soft;
+    __adddf3; __truncdfsf2;
+    __divdf3; __eqdf2;
+    __extendsfdf2; __fixdfdi; __fixdfsi; __fixsfdi;
+    __fixtfdi;
+    __fixunsdfdi; __fixunsdfsi;
+    __floatdidf; __floatsidf;
+    __gedf2; __ledf2; __muldf3;
+    __negdf2; __sqrtdf2; __subdf3;
+    __truncdfsf2;
+  }
+  GLIBC_2.5 {
+    __floatundidf; __floatunsidf;
+    __unorddf2; __nedf2;
+    __gtdf2; __ltdf2;
+  }
+}

@@ -1,0 +1,20 @@
+# Check for E500.
+
+case "$machine" in
+powerpc)
+	if test "$with_fp" = "yes"; then
+	  variant=`(echo "#ifdef __NO_FPRS__"
+	      echo "#ifdef _SOFT_DOUBLE"
+	      echo "e500/single"
+	      echo "#else"
+	      echo "e500"
+	      echo "#endif"
+	      echo "#endif") |
+	     $CC $CFLAGS $CPPFLAGS -E - |
+	     grep '^[a-z]'`
+	  if test -n "$variant"; then
+	    base_machine=powerpc machine=powerpc/powerpc32/$variant
+	  fi
+	fi
+	;;
+esac

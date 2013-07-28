@@ -1,0 +1,59 @@
+dnl configure fragment for new libpthread implementation.
+GLIBC_PROVIDES dnl See aclocal.m4 in the top level source directory.
+
+if test "x$libc_cv_gcc___thread" != xyes; then
+  AC_MSG_ERROR(compiler support for __thread is required)
+fi
+
+if test "x${libc_cv_visibility_attribute}" != xyes ||
+   test "x${libc_cv_broken_visibility_attribute}" != xno; then
+  AC_MSG_ERROR(working compiler support for visibility attribute is required)
+fi
+
+if test "x$libc_cv_asm_cfi_directives" != xyes; then
+  dnl We need this only for some architectures.
+  case "$base_machine" in
+    i386 | x86_64 | powerpc | s390)
+      AC_MSG_ERROR(CFI directive support in assembler is required) ;;
+    *) ;;
+  esac
+fi
+
+dnl These link tests made bootstrapping EGLIBC difficult (how do you
+dnl link if you haven't built a libc yet?), and this test is only used
+dnl to produce an error message anyway.  We've already checked the
+dnl GCC, as, and ld versions in the top-level configure script, and we
+dnl only use the results of these tests to produce an error message,
+dnl so we just disable these tests entirely.
+dnl 
+dnl dnl Iff <unwind.h> is available, make sure it is the right one and it
+dnl dnl contains struct _Unwind_Exception.
+dnl AC_CACHE_CHECK(dnl
+dnl for forced unwind support, libc_cv_forced_unwind, [dnl
+dnl AC_TRY_LINK([#include <unwind.h>], [
+dnl struct _Unwind_Exception exc;
+dnl struct _Unwind_Context *context;
+dnl _Unwind_GetCFA (context)],
+dnl libc_cv_forced_unwind=yes, libc_cv_forced_unwind=no)])
+dnl if test $libc_cv_forced_unwind = yes; then
+dnl   AC_DEFINE(HAVE_FORCED_UNWIND)
+dnl dnl Check for C cleanup handling.
+dnl   old_CFLAGS="$CFLAGS"
+dnl   CFLAGS="$CFLAGS -Werror -fexceptions"
+dnl   AC_CACHE_CHECK([for C cleanup handling], libc_cv_c_cleanup, [dnl
+dnl   AC_TRY_LINK([
+dnl #include <stdio.h>
+dnl void cl (void *a) { }], [
+dnl   int a __attribute__ ((cleanup (cl)));
+dnl   puts ("test")],
+dnl libc_cv_c_cleanup=yes, libc_cv_c_cleanup=no)])
+dnl   CFLAGS="$old_CFLAGS"
+dnl   if test $libc_cv_c_cleanup = no; then
+dnl     AC_MSG_ERROR([the compiler must support C cleanup handling])
+dnl   fi
+dnl else
+dnl   AC_MSG_ERROR(forced unwind support is required)
+dnl fi
+libc_cv_forced_unwind=yes
+AC_DEFINE(HAVE_FORCED_UNWIND)
+libc_cv_c_cleanup=yes
