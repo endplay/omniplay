@@ -26,10 +26,10 @@
 
 	.text
 
-	.globl	__new_sem_post
-	.type	__new_sem_post,@function
+	.globl	__new_internal_sem_post
+	.type	__new_internal_sem_post,@function
 	.align	16
-__new_sem_post:
+__new_internal_sem_post:
 	cfi_startproc
 	pushl	%ebx
 	cfi_adjust_cfa_offset(4)
@@ -117,12 +117,11 @@ __new_sem_post:
 	cfi_restore(%ebx)
 	ret
 	cfi_endproc
-	.size	__new_sem_post,.-__new_sem_post
-	versioned_symbol(libpthread, __new_sem_post, sem_post, GLIBC_2_1)
+	.size	__new_internal_sem_post,.-__new_internal_sem_post
 #if SHLIB_COMPAT(libpthread, GLIBC_2_0, GLIBC_2_1)
-	.global	__old_sem_post
-	.type	__old_sem_post,@function
-__old_sem_post:
+	.global	__old_internal_sem_post
+	.type	__old_internal_sem_post,@function
+__old_internal_sem_post:
 	cfi_startproc
 	pushl	%ebx
 	cfi_adjust_cfa_offset(4)
@@ -146,8 +145,7 @@ __old_sem_post:
 	cfi_restore(%ebx)
 	ret
 	cfi_endproc
-	.size	__old_sem_post,.-__old_sem_post
-	compat_symbol(libpthread, __old_sem_post, sem_post, GLIBC_2_0)
+	.size	__old_internal_sem_post,.-__old_internal_sem_post
 #endif
 
 

@@ -29,9 +29,17 @@
 __libc_lock_define (typedef, mutex_t)
 
 #define mutex_init(m)		__libc_lock_init (*(m))
+/* Begin REPLAY */
+#if 0
 #define mutex_lock(m)		__libc_lock_lock (*(m))
 #define mutex_trylock(m)	__libc_lock_trylock (*(m))
 #define mutex_unlock(m)		__libc_lock_unlock (*(m))
+#else
+extern void mutex_lock(__libc_lock_t *);
+extern int mutex_trylock(__libc_lock_t *);
+extern void mutex_unlock(__libc_lock_t *);
+#endif
+/* End REPLAY */
 #define MUTEX_INITIALIZER	LLL_LOCK_INITIALIZER
 
 /* This is defined by newer gcc version unique for each module.  */

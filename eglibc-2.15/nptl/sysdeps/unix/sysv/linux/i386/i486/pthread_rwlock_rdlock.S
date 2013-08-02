@@ -26,10 +26,10 @@
 
 	.text
 
-	.globl	__pthread_rwlock_rdlock
-	.type	__pthread_rwlock_rdlock,@function
+	.globl	__internal_pthread_rwlock_rdlock
+	.type	__internal_pthread_rwlock_rdlock,@function
 	.align	16
-__pthread_rwlock_rdlock:
+__internal_pthread_rwlock_rdlock:
 	cfi_startproc
 	pushl	%esi
 	cfi_adjust_cfa_offset(4)
@@ -184,10 +184,10 @@ __pthread_rwlock_rdlock:
 	call	__lll_lock_wait
 	jmp	13b
 	cfi_endproc
-	.size	__pthread_rwlock_rdlock,.-__pthread_rwlock_rdlock
+	.size	__internal_pthread_rwlock_rdlock,.-__internal_pthread_rwlock_rdlock
 
-	.globl	pthread_rwlock_rdlock
-pthread_rwlock_rdlock = __pthread_rwlock_rdlock
+	.globl	internal_pthread_rwlock_rdlock
+internal_pthread_rwlock_rdlock = __internal_pthread_rwlock_rdlock
 
-	.globl	__pthread_rwlock_rdlock_internal
-__pthread_rwlock_rdlock_internal = __pthread_rwlock_rdlock
+	.globl	__internal_pthread_rwlock_rdlock_internal
+__internal_pthread_rwlock_rdlock_internal = __internal_pthread_rwlock_rdlock

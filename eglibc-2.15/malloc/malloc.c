@@ -5255,6 +5255,46 @@ weak_alias (__malloc_trim, malloc_trim)
 weak_alias (__malloc_get_state, malloc_get_state)
 weak_alias (__malloc_set_state, malloc_set_state)
 
+/* Begin REPLAY */
+void (*pthread_log_lock)(__libc_lock_t *);
+int (*pthread_log_trylock)(__libc_lock_t *) = NULL;
+void (*pthread_log_unlock)(__libc_lock_t *) = NULL;
+
+void __libc_malloc_setup (void (*__pthread_log_lock)(__libc_lock_t *),
+			  int (*__pthread_log_trylock)(__libc_lock_t *),
+			  void (*__pthread_log_unlock)(__libc_lock_t *))
+{
+  pthread_log_lock = __pthread_log_lock;
+  pthread_log_trylock = __pthread_log_trylock;
+  pthread_log_unlock = __pthread_log_unlock;
+}
+
+void mutex_lock(__libc_lock_t *m)
+{
+	if(pthread_log_lock)
+		pthread_log_lock(m);
+	else	
+		__libc_lock_lock(*m);
+} 
+
+int mutex_trylock(__libc_lock_t *m)
+{
+	if(pthread_log_trylock)	
+		return pthread_log_trylock(m);
+	else	
+		return __libc_lock_trylock(*m);
+}
+
+void mutex_unlock(__libc_lock_t *m)
+{
+	if(pthread_log_unlock) 
+		pthread_log_unlock(m);
+	else	
+		__libc_lock_unlock(*m);
+}
+strong_alias (__libc_malloc_setup, __malloc_setup) strong_alias (__libc_malloc_setup, malloc_setup)
+
+/* End REPLAY */
 
 /* ------------------------------------------------------------
 History:

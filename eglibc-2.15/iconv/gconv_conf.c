@@ -432,7 +432,7 @@ __gconv_get_path (void)
   struct path_elem *result;
   __libc_lock_define_initialized (static, lock);
 
-  __libc_lock_lock (lock);
+  mutex_lock (&lock); // REPLAY
 
   /* Make sure there wasn't a second thread doing it already.  */
   result = (struct path_elem *) __gconv_path_elem;
@@ -530,7 +530,7 @@ __gconv_get_path (void)
       free (cwd);
     }
 
-  __libc_lock_unlock (lock);
+  mutex_unlock (&lock); // REPLAY
 }
 
 

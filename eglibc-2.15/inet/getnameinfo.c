@@ -75,7 +75,7 @@ nrl_domainname (void)
   if (! not_first)
     {
       __libc_lock_define_initialized (static, lock);
-      __libc_lock_lock (lock);
+      mutex_lock (&lock); // REPLAY
 
       if (! not_first)
 	{
@@ -149,7 +149,7 @@ nrl_domainname (void)
 	    }
 	}
 
-      __libc_lock_unlock (lock);
+      mutex_unlock (&lock); // REPLAY
     }
 
   return domain;

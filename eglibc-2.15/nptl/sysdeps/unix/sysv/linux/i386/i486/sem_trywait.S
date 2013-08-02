@@ -24,10 +24,10 @@
 
 	.text
 
-	.globl	__new_sem_trywait
-	.type	__new_sem_trywait,@function
+	.globl	__new_internal_sem_trywait
+	.type	__new_internal_sem_trywait,@function
 	.align	16
-__new_sem_trywait:
+__new_internal_sem_trywait:
 	movl	4(%esp), %ecx
 
 	movl	(%ecx), %eax
@@ -59,12 +59,10 @@ __new_sem_trywait:
 #endif
 	orl	$-1, %eax
 	ret
-	.size	__new_sem_trywait,.-__new_sem_trywait
-	versioned_symbol(libpthread, __new_sem_trywait, sem_trywait, GLIBC_2_1)
+	.size	__new_internal_sem_trywait,.-__new_internal_sem_trywait
 #if SHLIB_COMPAT(libpthread, GLIBC_2_0, GLIBC_2_1)
-	.global	__old_sem_trywait
-__old_sem_trywait = __new_sem_trywait
-	compat_symbol(libpthread, __old_sem_trywait, sem_trywait, GLIBC_2_0)
+	.global	__old_internal_sem_trywait
+__old_internal_sem_trywait = __new_internal_sem_trywait
 #endif
 
 

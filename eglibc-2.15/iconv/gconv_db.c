@@ -710,7 +710,6 @@ __gconv_compare_alias (const char *name1, const char *name2)
   return result;
 }
 
-
 int
 internal_function
 __gconv_find_transform (const char *toset, const char *fromset,
@@ -725,20 +724,20 @@ __gconv_find_transform (const char *toset, const char *fromset,
   __libc_once (once, __gconv_read_conf);
 
   /* Acquire the lock.  */
-  __libc_lock_lock (__gconv_lock);
+  mutex_lock(&__gconv_lock); // REPLAY
 
   result = __gconv_lookup_cache (toset, fromset, handle, nsteps, flags);
   if (result != __GCONV_NODB)
     {
       /* We have a cache and could resolve the request, successful or not.  */
-      __libc_lock_unlock (__gconv_lock);
+      mutex_unlock (&__gconv_lock); // REPLAY
       return result;
     }
 
   /* If we don't have a module database return with an error.  */
   if (__gconv_modules_db == NULL)
     {
-      __libc_lock_unlock (__gconv_lock);
+      mutex_unlock (&__gconv_lock); // REPLAY
       return __GCONV_NOCONV;
     }
 
@@ -757,7 +756,7 @@ __gconv_find_transform (const char *toset, const char *fromset,
 		      && strcmp (toset_expand, fromset_expand) == 0)))))
     {
       /* Both character sets are the same.  */
-      __libc_lock_unlock (__gconv_lock);
+      mutex_unlock (&__gconv_lock); // REPLAY
       return __GCONV_NULCONV;
     }
 
@@ -765,7 +764,7 @@ __gconv_find_transform (const char *toset, const char *fromset,
 			    handle, nsteps);
 
   /* Release the lock.  */
-  __libc_lock_unlock (__gconv_lock);
+  mutex_unlock (&__gconv_lock); // REPLAY
 
   /* The following code is necessary since `find_derivation' will return
      GCONV_OK even when no derivation was found but the same request
@@ -785,7 +784,7 @@ __gconv_close_transform (struct __gconv_step *steps, size_t nsteps)
   size_t cnt;
 
   /* Acquire the lock.  */
-  __libc_lock_lock (__gconv_lock);
+  mutex_lock (&__gconv_lock); // REPLAY
 
 #ifndef STATIC_GCONV
   cnt = nsteps;
@@ -799,7 +798,7 @@ __gconv_close_transform (struct __gconv_step *steps, size_t nsteps)
   __gconv_release_cache (steps, nsteps);
 
   /* Release the lock.  */
-  __libc_lock_unlock (__gconv_lock);
+  mutex_unlock (&__gconv_lock); // REPLAY
 
   return result;
 }

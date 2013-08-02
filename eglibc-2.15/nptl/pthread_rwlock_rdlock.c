@@ -26,7 +26,7 @@
 
 /* Acquire read lock for RWLOCK.  */
 int
-__pthread_rwlock_rdlock (rwlock)
+__internal_pthread_rwlock_rdlock (rwlock) // REPLAY
      pthread_rwlock_t *rwlock;
 {
   int result = 0;
@@ -92,5 +92,3 @@ __pthread_rwlock_rdlock (rwlock)
   return result;
 }
 
-weak_alias (__pthread_rwlock_rdlock, pthread_rwlock_rdlock)
-strong_alias (__pthread_rwlock_rdlock, __pthread_rwlock_rdlock_internal)

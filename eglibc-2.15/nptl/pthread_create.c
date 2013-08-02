@@ -30,6 +30,7 @@
 #include <resolv.h>
 #include <kernel-features.h>
 #include <gnu/option-groups.h>
+#include "pthread_log.h" /* REPLAY */
 
 #include <shlib-compat.h>
 
@@ -230,6 +231,8 @@ static int
 start_thread (void *arg)
 {
   struct pthread *pd = (struct pthread *) arg;
+
+  register_log(); /* REPLAY */
 
 #if HP_TIMING_AVAIL
   /* Remember the time when the thread was started.  */

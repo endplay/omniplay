@@ -26,10 +26,10 @@
 
 	.text
 
-	.globl	pthread_rwlock_timedrdlock
-	.type	pthread_rwlock_timedrdlock,@function
+	.globl	internal_pthread_rwlock_timedrdlock
+	.type	internal_pthread_rwlock_timedrdlock,@function
 	.align	16
-pthread_rwlock_timedrdlock:
+internal_pthread_rwlock_timedrdlock:
 	cfi_startproc
 	pushl	%esi
 	cfi_adjust_cfa_offset(4)
@@ -241,4 +241,4 @@ pthread_rwlock_timedrdlock:
 19:	movl	$EINVAL, %edx
 	jmp	9b
 	cfi_endproc
-	.size	pthread_rwlock_timedrdlock,.-pthread_rwlock_timedrdlock
+	.size	internal_pthread_rwlock_timedrdlock,.-internal_pthread_rwlock_timedrdlock

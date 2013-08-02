@@ -28,12 +28,12 @@
 
 	.text
 
-/* int pthread_cond_timedwait (pthread_cond_t *cond, pthread_mutex_t *mutex,
+/* int internal_pthread_cond_timedwait (internal_pthread_cond_t *cond, pthread_mutex_t *mutex,
 			       const struct timespec *abstime)  */
-	.globl	__pthread_cond_timedwait
-	.type	__pthread_cond_timedwait, @function
+	.globl	__internal_pthread_cond_timedwait
+	.type	__internal_pthread_cond_timedwait, @function
 	.align	16
-__pthread_cond_timedwait:
+__internal_pthread_cond_timedwait:
 .LSTARTCODE:
 	cfi_startproc
 #ifdef SHARED
@@ -505,9 +505,7 @@ __pthread_cond_timedwait:
 	js	6b
 	jmp	21b
 #endif
-	.size	__pthread_cond_timedwait, .-__pthread_cond_timedwait
-versioned_symbol (libpthread, __pthread_cond_timedwait, pthread_cond_timedwait,
-		  GLIBC_2_3_2)
+	.size	__internal_pthread_cond_timedwait, .-__internal_pthread_cond_timedwait
 
 
 	.type	__condvar_tw_cleanup2, @function

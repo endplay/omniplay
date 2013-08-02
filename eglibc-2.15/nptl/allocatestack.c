@@ -32,6 +32,7 @@
 #include <lowlevellock.h>
 #include <kernel-features.h>
 
+#include "pthread_log.h" // REPLAY
 
 #ifndef NEED_SEPARATE_REGISTER_STACK
 
@@ -704,6 +705,8 @@ allocate_stack (const struct pthread_attr *attr, struct pthread **pdp,
   pd->robust_prev = &pd->robust_head;
 #endif
   pd->robust_head.list = &pd->robust_head;
+
+  pd->log_head = allocate_log (); /* REPLAY */
 
   /* We place the thread descriptor at the end of the stack.  */
   *pdp = pd;

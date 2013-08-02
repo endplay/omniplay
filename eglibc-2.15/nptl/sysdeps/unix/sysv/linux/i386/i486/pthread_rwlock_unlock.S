@@ -25,10 +25,10 @@
 
 	.text
 
-	.globl	__pthread_rwlock_unlock
-	.type	__pthread_rwlock_unlock,@function
+	.globl	__internal_pthread_rwlock_unlock
+	.type	__internal_pthread_rwlock_unlock,@function
 	.align	16
-__pthread_rwlock_unlock:
+__internal_pthread_rwlock_unlock:
 	cfi_startproc
 	pushl	%ebx
 	cfi_adjust_cfa_offset(4)
@@ -146,10 +146,10 @@ __pthread_rwlock_unlock:
 	call	__lll_unlock_wake
 	jmp	8b
 	cfi_endproc
-	.size	__pthread_rwlock_unlock,.-__pthread_rwlock_unlock
+	.size	__internal_pthread_rwlock_unlock,.-__internal_pthread_rwlock_unlock
 
-	.globl	pthread_rwlock_unlock
-pthread_rwlock_unlock = __pthread_rwlock_unlock
+	.globl	internal_pthread_rwlock_unlock
+internal_pthread_rwlock_unlock = __internal_pthread_rwlock_unlock
 
-	.globl	__pthread_rwlock_unlock_internal
-__pthread_rwlock_unlock_internal = __pthread_rwlock_unlock
+	.globl	__internal_pthread_rwlock_unlock_internal
+__internal_pthread_rwlock_unlock_internal = __internal_pthread_rwlock_unlock

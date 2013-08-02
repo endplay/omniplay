@@ -333,7 +333,7 @@ __gconv_translit_find (struct trans_struct *trans)
   assert (trans->name != NULL);
 
   /* Acquire the lock.  */
-  __libc_lock_lock (lock);
+  mutex_lock (&lock); // REPLAY
 
   /* See whether we know this module already.  */
   found = __tfind (trans, &search_tree, trans_compare);
@@ -416,7 +416,7 @@ __gconv_translit_find (struct trans_struct *trans)
 	}
     }
 
-  __libc_lock_unlock (lock);
+  mutex_unlock (&lock); // REPLAY
 
   return res;
 }

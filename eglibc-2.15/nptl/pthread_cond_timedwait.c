@@ -49,7 +49,7 @@ struct _condvar_cleanup_buffer
 };
 
 int
-__pthread_cond_timedwait (cond, mutex, abstime)
+__internal_pthread_cond_timedwait (cond, mutex, abstime) // REPLAY
      pthread_cond_t *cond;
      pthread_mutex_t *mutex;
      const struct timespec *abstime;
@@ -222,5 +222,3 @@ __pthread_cond_timedwait (cond, mutex, abstime)
   return err ?: result;
 }
 
-versioned_symbol (libpthread, __pthread_cond_timedwait, pthread_cond_timedwait,
-		  GLIBC_2_3_2);

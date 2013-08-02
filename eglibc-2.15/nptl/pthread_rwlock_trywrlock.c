@@ -23,7 +23,7 @@
 
 
 int
-__pthread_rwlock_trywrlock (rwlock)
+__internal_pthread_rwlock_trywrlock (rwlock) // REPLAY
      pthread_rwlock_t *rwlock;
 {
   int result = EBUSY;
@@ -40,4 +40,3 @@ __pthread_rwlock_trywrlock (rwlock)
 
   return result;
 }
-strong_alias (__pthread_rwlock_trywrlock, pthread_rwlock_trywrlock)

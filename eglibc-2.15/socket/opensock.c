@@ -38,7 +38,7 @@ __opensock (void)
         return fd;
     }
 
-  __libc_lock_lock (lock);
+  mutex_lock (&lock); // REPLAY
 
   if (sock_af != -1)
     fd = __socket (sock_af, SOCK_DGRAM, 0);
@@ -66,6 +66,6 @@ __opensock (void)
 #endif
     }
 
-  __libc_lock_unlock (lock);
+  mutex_unlock (&lock); // REPLAY
   return fd;
 }

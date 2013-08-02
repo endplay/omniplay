@@ -28,11 +28,11 @@
 
 	.text
 
-	/* int pthread_cond_signal (pthread_cond_t *cond) */
-	.globl	__pthread_cond_signal
-	.type	__pthread_cond_signal, @function
+	/* int internal_pthread_cond_signal (internal_pthread_cond_t *cond) */
+	.globl	__internal_pthread_cond_signal
+	.type	__internal_pthread_cond_signal, @function
 	.align	16
-__pthread_cond_signal:
+__internal_pthread_cond_signal:
 
 	cfi_startproc
 	pushl	%ebx
@@ -210,6 +210,4 @@ __pthread_cond_signal:
 	jmp	2b
 
 	cfi_endproc
-	.size	__pthread_cond_signal, .-__pthread_cond_signal
-versioned_symbol (libpthread, __pthread_cond_signal, pthread_cond_signal,
-		  GLIBC_2_3_2)
+	.size	__internal_pthread_cond_signal, .-__internal_pthread_cond_signal

@@ -36,7 +36,7 @@ cleanup (void *arg)
 
 
 int
-pthread_join (threadid, thread_return)
+internal_pthread_join (threadid, thread_return) // REPLAY
      pthread_t threadid;
      void **thread_return;
 {

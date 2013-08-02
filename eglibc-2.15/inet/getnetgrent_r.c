@@ -188,7 +188,7 @@ setnetgrent (const char *group)
 {
   int result;
 
-  __libc_lock_lock (lock);
+  mutex_lock (&lock); // REPLAY
 
   if (__nss_not_use_nscd_netgroup > 0
       && ++__nss_not_use_nscd_netgroup > NSS_NSCD_RETRY)
@@ -205,7 +205,7 @@ setnetgrent (const char *group)
   result = internal_setnetgrent (group, &dataset);
 
  out:
-  __libc_lock_unlock (lock);
+  mutex_unlock (&lock); // REPLAY
 
   return result;
 }
@@ -227,11 +227,11 @@ strong_alias (internal_endnetgrent, __internal_endnetgrent)
 void
 endnetgrent (void)
 {
-  __libc_lock_lock (lock);
+  mutex_lock (&lock); // REPLAY
 
   internal_endnetgrent (&dataset);
 
-  __libc_lock_unlock (lock);
+  mutex_unlock (&lock); // REPLAY
 }
 
 
@@ -369,12 +369,12 @@ __getnetgrent_r (char **hostp, char **userp, char **domainp,
 {
   enum nss_status status;
 
-  __libc_lock_lock (lock);
+  mutex_lock (&lock); // REPLAY
 
   status = internal_getnetgrent_r (hostp, userp, domainp, &dataset,
 				   buffer, buflen, &errno);
 
-  __libc_lock_unlock (lock);
+  mutex_unlock (&lock); // REPLAY
 
   return status;
 }

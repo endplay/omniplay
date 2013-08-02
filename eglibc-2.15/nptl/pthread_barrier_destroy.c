@@ -23,7 +23,7 @@
 
 
 int
-pthread_barrier_destroy (barrier)
+internal_pthread_barrier_destroy (barrier) // REPLAY
      pthread_barrier_t *barrier;
 {
   struct pthread_barrier *ibarrier;
@@ -42,3 +42,4 @@ pthread_barrier_destroy (barrier)
 
   return result;
 }
+

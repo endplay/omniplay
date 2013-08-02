@@ -31,7 +31,7 @@ cleanup (void *arg)
 
 
 int
-pthread_timedjoin_np (threadid, thread_return, abstime)
+internal_pthread_timedjoin_np (threadid, thread_return, abstime) // REPLAY
      pthread_t threadid;
      void **thread_return;
      const struct timespec *abstime;

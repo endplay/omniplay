@@ -17,16 +17,16 @@
    Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
    02111-1307 USA.  */
 
-	.globl	pthread_spin_unlock
-	.type	pthread_spin_unlock,@function
+	.globl	internal_pthread_spin_unlock
+	.type	internal_pthread_spin_unlock,@function
 	.align	16
-pthread_spin_unlock:
+internal_pthread_spin_unlock:
 	movl	4(%esp), %eax
 	movl	$1, (%eax)
 	xorl	%eax, %eax
 	ret
-	.size	pthread_spin_unlock,.-pthread_spin_unlock
+	.size	internal_pthread_spin_unlock,.-internal_pthread_spin_unlock
 
-	/* The implementation of pthread_spin_init is identical.  */
-	.globl	pthread_spin_init
-pthread_spin_init = pthread_spin_unlock
+	/* The implementation of internal_pthread_spin_init is identical.  */
+	.globl	internal_pthread_spin_init
+internal_pthread_spin_init = internal_pthread_spin_unlock

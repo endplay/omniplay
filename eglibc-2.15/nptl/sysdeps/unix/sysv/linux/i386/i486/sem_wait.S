@@ -30,10 +30,10 @@
 
 	.text
 
-	.globl	__new_sem_wait
-	.type	__new_sem_wait,@function
+	.globl	__new_internal_sem_wait
+	.type	__new_internal_sem_wait,@function
 	.align	16
-__new_sem_wait:
+__new_internal_sem_wait:
 .LSTARTCODE:
 	pushl	%ebx
 .Lpush_ebx:
@@ -125,12 +125,11 @@ __new_sem_wait:
 	orl	$-1, %eax
 
 	jmp	9b
-	.size	__new_sem_wait,.-__new_sem_wait
-	versioned_symbol(libpthread, __new_sem_wait, sem_wait, GLIBC_2_1)
+	.size	__new_internal_sem_wait,.-__new_internal_sem_wait
 
 
-	.type	sem_wait_cleanup,@function
-sem_wait_cleanup:
+	.type	internal_sem_wait_cleanup,@function
+internal_sem_wait_cleanup:
 	LOCK
 	decl	NWAITERS(%ebx)
 	movl	%eax, (%esp)
@@ -138,7 +137,7 @@ sem_wait_cleanup:
 	call	_Unwind_Resume@PLT
 	hlt
 .LENDCODE:
-	.size	sem_wait_cleanup,.-sem_wait_cleanup
+	.size	internal_sem_wait_cleanup,.-internal_sem_wait_cleanup
 
 
 	.section .gcc_except_table,"a",@progbits
@@ -151,7 +150,7 @@ sem_wait_cleanup:
 .Lcstbegin:
 	.uleb128 .LcleanupSTART-.LSTARTCODE
 	.uleb128 .LcleanupEND-.LcleanupSTART
-	.uleb128 sem_wait_cleanup-.LSTARTCODE
+	.uleb128 internal_sem_wait_cleanup-.LSTARTCODE
 	.uleb128  0
 	.uleb128 .LcallUR-.LSTARTCODE
 	.uleb128 .LENDCODE-.LcallUR
@@ -266,11 +265,11 @@ DW.ref.__gcc_personality_v0:
 
 #if SHLIB_COMPAT(libpthread, GLIBC_2_0, GLIBC_2_1)
 	.section ".text.compat", "ax"
-	.global	__old_sem_wait
-	.type	__old_sem_wait,@function
+	.global	__old_internal_sem_wait
+	.type	__old_internal_sem_wait,@function
 	.align	16
 	cfi_startproc
-__old_sem_wait:
+__old_internal_sem_wait:
 	pushl	%ebx
 	cfi_adjust_cfa_offset(4)
 	pushl	%esi
@@ -339,6 +338,5 @@ __old_sem_wait:
 	orl	$-1, %eax
 	jmp	5b
 	cfi_endproc
-	.size	__old_sem_wait,.-__old_sem_wait
-	compat_symbol(libpthread, __old_sem_wait, sem_wait, GLIBC_2_0)
+	.size	__old_internal_sem_wait,.-__old_internal_sem_wait
 #endif

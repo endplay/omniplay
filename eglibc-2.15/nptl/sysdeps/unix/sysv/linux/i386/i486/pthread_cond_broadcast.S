@@ -28,10 +28,10 @@
 	.text
 
 	/* int pthread_cond_broadcast (pthread_cond_t *cond) */
-	.globl	__pthread_cond_broadcast
-	.type	__pthread_cond_broadcast, @function
+	.globl	__internal_pthread_cond_broadcast
+	.type	__internal_pthread_cond_broadcast, @function
 	.align	16
-__pthread_cond_broadcast:
+__internal_pthread_cond_broadcast:
 	cfi_startproc
 	pushl	%ebx
 	cfi_adjust_cfa_offset(4)
@@ -234,6 +234,4 @@ __pthread_cond_broadcast:
 	ENTER_KERNEL
 	jmp	6b
 	cfi_endproc
-	.size	__pthread_cond_broadcast, .-__pthread_cond_broadcast
-versioned_symbol (libpthread, __pthread_cond_broadcast, pthread_cond_broadcast,
-		  GLIBC_2_3_2)
+	.size	__internal_pthread_cond_broadcast, .-__internal_pthread_cond_broadcast

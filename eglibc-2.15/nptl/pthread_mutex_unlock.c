@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include "pthreadP.h"
 #include <lowlevellock.h>
+#include "pthread_log.h" // REPLAY
 
 static int
 internal_function
@@ -287,7 +288,21 @@ int
 __pthread_mutex_unlock (mutex)
      pthread_mutex_t *mutex;
 {
-  return __pthread_mutex_unlock_usercnt (mutex, 1);
+  /* Begin REPLAY */
+  int rc;
+
+  if (is_recording()) {
+    pthread_log_record (0, PTHREAD_MUTEX_UNLOCK_ENTER, (u_long) mutex, 1); 
+    rc = __pthread_mutex_unlock_usercnt (mutex, 1);
+    pthread_log_record (rc, PTHREAD_MUTEX_UNLOCK_EXIT, (u_long) mutex, 0); 
+  } else if (is_replaying()) {
+    pthread_log_replay (PTHREAD_MUTEX_UNLOCK_ENTER, (u_long) mutex); 
+    rc = pthread_log_replay (PTHREAD_MUTEX_UNLOCK_EXIT, (u_long) mutex); 
+  } else {
+    rc = __pthread_mutex_unlock_usercnt (mutex, 1);
+  }
+  return rc;
+  /* End REPLAY */
 }
 strong_alias (__pthread_mutex_unlock, pthread_mutex_unlock)
 strong_alias (__pthread_mutex_unlock, __pthread_mutex_unlock_internal)

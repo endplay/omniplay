@@ -20,10 +20,10 @@
 
 #include <errno.h>
 #include <pthreadP.h>
-
+#include "pthread_log.h" // REPLAY
 
 int
-pthread_mutex_getprioceiling (mutex, prioceiling)
+internal_pthread_mutex_getprioceiling (mutex, prioceiling) // REPLAY
      const pthread_mutex_t *mutex;
      int *prioceiling;
 {
@@ -36,3 +36,28 @@ pthread_mutex_getprioceiling (mutex, prioceiling)
 
   return 0;
 }
+
+/* Begin REPLAY */
+int
+pthread_mutex_getprioceiling (mutex, prioceiling)
+     const pthread_mutex_t *mutex;
+     int *prioceiling;
+{
+  int rc;
+
+  if (is_recording()) {
+    pthread_log_record (0, PTHREAD_MUTEX_GETPRIOCEILING_ENTER, (u_long) mutex, 1); 
+    rc = internal_pthread_mutex_getprioceiling (mutex, prioceiling);
+    pthread_log_record (rc, PTHREAD_MUTEX_GETPRIOCEILING_EXIT_1, (u_long) mutex, 0); 
+    pthread_log_record (*prioceiling, PTHREAD_MUTEX_GETPRIOCEILING_EXIT_2, (u_long) mutex, 0); 
+  } else if (is_replaying()) {
+    pthread_log_replay (PTHREAD_MUTEX_GETPRIOCEILING_ENTER, (u_long) mutex); 
+    rc = pthread_log_replay (PTHREAD_MUTEX_GETPRIOCEILING_EXIT_1, (u_long) mutex); 
+    *prioceiling = pthread_log_replay (PTHREAD_MUTEX_GETPRIOCEILING_EXIT_2, (u_long) mutex); 
+  } else {
+    rc = internal_pthread_mutex_getprioceiling (mutex, prioceiling);
+  }
+  return rc;
+}
+/* End REPLAY */
+

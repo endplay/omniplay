@@ -29,7 +29,7 @@
 
 
 int
-__pthread_cond_signal (cond)
+__internal_pthread_cond_signal (cond) // REPLAY
      pthread_cond_t *cond;
 {
   int pshared = (cond->__data.__mutex == (void *) ~0l)
@@ -60,5 +60,3 @@ __pthread_cond_signal (cond)
   return 0;
 }
 
-versioned_symbol (libpthread, __pthread_cond_signal, pthread_cond_signal,
-		  GLIBC_2_3_2);

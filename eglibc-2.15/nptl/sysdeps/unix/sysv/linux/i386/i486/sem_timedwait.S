@@ -31,10 +31,10 @@
 
 	.text
 
-	.globl	sem_timedwait
-	.type	sem_timedwait,@function
+	.globl	internal_sem_timedwait
+	.type	internal_sem_timedwait,@function
 	.align	16
-sem_timedwait:
+internal_sem_timedwait:
 .LSTARTCODE:
 	movl	4(%esp), %ecx
 
@@ -166,7 +166,7 @@ sem_timedwait:
 	movl	28(%esp), %ebx	/* Load semaphore address.  */
 	orl	$-1, %eax
 	jmp	10b
-	.size	sem_timedwait,.-sem_timedwait
+	.size	internal_sem_timedwait,.-internal_sem_timedwait
 
 
 	.type	sem_wait_cleanup,@function

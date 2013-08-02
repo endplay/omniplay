@@ -25,7 +25,7 @@
 
 
 int
-pthread_tryjoin_np (threadid, thread_return)
+internal_pthread_tryjoin_np (threadid, thread_return) // REPLAY 
      pthread_t threadid;
      void **thread_return;
 {

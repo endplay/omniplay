@@ -22,7 +22,7 @@
 #include <atomic.h>
 
 int
-pthread_spin_unlock (pthread_spinlock_t *lock)
+internal_pthread_spin_unlock (pthread_spinlock_t *lock) // REPLAY
 {
   atomic_full_barrier ();
   *lock = 0;

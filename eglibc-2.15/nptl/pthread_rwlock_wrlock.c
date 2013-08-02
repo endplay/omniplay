@@ -26,7 +26,7 @@
 
 /* Acquire write lock for RWLOCK.  */
 int
-__pthread_rwlock_wrlock (rwlock)
+__pthread_rwlock_wrlock (rwlock) // REPLAY
      pthread_rwlock_t *rwlock;
 {
   int result = 0;
@@ -83,6 +83,3 @@ __pthread_rwlock_wrlock (rwlock)
 
   return result;
 }
-
-weak_alias (__pthread_rwlock_wrlock, pthread_rwlock_wrlock)
-strong_alias (__pthread_rwlock_wrlock, __pthread_rwlock_wrlock_internal)

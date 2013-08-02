@@ -245,14 +245,14 @@ regexec (preg, string, nmatch, pmatch, eflags)
       length = strlen (string);
     }
 
-  __libc_lock_lock (dfa->lock);
+  mutex_lock (&dfa->lock); // REPLAY
   if (preg->no_sub)
     err = re_search_internal (preg, string, length, start, length - start,
 			      length, 0, NULL, eflags);
   else
     err = re_search_internal (preg, string, length, start, length - start,
 			      length, nmatch, pmatch, eflags);
-  __libc_lock_unlock (dfa->lock);
+  mutex_unlock (&dfa->lock); // REPLAY
   return err != REG_NOERROR;
 }
 
@@ -411,7 +411,7 @@ re_search_stub (bufp, string, length, start, range, stop, regs, ret_len)
   else if (BE (start + range < 0, 0))
     range = -start;
 
-  __libc_lock_lock (dfa->lock);
+  mutex_lock (&dfa->lock); // REPLAY
 
   eflags |= (bufp->not_bol) ? REG_NOTBOL : 0;
   eflags |= (bufp->not_eol) ? REG_NOTEOL : 0;
@@ -475,7 +475,7 @@ re_search_stub (bufp, string, length, start, range, stop, regs, ret_len)
     }
   re_free (pmatch);
  out:
-  __libc_lock_unlock (dfa->lock);
+  mutex_unlock (&dfa->lock); // REPLAY
   return rval;
 }
 

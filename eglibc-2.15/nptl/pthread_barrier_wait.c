@@ -22,10 +22,9 @@
 #include <lowlevellock.h>
 #include <pthreadP.h>
 
-
 /* Wait on barrier.  */
 int
-pthread_barrier_wait (barrier)
+internal_pthread_barrier_wait (barrier) // REPLAY
      pthread_barrier_t *barrier;
 {
   struct pthread_barrier *ibarrier = (struct pthread_barrier *) barrier;
@@ -77,3 +76,4 @@ pthread_barrier_wait (barrier)
 
   return result;
 }
+

@@ -54,8 +54,10 @@
 #else
 # define __libc_lock_define(CLASS,NAME)
 # define __libc_lock_init(NAME) do { } while (0)
-# define __libc_lock_lock(NAME) do { } while (0)
-# define __libc_lock_unlock(NAME) do { } while (0)
+/* Begin REPLAY */
+# define mutex_lock(NAME) do { } while (0)
+# define mutex_unlock(NAME) do { } while (0) 
+/* End REPLAY */
 #endif
 
 /* In case that the system doesn't have isblank().  */

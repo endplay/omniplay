@@ -21,9 +21,8 @@
 #include <shlib-compat.h>
 #include "pthreadP.h"
 
-
 int
-__pthread_cond_destroy (cond)
+__internal_pthread_cond_destroy (cond) // REPLAY
      pthread_cond_t *cond;
 {
   int pshared = (cond->__data.__mutex == (void *) ~0l)
@@ -81,5 +80,4 @@ __pthread_cond_destroy (cond)
 
   return 0;
 }
-versioned_symbol (libpthread, __pthread_cond_destroy,
-		  pthread_cond_destroy, GLIBC_2_3_2);
+

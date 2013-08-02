@@ -91,7 +91,7 @@ __condvar_cleanup (void *arg)
 
 
 int
-__pthread_cond_wait (cond, mutex)
+__internal_pthread_cond_wait (cond, mutex) // REPLAY
      pthread_cond_t *cond;
      pthread_mutex_t *mutex;
 {
@@ -191,5 +191,3 @@ __pthread_cond_wait (cond, mutex)
   return __pthread_mutex_cond_lock (mutex);
 }
 
-versioned_symbol (libpthread, __pthread_cond_wait, pthread_cond_wait,
-		  GLIBC_2_3_2);

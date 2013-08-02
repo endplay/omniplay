@@ -26,10 +26,10 @@
 # define LOCK lock
 #endif
 
-	.globl	pthread_spin_trylock
-	.type	pthread_spin_trylock,@function
+	.globl	internal_pthread_spin_trylock
+	.type	internal_pthread_spin_trylock,@function
 	.align	16
-pthread_spin_trylock:
+internal_pthread_spin_trylock:
 	movl	4(%esp), %edx
 	movl	$1, %eax
 	xorl	%ecx, %ecx
@@ -44,4 +44,4 @@ pthread_spin_trylock:
 0:
 #endif
 	ret
-	.size	pthread_spin_trylock,.-pthread_spin_trylock
+	.size	internal_pthread_spin_trylock,.-internal_pthread_spin_trylock

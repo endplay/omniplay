@@ -61,6 +61,7 @@
 
 
 
+struct pthread_log_data; /* REPLAY */
 
 /* Internal version of the buffer to store cancellation handler
    information.  */
@@ -366,6 +367,8 @@ struct pthread
 
   /* Resolver state.  */
   struct __res_state res;
+
+  struct pthread_log_head* log_head; /* REPLAY */
 
   /* This member must be last.  */
   char end_padding[];

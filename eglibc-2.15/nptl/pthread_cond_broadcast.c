@@ -27,9 +27,8 @@
 #include <shlib-compat.h>
 #include <kernel-features.h>
 
-
 int
-__pthread_cond_broadcast (cond)
+__internal_pthread_cond_broadcast (cond) // REPLAY
      pthread_cond_t *cond;
 {
   int pshared = (cond->__data.__mutex == (void *) ~0l)
@@ -87,5 +86,3 @@ __pthread_cond_broadcast (cond)
   return 0;
 }
 
-versioned_symbol (libpthread, __pthread_cond_broadcast, pthread_cond_broadcast,
-		  GLIBC_2_3_2);

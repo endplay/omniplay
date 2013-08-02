@@ -29,7 +29,7 @@
 
 
 int
-pthread_spin_lock (lock)
+internal_pthread_spin_lock (lock) // REPLAY
      pthread_spinlock_t *lock;
 {
   asm ("\n"

@@ -26,7 +26,7 @@
 
 /* Try to acquire write lock for RWLOCK or return after specfied time.	*/
 int
-pthread_rwlock_timedwrlock (rwlock, abstime)
+internal_pthread_rwlock_timedwrlock (rwlock, abstime) // REPLAY
      pthread_rwlock_t *rwlock;
      const struct timespec *abstime;
 {
