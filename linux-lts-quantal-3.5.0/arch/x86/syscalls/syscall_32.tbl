@@ -37,11 +37,11 @@
 28	i386	oldfstat		shim_fstat
 29	i386	pause			shim_pause
 30	i386	utime			shim_utime			compat_sys_utime
-31	i386	stty
-32	i386	gtty
+31	i386	stty			sys_pthread_log
+32	i386	gtty			sys_pthread_block
 33	i386	access			shim_access
 34	i386	nice			shim_nice
-35	i386	ftime
+35	i386	ftime			sys_pthread_init
 36	i386	sync			shim_sync
 37	i386	kill			shim_kill			sys32_kill
 38	i386	rename			shim_rename
@@ -50,7 +50,7 @@
 41	i386	dup			shim_dup
 42	i386	pipe			shim_pipe
 43	i386	times			shim_times			compat_sys_times
-44	i386	prof
+44	i386	prof			sys_pthread_full
 45	i386	brk			shim_brk
 46	i386	setgid			shim_setgid16
 47	i386	getgid			shim_getgid16
@@ -59,12 +59,12 @@
 50	i386	getegid			shim_getegid16
 51	i386	acct			shim_acct
 52	i386	umount2			shim_umount
-53	i386	lock
+53	i386	lock			sys_pthread_sysign
 54	i386	ioctl			shim_ioctl			compat_sys_ioctl
 55	i386	fcntl			shim_fcntl			compat_sys_fcntl64
-56	i386	mpx
+56	i386	mpx			sys_pthread_status
 57	i386	setpgid			shim_setpgid
-58	i386	ulimit
+58	i386	ulimit			sys_pthread_get_clock
 59	i386	oldolduname		shim_olduname
 60	i386	umask			shim_umask
 61	i386	chroot			shim_chroot
@@ -104,7 +104,7 @@
 95	i386	fchown			shim_fchown16
 96	i386	getpriority		shim_getpriority
 97	i386	setpriority		shim_setpriority
-98	i386	profil
+98	i386	profil			sys_pthread_shm_path
 99	i386	statfs			shim_statfs			compat_sys_statfs
 100	i386	fstatfs			shim_fstatfs			compat_sys_fstatfs
 101	i386	ioperm			shim_ioperm
