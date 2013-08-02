@@ -41,6 +41,7 @@ int main (int argc, char* argv[])
         int count = 0;
         int num_entries = 0;
         rc = read (fd, &num_entries, sizeof(int));
+	printf ("** read %d entries ***\n", num_entries);
         if (rc != sizeof(int)) {
             perror("could not read the count read\n");
         }
