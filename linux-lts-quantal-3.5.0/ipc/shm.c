@@ -1109,8 +1109,6 @@ SYSCALL_DEFINE3(shmat, int, shmid, char __user *, shmaddr, int, shmflg)
 	unsigned long ret;
 	long err;
 	
-	if (current->record_thrd) printk ("sys_shmat: smid %d shmaddr %p shmflg %x\n", shmid, shmaddr, shmflg);
-
 	err = do_shmat(shmid, shmaddr, shmflg, &ret);
 	if (err)
 		return err;
