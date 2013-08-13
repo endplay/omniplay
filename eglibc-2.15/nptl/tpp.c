@@ -93,7 +93,7 @@ __pthread_tpp_change_priority (int previous_prio, int new_prio)
   if (priomax == newpriomax)
     return 0;
 
-  lll_lock (self->lock, LLL_PRIVATE);
+  pthread_log_lll_lock (&self->lock, LLL_PRIVATE);
 
   tpp->priomax = newpriomax;
 
@@ -129,7 +129,7 @@ __pthread_tpp_change_priority (int previous_prio, int new_prio)
 	}
     }
 
-  lll_unlock (self->lock, LLL_PRIVATE);
+  pthread_log_lll_unlock (&self->lock, LLL_PRIVATE);
 
   return result;
 }

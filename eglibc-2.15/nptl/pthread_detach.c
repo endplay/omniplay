@@ -20,13 +20,14 @@
 #include <errno.h>
 #include "pthreadP.h"
 #include <atomic.h>
-
+#include "pthread_log.h"
 
 int
 pthread_detach (th)
      pthread_t th;
 {
   struct pthread *pd = (struct pthread *) th;
+  int b;
 
   /* Make sure the descriptor is valid.  */
   if (INVALID_NOT_TERMINATED_TD_P (pd))
@@ -36,13 +37,33 @@ pthread_detach (th)
   int result = 0;
 
   /* Mark the thread as detached.  */
-  if (atomic_compare_and_exchange_bool_acq (&pd->joinid, pd, NULL))
+  if (is_recording()) {
+    pthread_log_record (0, PTHREAD_JOINID_ENTER, (u_long) &pd->joinid, 1); 
+    b = atomic_compare_and_exchange_bool_acq (&pd->joinid, pd, NULL);
+    pthread_log_record (b, PTHREAD_JOINID_EXIT, (u_long) &pd->joinid, 0); 
+  } else if (is_replaying()) {
+    pthread_log_replay (PTHREAD_JOINID_ENTER, (u_long) &pd->joinid); 
+    b = pthread_log_replay (PTHREAD_JOINID_EXIT, (u_long) &pd->joinid); 
+  } else {
+    b = atomic_compare_and_exchange_bool_acq (&pd->joinid, pd, NULL);
+  }
+  if (b)
     {
       /* There are two possibilities here.  First, the thread might
 	 already be detached.  In this case we return EINVAL.
 	 Otherwise there might already be a waiter.  The standard does
 	 not mention what happens in this case.  */
-      if (IS_DETACHED (pd))
+      if (is_recording()) {
+	pthread_log_record (0, PTHREAD_JOINID_ENTER, (u_long) &pd->joinid, 1); 
+	b = IS_DETACHED (pd);
+	pthread_log_record (b, PTHREAD_JOINID_EXIT, (u_long) &pd->joinid, 0); 
+      } else if (is_replaying()) {
+	pthread_log_replay (PTHREAD_JOINID_ENTER, (u_long) &pd->joinid); 
+	b = pthread_log_replay (PTHREAD_JOINID_EXIT, (u_long) &pd->joinid); 
+      } else {
+	b = IS_DETACHED (pd);
+      }
+      if (b)
 	result = EINVAL;
     }
   else

@@ -67,7 +67,7 @@ __find_in_stack_list (pd)
   list_t *entry;
   struct pthread *result = NULL;
 
-  lll_lock (stack_cache_lock, LLL_PRIVATE);
+  pthread_log_lll_lock (&stack_cache_lock, LLL_PRIVATE);
 
   list_for_each (entry, &stack_used)
     {
@@ -94,7 +94,7 @@ __find_in_stack_list (pd)
 	  }
       }
 
-  lll_unlock (stack_cache_lock, LLL_PRIVATE);
+  pthread_log_lll_unlock (&stack_cache_lock, LLL_PRIVATE);
 
   return result;
 }
@@ -231,6 +231,7 @@ static int
 start_thread (void *arg)
 {
   struct pthread *pd = (struct pthread *) arg;
+  int b;
 
   register_log(); /* REPLAY */
 
@@ -299,9 +300,9 @@ start_thread (void *arg)
 	  int oldtype = CANCEL_ASYNC ();
 
 	  /* Get the lock the parent locked to force synchronization.  */
-	  lll_lock (pd->lock, LLL_PRIVATE);
+	  pthread_log_lll_lock (&pd->lock, LLL_PRIVATE);
 	  /* And give it up right away.  */
-	  lll_unlock (pd->lock, LLL_PRIVATE);
+	  pthread_log_lll_unlock (&pd->lock, LLL_PRIVATE);
 
 	  CANCEL_RESET (oldtype);
 	}
@@ -407,7 +408,17 @@ start_thread (void *arg)
     madvise (pd->stackblock, freesize - PTHREAD_STACK_MIN, MADV_DONTNEED);
 
   /* If the thread is detached free the TCB.  */
-  if (IS_DETACHED (pd))
+  if (is_recording()) {
+    pthread_log_record (0, PTHREAD_JOINID_ENTER, (u_long) &pd->joinid, 1); 
+    b = IS_DETACHED (pd);
+    pthread_log_record (b, PTHREAD_JOINID_EXIT, (u_long) &pd->joinid, 0); 
+  } else if (is_replaying()) {
+    pthread_log_replay (PTHREAD_JOINID_ENTER, (u_long) &pd->joinid); 
+    b = pthread_log_replay (PTHREAD_JOINID_EXIT, (u_long) &pd->joinid); 
+  } else {
+    b = IS_DETACHED (pd);
+  }
+  if (b)
     /* Free the TCB.  */
     __free_tcb (pd);
   else if (__builtin_expect (pd->cancelhandling & SETXID_BITMASK, 0))
@@ -496,7 +507,7 @@ __pthread_create_2_1 (newthread, attr, start_routine, arg)
   /* Initialize the field for the ID of the thread which is waiting
      for us.  This is a self-reference in case the thread is created
      detached.  */
-  pd->joinid = iattr->flags & ATTR_FLAG_DETACHSTATE ? pd : NULL;
+  pd->joinid = iattr->flags & ATTR_FLAG_DETACHSTATE ? pd : NULL; // No need to record since not a race
 
   /* The debug events are inherited from the parent.  */
   pd->eventbuf = self->eventbuf;

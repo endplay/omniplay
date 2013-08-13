@@ -21,7 +21,7 @@
 #include <stdlib.h>
 #include <atomic.h>
 #include "pthreadP.h"
-
+#include "pthread_log.h"
 
 static void
 cleanup (void *arg)
@@ -31,7 +31,7 @@ cleanup (void *arg)
 
 
 int
-internal_pthread_timedjoin_np (threadid, thread_return, abstime) // REPLAY
+pthread_timedjoin_np (threadid, thread_return, abstime)
      pthread_t threadid;
      void **thread_return;
      const struct timespec *abstime;
@@ -39,6 +39,7 @@ internal_pthread_timedjoin_np (threadid, thread_return, abstime) // REPLAY
   struct pthread *self;
   struct pthread *pd = (struct pthread *) threadid;
   int result;
+  int b;
 
   /* Make sure the descriptor is valid.  */
   if (INVALID_NOT_TERMINATED_TD_P (pd))
@@ -46,12 +47,33 @@ internal_pthread_timedjoin_np (threadid, thread_return, abstime) // REPLAY
     return ESRCH;
 
   /* Is the thread joinable?.  */
-  if (IS_DETACHED (pd))
+  if (is_recording()) {
+    pthread_log_record (0, PTHREAD_JOINID_ENTER, (u_long) &pd->joinid, 1); 
+    b = IS_DETACHED (pd);
+    pthread_log_record (b, PTHREAD_JOINID_EXIT, (u_long) &pd->joinid, 0); 
+  } else if (is_replaying()) {
+    pthread_log_replay (PTHREAD_JOINID_ENTER, (u_long) &pd->joinid); 
+    b = pthread_log_replay (PTHREAD_JOINID_EXIT, (u_long) &pd->joinid); 
+  } else {
+    b = IS_DETACHED (pd);
+  }
+  if (b)
     /* We cannot wait for the thread.  */
     return EINVAL;
 
   self = THREAD_SELF;
-  if (pd == self || self->joinid == pd)
+  
+  if (is_recording()) {
+    pthread_log_record (0, PTHREAD_JOINID_ENTER, (u_long) &self->joinid, 1); 
+    b = (self->joinid == pd);
+    pthread_log_record (b, PTHREAD_JOINID_EXIT, (u_long) &self->joinid, 0); 
+  } else if (is_replaying()) {
+    pthread_log_replay (PTHREAD_JOINID_ENTER, (u_long) &self->joinid); 
+    b = pthread_log_replay (PTHREAD_JOINID_EXIT, (u_long) &self->joinid); 
+  } else {
+    b = (self->joinid == pd);
+  }
+  if (pd == self || b)
     /* This is a deadlock situation.  The threads are waiting for each
        other to finish.  Note that this is a "may" error.  To be 100%
        sure we catch this error we would have to lock the data
@@ -63,8 +85,17 @@ internal_pthread_timedjoin_np (threadid, thread_return, abstime) // REPLAY
 
   /* Wait for the thread to finish.  If it is already locked something
      is wrong.  There can only be one waiter.  */
-  if (__builtin_expect (atomic_compare_and_exchange_bool_acq (&pd->joinid,
-							      self, NULL), 0))
+  if (is_recording()) {
+    pthread_log_record (0, PTHREAD_JOINID_ENTER, (u_long) &pd->joinid, 1); 
+    b = atomic_compare_and_exchange_bool_acq (&pd->joinid, self, NULL);
+    pthread_log_record (b, PTHREAD_JOINID_EXIT, (u_long) &pd->joinid, 0); 
+  } else if (is_replaying()) {
+    pthread_log_replay (PTHREAD_JOINID_ENTER, (u_long) &pd->joinid); 
+    b = pthread_log_replay (PTHREAD_JOINID_EXIT, (u_long) &pd->joinid); 
+  } else {
+    b = atomic_compare_and_exchange_bool_acq (&pd->joinid, self, NULL);
+  }
+  if (__builtin_expect (b, 0))
     /* There is already somebody waiting for the thread.  */
     return EINVAL;
 
@@ -79,7 +110,7 @@ internal_pthread_timedjoin_np (threadid, thread_return, abstime) // REPLAY
 
 
   /* Wait for the child.  */
-  result = lll_timedwait_tid (pd->tid, abstime);
+  result = pthread_log_lll_timedwait_tid (&pd->tid, abstime);
 
 
   /* Restore cancellation mode.  */
@@ -100,8 +131,18 @@ internal_pthread_timedjoin_np (threadid, thread_return, abstime) // REPLAY
       /* Free the TCB.  */
       __free_tcb (pd);
     }
-  else
-    pd->joinid = NULL;
+  else {
+    if (is_recording()) {
+      pthread_log_record (0, PTHREAD_JOINID_ENTER, (u_long) &pd->joinid, 1); 
+      pd->joinid = NULL;
+      pthread_log_record (0, PTHREAD_JOINID_EXIT, (u_long) &pd->joinid, 0); 
+    } else if (is_replaying()) {
+      pthread_log_replay (PTHREAD_JOINID_ENTER, (u_long) &pd->joinid); 
+      pthread_log_replay (PTHREAD_JOINID_EXIT, (u_long) &pd->joinid); 
+    } else {
+      pd->joinid = NULL;
+    }
+  }
 
   return result;
 }

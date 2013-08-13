@@ -22,7 +22,7 @@
 #include <string.h>
 #include "pthreadP.h"
 #include <lowlevellock.h>
-
+#include "pthread_log.h"
 
 int
 __pthread_setschedparam (threadid, policy, param)
@@ -39,7 +39,7 @@ __pthread_setschedparam (threadid, policy, param)
 
   int result = 0;
 
-  lll_lock (pd->lock, LLL_PRIVATE);
+  pthread_log_lll_lock (&pd->lock, LLL_PRIVATE);
 
   struct sched_param p;
   const struct sched_param *orig_param = param;
@@ -67,7 +67,7 @@ __pthread_setschedparam (threadid, policy, param)
       pd->flags |= ATTR_FLAG_SCHED_SET | ATTR_FLAG_POLICY_SET;
     }
 
-  lll_unlock (pd->lock, LLL_PRIVATE);
+  pthread_log_lll_unlock (&pd->lock, LLL_PRIVATE);
 
   return result;
 }

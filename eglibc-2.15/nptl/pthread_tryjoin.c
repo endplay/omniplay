@@ -22,15 +22,16 @@
 
 #include <atomic.h>
 #include "pthreadP.h"
-
+#include "pthread_log.h"
 
 int
-internal_pthread_tryjoin_np (threadid, thread_return) // REPLAY 
+pthread_tryjoin_np (threadid, thread_return) 
      pthread_t threadid;
      void **thread_return;
 {
   struct pthread *self;
   struct pthread *pd = (struct pthread *) threadid;
+  int b;
 
   /* Make sure the descriptor is valid.  */
   if (DEBUGGING_P && __find_in_stack_list (pd) == NULL)
@@ -38,12 +39,32 @@ internal_pthread_tryjoin_np (threadid, thread_return) // REPLAY
     return ESRCH;
 
   /* Is the thread joinable?.  */
-  if (IS_DETACHED (pd))
+  if (is_recording()) {
+    pthread_log_record (0, PTHREAD_JOINID_ENTER, (u_long) &pd->joinid, 1); 
+    b = IS_DETACHED (pd);
+    pthread_log_record (b, PTHREAD_JOINID_EXIT, (u_long) &pd->joinid, 0); 
+  } else if (is_replaying()) {
+    pthread_log_replay (PTHREAD_JOINID_ENTER, (u_long) &pd->joinid); 
+    b = pthread_log_replay (PTHREAD_JOINID_EXIT, (u_long) &pd->joinid); 
+  } else {
+    b = IS_DETACHED (pd);
+  }
+  if (b)
     /* We cannot wait for the thread.  */
     return EINVAL;
 
   self = THREAD_SELF;
-  if (pd == self || self->joinid == pd)
+  if (is_recording()) {
+    pthread_log_record (0, PTHREAD_JOINID_ENTER, (u_long) &self->joinid, 1); 
+    b = (self->joinid == pd);
+    pthread_log_record (b, PTHREAD_JOINID_EXIT, (u_long) &self->joinid, 0); 
+  } else if (is_replaying()) {
+    pthread_log_replay (PTHREAD_JOINID_ENTER, (u_long) &self->joinid); 
+    b = pthread_log_replay (PTHREAD_JOINID_EXIT, (u_long) &self->joinid); 
+  } else {
+    b = (self->joinid == pd);
+  }
+  if (pd == self || b)
     /* This is a deadlock situation.  The threads are waiting for each
        other to finish.  Note that this is a "may" error.  To be 100%
        sure we catch this error we would have to lock the data
@@ -59,7 +80,17 @@ internal_pthread_tryjoin_np (threadid, thread_return) // REPLAY
 
   /* Wait for the thread to finish.  If it is already locked something
      is wrong.  There can only be one waiter.  */
-  if (atomic_compare_and_exchange_bool_acq (&pd->joinid, self, NULL))
+  if (is_recording()) {
+    pthread_log_record (0, PTHREAD_JOINID_ENTER, (u_long) &pd->joinid, 1); 
+    b = atomic_compare_and_exchange_bool_acq (&pd->joinid, self, NULL);
+    pthread_log_record (b, PTHREAD_JOINID_EXIT, (u_long) &pd->joinid, 0); 
+  } else if (is_replaying()) {
+      pthread_log_replay (PTHREAD_JOINID_ENTER, (u_long) &pd->joinid); 
+      b = pthread_log_replay (PTHREAD_JOINID_EXIT, (u_long) &pd->joinid); 
+  } else {
+    b = atomic_compare_and_exchange_bool_acq (&pd->joinid, self, NULL);
+  }
+  if (b)
     /* There is already somebody waiting for the thread.  */
     return EINVAL;
 

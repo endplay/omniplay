@@ -30,7 +30,7 @@
 #include <bits/stdio-lock.h>
 #include <atomic.h>
 #include <pthreadP.h>
-
+#include "pthread_log.h"
 
 unsigned long int *__fork_generation_pointer;
 
@@ -146,7 +146,7 @@ __libc_fork (void)
 
       /* Adjust the PID field for the new process.  */
       THREAD_SETMEM (self, pid, THREAD_GETMEM (self, tid));
-
+      
 #if HP_TIMING_AVAIL
       /* The CPU clock of the thread and process have to be set to zero.  */
       hp_timing_t now;

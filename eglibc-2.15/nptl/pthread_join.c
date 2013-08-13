@@ -22,7 +22,7 @@
 
 #include <atomic.h>
 #include "pthreadP.h"
-
+#include "pthread_log.h"
 
 static void
 cleanup (void *arg)
@@ -30,17 +30,27 @@ cleanup (void *arg)
   /* If we already changed the waiter ID, reset it.  The call cannot
      fail for any reason but the thread not having done that yet so
      there is no reason for a loop.  */
-  (void) atomic_compare_and_exchange_bool_acq ((struct pthread **) arg, NULL,
-					       THREAD_SELF);
+  if (is_recording()) {
+    pthread_log_record (0, PTHREAD_JOINID_ENTER, (u_long) arg, 1); 
+    (void) atomic_compare_and_exchange_bool_acq ((struct pthread **) arg, NULL, THREAD_SELF);
+    pthread_log_record (0, PTHREAD_JOINID_EXIT, (u_long) arg, 0); 
+    
+  } else if (is_replaying()) {
+    pthread_log_replay (PTHREAD_JOINID_ENTER, (u_long) arg); 
+    pthread_log_replay (PTHREAD_JOINID_EXIT, (u_long) arg); 
+  } else {
+    (void) atomic_compare_and_exchange_bool_acq ((struct pthread **) arg, NULL, THREAD_SELF);
+  }
 }
 
 
 int
-internal_pthread_join (threadid, thread_return) // REPLAY
+pthread_join (threadid, thread_return) 
      pthread_t threadid;
      void **thread_return;
 {
   struct pthread *pd = (struct pthread *) threadid;
+  int b;
 
   /* Make sure the descriptor is valid.  */
   if (INVALID_NOT_TERMINATED_TD_P (pd))
@@ -48,7 +58,17 @@ internal_pthread_join (threadid, thread_return) // REPLAY
     return ESRCH;
 
   /* Is the thread joinable?.  */
-  if (IS_DETACHED (pd))
+  if (is_recording()) {
+    pthread_log_record (0, PTHREAD_JOINID_ENTER, (u_long) &pd->joinid, 1); 
+    b = IS_DETACHED (pd);
+    pthread_log_record (b, PTHREAD_JOINID_EXIT, (u_long) &pd->joinid, 0); 
+  } else if (is_replaying()) {
+    pthread_log_replay (PTHREAD_JOINID_ENTER, (u_long) &pd->joinid); 
+    b = pthread_log_replay (PTHREAD_JOINID_EXIT, (u_long) &pd->joinid); 
+  } else {
+    b = IS_DETACHED (pd);
+  }
+  if (b)
     /* We cannot wait for the thread.  */
     return EINVAL;
 
@@ -63,9 +83,18 @@ internal_pthread_join (threadid, thread_return) // REPLAY
   /* Switch to asynchronous cancellation.  */
   int oldtype = CANCEL_ASYNC ();
 
+  if (is_recording()) {
+    pthread_log_record (0, PTHREAD_JOINID_ENTER, (u_long) &self->joinid, 1); 
+    b = (self->joinid == pd);
+    pthread_log_record (b, PTHREAD_JOINID_EXIT, (u_long) &self->joinid, 0); 
+  } else if (is_replaying()) {
+    pthread_log_replay (PTHREAD_JOINID_ENTER, (u_long) &self->joinid); 
+    b = pthread_log_replay (PTHREAD_JOINID_EXIT, (u_long) &self->joinid); 
+  } else {
+    b = (self->joinid == pd);
+  }
   if ((pd == self
-       || (self->joinid == pd
-	   && (pd->cancelhandling
+       || (b && (pd->cancelhandling
 	       & (CANCELING_BITMASK | CANCELED_BITMASK | EXITING_BITMASK
 		  | TERMINATED_BITMASK)) == 0))
       && !CANCEL_ENABLED_AND_CANCELED (self->cancelhandling))
@@ -79,15 +108,24 @@ internal_pthread_join (threadid, thread_return) // REPLAY
     result = EDEADLK;
   /* Wait for the thread to finish.  If it is already locked something
      is wrong.  There can only be one waiter.  */
-  else if (__builtin_expect (atomic_compare_and_exchange_bool_acq (&pd->joinid,
-								   self,
-								   NULL), 0))
-    /* There is already somebody waiting for the thread.  */
-    result = EINVAL;
-  else
-    /* Wait for the child.  */
-    lll_wait_tid (pd->tid);
-
+  else {
+    if (is_recording()) {
+      pthread_log_record (0, PTHREAD_JOINID_ENTER, (u_long) &pd->joinid, 1); 
+      b = atomic_compare_and_exchange_bool_acq (&pd->joinid, self, NULL);
+      pthread_log_record (b, PTHREAD_JOINID_EXIT, (u_long) &pd->joinid, 0); 
+    } else if (is_replaying()) {
+      pthread_log_replay (PTHREAD_JOINID_ENTER, (u_long) &pd->joinid); 
+      b = pthread_log_replay (PTHREAD_JOINID_EXIT, (u_long) &pd->joinid); 
+    } else {
+      b = atomic_compare_and_exchange_bool_acq (&pd->joinid, self, NULL);
+    }
+    if (__builtin_expect (b, 0))
+      /* There is already somebody waiting for the thread.  */
+      result = EINVAL;
+    else
+      /* Wait for the child.  */
+      pthread_log_lll_wait_tid (&pd->tid);
+  }
 
   /* Restore cancellation mode.  */
   CANCEL_RESET (oldtype);

@@ -28,11 +28,11 @@
 	.text
 
 
-	.globl	__pthread_once
-	.type	__pthread_once,@function
+	.globl	__no_pthread_once
+	.type	__no_pthread_once,@function
 	.align	16
 	cfi_startproc
-__pthread_once:
+__no_pthread_once:
 	movl	4(%esp), %ecx
 	testl	$2, (%ecx)
 	jz	1f
@@ -174,13 +174,13 @@ __pthread_once:
 	/* NOTREACHED */
 	hlt
 	cfi_endproc
-	.size	__pthread_once,.-__pthread_once
+	.size	__no_pthread_once,.-__no_pthread_once
 
-	.globl	__pthread_once_internal
-__pthread_once_internal = __pthread_once
+	.globl	__no_pthread_once_internal
+__no_pthread_once_internal = __no_pthread_once
 
-	.globl	pthread_once
-pthread_once = __pthread_once
+	.globl	no_pthread_once
+no_pthread_once = __no_pthread_once
 
 
 #ifdef PIC

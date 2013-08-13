@@ -36,6 +36,7 @@
 #include <smp.h>
 #include <lowlevellock.h>
 #include <kernel-features.h>
+#include "pthread_log.h"
 
 
 /* Size and alignment of static TLS block.  */
@@ -160,9 +161,15 @@ nptl_freeres (void)
 
 static
 #endif
+
 void
 __nptl_set_robust (struct pthread *self)
 {
+  // This is the first call after a fork - so we force a reload of the log here
+  if (is_replaying()) {
+    pthread_log_status = PTHREAD_LOG_REP_AFTER_FORK; 
+  }
+
   INTERNAL_SYSCALL_DECL (err);
   INTERNAL_SYSCALL (set_robust_list, err, 2, &self->robust_head,
 		    sizeof (struct robust_list_head));

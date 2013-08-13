@@ -28,7 +28,7 @@
 #include "pthreadP.h"
 #include <lowlevellock.h>
 #include <ldsodefs.h>
-
+#include "pthread_log.h"
 
 int
 pthread_getattr_np (thread_id, attr)
@@ -38,8 +38,9 @@ pthread_getattr_np (thread_id, attr)
   struct pthread *thread = (struct pthread *) thread_id;
   struct pthread_attr *iattr = (struct pthread_attr *) attr;
   int ret = 0;
+  int b;
 
-  lll_lock (thread->lock, LLL_PRIVATE);
+  pthread_log_lll_lock (&thread->lock, LLL_PRIVATE);
 
   /* The thread library is responsible for keeping the values in the
      thread desriptor up-to-date in case the user changes them.  */
@@ -51,7 +52,17 @@ pthread_getattr_np (thread_id, attr)
   iattr->flags = thread->flags;
 
   /* The thread might be detached by now.  */
-  if (IS_DETACHED (thread))
+  if (is_recording()) {
+    pthread_log_record (0, PTHREAD_JOINID_ENTER, (u_long) &thread->joinid, 1); 
+    b = IS_DETACHED (thread);
+    pthread_log_record (b, PTHREAD_JOINID_EXIT, (u_long) &thread->joinid, 0); 
+  } else if (is_replaying()) {
+    pthread_log_replay (PTHREAD_JOINID_ENTER, (u_long) &thread->joinid); 
+    b = pthread_log_replay (PTHREAD_JOINID_EXIT, (u_long) &thread->joinid); 
+  } else {
+    b = IS_DETACHED (thread);
+  }
+  if (b)
     iattr->flags |= ATTR_FLAG_DETACHSTATE;
 
   /* This is the guardsize after adjusting it.  */
@@ -173,7 +184,7 @@ pthread_getattr_np (thread_id, attr)
 	}
     }
 
-  lll_unlock (thread->lock, LLL_PRIVATE);
+  pthread_log_lll_unlock (&thread->lock, LLL_PRIVATE);
 
   return ret;
 }

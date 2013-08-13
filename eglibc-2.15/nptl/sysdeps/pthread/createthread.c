@@ -24,7 +24,7 @@
 #include <atomic.h>
 #include <ldsodefs.h>
 #include <tls.h>
-
+#include "pthread_log.h"
 #include "kernel-features.h"
 
 
@@ -60,7 +60,7 @@ do_clone (struct pthread *pd, const struct pthread_attr *attr,
     /* We make sure the thread does not run far by forcing it to get a
        lock.  We lock it here too so that the new thread cannot continue
        until we tell it to.  */
-    lll_lock (pd->lock, LLL_PRIVATE);
+    pthread_log_lll_lock (&pd->lock, LLL_PRIVATE);
 
   /* One more thread.  We cannot have the thread do this itself, since it
      might exist but not have been scheduled yet by the time we've returned
@@ -231,7 +231,7 @@ create_thread (struct pthread *pd, const struct pthread_attr *attr,
 	      __nptl_create_event ();
 
 	      /* And finally restart the new thread.  */
-	      lll_unlock (pd->lock, LLL_PRIVATE);
+	      pthread_log_lll_unlock (&pd->lock, LLL_PRIVATE);
 	    }
 
 	  return res;
@@ -258,7 +258,7 @@ create_thread (struct pthread *pd, const struct pthread_attr *attr,
 
   if (res == 0 && stopped)
     /* And finally restart the new thread.  */
-    lll_unlock (pd->lock, LLL_PRIVATE);
+    pthread_log_lll_unlock (&pd->lock, LLL_PRIVATE);
 
   return res;
 }

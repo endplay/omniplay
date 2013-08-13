@@ -478,13 +478,6 @@ __pthread_mutex_lock (mutex)
 {
   int rc;
 
-  if (mutex == 0) {
-    pthread_log_debug ("__pthread_mutex_lock has NULL mutex\n");
-    pthread_log_debug ("Callee 0 is 0x%p\n", __builtin_return_address(0));
-    pthread_log_debug ("Callee 1 is 0x%p\n", __builtin_return_address(1));
-    pthread_log_debug ("Callee 2 is 0x%p\n", __builtin_return_address(2));
-    exit (0);
-  }
   if (is_recording()) {
     pthread_log_record (0, PTHREAD_MUTEX_LOCK_ENTER, (u_long) mutex, 1); 
     rc = __internal_pthread_mutex_lock (mutex);

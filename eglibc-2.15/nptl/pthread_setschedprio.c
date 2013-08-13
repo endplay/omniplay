@@ -23,7 +23,7 @@
 #include <sched.h>
 #include "pthreadP.h"
 #include <lowlevellock.h>
-
+#include "pthread_log.h"
 
 int
 pthread_setschedprio (threadid, prio)
@@ -41,7 +41,7 @@ pthread_setschedprio (threadid, prio)
   struct sched_param param;
   param.sched_priority = prio;
 
-  lll_lock (pd->lock, LLL_PRIVATE);
+  pthread_log_lll_lock (&pd->lock, LLL_PRIVATE);
 
   /* If the thread should have higher priority because of some
      PTHREAD_PRIO_PROTECT mutexes it holds, adjust the priority.  */
@@ -60,7 +60,7 @@ pthread_setschedprio (threadid, prio)
       pd->flags |= ATTR_FLAG_SCHED_SET;
     }
 
-  lll_unlock (pd->lock, LLL_PRIVATE);
+  pthread_log_lll_unlock (&pd->lock, LLL_PRIVATE);
 
   return result;
 }
