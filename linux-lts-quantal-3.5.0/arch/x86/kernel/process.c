@@ -764,7 +764,7 @@ unsigned long arch_align_stack(unsigned long sp)
 		} else if (current->replay_thrd) {
 			rand = replay_randomness();
 		}
-		sp -= get_random_int() % 8192;
+		sp -= rand % 8192;
 	}
 	/* End REPLAY */
 	return sp & ~0xf;
