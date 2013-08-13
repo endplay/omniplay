@@ -59,10 +59,6 @@ struct rvalues {
 	long val[REPLAY_MAX_RANDOM_VALUES];
 };
 
-struct waitpid_retvals {
-	int status;
-};
-
 struct gettimeofday_retvals {
 	short           has_tv;
 	short           has_tz;
@@ -183,9 +179,8 @@ struct sem_retvals {
 
 // retvals for shmat, since we need to save additional information
 struct shmat_retvals {
-	struct ipc_retvals ipc_rv;
-	u_long addr;
-	int size;
+	int    call;
+	u_long size;
 };
 
 struct set_thread_area_retvals {
@@ -370,7 +365,7 @@ int main (int argc, char* argv[])
 			if (psr.retparams) {
 				switch (psr.sysnum) {
 				case 3: size = psr.retval; break;
-				case 7: size = sizeof(struct waitpid_retvals); break;
+				case 7: size = sizeof(int); break;
 				case 11: size = sizeof(struct rvalues); break;
 				case 18: size = sizeof(struct __old_kernel_stat); break;
 				case 28: size = sizeof(struct __old_kernel_stat); break;
@@ -395,16 +390,6 @@ int main (int argc, char* argv[])
 				case 99: size = sizeof(struct statfs); break;
 				case 100: size = sizeof(struct statfs); break;
 				case 102: {
-					// peel off atomic_t refcnt and int all from retvals structs
-					atomic_t atom;
-					rc = read (fd, &atom, sizeof(atomic_t));
-					if (rc != sizeof(atomic_t)) {
-						printf ("cannot read refcnt value\n");
-						return rc;
-					}
-					if (stats) {
-						bytes[psr.sysnum] += sizeof(atomic_t);
-					}
 					rc = read (fd, &call, sizeof(int));
 					if (rc != sizeof(int)) {
 						printf ("cannot read call value\n");
@@ -414,6 +399,17 @@ int main (int argc, char* argv[])
 						bytes[psr.sysnum] += sizeof(int);
 					}
 					printf ("\tsocketcall %d\n", call);
+					if (call < 1 || call > SYS_SENDMSG) {
+						int i;
+						printf ("In hex %08x\n", call);
+						for (i = 0; i < 20; i++) {
+							rc = read (fd, &call, sizeof(int));
+							if (rc == sizeof(int)) {
+								printf ("Next bytes after error %08x\n", call);
+							}
+						}
+						exit (1);
+					}
 					// socketcall retvals specific
 					switch (call) {
 					case SYS_ACCEPT: 
@@ -467,36 +463,7 @@ int main (int argc, char* argv[])
 				case 104: size = sizeof(struct itimerval); break;
 				case 114: size = sizeof(struct wait4_retvals); break;
 				case 116: size = sizeof(struct sysinfo); break;
-				case 117:
-				{
-					// peel off ipc_retvals
-					struct ipc_retvals ipc_rv;
-					rc = read (fd, &ipc_rv, sizeof(struct ipc_retvals));
-					if (rc != sizeof(struct ipc_retvals)) {
-						printf ("cannot read ipc_retvals\n");
-						return rc;
-					}
-					if (stats) {
-						bytes[psr.sysnum] += sizeof(struct ipc_retvals);
-					}
-					ipc_call = ipc_rv.call;
-					//printf ("ipc call is %d\n", ipc_call);
-					// ipc call specific retvals
-					switch (ipc_rv.call) {
-						case SHMAT:
-							size = sizeof(struct shmat_retvals) - sizeof(struct ipc_retvals);
-							break;
-						case SEMCTL:
-						case SEMOP:
-						case SEMTIMEDOP:
-							size = sizeof(struct sem_retvals) - sizeof(struct ipc_retvals);
-							break;
-						default:
-							size = 0;
-					}
-					//printf ("ipc call size %d\n", size);
-					break;
-				}
+				case 117: size = sizeof(struct shmat_retvals); break;
 				case 122: size = sizeof(struct new_utsname); break;
 				case 126: size = sizeof(unsigned long); break; // old_sigset_t - def in asm/signal.h but cannot include
 				case 140: size = sizeof(loff_t); break;
@@ -564,12 +531,10 @@ int main (int argc, char* argv[])
 				case 230: size = (psr.retval > 0) ? psr.retval : 0; break;
 				case 239: size = sizeof(struct sendfile64_retvals); break;
 				case 242: size = sizeof(cpu_set_t); break;
-				case 243: size = sizeof(struct set_thread_area_retvals); break;
 				case 256: size = sizeof(struct epoll_wait_retvals) + ((psr.retval)-1)*sizeof(struct epoll_event); break;
 				case 265: size = sizeof(struct timespec); break;
 				case 266: size = sizeof(struct timespec); break;
-				//case 268: size = sizeof(struct statfs64); break; 
-				case 268: size = 84; break; 
+				case 268: size = 84; break; /* statfs 64 */
 				case 300: size = sizeof(struct stat64); break;
 			        case 340: size = sizeof(struct rlimit64); break;
 				default: 
@@ -607,6 +572,10 @@ int main (int argc, char* argv[])
 					struct gettimeofday_retvals* gttd = (struct gettimeofday_retvals*) buf;
 					printf ("gettimeofday has_tv %d, has_tz %d, tv_sec %ld, tv_usec %ld\n", 
 							gttd->has_tv, gttd->has_tz, gttd->tv.tv_sec, gttd->tv.tv_usec);
+				}
+
+				if (psr.sysnum == 42) {
+					printf ("pipe returns (%d,%d)\n", *buf, *(buf+4));
 				}
 
 				if (psr.sysnum == 142) {
