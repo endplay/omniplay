@@ -503,24 +503,13 @@ struct recvfrom_retvals {
 	char buf;  // Variable length buffer follows 
 };
 
-/* XXX- recvmsg_retvals should save whole data structures
-	that are pointed by the fields in struct msghdr,
-	but for simplicity, assume and check
-	msg_namelen <= 32
-	msg_iovlen <= 1
-	msg_controllen <= 32
-*/
-#define SIMPLE_MSGHDR_SIZE 32
 struct recvmsg_retvals {
-	int call;
-	char msg_name[SIMPLE_MSGHDR_SIZE];	//assume <=32
-	int msg_namelen;
-	char msg_control[SIMPLE_MSGHDR_SIZE];	//assume <=32
-	int msg_controllen;
+	int          call;
+	int          msg_namelen;
+	long         msg_controllen;
 	unsigned int msg_flags;
-	int iov_len;
-	char iov_base;  			// Variable length buffer follows 
 };
+// Followed by msg_namelen bytes of msg_name, msg_controllen bytes of msg_control and rc of data
 
 struct getsockopt_retvals {
 	int call;
@@ -2872,6 +2861,17 @@ asmlinkage long sys_pthread_sysign (void)
 		return rc;						\
 	}								
 
+#define SIMPLE_RECORD2(name, sysnum, arg0type, arg0name, arg1type, arg1name)	\
+	static asmlinkage long						\
+	record_##name (arg0type arg0name, arg1type arg1name)		\
+	{								\
+		long rc;						\
+		new_syscall_enter (sysnum, NULL);			\
+		rc = sys_##name(arg0name, arg1name);			\
+		new_syscall_exit (sysnum, rc, NULL);			\
+		return rc;						\
+	}								
+
 #define SIMPLE_REPLAY(name, sysnum, args...)		\
   static asmlinkage long				\
   replay_##name (args)					\
@@ -3390,42 +3390,12 @@ RET1_REPLAY(waitpid, 7, int, stat_addr, pid_t pid, int __user *stat_addr, int op
 
 asmlinkage long shim_waitpid (pid_t pid, int __user *stat_addr, int options) SHIM_CALL(waitpid, 7, pid, stat_addr, options);
 
-static asmlinkage long 
-record_creat(const char __user * pathname, int mode)
-{
-	long rc;
-
-	new_syscall_enter (8, NULL);
-
-	rc = sys_creat (pathname, mode);
-	DPRINT ("Pid %d records creat returning %ld\n", current->pid, rc);
-
-	new_syscall_exit (8, rc, NULL);
-
-	return rc;
-}
-
+SIMPLE_RECORD2(creat, 8, const char __user *, pathname, int, mode);
 SIMPLE_REPLAY(creat, 8, const char __user * pathname, int mode);
-
 asmlinkage long shim_creat(const char __user * pathname, int mode) SHIM_CALL(creat, 8, pathname, mode);
 
-static asmlinkage long 
-record_link (const char __user *oldname, const char __user *newname)
-{
-	long rc;
-
-	new_syscall_enter (9, NULL);
-
-	rc = sys_link (oldname, newname);
-	DPRINT ("Pid %d records link returning %ld\n", current->pid, rc);
-
-	new_syscall_exit (9, rc, NULL);
-
-	return rc;
-}
-
+SIMPLE_RECORD2(link, 9, const char __user *, oldname, const char __user *, newname);
 SIMPLE_REPLAY(link, 9, const char __user *oldname, const char __user *newname);
-
 asmlinkage long shim_link (const char __user *oldname, const char __user *newname) SHIM_CALL(link, 9, oldname, newname);
 
 SIMPLE_RECORD1(unlink, 10, const char __user *, pathname);
@@ -3605,23 +3575,8 @@ SIMPLE_REPLAY (mknod, 14, const char __user *filename, int mode, unsigned dev);
 
 asmlinkage long shim_mknod (const char __user *filename, int mode, unsigned dev) SHIM_CALL(mknod, 14, filename, mode, dev);
 
-static asmlinkage long 
-record_chmod (const char __user *filename, mode_t mode)
-{
-	long rc;
-
-	new_syscall_enter (15, NULL);
-
-	rc = sys_chmod (filename, mode);
-	DPRINT ("Pid %d records chmod returning %ld\n", current->pid, rc);
-
-	new_syscall_exit (15, rc, NULL); 
-
-	return rc;
-}
-
+SIMPLE_RECORD2(chmod, 15, const char __user *, filename, mode_t,  mode);
 SIMPLE_REPLAY(chmod, 15, const char __user *filename, mode_t mode);
-
 asmlinkage long shim_chmod (const char __user *filename, mode_t mode) SHIM_CALL(chmod, 15, filename, mode);
 
 static asmlinkage long 
@@ -3847,45 +3802,14 @@ asmlinkage long shim_fstat (unsigned int fd, struct __old_kernel_stat __user * s
 
 SIMPLE_RECORD0(pause, 29);
 SIMPLE_REPLAY(pause, 29, void);
-
 asmlinkage long shim_pause (void) SHIM_CALL (pause, 29);
 
-static asmlinkage long 
-record_utime (char __user *filename, struct utimbuf __user *times)
-{
-	long rc;
-
-	new_syscall_enter (30, NULL);
-
-	rc = sys_utime (filename, times);
-	DPRINT ("Pid %d records utime returning %ld\n", current->pid, rc);
-
-	new_syscall_exit (30, rc, NULL);
-
-	return rc;
-}
-
+SIMPLE_RECORD2(utime, 30, char __user *, filename, struct utimbuf __user *, times);
 SIMPLE_REPLAY(utime, 30, char __user *filename, struct utimbuf __user *times);
-
 asmlinkage long shim_utime (char __user *filename, struct utimbuf __user *times) SHIM_CALL (utime, 30, filename, times);
 
-static asmlinkage long 
-record_access (const char __user *filename, int mode)
-{
-	long rc;
-
-	new_syscall_enter (33, NULL);
-
-	rc = sys_access (filename, mode);
-	DPRINT ("Pid %d records access returning %ld\n", current->pid, rc);
-
-	new_syscall_exit (33, rc, NULL);
-
-	return rc;
-}
-
+SIMPLE_RECORD2(access, 33, const char __user *, filename, int, mode);
 SIMPLE_REPLAY(access, 33, const char __user *filename, int mode);
-
 asmlinkage long shim_access (const char __user *filename, int mode) SHIM_CALL(access, 33, filename, mode);
 
 SIMPLE_RECORD1 (nice, 34, int, increment);
@@ -3896,62 +3820,16 @@ SIMPLE_RECORD0(sync, 36);
 SIMPLE_REPLAY (sync, 36, void);
 asmlinkage long shim_sync (void) SHIM_CALL(sync, 36);
 
-// we need a separate retvals for kill since psr->sigsnt will be overwritten if
-// the signal attached is SIGTERM then recplay_exit_start will automatically overwrite
-// it with the vector clock time of when the child terminated
-static asmlinkage long
-record_kill (int pid, int sig)
-{
-	long rc;
-
-	new_syscall_enter (37, NULL);
-	rc = sys_kill (pid, sig);
-	DPRINT ("Pid %d records kill returning %ld\n", current->pid, rc);
-	new_syscall_exit (37, rc, NULL);
-
-	return rc;
-}
-
+SIMPLE_RECORD2(kill, 37, int, pid, int, sig);
 SIMPLE_REPLAY(kill, 37, int pid, int sig);
-
 asmlinkage long shim_kill (int pid, int sig) SHIM_CALL(kill, 37, pid, sig);
 
-static asmlinkage long 
-record_rename (const char __user *oldname, const char __user *newname)
-{
-	long rc;
-
-	new_syscall_enter (38, NULL);
-
-	rc = sys_rename (oldname, newname);
-	DPRINT ("Pid %d records rename returning %ld\n", current->pid, rc);
-
-	new_syscall_exit (38, rc, NULL);
-
-	return rc;
-}
-
+SIMPLE_RECORD2(rename, 38, const char __user *, oldname, const char __user *, newname);
 SIMPLE_REPLAY(rename, 38, const char __user *oldname, const char __user *newname);
-
 asmlinkage long shim_rename (const char __user *oldname, const char __user *newname) SHIM_CALL(rename, 38, oldname, newname);
 
-static asmlinkage long 
-record_mkdir (const char __user *pathname, int mode)
-{
-	long rc;
-
-	new_syscall_enter (39, NULL);
-
-	rc = sys_mkdir (pathname, mode);
-	DPRINT ("Pid %d records mkdir returning %ld\n", current->pid, rc);
-
-	new_syscall_exit (39, rc, NULL);
-
-	return rc;
-}
-
+SIMPLE_RECORD2(mkdir, 39, const char __user *, pathname, int, mode);
 SIMPLE_REPLAY(mkdir, 39, const char __user *pathname, int mode);
-
 asmlinkage long shim_mkdir (const char __user *pathname, int mode) SHIM_CALL(mkdir, 39, pathname, mode);
 
 SIMPLE_RECORD1(rmdir, 40, const char __user *, pathname);
@@ -4079,23 +3957,9 @@ SIMPLE_RECORD0(getgid16, 47);
 SIMPLE_REPLAY (getgid16, 47, void);
 asmlinkage long shim_getgid16 (void) SHIM_CALL(getgid16, 47);
 
-static asmlinkage long
-record_signal (int sig, __sighandler_t handler)
-{
-	long rc;
 
-	new_syscall_enter (48, NULL);
-
-	rc = sys_signal (sig, handler);
-	DPRINT ("Pid %d records signal returning %ld\n", current->pid, rc);
-
-	new_syscall_exit (48, rc, NULL);
-
-	return rc;
-}	
-
+SIMPLE_RECORD2(signal, 48, int, sig, __sighandler_t, handler);
 SIMPLE_REPLAY(signal, 48, int sig, __sighandler_t handler);
-
 asmlinkage unsigned long shim_signal (int sig, __sighandler_t handler) SHIM_CALL(signal, 48, sig, handler);
 
 SIMPLE_RECORD0(geteuid16, 49);
@@ -4110,23 +3974,8 @@ SIMPLE_RECORD1(acct, 51, char __user *, name)
 SIMPLE_REPLAY(acct, 51, char __user * name)
 asmlinkage long shim_acct (char __user * name) SHIM_CALL(acct, 51, name);
 
-static asmlinkage long 
-record_umount (char __user * name, int flags)
-{
-	long rc;
-
-	new_syscall_enter (52, NULL);
-
-	rc = sys_umount (name, flags);
-	DPRINT ("Pid %d records umount returning %ld\n", current->pid, rc);
-
-	new_syscall_exit (52, rc, NULL);
-
-	return rc;
-}	
-
+SIMPLE_RECORD2(umount, 52, char __user *, name, int, flags);
 SIMPLE_REPLAY(umount, 52, char __user * name, int flags);
-
 asmlinkage long shim_umount (char __user * name, int flags) SHIM_CALL(umount, 52, name, flags);
 
 static asmlinkage long 
@@ -4286,23 +4135,8 @@ replay_fcntl (unsigned int fd, unsigned int cmd, unsigned long arg)
 
 asmlinkage long shim_fcntl (unsigned int fd, unsigned int cmd, unsigned long arg) SHIM_CALL(fcntl, 55, fd, cmd, arg);
 
-static asmlinkage long 
-record_setpgid (pid_t pid, pid_t pgid)
-{
-	long rc;
-
-	new_syscall_enter (57, NULL);
-
-	rc = sys_setpgid (pid, pgid);
-	DPRINT ("Pid %d records setpgid returning %ld\n", current->pid, rc);
-	
-	new_syscall_exit (57, rc, NULL);
-
-	return rc;
-}	
-
+SIMPLE_RECORD2(setpgid, 57, pid_t, pid, pid_t, pgid);
 SIMPLE_REPLAY(setpgid, 57, pid_t pid, pid_t pgid);
-
 asmlinkage long shim_setpgid (pid_t pid, pid_t ppgid) SHIM_CALL(setpgid, 57, pid, ppgid);
 
 static asmlinkage long 
@@ -4375,23 +4209,8 @@ RET1_REPLAY(ustat, 62, struct ustat, ubuf, unsigned dev, struct ustat __user * u
 
 asmlinkage long shim_ustat (unsigned dev, struct ustat __user * ubuf) SHIM_CALL(ustat, 62, dev, ubuf);
 
-static asmlinkage long 
-record_dup2 (unsigned int oldfd, unsigned int newfd)
-{
-	long rc;
-
-	new_syscall_enter (63, NULL);
-
-	rc = sys_dup2 (oldfd, newfd);
-	DPRINT ("Pid %d records dup2 returning %ld\n", current->pid, rc);
-
-	new_syscall_exit (63, rc, NULL);
-
-	return rc;
-}
-
+SIMPLE_RECORD2(dup2, 63, unsigned int, oldfd, unsigned int, newfd);
 SIMPLE_REPLAY(dup2, 63, unsigned int oldfd, unsigned int newfd);
-
 asmlinkage long shim_dup2 (unsigned int oldfd, unsigned int newfd) SHIM_CALL(dup2, 63, oldfd, newfd);
 
 SIMPLE_RECORD0(getppid, 64);
@@ -4417,42 +4236,12 @@ asmlinkage long shim_sgetmask (void) SHIM_CALL(sgetmask, 68);
 
 asmlinkage long shim_ssetmask (int newmask) SHIM_NOOP(ssetmask, newmask)
 
-static asmlinkage long 
-record_setreuid16 (old_uid_t ruid, old_uid_t euid) 
-{
-	long rc;
-
-	new_syscall_enter (70, NULL);
-
-	rc = sys_setreuid (ruid, euid);
-	DPRINT ("Pid %d records setreuid16 returning %ld\n", current->pid, rc);
-	
-	new_syscall_exit (70, rc, NULL);
-
-	return rc;
-}	
-
+SIMPLE_RECORD2(setreuid16, 70, old_uid_t, ruid, old_uid_t, euid);
 SIMPLE_REPLAY(setreuid16, 70, old_uid_t ruid, old_uid_t euid);
-
 asmlinkage long shim_setreuid16 (old_uid_t ruid, old_uid_t euid) SHIM_CALL(setreuid16, 70, ruid, euid);
 
-static asmlinkage long 
-record_setregid16 (old_uid_t rgid, old_uid_t egid) 
-{
-	long rc;
-
-	new_syscall_enter (71, NULL);
-
-	rc = sys_setregid (rgid, egid);
-	DPRINT ("Pid %d records setregid16 returning %ld\n", current->pid, rc);
-	
-	new_syscall_exit (71, rc, NULL);
-
-	return rc;
-}	
-
+SIMPLE_RECORD2(setregid16, 71, old_gid_t, rgid, old_gid_t, egid);
 SIMPLE_REPLAY(setregid16, 71, old_gid_t rgid, old_gid_t egid);
-
 asmlinkage long shim_setregid16 (old_gid_t rgid, old_gid_t egid) SHIM_CALL(setregid16, 71, rgid, egid);
 
 /* No prototype for sys_sigsuspend */
@@ -4491,23 +4280,8 @@ RET1_REPLAY(sigpending, 72, old_sigset_t, set, old_sigset_t __user * set);
 
 asmlinkage long shim_sigpending (old_sigset_t __user *set) SHIM_CALL(sigpending, 73, set);
 
-static asmlinkage long 
-record_sethostname (char __user *name, int len)
-{
-	long rc;
-
-	new_syscall_enter (74, NULL);
-
-	rc = sys_sethostname (name, len);
-	DPRINT ("Pid %d records sethostname returning %ld\n", current->pid, rc);
-	
-	new_syscall_exit (74, rc, NULL);
-
-	return rc;
-}	
-
+SIMPLE_RECORD2(sethostname, 74, char __user *, name, int, len);
 SIMPLE_REPLAY(sethostname, 74, char __user *name, int len);
-
 asmlinkage long shim_sethostname (char __user *name, int len) SHIM_CALL(sethostname, 74, name, len)
 
 static asmlinkage long 
@@ -4676,23 +4450,8 @@ asmlinkage long shim_setgroups16 (int gidsetsize, old_gid_t __user *grouplist) S
 
 asmlinkage int shim_old_select (struct sel_arg_struct __user *arg) SHIM_NOOP(old_select, arg);
 
-static asmlinkage long 
-record_symlink (const char __user *oldname, const char __user *newname)
-{
-	long rc;
-
-	new_syscall_enter (83, NULL);
-
-	rc = sys_symlink (oldname, newname);
-	DPRINT ("Pid %d records symlink returning %ld\n", current->pid, rc);
-
-	new_syscall_exit (83, rc, NULL);
-
-	return rc;
-}
-
+SIMPLE_RECORD2(symlink, 83, const char __user *, oldname, const char __user *, newname);
 SIMPLE_REPLAY(symlink, 83, const char __user *oldname, const char __user *newname);
-
 asmlinkage long shim_symlink (const char __user *oldname, const char __user *newname) SHIM_CALL(symlink, 83, oldname, newname);
 
 asmlinkage long shim_lstat (char __user * filename, struct __old_kernel_stat __user * statbuf) SHIM_NOOP(lstat, filename, statbuf);
@@ -4782,61 +4541,18 @@ asmlinkage long shim_munmap (unsigned long addr, size_t len) SHIM_CALL(munmap, 9
 
 asmlinkage long shim_truncate (const char __user * path, unsigned long length) SHIM_NOOP(truncate, path, length);
 
-static asmlinkage long 
-record_ftruncate (unsigned int fd, unsigned long length)
-{
-	long rc;
-
-	new_syscall_enter (93, NULL);
-	rc = sys_ftruncate (fd, length);
-	new_syscall_exit (93, rc, NULL);
-	DPRINT ("Pid %d records ftruncate returning %ld\n", current->pid, rc);
-
-	return rc;
-}
-
+SIMPLE_RECORD2(ftruncate, 93, unsigned int, fd, unsigned long, length);
 SIMPLE_REPLAY(ftruncate, 93, unsigned int fd, unsigned long length);
-
 asmlinkage long shim_ftruncate (unsigned int fd, unsigned long length) SHIM_CALL(ftruncate, 93, fd, length);
 
-static asmlinkage long 
-record_fchmod (unsigned int fd, mode_t mode)
-{
-	long rc;
-
-	new_syscall_enter (94, NULL);
-
-	rc = sys_fchmod (fd, mode);
-	MPRINT ("Pid %d record_fchmod rc %ld\n", current->pid, rc);
-
-	new_syscall_exit (94, rc, NULL);
-
-	return rc;
-}
-
+SIMPLE_RECORD2(fchmod, 94, unsigned int, fd, mode_t, mode);
 SIMPLE_REPLAY(fchmod, 94, unsigned int fd, mode_t mode);
-
 asmlinkage long shim_fchmod (unsigned int fd, mode_t mode) SHIM_CALL(fchmod, 94, fd, mode);
 
 asmlinkage long shim_fchown16 (unsigned int fd, old_uid_t user, old_gid_t group) SHIM_NOOP(fchown16, fd, user, group);
 
-static asmlinkage long 
-record_getpriority (int which, int who)
-{
-	long rc;
-
-	new_syscall_enter (96, NULL);
-
-	rc = sys_getpriority (which, who);
-	MPRINT ("Pid %d records getpriority rc %ld\n", current->pid, rc);
-
-	new_syscall_exit (96, rc, NULL);
-
-	return rc;
-}
-
+SIMPLE_RECORD2(getpriority, 96, int, which, int, who);
 SIMPLE_REPLAY(getpriority, 96, int which, int who);
-
 asmlinkage long shim_getpriority(int which, int who) SHIM_CALL(getpriority, 96, which, who);
 
 static asmlinkage long 
@@ -5255,48 +4971,59 @@ record_socketcall(int call, unsigned long __user *args)
 	case SYS_RECVMSG:
 	{
 		struct recvmsg_retvals* pretvals = NULL;
+		struct msghdr __user *pmsghdr = (struct msghdr __user *) a[1];
+		char* pdata;
+		long iovlen, rem_size, to_copy, i;
+
 		if (rc >= 0) {
-			struct msghdr *pmsghdr = (struct msghdr *) a[1];
 
-			// check 
-			if(pmsghdr->msg_namelen > SIMPLE_MSGHDR_SIZE || pmsghdr->msg_controllen > SIMPLE_MSGHDR_SIZE || pmsghdr->msg_iovlen > 1) {
-				printk("[ERROR] record_socketcall(recvmsg): can't support recvmsg at this time... \n");
-				return -EFAULT;
-			}
+			DPRINT ("record_socketcall(recvmsg): namelen: %d, controllen %ld iov_len %d rc %ld\n", pmsghdr->msg_namelen, (long) pmsghdr->msg_controllen, pmsghdr->msg_iovlen, rc);
 
-			// record 
-			pretvals = ARGSKMALLOC(sizeof(struct recvmsg_retvals)+rc-1, GFP_KERNEL);
+			pretvals = ARGSKMALLOC(sizeof(struct recvmsg_retvals) + pmsghdr->msg_namelen + pmsghdr->msg_controllen + rc, GFP_KERNEL);
 			if (pretvals == NULL) {
 				printk("record_socketcall(recvmsg): can't allocate buffer\n");
 				return -ENOMEM;
 			}
-			if (copy_from_user (&pretvals->msg_name, (char *) pmsghdr->msg_name, pmsghdr->msg_namelen)) {
-				printk("record_socketcall(recvmsg): can't copy msg_name of size %d\n", pmsghdr->msg_namelen);
-				ARGSKFREE (pretvals, sizeof(struct recvmsg_retvals)+rc-1);
-				return -EFAULT;
-			}
-			pretvals->msg_namelen = pmsghdr->msg_namelen;
-			
-			if (copy_from_user (&pretvals->msg_control, (char *) pmsghdr->msg_control, pmsghdr->msg_controllen)) {
-				printk("record_socketcall(recvmsg): can't copy msg_control of size %d\n", pmsghdr->msg_controllen);
-				ARGSKFREE (pretvals, sizeof(struct recvmsg_retvals)+rc-1);
-				return -EFAULT;
-			}
-			pretvals->msg_controllen = pmsghdr->msg_controllen;
-
-			if (copy_from_user (&pretvals->msg_flags, (char *) &pmsghdr->msg_flags, sizeof(unsigned int))) {
-				printk("record_socketcall(recvmsg): can't copy msg_flags of size %d\n", sizeof(unsigned int));
-				ARGSKFREE (pretvals, sizeof(struct recvmsg_retvals)+rc-1);
-				return -EFAULT;
-			}
-
-			if (copy_from_user (&pretvals->iov_base, (char *) pmsghdr->msg_iov[0].iov_base, rc)) {
-				printk("record_socketcall(recvfrom): can't copy msg_iov of size %ld\n", rc);
-				ARGSKFREE (pretvals, sizeof(struct recvmsg_retvals)+rc-1);
-				return -EFAULT;
-			}
-			pretvals->iov_len = pmsghdr->msg_iov[0].iov_len;
 			pretvals->call = call;
+			get_user (pretvals->msg_namelen, &pmsghdr->msg_namelen);
+			get_user (pretvals->msg_controllen, &pmsghdr->msg_controllen);
+			get_user (pretvals->msg_flags, &pmsghdr->msg_flags);
+
+			pdata = ((char *) pretvals) + sizeof (struct recvmsg_retvals);
+
+			if (pretvals->msg_namelen) {
+				if (copy_from_user (pdata, pmsghdr->msg_name, pretvals->msg_namelen)) {
+					printk("record_socketcall(recvmsg): can't copy msg_name of size %d\n", pretvals->msg_namelen);
+					ARGSKFREE (pretvals, sizeof(struct recvmsg_retvals) + pmsghdr->msg_namelen + pmsghdr->msg_controllen + rc);
+					return -EFAULT;
+				}
+				pdata += pmsghdr->msg_namelen;
+			}
+			if (pmsghdr->msg_controllen) {
+				if (copy_from_user (pdata, pmsghdr->msg_control, pretvals->msg_controllen)) {
+					printk("record_socketcall(recvmsg): can't copy msg_control of size %ld\n", pretvals->msg_controllen);
+					ARGSKFREE (pretvals, sizeof(struct recvmsg_retvals) + pmsghdr->msg_namelen + pmsghdr->msg_controllen + rc);
+					return -EFAULT;
+				}
+				pdata += pmsghdr->msg_controllen;
+			}
+			
+			get_user (iovlen, &pmsghdr->msg_iovlen);
+			rem_size = rc;
+			for (i = 0; i < iovlen; i++) {
+				get_user(to_copy, &pmsghdr->msg_iov[i].iov_len);
+				if (rem_size < to_copy) to_copy = rem_size;
+
+				if (copy_from_user (pdata, pmsghdr->msg_iov[i].iov_base, to_copy)) {
+					printk ("Pid %d record_readv copy_from_user of data failed\n", current->pid);
+					ARGSKFREE (pretvals, sizeof(struct recvmsg_retvals) + pmsghdr->msg_namelen + pmsghdr->msg_controllen + rc);
+					return -EFAULT;
+				}
+				pdata += to_copy;
+				rem_size -= to_copy;
+				if (rem_size == 0) break;
+			}
+			if (rem_size != 0) printk ("record_socketcall(recvmsg): %ld bytes of data remain???\n", rem_size);
 		}
 
 		new_syscall_exit (102, rc, pretvals);
@@ -5457,32 +5184,58 @@ replay_socketcall (int call, unsigned long __user *args)
 			}
 		}
 		return rc;
-	case SYS_RECVMSG:
-		if (rc >= 0) {
-			struct recvmsg_retvals* retvals = (struct recvmsg_retvals *) retparams;
-			struct msghdr *msg = (struct msghdr *)args[1];
+	case SYS_RECVMSG: {
+		struct recvmsg_retvals* retvals = (struct recvmsg_retvals *) retparams;
+		char* pdata = ((char *) retvals) + sizeof (struct recvmsg_retvals);
+		struct msghdr *msg = (struct msghdr __user *) args[1];
+		long rem_size, to_copy, i, iovlen;
+
+		if (retparams) {
 			if (retvals == NULL) {
 				printk ("[DIFF]replay_socketcall(recvmsg): no return parameters\n");
 				goto error;
 			}
+			put_user (retvals->msg_controllen, &msg->msg_controllen); // This is a in-out parameter
+			put_user (retvals->msg_flags, &msg->msg_flags);           // Out parameter
 
-			if (copy_to_user ((char *) msg->msg_name, &retvals->msg_name, retvals->msg_namelen)) {
-				printk ("Pid %d cannot copy msg_name to user\n", current->pid);
+			if (retvals->msg_namelen) {
+				if (copy_to_user ((char *) msg->msg_name, pdata, retvals->msg_namelen)) {
+					printk ("Pid %d cannot copy msg_name to user\n", current->pid);
+					syscall_mismatch();
+				}
+				pdata += retvals->msg_namelen;
 			}
 
-			if (copy_to_user ((char *) msg->msg_control, &retvals->msg_control, retvals->msg_controllen)) {
-				printk ("Pid %d cannot copy msg_name to user\n", current->pid);
+			if (retvals->msg_controllen) {
+				if (copy_to_user ((char *) msg->msg_control, pdata, retvals->msg_controllen)) {
+					printk ("Pid %d cannot copy msg_name to user\n", current->pid);
+					syscall_mismatch();
+				}
+				pdata += retvals->msg_controllen;
 			}
 
-			if (copy_to_user ((char *) &msg->msg_flags, &retvals->msg_flags, sizeof(unsigned int))) {
-				printk ("Pid %d cannot copy msg_name to user\n", current->pid);
+			get_user (iovlen, &msg->msg_iovlen);
+			rem_size = rc;
+			for (i = 0; i < iovlen; i++) {
+				get_user (to_copy, &msg->msg_iov[i].iov_len);
+				if (rem_size < to_copy) to_copy = rem_size;
+
+				if (copy_to_user (msg->msg_iov[i].iov_base, pdata, to_copy)) {
+					printk ("Pid %d replay_readv copy_to_user of data failed\n", current->pid);
+					syscall_mismatch();
+				}
+				pdata += to_copy;
+				rem_size -= to_copy;
+				if (rem_size == 0) break;
 			}
 
-			if (copy_to_user ((char *) msg->msg_iov[0].iov_base, &retvals->iov_base, rc)) {
-				printk ("Pid %d cannot copy msg_name to user\n", current->pid);
+			if (rem_size != 0) {
+				printk ("replay_socketcall(recvmsg): %ld bytes remaining\n", rem_size);
+				syscall_mismatch();
 			}
 		}
 		return rc;
+	}
 	case SYS_GETSOCKOPT:
 		if (rc >= 0) {
 			struct getsockopt_retvals* retvals = (struct getsockopt_retvals *) retparams;
@@ -6070,7 +5823,6 @@ record_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 	new_syscall_enter (120, NULL);
 
 	if (!(clone_flags&CLONE_VM)) {
-		printk ("This is a fork-style clone - reset the user log appropriately\n");
 		/* The intent here is to change the next pointer for the child - the easiest way to do this is to change
 		   the parent, fork, and then revert the parent */
 		phead = (struct pthread_log_head __user *) current->record_thrd->rp_user_log_addr;
@@ -6080,7 +5832,7 @@ record_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 	}
 
 	rc = do_fork(clone_flags, stack_start, regs, stack_size, parent_tidptr, child_tidptr);
-	printk ("Pid %d records clone with flags %lx returning %ld\n", current->pid, clone_flags, rc);
+	printk ("Pid %d records clone with flags %lx fork %d returning %ld\n", current->pid, clone_flags, (clone_flags&CLONE_VM) ? 1 : 0, rc);
 
 	rg_lock(prg);
 	new_syscall_exit (120, rc, NULL);
@@ -6625,23 +6377,8 @@ replay_select (int n, fd_set __user *inp, fd_set __user *outp, fd_set __user *ex
 
 asmlinkage long shim_select (int n, fd_set __user *inp, fd_set __user *outp, fd_set __user *exp, struct timeval __user *tvp) SHIM_CALL(select, 142, n, inp, outp, exp, tvp);
 
-static asmlinkage long
-record_flock (unsigned int fd, unsigned int cmd)
-{
-	long rc;
-
-	new_syscall_enter (143, NULL);
-
-	rc = sys_flock (fd, cmd);
-	DPRINT ("Pid %d records flock(%d, %d) returning %ld\n", current->pid, fd, cmd, rc);
-
-	new_syscall_exit (143, rc, NULL);
-
-	return rc;
-}
-
+SIMPLE_RECORD2 (flock, 143, unsigned int, fd, unsigned int, cmd);
 SIMPLE_REPLAY (flock, 143, unsigned int fd, unsigned int cmd);
-
 asmlinkage long shim_flock (unsigned int fd, unsigned int cmd) SHIM_CALL(flock, 143, fd, cmd);
 
 asmlinkage long shim_msync (unsigned long start, size_t len, int flags) SHIM_NOOP(msync, start, len, flags);
@@ -6789,23 +6526,8 @@ asmlinkage long shim_mlockall (int flags) SHIM_NOOP(mlockall, flags);
 
 asmlinkage long shim_munlockall (void) SHIM_NOOP(munlockall);
 
-static asmlinkage long 
-record_sched_setparam (pid_t pid, struct sched_param __user *param)
-{
-	long rc;
-
-	new_syscall_enter (154, NULL);
-
-	rc = sys_sched_setparam (pid, param);
-	DPRINT ("Pid %d records sched_setparam returning %ld\n", current->pid, rc);
-	
-	new_syscall_exit (154, rc, NULL);
-
-	return rc;
-}	
-
+SIMPLE_RECORD2(sched_setparam, 154, pid_t, pid, struct sched_param __user *, param);
 SIMPLE_REPLAY(sched_setparam, 154, pid_t pid, struct sched_param __user *param);
-
 asmlinkage long shim_sched_setparam (pid_t pid, struct sched_param __user *param) SHIM_CALL(sched_setparam, 154, pid, param);
 
 static asmlinkage long 
@@ -7402,22 +7124,8 @@ asmlinkage long shim_rt_sigtimedwait (const sigset_t __user *uthese, siginfo_t _
 
 asmlinkage long shim_rt_sigqueueinfo (int pid, int sig, siginfo_t __user *uinfo) SHIM_NOOP(rt_sigqueueinfo, pid, sig, uinfo);
 
-static asmlinkage long 
-record_rt_sigsuspend (sigset_t __user *unewset, size_t sigsetsize) 
-{
-	long rc;
-
-	new_syscall_enter (179, NULL);
-	rc = sys_rt_sigsuspend (unewset, sigsetsize);
-	new_syscall_exit (179, rc, NULL);
-	DPRINT ("Pid %d records rt_sigsuspend returning %ld\n", current->pid, rc);
-
-	return rc;
-}
-
-// No need to suspend, I think, since we are faking the signal
+SIMPLE_RECORD2(rt_sigsuspend, 179, sigset_t __user *, unewset, size_t, sigsetsize);
 SIMPLE_REPLAY(rt_sigsuspend, 179, sigset_t __user *unewset, size_t sigsetsize);
-
 asmlinkage long shim_rt_sigsuspend (sigset_t __user *unewset, size_t sigsetsize) SHIM_CALL(rt_sigsuspend, 179, unewset, sigsetsize);
 
 static asmlinkage ssize_t 
@@ -7891,20 +7599,8 @@ asmlinkage long shim_mmap_pgoff (unsigned long addr, unsigned long len, unsigned
 
 asmlinkage long shim_truncate64 (const char __user * path, loff_t length) SHIM_NOOP(truncate64, path, length);
 
-static asmlinkage long 
-record_ftruncate64 (unsigned int fd, loff_t length)
-{
-	long rc;
-
-	new_syscall_enter (194, NULL);
-	rc = sys_ftruncate64 (fd, length);
-	new_syscall_exit (194, rc, NULL);
-
-	return rc;
-}
-
+SIMPLE_RECORD2(ftruncate64, 194, unsigned int, fd, loff_t, length);
 SIMPLE_REPLAY(ftruncate64, 194, unsigned int fd, loff_t length);
-
 asmlinkage long shim_ftruncate64 (unsigned int fd, loff_t length) SHIM_CALL(ftruncate64, 194, fd, length);
 
 static asmlinkage long 
@@ -8070,23 +7766,8 @@ replay_getgroups (int gidsetsize, gid_t __user *grouplist)
 
 asmlinkage long shim_getgroups (int gidsetsize, gid_t __user *grouplist) SHIM_CALL(getgroups, 205, gidsetsize, grouplist);
 
-static asmlinkage long
-record_setgroups (int gidsetsize, gid_t __user * grouplist)
-{
-	long rc;
-
-	new_syscall_enter (206, NULL);
-
-	rc = sys_setgroups (gidsetsize, grouplist);
-	DPRINT ("Pid %d records setgroups returning %ld\n", current->pid, rc);
-
-	new_syscall_exit (206, rc, NULL);
-
-	return rc;
-}
-
+SIMPLE_RECORD2(setgroups, 206, int, gidsetsize, gid_t __user *, grouplist);
 SIMPLE_REPLAY(setgroups, 206, int gidsetsize, gid_t __user *grouplist);
-
 asmlinkage long shim_setgroups (int gidsetsize, gid_t __user *grouplist) SHIM_CALL(setgroups, 206, gidsetsize, grouplist);
 
 static asmlinkage long
@@ -8941,21 +8622,8 @@ SIMPLE_REPLAY(tgkill, 270, int tgid, int pid, int sig);
 
 asmlinkage long shim_tgkill(int tgid, int pid, int sig) SHIM_CALL (tgkill, 270, tgid, pid, sig);
 
-static asmlinkage long 
-record_utimes (char __user *filename, struct timeval __user *utimes)
-{
-	long rc;
-
-	new_syscall_enter (271, NULL);
-	rc = sys_utimes (filename, utimes);
-	DPRINT ("Pid %d records utimes returning %ld\n", current->pid, rc);
-	new_syscall_exit (271, rc, NULL);
-
-	return rc;
-}
-
+SIMPLE_RECORD2(utimes, 271, char __user *, filename, struct timeval __user *, utimes);
 SIMPLE_REPLAY(utimes, 271, char __user *filename, struct timeval __user *utimes);
-
 asmlinkage long shim_utimes (char __user *filename, struct timeval __user *utimes) SHIM_CALL (utimes, 271, filename, utimes);
 
 static asmlinkage long
@@ -9129,21 +8797,7 @@ asmlinkage long shim_ppoll (struct pollfd __user *ufds, unsigned int nfds, struc
 
 asmlinkage long shim_unshare (unsigned long unshare_flags) SHIM_NOOP(unshare, unshare_flags);
 
-static asmlinkage long 
-record_set_robust_list (struct robust_list_head __user *head, size_t len)
-{
-	long rc;
-
-	new_syscall_enter (311, NULL);
-
-	DPRINT ("Pid %d records set_robust_list\n", current->pid);
-	rc = sys_set_robust_list (head, len);
-
-	new_syscall_exit (311, rc, NULL);
-
-	return rc;
-}
-
+SIMPLE_RECORD2(set_robust_list, 311, struct robust_list_head __user *, head, size_t, len);
 SIMPLE_REPLAY(set_robust_list, 311, struct robust_list_head __user *head, size_t len);
 
 asmlinkage long shim_set_robust_list (struct robust_list_head __user *head, size_t len) SHIM_CALL(set_robust_list, 311, head, len);
@@ -9197,21 +8851,8 @@ asmlinkage long shim_timerfd_gettime (int ufd, struct itimerspec __user *otmr) S
 
 asmlinkage long shim_signalfd4(int ufd, sigset_t __user *user_mask, size_t sizemask, int flags) SHIM_NOOP(signalfd4, ufd, user_mask, sizemask, flags);
 
-static asmlinkage long 
-record_eventfd2 (unsigned int count, int flags)
-{
-	long rc;
-
-	new_syscall_enter (328, NULL);
-	rc = sys_eventfd2 (count, flags);
-	new_syscall_exit (328, rc, NULL);
-	DPRINT ("Pid %d records eventfd2 returning %ld\n", current->pid, rc);
-
-	return rc;
-}
-
+SIMPLE_RECORD2(eventfd2, 328, unsigned int, count, int, flags);
 SIMPLE_REPLAY(eventfd2, 328, unsigned int count, int flags);
-
 asmlinkage long shim_eventfd2(unsigned int count, int flags) SHIM_CALL(eventfd2, 328, count, flags);
 
 asmlinkage long shim_epoll_create1(int flags) SHIM_NOOP(epoll_create, flags);
@@ -9705,16 +9346,15 @@ int read_log_data_internal (struct record_thread* prect, struct syscall_result* 
 							  case SYS_ACCEPT:
 						          case SYS_ACCEPT4:
 							  case SYS_GETSOCKNAME:
-							  case SYS_GETPEERNAME:
-								  {	
-									  rc = vfs_read(file, (char *)&addrlen, sizeof(int), &peekpos);
-									  if (rc != sizeof(int)) {
-										  printk ("vfs_read cannot read accept value\n");
-										  goto error;
-									  }
-									  size = sizeof(struct accept_retvals) + addrlen;
-									  break;
+							  case SYS_GETPEERNAME: {	
+								  rc = vfs_read(file, (char *)&addrlen, sizeof(int), &peekpos);
+								  if (rc != sizeof(int)) {
+									  printk ("vfs_read cannot read accept value\n");
+									  goto error;
 								  }
+								  size = sizeof(struct accept_retvals) + addrlen;
+								  break;
+							  }
 							  case SYS_SOCKETPAIR:
 								  size = sizeof(struct socketpair_retvals);
 								  break;
@@ -9724,20 +9364,26 @@ int read_log_data_internal (struct record_thread* prect, struct syscall_result* 
 							  case SYS_RECVFROM:
 								  size = sizeof(struct recvfrom_retvals) + psr[cnt].retval-1; 
 								  break;
-							  case SYS_RECVMSG:
-								  size = sizeof(struct recvmsg_retvals) + psr[cnt].retval-1; 
-								  break;
-							  case SYS_GETSOCKOPT:
-								  {
-									  int optlen;
-									  rc = vfs_read(file, (char *)&optlen, sizeof(int), &peekpos);
-									  if (rc != sizeof(int)) {
-										  printk ("vfs_read cannot read accept value\n");
-										  goto error;
-									  }
-									  size = sizeof(struct getsockopt_retvals) + optlen;
-									  break;
+						          case SYS_RECVMSG: {
+								  struct recvmsg_retvals msg;
+								  rc = vfs_read(file, ((char *)&msg)+sizeof(int), sizeof(struct recvmsg_retvals)-sizeof(int), &peekpos);
+								  if (rc != sizeof(struct recvmsg_retvals)-sizeof(int)) {
+									  printk ("vfs_read cannot read recvfrom values\n");
+									  goto error;
 								  }
+								  size = sizeof(struct recvmsg_retvals) + msg.msg_namelen + msg.msg_controllen + psr[cnt].retval; 
+								  break;
+							  }
+							  case SYS_GETSOCKOPT: {
+								  int optlen;
+								  rc = vfs_read(file, (char *)&optlen, sizeof(int), &peekpos);
+								  if (rc != sizeof(int)) {
+									  printk ("vfs_read cannot read accept value\n");
+									  goto error;
+								  }
+								  size = sizeof(struct getsockopt_retvals) + optlen;
+								  break;
+							  }
 							  default:
 								  size = sizeof(struct generic_socket_retvals);
 						  }
@@ -9817,7 +9463,7 @@ int read_log_data_internal (struct record_thread* prect, struct syscall_result* 
 
 				}
 				if (buf == NULL) {
-					printk ("Pid %d cannot allocate log memory, size=%d, sysnum=%d\n", current->pid, size, psr[cnt].sysnum);
+					printk ("Pid %d cannot allocate log memory, logid=%d, count=%d, size=%d, sysnum=%d\n", current->pid, logid, count, size, psr[cnt].sysnum);
 					return -ENOMEM;
 				}
 				rc = vfs_read (file, buf, size, pos);
