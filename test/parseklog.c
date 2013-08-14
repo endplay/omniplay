@@ -103,29 +103,23 @@ struct rt_sigprocmask_args {
 	size_t sigsetsize;
 };
 
-#define atomic_t int
-
 struct generic_socket_retvals {
-	atomic_t refcnt;
 	int call;
 };
 
 struct accept_retvals {
-	atomic_t refcnt;
 	int call;
 	int addrlen;
 	char addr; // Variable length buffer follows
 };
 
 struct socketpair_retvals {
-	atomic_t refcnt;
 	int call;
 	int sv0;
 	int sv1;
 };
 
 struct recvfrom_retvals {
-	atomic_t refcnt;
 	int call;
 	struct sockaddr addr;
 	int addrlen;
@@ -137,31 +131,18 @@ struct getxattr_retvals {
 };
 
 struct sendfile64_retvals {
-	atomic_t refcnt;
 	loff_t offset;
 };
-/* XXX- recvmsg_retvals should save whole data structures
-	that are pointed by the fields in struct msghdr,
-	but for simplicity, assume and check
-	msg_namelen <= 32
-	msg_iovlen <= 1
-	msg_controllen <= 32
-*/
-#define SIMPLE_MSGHDR_SIZE 32
+
 struct recvmsg_retvals {
-	atomic_t refcnt;
-	int call;
-	char msg_name[SIMPLE_MSGHDR_SIZE];	//assume <=32
-	int msg_namelen;
-	char msg_control[SIMPLE_MSGHDR_SIZE];	//assume <=32
-	int msg_controllen;
+	int          call;
+	int          msg_namelen;
+	long         msg_controllen;
 	unsigned int msg_flags;
-	int iov_len;
-	char iov_base;  			// Variable length buffer follows 
 };
+// Followed by msg_namelen bytes of msg_name, msg_controllen bytes of msg_control and rc of data
 
 struct getsockopt_retvals {
-	atomic_t refcnt;
 	int call;
 	int optlen;
 	char optval; // Variable length buffer follows
@@ -203,7 +184,6 @@ u_long bytes[512];
  * 
  */
 struct epoll_wait_retvals {
-	atomic_t refcnt;
 	// struct epoll_event
 	struct epoll_event event;		// Variable length
 };
@@ -399,64 +379,62 @@ int main (int argc, char* argv[])
 						bytes[psr.sysnum] += sizeof(int);
 					}
 					printf ("\tsocketcall %d\n", call);
-					if (call < 1 || call > SYS_SENDMSG) {
-						int i;
-						printf ("In hex %08x\n", call);
-						for (i = 0; i < 20; i++) {
-							rc = read (fd, &call, sizeof(int));
-							if (rc == sizeof(int)) {
-								printf ("Next bytes after error %08x\n", call);
-							}
-						}
-						exit (1);
-					}
 					// socketcall retvals specific
 					switch (call) {
 					case SYS_ACCEPT: 
 					case SYS_GETSOCKNAME:
-					case SYS_GETPEERNAME:
-					{
+					case SYS_GETPEERNAME: {
 						struct accept_retvals avr;
-						rc = read (fd, ((char *) &avr) + sizeof(atomic_t) + sizeof(int), 
-							   sizeof(struct accept_retvals) - sizeof(atomic_t) - sizeof(int));
-						if (rc != sizeof(struct accept_retvals)-sizeof(atomic_t) - sizeof(int)) {
+						rc = read (fd, ((char *) &avr) + sizeof(int), 
+							   sizeof(struct accept_retvals) - sizeof(int));
+						if (rc != sizeof(struct accept_retvals) - sizeof(int)) {
 							printf ("cannot read accept value\n");
 							return rc;
 						}
 						if (stats) {
-							bytes[psr.sysnum] += sizeof(struct accept_retvals) - sizeof(atomic_t) - sizeof(int);
+							bytes[psr.sysnum] += sizeof(struct accept_retvals) - sizeof(int);
 						}
 						size = avr.addrlen; 
 						break;
 					}	
 					case SYS_RECV:
-						size = sizeof(struct recvfrom_retvals) -sizeof(atomic_t) - sizeof(int) + psr.retval; 
+						size = sizeof(struct recvfrom_retvals) - sizeof(int) + psr.retval; 
 						break;
 					case SYS_RECVFROM:
-						size = sizeof(struct recvfrom_retvals) -sizeof(atomic_t) - sizeof(int) + psr.retval-1; 
+						size = sizeof(struct recvfrom_retvals) - sizeof(int) + psr.retval-1; 
 						break;
-					case SYS_RECVMSG:
-						size = sizeof(struct recvmsg_retvals) - sizeof(atomic_t) - sizeof(int) + psr.retval-1; 
+					case SYS_RECVMSG: {
+						struct recvmsg_retvals msg;
+						rc = read(fd, ((char *)&msg) + sizeof(int), sizeof(struct recvmsg_retvals) - sizeof(int));
+						if (rc != sizeof(struct recvmsg_retvals) - sizeof(int)) {
+							printf ("cannot read recvfrom values\n");
+							return rc;
+						}
+						printf ("\trecvmsg: msgnamelen %d msg_controllen %ld msg_flags %x\n", msg.msg_namelen, msg.msg_controllen, msg.msg_flags);
+						if (stats) {
+							bytes[psr.sysnum] += sizeof(struct recvfrom_retvals) - sizeof(int);
+						}
+						size = msg.msg_namelen + msg.msg_controllen + psr.retval; 
 						break;
+					}
 					case SYS_SOCKETPAIR:
-						size = sizeof(struct socketpair_retvals) - sizeof(atomic_t) - sizeof(int);
+						size = sizeof(struct socketpair_retvals) - sizeof(int);
 						break;
-					case SYS_GETSOCKOPT:
-					{
+					case SYS_GETSOCKOPT: {
 						struct getsockopt_retvals sor;
-						rc = read (fd, ((char *) &sor) + sizeof(atomic_t) + sizeof(int),
-								sizeof(struct getsockopt_retvals) - sizeof(atomic_t) - sizeof(int));
-						if (rc != sizeof(struct getsockopt_retvals)-sizeof(atomic_t)-sizeof(int)) {
+						rc = read (fd, ((char *) &sor) + sizeof(int),
+								sizeof(struct getsockopt_retvals) - sizeof(int));
+						if (rc != sizeof(struct getsockopt_retvals)-sizeof(int)) {
 							printf("cannot read getsockopt value\n");
 							return rc;
 						}
 						if (stats) {
-							bytes[psr.sysnum] += sizeof(struct getsockopt_retvals) - sizeof(atomic_t) - sizeof(int);
+							bytes[psr.sysnum] += sizeof(struct getsockopt_retvals) - sizeof(int);
 						}
 						break;
 					}
 					default:
-						size = 0; //sizeof(generic_retvals) - sizeof(atomic_t) - sizeof(int) = 0
+						size = 0; 
 					}
 					break;
 				}
@@ -586,7 +564,6 @@ int main (int argc, char* argv[])
 				if (psr.sysnum == 7) {
 					printf ("status is %d\n", *(buf));
 				}
-				
 			}
 
 			if (psr.signal) {
@@ -636,9 +613,6 @@ int main (int argc, char* argv[])
 					printf ("\tmtime is %lx.%lx\n", ((struct mmap_pgoff_retvals *)buf)->mtime.tv_sec, ((struct mmap_pgoff_retvals *)buf)->mtime.tv_nsec);
 				}
 			}
-			
-			
-			
 		}
 	}
 
