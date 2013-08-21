@@ -6,7 +6,7 @@
 #
 # The abi is always "i386" for this file.
 #
-0	i386	restart_syscall		sys_restart_syscall
+0	i386	restart_syscall		shim_restart_syscall
 1	i386	exit			shim_exit
 2	i386	fork			ptregs_fork			stub32_fork
 3	i386	read			shim_read

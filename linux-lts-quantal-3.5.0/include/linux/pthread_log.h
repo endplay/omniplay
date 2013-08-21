@@ -17,6 +17,8 @@ struct pthread_log_head {
 	int need_fake_calls;
 };
 
+#define FAKE_SYSCALLS               127
+
 #define PTHREAD_LOG_ENTRIES (1024*1024)
 
 #define PTHREAD_LOG_NONE           0

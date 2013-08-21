@@ -41,6 +41,8 @@
 #include <asm/cacheflush.h>
 #include "audit.h"	/* audit_signal_info() */
 
+//#define REP_SIG_DEBUG
+
 /*
  * SLAB caches for signal bits.
  */
@@ -130,6 +132,12 @@ static int recalc_sigpending_tsk(struct task_struct *t)
 	if ((t->jobctl & JOBCTL_PENDING_MASK) ||
 	    PENDING(&t->pending, &t->blocked) ||
 	    PENDING(&t->signal->shared_pending, &t->blocked)) {
+#ifdef REP_SIG_DEBUG
+		if (t->record_thrd || t->replay_thrd) {
+			printk ("recalc_sigpending_tsk sets SIGPENDING for record/replay task %d\n", t->pid);
+			dump_stack();
+		}
+#endif
 		set_tsk_thread_flag(t, TIF_SIGPENDING);
 		return 1;
 	}
@@ -685,6 +693,12 @@ int dequeue_signal(struct task_struct *tsk, sigset_t *mask, siginfo_t *info)
 void signal_wake_up_state(struct task_struct *t, unsigned int state)
 {
 	set_tsk_thread_flag(t, TIF_SIGPENDING);
+#ifdef REP_SIG_DEBUG
+	if (t->record_thrd || t->replay_thrd) {
+		printk ("signal_wake_up_state sets SIGPENDING for record/replay task %d\n", t->pid);
+		dump_stack ();
+	}
+#endif
 	/*
 	 * TASK_WAKEKILL also means wake it up in the stopped/traced/killable
 	 * case. We don't check t->state here because there is a race with it
