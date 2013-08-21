@@ -41,8 +41,7 @@
 static int __pthread_mutex_lock_full (pthread_mutex_t *mutex)
      __attribute_noinline__;
 
-
-static inline int // REPLAY
+int 
 __internal_pthread_mutex_lock (mutex) // REPLAY
      pthread_mutex_t *mutex;
 {
@@ -470,33 +469,6 @@ __pthread_mutex_lock_full (pthread_mutex_t *mutex)
 
   return 0;
 }
-
-/* Begin REPLAY */
-int
-__pthread_mutex_lock (mutex)
-     pthread_mutex_t *mutex;
-{
-  int rc;
-
-  if (is_recording()) {
-    pthread_log_record (0, PTHREAD_MUTEX_LOCK_ENTER, (u_long) mutex, 1); 
-    rc = __internal_pthread_mutex_lock (mutex);
-    pthread_log_record (rc, PTHREAD_MUTEX_LOCK_EXIT, (u_long) mutex, 0); 
-  } else if (is_replaying()) {
-    pthread_log_replay (PTHREAD_MUTEX_LOCK_ENTER, (u_long) mutex); 
-    rc = pthread_log_replay (PTHREAD_MUTEX_LOCK_EXIT, (u_long) mutex); 
-  } else {
-    rc = __internal_pthread_mutex_lock (mutex);
-  }
-  return rc;
-}
-/* End REPLAY */
-
-#ifndef __pthread_mutex_lock
-strong_alias (__pthread_mutex_lock, pthread_mutex_lock)
-strong_alias (__pthread_mutex_lock, __pthread_mutex_lock_internal)
-#endif
-
 
 #ifdef NO_INCR
 void

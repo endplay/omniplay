@@ -106,6 +106,22 @@ libpthread {
 
     pthread_kill_other_threads_np;
 
+    # Special sync op logging for replay
+    pthread_log__sync_add_and_fetch;
+    pthread_log__sync_bool_compare_and_swap;
+    pthread_log__sync_fetch_and_add;
+    pthread_log__sync_fetch_and_sub;
+    pthread_log__sync_lock_test_and_set;
+    pthread_log__sync_sub_and_fetch;
+    pthread_log__sync_val_compare_and_swap;
+
+    pthread_log__sync_add_and_fetch_uint;
+    pthread_log__sync_bool_compare_and_swap_uint;
+    pthread_log__sync_sub_and_fetch_uint;
+
+    pthread_log__sync_add_and_fetch_uint64;
+    pthread_log__sync_sub_and_fetch_uint64;
+
     # The error functions.
     __errno_location; __h_errno_location;
 
@@ -162,7 +178,7 @@ libpthread {
     pthread_attr_getstack; pthread_attr_setstack;
 
     pthread_spin_destroy; pthread_spin_init; pthread_spin_lock;
-    pthread_spin_trylock; pthread_spin_unlock;
+    pthread_spin_trylock; pthread_spin_unlock; 
 
     pthread_barrier_init; pthread_barrier_destroy; pthread_barrier_wait;
     pthread_barrierattr_destroy; pthread_barrierattr_init;
