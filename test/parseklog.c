@@ -162,6 +162,7 @@ struct sem_retvals {
 struct shmat_retvals {
 	int    call;
 	u_long size;
+	u_long raddr;
 };
 
 struct set_thread_area_retvals {
@@ -172,6 +173,11 @@ struct mmap_pgoff_retvals {
 	u_long          dev;
 	u_long          ino;
 	struct timespec mtime; 
+};
+
+struct splice_retvals {
+	loff_t off_in;
+	loff_t off_out;
 };
 
 u_long scount[512];
@@ -504,7 +510,19 @@ int main (int argc, char* argv[])
 				case 209: size = (psr.retval >= 0) ? (sizeof(uid_t)*3) : 0; break;
 				case 211: size = (psr.retval >= 0) ? sizeof(gid_t)*3 : 0; break;
 				case 220: size = psr.retval; break;
-				case 221: size = sizeof(struct flock64); break;
+				case 221: {
+					int val;
+					rc = read (fd, &val, sizeof(int));
+					if (rc != sizeof(int)) {
+						printf ("cannot read fcntl64 value\n");
+						return rc;
+					}
+					if (stats) {
+						bytes[psr.sysnum] += sizeof(int);
+					}
+					size = val - sizeof(int);
+					break;
+				}
 				case 229: size = (psr.retval > 0) ? psr.retval : 0; break;
 				case 230: size = (psr.retval > 0) ? psr.retval : 0; break;
 				case 239: size = sizeof(struct sendfile64_retvals); break;
@@ -513,7 +531,9 @@ int main (int argc, char* argv[])
 				case 265: size = sizeof(struct timespec); break;
 				case 266: size = sizeof(struct timespec); break;
 				case 268: size = 84; break; /* statfs 64 */
+				case 269: size = 84; break; /* statfs 64 */
 				case 300: size = sizeof(struct stat64); break;
+				case 313: size = sizeof(struct splice_retvals); break;
 			        case 340: size = sizeof(struct rlimit64); break;
 				default: 
 					size = 0;
