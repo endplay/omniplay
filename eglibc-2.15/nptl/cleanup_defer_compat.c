@@ -18,7 +18,7 @@
    02111-1307 USA.  */
 
 #include "pthreadP.h"
-
+#include "pthread_log.h"
 
 void
 _pthread_cleanup_push_defer (buffer, routine, arg)
@@ -32,16 +32,33 @@ _pthread_cleanup_push_defer (buffer, routine, arg)
   buffer->__arg = arg;
   buffer->__prev = THREAD_GETMEM (self, cleanup);
 
-  int cancelhandling = THREAD_GETMEM (self, cancelhandling);
+  int cancelhandling;
+  if (is_recording()) {
+    pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling, 1); 
+    cancelhandling = THREAD_GETMEM (self, cancelhandling);
+    pthread_log_record (cancelhandling, PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling, 0); 
+  } else if (is_replaying()) {
+    pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling); 
+    cancelhandling = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling); 
+  } else {
+    cancelhandling = THREAD_GETMEM (self, cancelhandling);
+  }
 
   /* Disable asynchronous cancellation for now.  */
   if (__builtin_expect (cancelhandling & CANCELTYPE_BITMASK, 0))
     while (1)
       {
-	int curval = THREAD_ATOMIC_CMPXCHG_VAL (self, cancelhandling,
-						cancelhandling
-						& ~CANCELTYPE_BITMASK,
-						cancelhandling);
+	int curval;
+	if (is_recording()) {
+	  pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling, 1); 
+	  curval = THREAD_ATOMIC_CMPXCHG_VAL (self, cancelhandling, cancelhandling & ~CANCELTYPE_BITMASK, cancelhandling);
+	  pthread_log_record (curval, PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling, 0); 
+	} else if (is_replaying()) {
+	  pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling); 
+	  curval = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling); 
+	} else {
+	  curval = THREAD_ATOMIC_CMPXCHG_VAL (self, cancelhandling, cancelhandling & ~CANCELTYPE_BITMASK, cancelhandling);
+	}
 	if (__builtin_expect (curval == cancelhandling, 1))
 	  /* Successfully replaced the value.  */
 	  break;
@@ -69,16 +86,31 @@ _pthread_cleanup_pop_restore (buffer, execute)
   THREAD_SETMEM (self, cleanup, buffer->__prev);
 
   int cancelhandling;
-  if (__builtin_expect (buffer->__canceltype != PTHREAD_CANCEL_DEFERRED, 0)
-      && ((cancelhandling = THREAD_GETMEM (self, cancelhandling))
-	  & CANCELTYPE_BITMASK) == 0)
+  if (is_recording()) {
+    pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling, 1); 
+    cancelhandling = THREAD_GETMEM (self, cancelhandling);
+    pthread_log_record (cancelhandling, PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling, 0); 
+  } else if (is_replaying()) {
+    pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling); 
+    cancelhandling = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling); 
+  } else {
+    cancelhandling = THREAD_GETMEM (self, cancelhandling);
+  }
+  if (__builtin_expect (buffer->__canceltype != PTHREAD_CANCEL_DEFERRED, 0) && (cancelhandling & CANCELTYPE_BITMASK) == 0)
     {
       while (1)
 	{
-	  int curval = THREAD_ATOMIC_CMPXCHG_VAL (self, cancelhandling,
-						  cancelhandling
-						  | CANCELTYPE_BITMASK,
-						  cancelhandling);
+	  int curval;
+	  if (is_recording()) {
+	    pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling, 1); 
+	    curval = THREAD_ATOMIC_CMPXCHG_VAL (self, cancelhandling, cancelhandling | CANCELTYPE_BITMASK, cancelhandling);
+	    pthread_log_record (curval, PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling, 0); 
+	  } else if (is_replaying()) {
+	    pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling); 
+	    curval = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling); 
+	  } else {
+	    curval = THREAD_ATOMIC_CMPXCHG_VAL (self, cancelhandling, cancelhandling | CANCELTYPE_BITMASK, cancelhandling);
+	  }
 	  if (__builtin_expect (curval == cancelhandling, 1))
 	    /* Successfully replaced the value.  */
 	    break;

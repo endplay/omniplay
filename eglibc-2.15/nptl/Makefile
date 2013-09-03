@@ -30,7 +30,7 @@ extra-libs-others := $(extra-libs)
 install-lib-ldscripts := libpthread.so
 
 routines = alloca_cutoff forward libc-lowlevellock libc-cancellation \
-	   libc-cleanup
+	   libc-cleanup pthread_log_min
 shared-only-routines = forward
 
 libpthread-routines = nptl-init vars events version \

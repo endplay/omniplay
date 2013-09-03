@@ -975,7 +975,7 @@ static void
 internal_function
 setxid_mark_thread (struct xid_command *cmdp, struct pthread *t)
 {
-  int ch;
+  int ch, b;
 
   /* Wait until this thread is cloned.  */
   if (t->setxid_futex == -1
@@ -989,8 +989,16 @@ setxid_mark_thread (struct xid_command *cmdp, struct pthread *t)
 
   do
     {
-      ch = t->cancelhandling;
-
+      if (is_recording()) {
+	pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &t->cancelhandling, 1); 
+	ch = t->cancelhandling;
+	pthread_log_record (ch, PTHREAD_CANCELHANDLING_EXIT, (u_long) &t->cancelhandling, 0); 
+      } else if (is_replaying()) {
+	pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &t->cancelhandling); 
+	ch = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &t->cancelhandling); 
+      } else {
+	ch = t->cancelhandling;
+      }
       /* If the thread is exiting right now, ignore it.  */
       if ((ch & EXITING_BITMASK) != 0)
 	{
@@ -1003,9 +1011,18 @@ setxid_mark_thread (struct xid_command *cmdp, struct pthread *t)
 	    }
 	  return;
 	}
+      if (is_recording()) {
+	pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &t->cancelhandling, 1); 
+	b = atomic_compare_and_exchange_bool_acq (&t->cancelhandling, ch | SETXID_BITMASK, ch);
+	pthread_log_record (b, PTHREAD_CANCELHANDLING_EXIT, (u_long) &t->cancelhandling, 0); 
+      } else if (is_replaying()) {
+	pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &t->cancelhandling); 
+	b = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &t->cancelhandling); 
+      } else {
+	b = atomic_compare_and_exchange_bool_acq (&t->cancelhandling, ch | SETXID_BITMASK, ch);
+      }
     }
-  while (atomic_compare_and_exchange_bool_acq (&t->cancelhandling,
-					       ch | SETXID_BITMASK, ch));
+  while (b);
 }
 
 
@@ -1013,16 +1030,34 @@ static void
 internal_function
 setxid_unmark_thread (struct xid_command *cmdp, struct pthread *t)
 {
-  int ch;
+  int ch, b;
 
   do
     {
-      ch = t->cancelhandling;
+      if (is_recording()) {
+	pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &t->cancelhandling, 1); 
+	ch = t->cancelhandling;
+	pthread_log_record (ch, PTHREAD_CANCELHANDLING_EXIT, (u_long) &t->cancelhandling, 0); 
+      } else if (is_replaying()) {
+	pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &t->cancelhandling); 
+	ch = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &t->cancelhandling); 
+      } else {
+	ch = t->cancelhandling;
+      }
       if ((ch & SETXID_BITMASK) == 0)
 	return;
+      if (is_recording()) {
+	pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &t->cancelhandling, 1); 
+	b = atomic_compare_and_exchange_bool_acq (&t->cancelhandling, ch & ~SETXID_BITMASK, ch);
+	pthread_log_record (b, PTHREAD_CANCELHANDLING_EXIT, (u_long) &t->cancelhandling, 0); 
+      } else if (is_replaying()) {
+	pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &t->cancelhandling); 
+	b = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &t->cancelhandling); 
+      } else {
+	b = atomic_compare_and_exchange_bool_acq (&t->cancelhandling, ch & ~SETXID_BITMASK, ch);
+      }
     }
-  while (atomic_compare_and_exchange_bool_acq (&t->cancelhandling,
-					       ch & ~SETXID_BITMASK, ch));
+  while (b);
 
   /* Release the futex just in case.  */
   t->setxid_futex = 1;
@@ -1034,7 +1069,18 @@ static int
 internal_function
 setxid_signal_thread (struct xid_command *cmdp, struct pthread *t)
 {
-  if ((t->cancelhandling & SETXID_BITMASK) == 0)
+  int b;
+  if (is_recording()) {
+    pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &t->cancelhandling, 1); 
+    b = ((t->cancelhandling & SETXID_BITMASK) == 0);
+    pthread_log_record (b, PTHREAD_CANCELHANDLING_EXIT, (u_long) &t->cancelhandling, 0); 
+  } else if (is_replaying()) {
+    pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &t->cancelhandling); 
+    b = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &t->cancelhandling); 
+  } else {
+    b = ((t->cancelhandling & SETXID_BITMASK) == 0);
+  }
+  if (b)
     return 0;
 
   int val;

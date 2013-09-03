@@ -25,7 +25,7 @@ endif
 endif
 
 ifeq ($(subdir),rt)
-librt-sysdep_routines += timer_routines librt-cancellation
+librt-sysdep_routines += timer_routines librt-cancellation ../../pthread_log_min
 CFLAGS-librt-cancellation.c += -fexceptions -fasynchronous-unwind-tables
 
 ifeq (yes,$(build-shared))

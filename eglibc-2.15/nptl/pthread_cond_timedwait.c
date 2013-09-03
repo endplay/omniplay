@@ -161,14 +161,14 @@ __internal_pthread_cond_timedwait (cond, mutex, abstime) // REPLAY
       lll_unlock (cond->__data.__lock, pshared);
 
       /* Enable asynchronous cancellation.  Required by the standard.  */
-      cbuffer.oldtype = __pthread_enable_asynccancel ();
+      cbuffer.oldtype = __internal_pthread_enable_asynccancel ();
 
       /* Wait until woken by signal or broadcast.  */
       err = lll_futex_timed_wait (&cond->__data.__futex,
 				  futex_val, &rt, pshared);
 
       /* Disable asynchronous cancellation.  */
-      __pthread_disable_asynccancel (cbuffer.oldtype);
+      __internal_pthread_disable_asynccancel (cbuffer.oldtype);
 
       /* We are going to look at shared data again, so get the lock.  */
       lll_lock (cond->__data.__lock, pshared);

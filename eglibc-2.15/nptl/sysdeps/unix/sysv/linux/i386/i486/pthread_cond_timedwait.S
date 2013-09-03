@@ -173,7 +173,7 @@ __internal_pthread_cond_timedwait:
 	jne	3f
 
 .LcleanupSTART:
-4:	call	__pthread_enable_asynccancel
+4:	call	__internal_pthread_enable_asynccancel
 	movl	%eax, (%esp)
 
 #if FUTEX_PRIVATE_FLAG > 255
@@ -239,7 +239,7 @@ __internal_pthread_cond_timedwait:
 	movl	%eax, %esi
 
 41:	movl	(%esp), %eax
-	call	__pthread_disable_asynccancel
+	call	__internal_pthread_disable_asynccancel
 .LcleanupEND:
 
 	/* Lock.  */

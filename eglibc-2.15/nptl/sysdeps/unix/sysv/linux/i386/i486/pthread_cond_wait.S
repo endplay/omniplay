@@ -118,7 +118,7 @@ __internal_pthread_cond_wait:
 	jne	3f
 
 .LcleanupSTART:
-4:	call	__pthread_enable_asynccancel
+4:	call	__internal_pthread_enable_asynccancel
 	movl	%eax, (%esp)
 
 	xorl	%ecx, %ecx
@@ -175,7 +175,7 @@ __internal_pthread_cond_wait:
 .Lsub_cond_futex:
 
 19:	movl	(%esp), %eax
-	call	__pthread_disable_asynccancel
+	call	__internal_pthread_disable_asynccancel
 .LcleanupEND:
 
 	/* Lock.  */

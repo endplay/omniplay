@@ -66,13 +66,24 @@ pthread_detach (th)
       if (b)
 	result = EINVAL;
     }
-  else
+  else {
     /* Check whether the thread terminated meanwhile.  In this case we
        will just free the TCB.  */
-    if ((pd->cancelhandling & EXITING_BITMASK) != 0)
+    if (is_recording()) {
+      pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &pd->cancelhandling, 1); 
+      b = ((pd->cancelhandling & EXITING_BITMASK) != 0);
+      pthread_log_record (b, PTHREAD_CANCELHANDLING_EXIT, (u_long) &pd->cancelhandling, 0); 
+    } else if (is_replaying()) {
+      pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &pd->cancelhandling); 
+      b = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &pd->cancelhandling); 
+    } else {  
+      b = ((pd->cancelhandling & EXITING_BITMASK) != 0);
+    }
+    if (b)
       /* Note that the code in __free_tcb makes sure each thread
 	 control block is freed only once.  */
       __free_tcb (pd);
+  }
 
   return result;
 }

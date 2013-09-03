@@ -201,8 +201,19 @@ internal_function
 __free_tcb (struct pthread *pd)
 {
   /* The thread is exiting now.  */
-  if (__builtin_expect (atomic_bit_test_set (&pd->cancelhandling,
-					     TERMINATED_BIT) == 0, 1))
+  int b;
+
+  if (is_recording()) {
+    pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &pd->cancelhandling, 1); 
+    b = __builtin_expect (atomic_bit_test_set (&pd->cancelhandling, TERMINATED_BIT) == 0, 1);
+    pthread_log_record (b, PTHREAD_CANCELHANDLING_EXIT, (u_long) &pd->cancelhandling, 0); 
+  } else if (is_replaying()) {
+    pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &pd->cancelhandling); 
+    b = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &pd->cancelhandling); 
+  } else {
+    b = __builtin_expect (atomic_bit_test_set (&pd->cancelhandling, TERMINATED_BIT) == 0, 1);
+  }
+  if (b)
     {
       /* Remove the descriptor from the list.  */
       if (DEBUGGING_P && __find_in_stack_list (pd) == NULL)
@@ -270,7 +281,17 @@ start_thread (void *arg)
   /* If the parent was running cancellation handlers while creating
      the thread the new thread inherited the signal mask.  Reset the
      cancellation signal mask.  */
-  if (__builtin_expect (pd->parent_cancelhandling & CANCELING_BITMASK, 0))
+  if (is_recording()) {
+    pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &pd->cancelhandling, 1); 
+    b = __builtin_expect (pd->parent_cancelhandling & CANCELING_BITMASK, 0);
+    pthread_log_record (b, PTHREAD_CANCELHANDLING_EXIT, (u_long) &pd->cancelhandling, 0); 
+  } else if (is_replaying()) {
+    pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &pd->cancelhandling); 
+    b = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &pd->cancelhandling); 
+  } else {
+    b = __builtin_expect (pd->parent_cancelhandling & CANCELING_BITMASK, 0);
+  }
+  if (b)
     {
       INTERNAL_SYSCALL_DECL (err);
       sigset_t mask;
@@ -361,8 +382,16 @@ start_thread (void *arg)
   /* The thread is exiting now.  Don't set this bit until after we've hit
      the event-reporting breakpoint, so that td_thr_get_info on us while at
      the breakpoint reports TD_THR_RUN state rather than TD_THR_ZOMBIE.  */
-  atomic_bit_set (&pd->cancelhandling, EXITING_BIT);
-
+  if (is_recording()) {
+    pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &pd->cancelhandling, 1); 
+    atomic_bit_set (&pd->cancelhandling, EXITING_BIT);
+    pthread_log_record (0, PTHREAD_CANCELHANDLING_EXIT, (u_long) &pd->cancelhandling, 0); 
+  } else if (is_replaying()) {
+    pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &pd->cancelhandling); 
+    pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &pd->cancelhandling); 
+  } else {
+    atomic_bit_set (&pd->cancelhandling, EXITING_BIT);
+  }
 #ifndef __ASSUME_SET_ROBUST_LIST
   /* If this thread has any robust mutexes locked, handle them now.  */
 # if __WORDSIZE == 64
@@ -421,18 +450,39 @@ start_thread (void *arg)
   if (b)
     /* Free the TCB.  */
     __free_tcb (pd);
-  else if (__builtin_expect (pd->cancelhandling & SETXID_BITMASK, 0))
-    {
-      /* Some other thread might call any of the setXid functions and expect
-	 us to reply.  In this case wait until we did that.  */
-      do
-	lll_futex_wait (&pd->setxid_futex, 0, LLL_PRIVATE);
-      while (pd->cancelhandling & SETXID_BITMASK);
-
-      /* Reset the value so that the stack can be reused.  */
-      pd->setxid_futex = 0;
+  else {
+    if (is_recording()) {
+      pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &pd->cancelhandling, 1); 
+      b = __builtin_expect (pd->cancelhandling & SETXID_BITMASK, 0);
+      pthread_log_record (b, PTHREAD_CANCELHANDLING_EXIT, (u_long) &pd->cancelhandling, 0); 
+    } else if (is_replaying()) {
+      pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &pd->cancelhandling); 
+      b = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &pd->cancelhandling); 
+    } else {
+      b = __builtin_expect (pd->cancelhandling & SETXID_BITMASK, 0);
     }
-
+    if (b) 
+      {
+	/* Some other thread might call any of the setXid functions and expect
+	   us to reply.  In this case wait until we did that.  */
+	do {
+	  lll_futex_wait (&pd->setxid_futex, 0, LLL_PRIVATE);
+	  if (is_recording()) {
+	    pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &pd->cancelhandling, 1); 
+	    b = (pd->cancelhandling & SETXID_BITMASK);
+	    pthread_log_record (b, PTHREAD_CANCELHANDLING_EXIT, (u_long) &pd->cancelhandling, 0); 
+	  } else if (is_replaying()) {
+	    pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &pd->cancelhandling); 
+	    b = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &pd->cancelhandling); 
+	  } else {
+	    b = (pd->cancelhandling & SETXID_BITMASK);
+	  }
+	} while (b);
+	
+	/* Reset the value so that the stack can be reused.  */
+	pd->setxid_futex = 0;
+      }
+  }
   /* We cannot call '_exit' here.  '_exit' will terminate the process.
 
      The 'exit' implementation in the kernel will signal when the

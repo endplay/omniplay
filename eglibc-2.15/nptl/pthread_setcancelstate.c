@@ -34,7 +34,18 @@ __pthread_setcancelstate (state, oldstate)
 
   self = THREAD_SELF;
 
-  int oldval = THREAD_GETMEM (self, cancelhandling);
+  int oldval;
+  if (is_recording()) {
+    pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling, 1); 
+    oldval = THREAD_GETMEM (self, cancelhandling);
+    pthread_log_record (oldval, PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling, 0); 
+  } else if (is_replaying()) {
+    pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling); 
+    oldval = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling); 
+  } else {
+    oldval = THREAD_GETMEM (self, cancelhandling);
+  }
+
   while (1)
     {
       int newval = (state == PTHREAD_CANCEL_DISABLE
@@ -54,8 +65,18 @@ __pthread_setcancelstate (state, oldstate)
 
       /* Update the cancel handling word.  This has to be done
 	 atomically since other bits could be modified as well.  */
-      int curval = THREAD_ATOMIC_CMPXCHG_VAL (self, cancelhandling, newval,
-					      oldval);
+      int curval;
+      if (is_recording()) {
+	pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling, 1); 
+	curval = THREAD_ATOMIC_CMPXCHG_VAL (self, cancelhandling, newval, oldval);
+	pthread_log_record (curval, PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling, 0); 
+      } else if (is_replaying()) {
+	pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling); 
+	curval = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling); 
+      } else {
+	curval = THREAD_ATOMIC_CMPXCHG_VAL (self, cancelhandling, newval, oldval);
+      }
+      
       if (__builtin_expect (curval == oldval, 1))
 	{
 	  if (CANCEL_ENABLED_AND_CANCELED_AND_ASYNCHRONOUS (newval))

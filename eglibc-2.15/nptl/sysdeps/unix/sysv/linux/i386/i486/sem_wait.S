@@ -65,7 +65,7 @@ __new_internal_sem_wait:
 	incl	NWAITERS(%ebx)
 
 .LcleanupSTART:
-6:	call	__pthread_enable_asynccancel
+6:	call	__internal_pthread_enable_asynccancel
 	movl	%eax, (%esp)
 
 #if FUTEX_WAIT == 0
@@ -81,7 +81,7 @@ __new_internal_sem_wait:
 	movl	%eax, %esi
 
 	movl	(%esp), %eax
-	call	__pthread_disable_asynccancel
+	call	__internal_pthread_disable_asynccancel
 .LcleanupEND:
 
 	testl	%esi, %esi
@@ -302,7 +302,7 @@ __old_internal_sem_wait:
 	cfi_adjust_cfa_offset(12)
 	cfi_offset(ebx, -8)
 	cfi_offset(esi, -12)
-1:	call	__pthread_enable_asynccancel
+1:	call	__internal_pthread_enable_asynccancel
 	movl	%eax, (%esp)
 
 	xorl	%esi, %esi
@@ -313,7 +313,7 @@ __old_internal_sem_wait:
 	movl	%eax, %esi
 
 	movl	(%esp), %eax
-	call	__pthread_disable_asynccancel
+	call	__internal_pthread_disable_asynccancel
 
 	testl	%esi, %esi
 	je	3b

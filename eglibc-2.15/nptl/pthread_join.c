@@ -50,7 +50,7 @@ pthread_join (threadid, thread_return)
      void **thread_return;
 {
   struct pthread *pd = (struct pthread *) threadid;
-  int b;
+  int b, pch, sch;
 
   /* Make sure the descriptor is valid.  */
   if (INVALID_NOT_TERMINATED_TD_P (pd))
@@ -87,17 +87,26 @@ pthread_join (threadid, thread_return)
     pthread_log_record (0, PTHREAD_JOINID_ENTER, (u_long) &self->joinid, 1); 
     b = (self->joinid == pd);
     pthread_log_record (b, PTHREAD_JOINID_EXIT, (u_long) &self->joinid, 0); 
+    pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &pd->cancelhandling, 1); 
+    pch = pd->cancelhandling;
+    pthread_log_record (pch, PTHREAD_CANCELHANDLING_EXIT, (u_long) &pd->cancelhandling, 0); 
+    pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling, 1); 
+    sch = self->cancelhandling;
+    pthread_log_record (sch, PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling, 0); 
   } else if (is_replaying()) {
     pthread_log_replay (PTHREAD_JOINID_ENTER, (u_long) &self->joinid); 
     b = pthread_log_replay (PTHREAD_JOINID_EXIT, (u_long) &self->joinid); 
+    pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &pd->cancelhandling); 
+    pch = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &pd->cancelhandling); 
+    pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling); 
+    sch = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling); 
   } else {
     b = (self->joinid == pd);
+    pch = pd->cancelhandling;
+    sch = self->cancelhandling;
   }
-  if ((pd == self
-       || (b && (pd->cancelhandling
-	       & (CANCELING_BITMASK | CANCELED_BITMASK | EXITING_BITMASK
-		  | TERMINATED_BITMASK)) == 0))
-      && !CANCEL_ENABLED_AND_CANCELED (self->cancelhandling))
+  if ((pd == self || (b && (pch & (CANCELING_BITMASK | CANCELED_BITMASK | EXITING_BITMASK | TERMINATED_BITMASK)) == 0))
+      && !CANCEL_ENABLED_AND_CANCELED (sch))
     /* This is a deadlock situation.  The threads are waiting for each
        other to finish.  Note that this is a "may" error.  To be 100%
        sure we catch this error we would have to lock the data

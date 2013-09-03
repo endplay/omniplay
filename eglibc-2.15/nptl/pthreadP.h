@@ -32,7 +32,7 @@
 #include <pthread-functions.h>
 #include <atomic.h>
 #include <kernel-features.h>
-
+#include "pthread_log.h"
 
 /* Atomic operations on TLS memory.  */
 #ifndef THREAD_ATOMIC_CMPXCHG_VAL
@@ -215,7 +215,17 @@ extern int __pthread_debug attribute_hidden;
 /* Cancellation test.  */
 #define CANCELLATION_P(self) \
   do {									      \
-    int cancelhandling = THREAD_GETMEM (self, cancelhandling);		      \
+    int cancelhandling;							\
+    if (is_recording()) {						\
+      pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling, 1); \
+      cancelhandling = THREAD_GETMEM (self, cancelhandling);		\
+      pthread_log_record (cancelhandling, PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling, 0); \
+    } else if (is_replaying()) {					\
+      pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling); \
+      cancelhandling = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling); \
+    } else {								\
+      cancelhandling = THREAD_GETMEM (self, cancelhandling);		\
+    }									\
     if (CANCEL_ENABLED_AND_CANCELED (cancelhandling))			      \
       {									      \
 	THREAD_SETMEM (self, result, PTHREAD_CANCELED);			      \
@@ -260,8 +270,16 @@ __do_cancel (void)
   struct pthread *self = THREAD_SELF;
 
   /* Make sure we get no more cancellations.  */
-  THREAD_ATOMIC_BIT_SET (self, cancelhandling, EXITING_BIT);
-
+  if (is_recording()) {
+    pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling, 1); 
+    THREAD_ATOMIC_BIT_SET (self, cancelhandling, EXITING_BIT);
+    pthread_log_record (0, PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling, 0); 
+  } else if (is_replaying()) {
+    pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling); 
+    pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling); 
+  } else {
+    THREAD_ATOMIC_BIT_SET (self, cancelhandling, EXITING_BIT);
+  }
   __pthread_unwind ((__pthread_unwind_buf_t *)
 		    THREAD_GETMEM (self, cleanup_jmp_buf));
 }
@@ -505,6 +523,9 @@ extern void __pthread_exit (void *value);
 extern int __pthread_setcanceltype (int type, int *oldtype);
 extern int __pthread_enable_asynccancel (void) attribute_hidden;
 extern void __pthread_disable_asynccancel (int oldtype)
+     internal_function attribute_hidden;
+extern int __internal_pthread_enable_asynccancel (void) attribute_hidden;
+extern void __internal_pthread_disable_asynccancel (int oldtype)
      internal_function attribute_hidden;
 
 extern int __pthread_cond_broadcast_2_0 (pthread_cond_2_0_t *cond);

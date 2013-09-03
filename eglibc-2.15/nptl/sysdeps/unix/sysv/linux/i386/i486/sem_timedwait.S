@@ -95,7 +95,7 @@ internal_sem_timedwait:
 	movl	%edx, 4(%esp)
 
 .LcleanupSTART:
-	call	__pthread_enable_asynccancel
+	call	__internal_pthread_enable_asynccancel
 	movl	%eax, 8(%esp)
 
 	movl	28(%esp), %ebx	/* Load semaphore address.  */
@@ -112,7 +112,7 @@ internal_sem_timedwait:
 	movl	%eax, %esi
 
 	movl	8(%esp), %eax
-	call	__pthread_disable_asynccancel
+	call	__internal_pthread_disable_asynccancel
 .LcleanupEND:
 
 	testl	%esi, %esi

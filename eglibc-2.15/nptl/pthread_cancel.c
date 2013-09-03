@@ -41,11 +41,20 @@ pthread_cancel (th)
 #endif
   int result = 0;
   int oldval;
-  int newval;
+  int newval, b;
   do
     {
     again:
-      oldval = pd->cancelhandling;
+      if (is_recording()) {
+	pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &pd->cancelhandling, 1); 
+	oldval = pd->cancelhandling;
+	pthread_log_record (oldval, PTHREAD_CANCELHANDLING_EXIT, (u_long) &pd->cancelhandling, 0); 
+      } else if (is_replaying()) {
+	pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &pd->cancelhandling); 
+	oldval = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &pd->cancelhandling); 
+      } else {
+	oldval = pd->cancelhandling;
+      }
       newval = oldval | CANCELING_BITMASK | CANCELED_BITMASK;
 
       /* Avoid doing unnecessary work.  The atomic operation can
@@ -60,9 +69,17 @@ pthread_cancel (th)
       if (CANCEL_ENABLED_AND_CANCELED_AND_ASYNCHRONOUS (newval))
 	{
 	  /* Mark the cancellation as "in progress".  */
-	  if (atomic_compare_and_exchange_bool_acq (&pd->cancelhandling,
-						    oldval | CANCELING_BITMASK,
-						    oldval))
+	  if (is_recording()) {
+	    pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &pd->cancelhandling, 1); 
+	    b = atomic_compare_and_exchange_bool_acq (&pd->cancelhandling, oldval | CANCELING_BITMASK, oldval);
+	    pthread_log_record (b, PTHREAD_CANCELHANDLING_EXIT, (u_long) &pd->cancelhandling, 0); 
+	  } else if (is_replaying()) {
+	    pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &pd->cancelhandling); 
+	    b = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &pd->cancelhandling); 
+	  } else {
+	    b = atomic_compare_and_exchange_bool_acq (&pd->cancelhandling, oldval | CANCELING_BITMASK, oldval);
+	  }
+	  if (b)
 	    goto again;
 
 	  /* The cancellation handler will take care of marking the
@@ -96,11 +113,20 @@ pthread_cancel (th)
 
 	  break;
 	}
+      if (is_recording()) {
+	pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &pd->cancelhandling, 1); 
+	b = atomic_compare_and_exchange_bool_acq (&pd->cancelhandling, newval, oldval);
+	pthread_log_record (b, PTHREAD_CANCELHANDLING_EXIT, (u_long) &pd->cancelhandling, 0); 
+      } else if (is_replaying()) {
+	pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &pd->cancelhandling); 
+	b = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &pd->cancelhandling); 
+      } else {
+	b = atomic_compare_and_exchange_bool_acq (&pd->cancelhandling, newval, oldval);
+      }
     }
   /* Mark the thread as canceled.  This has to be done
      atomically since other bits could be modified as well.  */
-  while (atomic_compare_and_exchange_bool_acq (&pd->cancelhandling, newval,
-					       oldval));
+  while (b);
 
   return result;
 }

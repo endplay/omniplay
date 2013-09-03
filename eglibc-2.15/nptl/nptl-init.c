@@ -203,7 +203,17 @@ sigcancel_handler (int sig, siginfo_t *si, void *ctx)
 
   struct pthread *self = THREAD_SELF;
 
-  int oldval = THREAD_GETMEM (self, cancelhandling);
+  int oldval;
+  if (is_recording()) {
+    pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling, 1); 
+    oldval = THREAD_GETMEM (self, cancelhandling);
+    pthread_log_record (oldval, PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling, 0); 
+  } else if (is_replaying()) {
+    pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling); 
+    oldval = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling); 
+  } else {
+    oldval = THREAD_GETMEM (self, cancelhandling);
+  }
   while (1)
     {
       /* We are canceled now.  When canceled by another thread this flag
@@ -215,8 +225,17 @@ sigcancel_handler (int sig, siginfo_t *si, void *ctx)
 	/* Already canceled or exiting.  */
 	break;
 
-      int curval = THREAD_ATOMIC_CMPXCHG_VAL (self, cancelhandling, newval,
-					      oldval);
+      int curval;
+      if (is_recording()) {
+	pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling, 1); 
+	curval = THREAD_ATOMIC_CMPXCHG_VAL (self, cancelhandling, newval, oldval);
+	pthread_log_record (curval, PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling, 0); 
+      } else if (is_replaying()) {
+	pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling); 
+	curval = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling); 
+      } else {
+	curval = THREAD_ATOMIC_CMPXCHG_VAL (self, cancelhandling, newval, oldval);
+      }
       if (curval == oldval)
 	{
 	  /* Set the return value.  */
@@ -271,9 +290,22 @@ sighandler_setxid (int sig, siginfo_t *si, void *ctx)
   int flags, newval;
   do
     {
-      flags = THREAD_GETMEM (self, cancelhandling);
-      newval = THREAD_ATOMIC_CMPXCHG_VAL (self, cancelhandling,
-					  flags & ~SETXID_BITMASK, flags);
+      if (is_recording()) {
+	pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling, 1); 
+	flags = THREAD_GETMEM (self, cancelhandling);
+	pthread_log_record (flags, PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling, 0); 
+	pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling, 1); 
+	newval = THREAD_ATOMIC_CMPXCHG_VAL (self, cancelhandling, flags & ~SETXID_BITMASK, flags);
+	pthread_log_record (newval, PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling, 0); 
+      } else if (is_replaying()) {
+	pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling); 
+	flags = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling); 
+	pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling); 
+	newval = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling); 
+      } else {
+	flags = THREAD_GETMEM (self, cancelhandling);
+	newval = THREAD_ATOMIC_CMPXCHG_VAL (self, cancelhandling, flags & ~SETXID_BITMASK, flags);
+      }
     }
   while (flags != newval);
 

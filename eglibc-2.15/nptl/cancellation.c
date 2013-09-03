@@ -20,14 +20,14 @@
 #include <setjmp.h>
 #include <stdlib.h>
 #include "pthreadP.h"
-
+#include "pthread_log.h"
 
 /* The next two functions are similar to pthread_setcanceltype() but
    more specialized for the use in the cancelable functions like write().
    They do not need to check parameters etc.  */
 int
 attribute_hidden
-__pthread_enable_asynccancel (void)
+__internal_pthread_enable_asynccancel (void)
 {
   struct pthread *self = THREAD_SELF;
   int oldval = THREAD_GETMEM (self, cancelhandling);
@@ -60,9 +60,64 @@ __pthread_enable_asynccancel (void)
 }
 
 
+int
+attribute_hidden
+__pthread_enable_asynccancel (void)
+{
+  struct pthread *self = THREAD_SELF;
+  int oldval;
+  if (is_recording()) {
+    pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling, 1); 
+    oldval = THREAD_GETMEM (self, cancelhandling);
+    pthread_log_record (oldval, PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling, 0); 
+  } else if (is_replaying()) {
+    pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling); 
+    oldval = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling); 
+  } else {
+    oldval = THREAD_GETMEM (self, cancelhandling);
+  }
+
+  while (1)
+    {
+      int newval = oldval | CANCELTYPE_BITMASK;
+
+      if (newval == oldval)
+	break;
+
+      int curval;
+      if (is_recording()) {
+	pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling, 1); 
+	curval = THREAD_ATOMIC_CMPXCHG_VAL (self, cancelhandling, newval, oldval);
+	pthread_log_record (curval, PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling, 0); 
+      } else if (is_replaying()) {
+	pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling); 
+	curval = pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling); 
+      } else {
+	curval = THREAD_ATOMIC_CMPXCHG_VAL (self, cancelhandling, newval, oldval);
+      }
+ 
+      if (__builtin_expect (curval == oldval, 1))
+	{
+	  if (CANCEL_ENABLED_AND_CANCELED_AND_ASYNCHRONOUS (newval))
+	    {
+	      THREAD_SETMEM (self, result, PTHREAD_CANCELED);
+	      __do_cancel ();
+	    }
+
+	  break;
+	}
+
+      /* Prepare the next round.  */
+      oldval = curval;
+    }
+
+  return oldval;
+}
+
+
 void
 internal_function attribute_hidden
-__pthread_disable_asynccancel (int oldtype)
+__internal_pthread_disable_asynccancel (int oldtype)
 {
   /* If asynchronous cancellation was enabled before we do not have
      anything to do.  */
@@ -72,14 +127,15 @@ __pthread_disable_asynccancel (int oldtype)
   struct pthread *self = THREAD_SELF;
   int newval;
 
-  int oldval = THREAD_GETMEM (self, cancelhandling);
+  int oldval;
+  oldval = THREAD_GETMEM (self, cancelhandling);
 
   while (1)
     {
       newval = oldval & ~CANCELTYPE_BITMASK;
 
-      int curval = THREAD_ATOMIC_CMPXCHG_VAL (self, cancelhandling, newval,
-					      oldval);
+      int curval;
+      curval = THREAD_ATOMIC_CMPXCHG_VAL (self, cancelhandling, newval, oldval);
       if (__builtin_expect (curval == oldval, 1))
 	break;
 
@@ -97,4 +153,23 @@ __pthread_disable_asynccancel (int oldtype)
       lll_futex_wait (&self->cancelhandling, newval, LLL_PRIVATE);
       newval = THREAD_GETMEM (self, cancelhandling);
     }
+}
+
+// REPLAY: The above function only modifies cancelhandling
+void
+internal_function attribute_hidden
+__pthread_disable_asynccancel (int oldtype)
+{
+  if (is_recording()) {
+    struct pthread *self = THREAD_SELF;
+    pthread_log_record (0, PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling, 1); 
+    __internal_pthread_disable_asynccancel(oldtype);
+    pthread_log_record (0, PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling, 0); 
+  } else if (is_replaying()) {
+    struct pthread *self = THREAD_SELF;
+    pthread_log_replay (PTHREAD_CANCELHANDLING_ENTER, (u_long) &self->cancelhandling); 
+    pthread_log_replay (PTHREAD_CANCELHANDLING_EXIT, (u_long) &self->cancelhandling); 
+  } else {
+    __internal_pthread_disable_asynccancel(oldtype);
+  }
 }
