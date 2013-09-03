@@ -3306,7 +3306,7 @@ extern long do_restart_poll(struct restart_block *restart_block); /* In select.c
 static long 
 record_restart_syscall(struct restart_block* restart)
 {
-	printk ("Record pid %d calls shim_restart_syscall\n", current->pid);
+	printk ("Pid %d calls record_restart_syscall\n", current->pid);
 	if (restart->fn == do_restart_poll) {
 		long rc;
 		char* pretvals;
@@ -3340,7 +3340,7 @@ record_restart_syscall(struct restart_block* restart)
 static long 
 replay_restart_syscall(struct restart_block* restart)
 {
-	printk ("Replay pid %d calls shim_restart_syscall\n", current->pid);
+	printk ("Pid %d calls replay_restart_syscall\n", current->pid);
 	if (restart->fn == do_restart_poll) {
 		return replay_poll (restart->poll.ufds, restart->poll.nfds, 0 /* unused */);
 	} else {
@@ -5402,7 +5402,7 @@ record_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 	}
 
 	rc = do_fork(clone_flags, stack_start, regs, stack_size, parent_tidptr, child_tidptr);
-	printk ("Pid %d records clone with flags %lx fork %d returning %ld\n", current->pid, clone_flags, (clone_flags&CLONE_VM) ? 1 : 0, rc);
+	printk ("Pid %d records clone with flags %lx fork %d returning %ld\n", current->pid, clone_flags, (clone_flags&CLONE_VM) ? 0 : 1, rc);
 
 	rg_lock(prg);
 	new_syscall_exit (120, rc, NULL);
@@ -6154,10 +6154,12 @@ replay_poll (struct pollfd __user *ufds, unsigned int nfds, long timeout_msecs)
 	if (rc == -ERESTART_RESTARTBLOCK) { // Save info for restart of syscall
 		struct restart_block *restart_block;
 		
+		printk ("pid %d restarting poll system call\n", current->pid);
 		restart_block = &current_thread_info()->restart_block;
 		restart_block->fn = do_restart_poll;
 		restart_block->poll.ufds = ufds;
 		restart_block->poll.nfds = nfds;
+		set_thread_flag(TIF_SIGPENDING); // Apparently necessary to actually restart 
 	}
 	
 	return rc;
