@@ -21,8 +21,11 @@ resume: resume.o libutil.a
 hello: hello.c
 	gcc hello.c -o hello -I../../eglibc-2.15/prefix/include -L../../eglibc-2.15/prefix/lib 
 
-pthread_test: pthread_test.c
-	gcc pthread_test.c -o pthread_test -I../eglibc-2.15/prefix/include -L../eglibc-2.15/prefix/lib -pthread
+pthread_test.o: pthread_test.cc
+	c++ pthread_test.cc -o pthread_test.o -c 
+
+pthread_test: pthread_test.o
+	c++ pthread_test.o -o pthread_test -L../eglibc-2.15/prefix/lib -pthread
 
 libutil.a: util.o
 	ar rv libutil.a util.o
