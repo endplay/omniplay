@@ -12,7 +12,9 @@ if (len(sys.argv) != 2):
 dir = sys.argv[1]
 
 for klog in glob.glob(dir + "/klog.id.*"):
-    print klog
     m = re.search("\d+", klog)
-    print m.group(0)
     os.system("./parseklog " + klog + "> /tmp/klog." + m.group(0));
+
+for ulog in glob.glob(dir + "/ulog.id.*"):
+    m = re.search("\d+", ulog)
+    os.system("./parseulog " + ulog + "> /tmp/ulog." + m.group(0));
