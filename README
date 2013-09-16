@@ -1,0 +1,53 @@
+Building the kernel:
+
+$ cd linux-lts-quantal-3.5.0
+$ make menuconfig
+$ make
+$ su
+# make modules_install
+# make install
+
+Make a replay cache folder:
+$ mkdir /replay_cache/
+
+Record a program:
+$ su
+# ./launcher <logdir> <program>
+
+Example:
+$ sudo ~/omniplay/launcher /tmp/logs /bin/ls
+
+Replay a program:
+$ su
+# ./resume <logdir>
+
+Example:
+$ sudo ~/omniplay/resume /tmp/logs
+
+Building glibc:
+$ cd eglibc-2.15/
+$ mkdir build
+$ mkdir prefix
+$ cd build
+$ ../configure -prefix=<tree>/eglibc-2.15/prefix --disable-profile --enable-add-on --without-gd --without-selinux --without-cvs --enable-kernel=3.2.0
+$ make
+$ mkdir /var/db
+$ chown <user> /var/db
+$ touch ../prefix/etc/ld.so.conf
+$ make install
+
+For multi-threaded programs, need to link in our glibc.
+
+To record a program with glibc:
+$ sudo ./launcher --pthread eglibc-2.15/prefix/lib <logdir> <program>
+
+To replay a program with glibc:
+$ sudo ./resume <logdir> --pthread eglibc-2.15/prefix/lib <logdir> <program>
+
+
+Debugging:
+After a replay, check the kernel buffer for errors
+$ dmesg
+
+Use parseklog to examine a kernel log.
+$ omniplay/test/parseklog /tmp/logs/klog.id.* > parsed_klog
