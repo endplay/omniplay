@@ -23,6 +23,7 @@
 #include <sched.h>
 #include <sys/epoll.h>
 #include <sys/statfs.h>
+#include <linux/capability.h>
 #include <asm/ldt.h>
 #define __USE_LARGEFILE64
 #include <fcntl.h>
@@ -80,6 +81,17 @@ struct select_retvals {
 	fd_set         outp;
 	fd_set         exp;
 	struct timeval tv;
+};
+
+struct pselect6_retvals {
+	char            has_inp;
+	char            has_outp;
+	char            has_exp;
+	char            has_tsp;
+	fd_set          inp;
+	fd_set          outp;
+	fd_set          exp;
+	struct timespec tsp;
 };
 
 struct mmap_pgoff_args {
@@ -185,19 +197,13 @@ struct splice_retvals {
 	loff_t off_out;
 };
 
+struct capget_retvals {
+	struct __user_cap_header_struct header;
+	struct __user_cap_data_struct dataptr;
+};
+
 u_long scount[512];
 u_long bytes[512];
-
-/* 
- * epoll_wait_retvals should save whole data structures
- * that are pointed to by the fields in struct epoll_event,
- * for simplicity, assuming union epoll_data is not void*
- * 
- */
-struct epoll_wait_retvals {
-	// struct epoll_event
-	struct epoll_event event;		// Variable length
-};
 
 /* grabbed from asm/stat.h - ick - cannot include */
 /* for 32bit emulation and 32 bit kernels */
@@ -226,6 +232,42 @@ struct wait4_retvals {
 	int           stat_addr;
 	struct rusage ru;
 };
+
+struct waitid_retvals {
+	struct siginfo info;
+	struct rusage  ru;
+};
+
+struct get_robust_list_retvals {
+	struct robust_list_head * head_ptr;
+	size_t                    len;
+};
+
+struct file_handle
+{
+  unsigned int handle_bytes;
+  int handle_type;
+  /* File identifier.  */
+  unsigned char f_handle[0];
+};
+
+struct name_to_handle_at_retvals {
+	struct file_handle handle;
+	int                mnt_id;
+};
+
+static u_long varsize (int fd, int stats, struct syscall_result* psr)
+{
+	u_long val;
+	if (read (fd, &val, sizeof(u_long)) != sizeof(u_long)) {
+		printf ("cannot read variable length field\n");
+		return -1;
+	}
+	if (stats) {
+		bytes[psr->sysnum] += sizeof(u_long);
+	}
+	return val;
+}
 
 int main (int argc, char* argv[])
 {
@@ -363,27 +405,19 @@ int main (int argc, char* argv[])
 				case 28: size = sizeof(struct __old_kernel_stat); break;
 				case 42: size = 2*sizeof(int); break;
 				case 43: size = sizeof(struct tms); break;
-				case 54: {
-					rc = read (fd, &size, sizeof(int));
-					if (stats) {
-						bytes[psr.sysnum] += sizeof(int);
-					}
-					if (rc != sizeof(int)) {
-						printf ("cannot read ioctl value\n");
-						return rc;
-					}
-					printf("ioctl rc = %d, size = %d\n", rc, size);
-					break;
-				}
-				case 55: size = sizeof(struct flock); break;
+				case 54: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
+				case 55: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
 				case 59: size = sizeof(struct oldold_utsname); break;
 				case 62: size = sizeof(struct ustat); break;
+				case 67: size = sizeof(struct sigaction); break;
 				case 73: size = sizeof(sigset_t); break;
 				case 76: size = sizeof(struct rlimit); break;
 				case 77: size = sizeof(struct rusage); break;
 				case 78: size = sizeof(struct gettimeofday_retvals); break;
+			        case 80: size = sizeof(u_short)*psr.retval; break;
 				case 84: size = sizeof(struct __old_kernel_stat); break;
 				case 85: size = psr.retval; break;
+				case 86: size = sizeof(struct mmap_pgoff_retvals); break;
 				case 89: size = 266; break; /* sizeof old_linux_dirent??? */
 				case 99: size = sizeof(struct statfs); break;
 				case 100: size = sizeof(struct statfs); break;
@@ -435,6 +469,21 @@ int main (int argc, char* argv[])
 						size = msg.msg_namelen + msg.msg_controllen + psr.retval; 
 						break;
 					}
+					case SYS_RECVMMSG: {
+						if (psr.retval > 0) {
+							long len;
+							rc = read(fd, ((char *)&len), sizeof(long));
+							if (rc != sizeof(long)) {
+								printf ("cannot read recvmmsg value\n");
+								return rc;
+							}
+							if (stats) bytes[psr.sysnum] += sizeof(long);
+							size = len;
+						} else {
+							size = 0;
+						}
+						break;
+					}
 					case SYS_SOCKETPAIR:
 						size = sizeof(struct socketpair_retvals) - sizeof(int);
 						break;
@@ -469,68 +518,41 @@ int main (int argc, char* argv[])
 				case 122: size = sizeof(struct new_utsname); break;
 				case 124: size = sizeof(struct timex); break;
 				case 126: size = sizeof(unsigned long); break; // old_sigset_t - def in asm/signal.h but cannot include
-				case 131: size = sizeof (struct dqblk); break;
+				case 131: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
+				case 134: size = sizeof(long); break;
+				case 135: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
 				case 140: size = sizeof(loff_t); break;
 				case 141: size = psr.retval; break;
 				case 142: size = sizeof(struct select_retvals); break;
 				case 145: size = psr.retval; break;
+				case 149: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
 				case 155: size = sizeof(struct sched_param); break;
 				case 161: size = sizeof(struct timespec); break;
 				case 162: size = sizeof(struct timespec); break;
-				case 168: {
-					rc = read (fd, &size, sizeof(int));
-					if (rc != sizeof(int)) {
-						printf ("cannot read 168 value\n");
-						return rc;
-					}
-					if (stats) {
-						bytes[psr.sysnum] += sizeof(int);
-					}
-					break;
-				}
+				case 165: size = sizeof(u_short)*3; break;
+				case 168: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
+				case 171: size = sizeof(u_short)*3; break;
+				case 172: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
 				case 174: size = 20 /* sizeof(struct sigaction)*/; break;
-				case 175: 
-				{
-					size_t sigsetsize;
-				        rc = read (fd, &sigsetsize, sizeof(size_t));
-					if (rc != sizeof(size_t)) {
-						printf ("cannot read 175 value\n");
-						return rc;
-					}
-					if (stats) {
-						bytes[psr.sysnum] += sizeof(size_t);
-					}
-					//printf ("sigsetsize is %d\n", sigsetsize);
-					size =  sigsetsize;
-					break;
-					
-				} 
+				case 175: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
+				case 176: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
 				case 177: size = sizeof(siginfo_t); break;
 				case 180: size = psr.retval; break;
 				case 183: size = psr.retval; break;
+				case 184: size = sizeof(struct capget_retvals); break;
+				case 185: size = sizeof(struct __user_cap_header_struct); break;
 				case 187: size = sizeof(off_t); break;
 				case 191: size = sizeof(struct rlimit); break;
 				case 192: size = sizeof(struct mmap_pgoff_retvals); break;
 				case 195: size = sizeof(struct stat64); break;
 				case 196: size = sizeof(struct stat64); break;
 				case 197: size = sizeof(struct stat64); break;
-			        case 205: size = (psr.retval > 0) ? sizeof(gid_t)*psr.retval : 0; break;
-				case 209: size = (psr.retval >= 0) ? (sizeof(uid_t)*3) : 0; break;
-				case 211: size = (psr.retval >= 0) ? sizeof(gid_t)*3 : 0; break;
+			        case 205: size = sizeof(gid_t)*psr.retval; break;
+				case 209: size = sizeof(uid_t)*3; break;
+				case 211: size = sizeof(gid_t)*3; break;
+				case 218: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
 				case 220: size = psr.retval; break;
-				case 221: {
-					int val;
-					rc = read (fd, &val, sizeof(int));
-					if (rc != sizeof(int)) {
-						printf ("cannot read fcntl64 value\n");
-						return rc;
-					}
-					if (stats) {
-						bytes[psr.sysnum] += sizeof(int);
-					}
-					size = val - sizeof(int);
-					break;
-				}
+				case 221: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
 				case 229: size = psr.retval; break;
 				case 230: size = psr.retval; break;
 				case 231: size = psr.retval; break;
@@ -538,11 +560,12 @@ int main (int argc, char* argv[])
 				case 233: size = psr.retval; break;
 				case 234: size = psr.retval; break;
 				case 239: size = sizeof(struct sendfile64_retvals); break;
-				case 242: size = sizeof(cpu_set_t); break;
+				case 242: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
 				case 245: size = sizeof(u_long); break;
-				case 249: size = 32; break; /* ioevent */
+				case 247: size = psr.retval*32; break; /* struct ioevents */
+				case 249: size = 32; break; /* struct ioevent */
 				case 253: size = psr.retval; break;
-				case 256: size = sizeof(struct epoll_wait_retvals) + ((psr.retval)-1)*sizeof(struct epoll_event); break;
+				case 256: size = psr.retval*sizeof(struct epoll_event); break;
 				case 259: size = sizeof(timer_t); break;
 				case 260: size = sizeof(struct itimerspec); break;
 				case 261: size = sizeof(struct itimerspec); break;
@@ -551,14 +574,26 @@ int main (int argc, char* argv[])
 				case 267: size = sizeof(struct timespec); break;
 				case 268: size = 84; break; /* statfs 64 */
 				case 269: size = 84; break; /* statfs 64 */
+				case 275: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
 				case 280: size = psr.retval; break;
 				case 282: size = sizeof(struct mq_attr); break;
+				case 284: size = sizeof(struct waitid_retvals); break;
+				case 288: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
 				case 300: size = sizeof(struct stat64); break;
 				case 305: size = psr.retval; break;
+				case 308: size = sizeof(struct pselect6_retvals); break;
+				case 309: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
+				case 312: size = sizeof(struct get_robust_list_retvals); break;
 				case 313: size = sizeof(struct splice_retvals); break;
+				case 317: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
+				case 318: size = sizeof(unsigned)*2; break;
+				case 319: size = psr.retval*sizeof(struct epoll_event); break;
 				case 325: size = sizeof(struct itimerspec); break;
 				case 326: size = sizeof(struct itimerspec); break;
+				case 333: size = psr.retval; break;
+				case 337: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
 			        case 340: size = sizeof(struct rlimit64); break;
+				case 341: size = sizeof(struct name_to_handle_at_retvals); break;
 				case 343: size = sizeof(struct timex); break;
 				default: 
 					size = 0;
@@ -576,7 +611,7 @@ int main (int argc, char* argv[])
 				printf ("\t%d bytes of return parameters included\n", size);
 				//printf ("\t%d syscall number in retparams\n", *(short *) buf);
 				
-				if (psr.sysnum == 197) {
+				if (psr.sysnum == 196 || psr.sysnum == 197) {
 					struct stat64* pst = (struct stat64 *) buf;
 					printf ("stat64 size %Ld blksize %lx blocks %Ld ino %Ld\n", 
 						pst->st_size, pst->st_blksize, pst->st_blocks, pst->st_ino);
