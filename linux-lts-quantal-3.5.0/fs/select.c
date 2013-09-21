@@ -693,13 +693,15 @@ struct sel_arg_struct {
 	struct timeval __user *tvp;
 };
 
+asmlinkage long shim_select (int n, fd_set __user *inp, fd_set __user *outp, fd_set __user *exp, struct timeval __user *tvp); /* REPLAY */
+
 SYSCALL_DEFINE1(old_select, struct sel_arg_struct __user *, arg)
 {
 	struct sel_arg_struct a;
 
 	if (copy_from_user(&a, arg, sizeof(a)))
 		return -EFAULT;
-	return sys_select(a.n, a.inp, a.outp, a.exp, a.tvp);
+	return shim_select(a.n, a.inp, a.outp, a.exp, a.tvp); /* REPLAY */
 }
 #endif
 

@@ -48,11 +48,6 @@
 #include <asm/irq.h>
 #include <asm/syscalls.h>
 
-/* Begin REPLAY */
-void shim_vm86old(struct kernel_vm86_struct *info, struct task_struct *tsk);
-int shim_vm86(unsigned long cmd, unsigned long arg, struct pt_regs *regs);
-/* End REPLAY */
-
 /*
  * Known problems:
  *
@@ -203,8 +198,7 @@ out:
 
 
 static int do_vm86_irq_handling(int subfunction, int irqnumber);
-/* static REPLAY */
-void do_sys_vm86(struct kernel_vm86_struct *info, struct task_struct *tsk);
+static void do_sys_vm86(struct kernel_vm86_struct *info, struct task_struct *tsk);
 
 int sys_vm86old(struct vm86_struct __user *v86, struct pt_regs *regs)
 {
@@ -234,13 +228,8 @@ out:
 	return ret;
 }
 
-/* Begin REPLAY */
-int sys_vm86(unsigned long cmd, unsigned long arg, struct pt_regs *regs) 
-{
-	return shim_vm86(cmd, arg, regs);
-}
 
-int dummy_vm86(unsigned long cmd, unsigned long arg, struct pt_regs *regs) /* REPLAY */
+int sys_vm86(unsigned long cmd, unsigned long arg, struct pt_regs *regs) 
 {
 	struct kernel_vm86_struct info; /* declare this _on top_,
 					 * this avoids wasting of stack space.
@@ -291,8 +280,7 @@ out:
 }
 
 
-/* static REPLAY */
-void do_sys_vm86(struct kernel_vm86_struct *info, struct task_struct *tsk)
+static void do_sys_vm86(struct kernel_vm86_struct *info, struct task_struct *tsk)
 {
 	struct tss_struct *tss;
 /*

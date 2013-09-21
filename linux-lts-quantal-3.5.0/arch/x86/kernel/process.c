@@ -29,7 +29,6 @@
 #include <asm/nmi.h>
 
 /* Begin REPLAY */
-long shim_fork(unsigned long clone_flags, unsigned long stack_start, struct pt_regs *regs, unsigned long stack_size, int __user *parent_tidptr, int __user *child_tidptr);
 int shim_execve(const char *filename, const char __user *const __user *__argv, const char __user *const __user *__envp, struct pt_regs *regs);
 long shim_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_regs *regs, unsigned long stack_size, int __user *parent_tidptr, int __user *child_tidptr);
 long shim_vfork(unsigned long clone_flags, unsigned long stack_start, struct pt_regs *regs, unsigned long stack_size, int __user *parent_tidptr, int __user *child_tidptr);
@@ -279,7 +278,7 @@ void __switch_to_xtra(struct task_struct *prev_p, struct task_struct *next_p,
 
 int sys_fork(struct pt_regs *regs)
 {
-	return shim_fork(SIGCHLD, regs->sp, regs, 0, NULL, NULL);
+	return shim_clone(SIGCHLD, regs->sp, regs, 0, NULL, NULL); /* REPLAY */
 }
 
 /*

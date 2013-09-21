@@ -88,7 +88,7 @@
 79	i386	settimeofday		shim_settimeofday		compat_sys_settimeofday
 80	i386	getgroups		shim_getgroups16
 81	i386	setgroups		shim_setgroups16
-82	i386	select			shim_old_select			compat_sys_old_select
+82	i386	select			sys_old_select			compat_sys_old_select
 83	i386	symlink			shim_symlink
 84	i386	oldlstat		shim_lstat
 85	i386	readlink		shim_readlink
@@ -129,7 +129,7 @@
 120	i386	clone			ptregs_clone			stub32_clone
 121	i386	setdomainname		shim_setdomainname
 122	i386	uname			shim_newuname
-123	i386	modify_ldt		shim_modify_ldt
+123	i386	modify_ldt		sys_modify_ldt
 124	i386	adjtimex		shim_adjtimex			compat_sys_adjtimex
 125	i386	mprotect		shim_mprotect			sys32_mprotect
 126	i386	sigprocmask		shim_sigprocmask			compat_sys_sigprocmask
@@ -249,8 +249,8 @@
 240	i386	futex			shim_futex			compat_sys_futex
 241	i386	sched_setaffinity	shim_sched_setaffinity		compat_sys_sched_setaffinity
 242	i386	sched_getaffinity	shim_sched_getaffinity		compat_sys_sched_getaffinity
-243	i386	set_thread_area		shim_set_thread_area
-244	i386	get_thread_area		shim_get_thread_area
+243	i386	set_thread_area		sys_set_thread_area
+244	i386	get_thread_area		sys_get_thread_area
 245	i386	io_setup		shim_io_setup			compat_sys_io_setup
 246	i386	io_destroy		shim_io_destroy
 247	i386	io_getevents		shim_io_getevents		compat_sys_io_getevents
