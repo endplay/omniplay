@@ -192,7 +192,6 @@ struct syscall_result {
 	long			retval;		// return code from the system call
 	struct repsignal*	signal;		// Set if sig should be delivered
 	void*			retparams;	// system-call-specific return data
-	void*			args;		// system-call-specific arguments
 	long                    start_clock;    // total order over start
         long                    stop_clock;     // and stop of all system calls
 };
@@ -201,15 +200,6 @@ struct syscall_result {
 struct reserved_mapping {
 	u_long m_begin;
 	u_long m_end;
-};
-
-struct mmap_pgoff_args {
-	unsigned long addr;
-	unsigned long len;
-	unsigned long prot;
-	unsigned long flags;
-	unsigned long fd;
-	unsigned long pgoff;
 };
 
 struct record_group {
@@ -1033,7 +1023,7 @@ __syscall_mismatch (struct record_group* precg)
 {
 	precg->rg_mismatch_flag = 1;
 	rg_unlock (precg);
-	dump_user_stack ();
+	//dump_user_stack ();
 	printk ("SYSCALL MISMATCH\n");
 	sys_exit_group(0);
 }
@@ -1129,7 +1119,7 @@ get_used_addresses (struct used_address __user * plist, int listsize)
 }
 EXPORT_SYMBOL(get_used_addresses);
 
-static void
+void
 reserve_memory (u_long addr, u_long len)
 {
 	struct reserved_mapping* pmapping, *nmapping;
@@ -1180,6 +1170,7 @@ reserve_memory (u_long addr, u_long len)
 static long 
 read_prealloc_info (struct record_thread* prect, int root_pid)
 {
+#if 0
 	struct syscall_result* psr; // buffer we will use to read in the logs
 	ds_list_t* log_queue;
 	int log_pid, syscall_count, rc, i;
@@ -1236,7 +1227,7 @@ read_prealloc_info (struct record_thread* prect, int root_pid)
 	DPRINT ("Max break is %lx\n", max_brk);
 	current->replay_thrd->rp_group->rg_max_brk = max_brk;
 	VFREE (psr);
-
+#endif
 	return 0;
 }
 
@@ -1683,7 +1674,7 @@ replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd)
 EXPORT_SYMBOL(replay_ckpt_wakeup);
 
 static inline long
-__new_syscall_enter (long sysnum, void* args)
+new_syscall_enter (long sysnum)
 {
 	struct syscall_result* psr;
 	struct record_thread* prt = current->record_thrd;
@@ -1711,7 +1702,6 @@ __new_syscall_enter (long sysnum, void* args)
 	psr = &prt->rp_log[prt->rp_in_ptr]; 
 	psr->signal = NULL;
 	psr->sysnum = sysnum;
-	psr->args = args;
 	psr->retparams = NULL;
 	psr->retval = 0;
 	psr->start_clock = atomic_add_return (1, prt->rp_precord_clock) - 1;
@@ -1723,11 +1713,9 @@ __new_syscall_enter (long sysnum, void* args)
 	return 0;
 }
 
-#define new_syscall_enter(s,a) __new_syscall_enter (s,NULL)
-
 long new_syscall_enter_external (long sysnum)
 {
-	return __new_syscall_enter (sysnum, NULL);
+	return new_syscall_enter (sysnum);
 }
 
 static inline long
@@ -1816,7 +1804,7 @@ record_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 
 	if (ignore_flag) {
 		// Signal delivered after an ignored syscall.  We need to add a "fake" syscall for sequencing.  
-		__new_syscall_enter (SIGNAL_WHILE_SYSCALL_IGNORED, NULL); 
+		new_syscall_enter (SIGNAL_WHILE_SYSCALL_IGNORED); 
 		new_syscall_exit (SIGNAL_WHILE_SYSCALL_IGNORED, 0, NULL);
 		psr = &prt->rp_log[(prt->rp_in_ptr-1)]; 
 
@@ -1882,7 +1870,7 @@ record_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 
 		if (!ignore_flag) {
 			// Also need the fake syscall
-			__new_syscall_enter (SIGNAL_WHILE_SYSCALL_IGNORED, NULL); 
+			new_syscall_enter (SIGNAL_WHILE_SYSCALL_IGNORED); 
 			new_syscall_exit (SIGNAL_WHILE_SYSCALL_IGNORED, 0, NULL);
 			psr = &prt->rp_log[(prt->rp_in_ptr-1)]; 
 		}
@@ -2856,7 +2844,7 @@ asmlinkage long sys_pthread_sysign (void)
 	record_##name (void)						\
 	{								\
 		long rc;						\
-		new_syscall_enter (sysnum, NULL);			\
+		new_syscall_enter (sysnum);				\
 		rc = sys_##name();					\
 		new_syscall_exit (sysnum, rc, NULL);			\
 		return rc;						\
@@ -2867,7 +2855,7 @@ asmlinkage long sys_pthread_sysign (void)
 	record_##name (arg0type arg0name)				\
 	{								\
 		long rc;						\
-		new_syscall_enter (sysnum, NULL);			\
+		new_syscall_enter (sysnum);				\
 		rc = sys_##name(arg0name);				\
 		new_syscall_exit (sysnum, rc, NULL);			\
 		return rc;						\
@@ -2878,7 +2866,7 @@ asmlinkage long sys_pthread_sysign (void)
 	record_##name (arg0type arg0name, arg1type arg1name)		\
 	{								\
 		long rc;						\
-		new_syscall_enter (sysnum, NULL);			\
+		new_syscall_enter (sysnum);				\
 		rc = sys_##name(arg0name, arg1name);			\
 		new_syscall_exit (sysnum, rc, NULL);			\
 		return rc;						\
@@ -2889,7 +2877,7 @@ asmlinkage long sys_pthread_sysign (void)
 	record_##name (arg0type arg0name, arg1type arg1name, arg2type arg2name)	\
 	{								\
 		long rc;						\
-		new_syscall_enter (sysnum, NULL);			\
+		new_syscall_enter (sysnum);				\
 		rc = sys_##name(arg0name, arg1name, arg2name);		\
 		new_syscall_exit (sysnum, rc, NULL);			\
 		return rc;						\
@@ -2900,7 +2888,7 @@ asmlinkage long sys_pthread_sysign (void)
 	record_##name (arg0type arg0name, arg1type arg1name, arg2type arg2name, arg3type arg3name) \
 	{								\
 		long rc;						\
-		new_syscall_enter (sysnum, NULL);			\
+		new_syscall_enter (sysnum);				\
 		rc = sys_##name(arg0name, arg1name, arg2name, arg3name); \
 		new_syscall_exit (sysnum, rc, NULL);			\
 		return rc;						\
@@ -2911,7 +2899,7 @@ asmlinkage long sys_pthread_sysign (void)
 	record_##name (arg0type arg0name, arg1type arg1name, arg2type arg2name, arg3type arg3name, arg4type arg4name) \
 	{								\
 		long rc;						\
-		new_syscall_enter (sysnum, NULL);			\
+		new_syscall_enter (sysnum);				\
 		rc = sys_##name(arg0name, arg1name, arg2name, arg3name, arg4name); \
 		new_syscall_exit (sysnum, rc, NULL);			\
 		return rc;						\
@@ -2922,7 +2910,7 @@ asmlinkage long sys_pthread_sysign (void)
 	record_##name (arg0type arg0name, arg1type arg1name, arg2type arg2name, arg3type arg3name, arg4type arg4name, arg5type arg5name) \
 	{								\
 		long rc;						\
-		new_syscall_enter (sysnum, NULL);			\
+		new_syscall_enter (sysnum);				\
 		rc = sys_##name(arg0name, arg1name, arg2name, arg3name, arg4name, arg5name); \
 		new_syscall_exit (sysnum, rc, NULL);			\
 		return rc;						\
@@ -2976,7 +2964,7 @@ static asmlinkage long record_##name (arg0type arg0name)	\
 	long rc;							\
 	type *pretval = NULL;						\
 									\
-	new_syscall_enter (sysnum, NULL);				\
+	new_syscall_enter (sysnum);					\
 	rc = sys_##name (arg0name);					\
 	if (rc >= 0 && dest) {						\
 	        pretval = ARGSKMALLOC (sizeof(type), GFP_KERNEL);	\
@@ -3002,7 +2990,7 @@ static asmlinkage long record_##name (arg0type arg0name, arg1type arg1name) \
 	long rc;							\
 	type *pretval = NULL;						\
 									\
-	new_syscall_enter (sysnum, NULL);				\
+	new_syscall_enter (sysnum);					\
 	rc = sys_##name (arg0name, arg1name);				\
 	if (rc >= 0 && dest) {						\
 	        pretval = ARGSKMALLOC (sizeof(type), GFP_KERNEL);	\
@@ -3028,7 +3016,7 @@ static asmlinkage long record_##name (arg0type arg0name, arg1type arg1name, arg2
 	long rc;							\
 	type *pretval = NULL;						\
 									\
-	new_syscall_enter (sysnum, NULL);				\
+	new_syscall_enter (sysnum);					\
 	rc = sys_##name (arg0name, arg1name, arg2name);			\
 	if (rc >= 0 && dest) {						\
 	        pretval = ARGSKMALLOC (sizeof(type), GFP_KERNEL);	\
@@ -3054,7 +3042,7 @@ static asmlinkage long record_##name (arg0type arg0name, arg1type arg1name, arg2
 	long rc;							\
 	type *pretval = NULL;						\
 									\
-	new_syscall_enter (sysnum, NULL);				\
+	new_syscall_enter (sysnum);					\
 	rc = sys_##name (arg0name, arg1name, arg2name, arg3name);	\
 	if (rc >= 0 && dest) {						\
 	        pretval = ARGSKMALLOC (sizeof(type), GFP_KERNEL);	\
@@ -3080,7 +3068,7 @@ static asmlinkage long record_##name (arg0type arg0name, arg1type arg1name, arg2
 	long rc;							\
 	type *pretval = NULL;						\
 									\
-	new_syscall_enter (sysnum, NULL);				\
+	new_syscall_enter (sysnum);					\
 	rc = sys_##name (arg0name, arg1name, arg2name, arg3name, arg4name);	\
 	if (rc >= 0 && dest) {						\
 	        pretval = ARGSKMALLOC (sizeof(type), GFP_KERNEL);	\
@@ -3146,7 +3134,7 @@ static asmlinkage long record_##name (arg0type arg0name, arg1type arg1name, arg2
 	long rc;							\
 	char *pretval = NULL;						\
 									\
-	new_syscall_enter (sysnum, NULL);				\
+	new_syscall_enter (sysnum);					\
 	rc = sys_##name (arg0name, arg1name, arg2name);			\
 	if (rc >= 0 && dest) {						\
 		pretval = ARGSKMALLOC (rc, GFP_KERNEL);			\
@@ -3172,7 +3160,7 @@ static asmlinkage long record_##name (arg0type arg0name, arg1type arg1name, arg2
 	long rc;							\
 	char *pretval = NULL;						\
 									\
-	new_syscall_enter (sysnum, NULL);				\
+	new_syscall_enter (sysnum);					\
 	rc = sys_##name (arg0name, arg1name, arg2name, arg3name);	\
 	if (rc >= 0 && dest) {						\
 		pretval = ARGSKMALLOC (rc, GFP_KERNEL);			\
@@ -3198,7 +3186,7 @@ static asmlinkage long record_##name (arg0type arg0name, arg1type arg1name, arg2
 	long rc;							\
 	char *pretval = NULL;						\
 									\
-	new_syscall_enter (sysnum, NULL);				\
+	new_syscall_enter (sysnum);					\
 	rc = sys_##name (arg0name, arg1name, arg2name, arg3name, arg4name); \
 	if (rc >= 0 && dest) {						\
 		pretval = ARGSKMALLOC (rc, GFP_KERNEL);			\
@@ -3523,7 +3511,7 @@ record_restart_syscall(struct restart_block* restart)
 		long rc;
 		char* pretvals;
 		
-		new_syscall_enter (168, NULL);
+		new_syscall_enter (168);
 
 		rc = restart->fn (restart); 
 
@@ -3580,43 +3568,6 @@ shim_exit(int error_code)
 
 /* fork system call is handled by shim_clone */
 
-static char*
-copy_struct (const char __user * data, int len)
-{
-	char* tmp;
-
-	if (len <= 0) {
-		DPRINT ("copy_struct asked to allocate a %d byte stucture\n", len);
-		return NULL;
-	}
-
-	if (data) {
-#ifdef REPLAY_PARANOID
-		do {
-#endif
-			tmp = KMALLOC(len, GFP_KERNEL);
-#ifdef REPLAY_PARANOID
-			if (tmp && (u_long) tmp < 0xc0000000) {
-				printk ("KMALLOC of %d bytes returns %p\n", len, tmp);
-				dump_stack();
-			}
-		} while (tmp && (u_long) tmp < 0xc0000000);
-#endif
-		if (tmp == NULL) {
-			printk ("copy_struct: can't allocate memory\n");
-			return ERR_PTR(-ENOMEM);
-		}
-		if (copy_from_user (tmp, data, len)) {
-			printk ("copy_struct: can't copy from user\n");
-			KFREE (tmp);
-			return ERR_PTR(-EFAULT);
-		}
-		return tmp;
-	} else {
-		return NULL;
-	}
-}
-
 RET1_COUNT_SHIM3(read, 3, buf, unsigned int, fd, char __user *, buf, size_t, count);
 
 static asmlinkage ssize_t 
@@ -3626,7 +3577,7 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 	char kbuf[80];
 
 	if (fd == 99999) {  // Hack that assists in debugging user-level code
-		new_syscall_enter (4, NULL);
+		new_syscall_enter (4);
 		memset (kbuf, 0, sizeof(kbuf));
 		if (copy_from_user (kbuf, buf, count < 80 ? count : 79)) printk ("record_write: cannot copy kstring\n");
 		printk ("Pid %d clock %d records: %s", current->pid, atomic_read(current->record_thrd->rp_precord_clock)-1, kbuf);
@@ -3634,7 +3585,7 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 		return count;
 	}
 
-	new_syscall_enter (4, NULL);
+	new_syscall_enter (4);
 	size = sys_write (fd, buf, count);
 	DPRINT ("Pid %d records write returning %d\n", current->pid,size);
 	new_syscall_exit (4, size, NULL);
@@ -3680,7 +3631,7 @@ record_execve(const char *filename, const char __user *const __user *__argv, con
 	long rc;
 
 	MPRINT ("Record pid %d performing execve of %s\n", current->pid, filename);
-	new_syscall_enter (11, NULL);
+	new_syscall_enter (11);
 
 	// Will be used to store random vars for address space layout
 	pretval = ARGSKMALLOC(sizeof(struct rvalues), GFP_KERNEL);
@@ -3793,8 +3744,7 @@ record_time(time_t __user * tloc)
 	long rc;
 	time_t* pretval = NULL;
 
-	new_syscall_enter (13, NULL);
-
+	new_syscall_enter (13);
 	rc = sys_time (tloc);
 	DPRINT ("Pid %d records time returning %ld\n", current->pid, rc);
 	if (tloc) {
@@ -3847,7 +3797,7 @@ record_ptrace(long request, long pid, long addr, long data)
 		} // Now we know two tasks are in same record group, so memory ops should be deterministic (unless they incorrectly involve replay-specific structures) */
 	}
 
-	new_syscall_enter (26, NULL);
+	new_syscall_enter (26);
 	rc = sys_ptrace(request, pid, addr, data);
 	new_syscall_exit (26, rc, NULL);				
 	return rc;						
@@ -3908,10 +3858,8 @@ record_pipe (int __user *fildes)
 	long rc;
 	int* pretval = NULL;
 
-	new_syscall_enter (42, NULL);
-
+	new_syscall_enter (42);
 	rc = sys_pipe (fildes);
-	DPRINT ("Pid %d records pipe returning %ld\n", current->pid, rc);
 	if (rc == 0) {
 		pretval = ARGSKMALLOC(2*sizeof(int), GFP_KERNEL);
 		if (pretval == NULL) {
@@ -3941,7 +3889,7 @@ record_brk (unsigned long brk)
 	unsigned long rc;
 
 	rg_lock(current->record_thrd->rp_group);
-	new_syscall_enter (45, NULL);
+	new_syscall_enter (45);
 	rc = sys_brk (brk);
 	new_syscall_exit (45, rc, NULL);
 	rg_unlock(current->record_thrd->rp_group);
@@ -4120,7 +4068,7 @@ record_ioctl (unsigned int fd, unsigned int cmd, unsigned long arg)
 		break;
 	}
 
-	new_syscall_enter (54, NULL);
+	new_syscall_enter (54);
 
 	if (rc == 0) rc = sys_ioctl (fd, cmd, arg);
 
@@ -4169,7 +4117,7 @@ record_fcntl (unsigned int fd, unsigned int cmd, unsigned long arg)
 	char* recbuf = NULL;
 	long rc;
 
-	new_syscall_enter (55, NULL);
+	new_syscall_enter (55);
 	rc = sys_fcntl (fd, cmd, arg);
 	if (rc >= 0) {
 		if (cmd == F_GETLK) {
@@ -4280,10 +4228,8 @@ record_gettimeofday (struct timeval __user *tv, struct timezone __user *tz)
 	long rc;
 	struct gettimeofday_retvals* pretvals = NULL;
 
-	new_syscall_enter (78, NULL);
-
+	new_syscall_enter (78);
 	rc = sys_gettimeofday (tv, tz);
-	DPRINT ("Pid %d records gettimeofday(tv=%p,tz=%p) returning %ld\n", current->pid, tv, tz, rc);
 	if (rc == 0) {
 		pretvals = ARGSKMALLOC(sizeof(struct gettimeofday_retvals), GFP_KERNEL);
 		if (pretvals == NULL) {
@@ -4352,8 +4298,7 @@ record_getgroups16 (int gidsetsize, old_gid_t __user *grouplist)
 	long rc;
 	old_gid_t* pretval = NULL;
 
-	new_syscall_enter (80, NULL);
-
+	new_syscall_enter (80);
 	rc = sys_getgroups16 (gidsetsize, grouplist);
 	if (gidsetsize > 0 && rc > 0) {
 		pretval = ARGSKMALLOC(sizeof(old_gid_t)*rc, GFP_KERNEL);
@@ -4402,8 +4347,7 @@ record_uselib (const char __user * library)
 	mm_segment_t old_fs;
 
 	rg_lock(current->record_thrd->rp_group);
-	new_syscall_enter (86, NULL);
-
+	new_syscall_enter (86);
 	rc = sys_uselib (library);
 	if (rc == 0) {
 		old_fs = get_fs();
@@ -4484,7 +4428,7 @@ record_munmap (unsigned long addr, size_t len)
 	long rc;
 	
 	rg_lock(current->record_thrd->rp_group);
-	new_syscall_enter (91, NULL);
+	new_syscall_enter (91);
 	rc = sys_munmap (addr, len);
 	new_syscall_exit (91, rc, NULL);
 	DPRINT ("Pid %d records munmap of addr %lx returning %ld\n", current->pid, addr, rc);
@@ -4539,11 +4483,6 @@ static const unsigned char nargs[21] = {
 };
 
 #undef AL
-
-struct sendto_args {
-	char* buf;
-	char* to;
-};
 
 static char *
 copy_iovec_to_args(long size, const struct iovec __user *vec, unsigned long vlen)
@@ -4671,7 +4610,7 @@ record_socketcall(int call, unsigned long __user *args)
 
 	DPRINT ("Pid %d in record_socketcall(%d)\n", current->pid, call);
 
-	new_syscall_enter (102, NULL);
+	new_syscall_enter (102);
 
 	if (call < 1 || call > SYS_SENDMMSG) {
 		printk ("record_socketcall: out of range call %d\n", call);
@@ -5380,7 +5319,7 @@ record_syslog (int type, char __user *buf, int len)
 	char* recbuf = NULL;
 	long rc;
 
-	new_syscall_enter (103, NULL);
+	new_syscall_enter (103);
 	rc = sys_syslog (type, buf, len);
 	if (rc > 0 && (type >= 3 && type <= 5)) {
 		recbuf = ARGSKMALLOC(rc, GFP_KERNEL);
@@ -5425,7 +5364,7 @@ record_wait4 (pid_t upid, int __user *stat_addr, int options, struct rusage __us
 	long rc;
 	struct wait4_retvals* retvals = NULL;
 
-	new_syscall_enter (114, NULL);
+	new_syscall_enter (114);
 	rc = sys_wait4 (upid, stat_addr, options, ru);
 	if (rc >= 0) {
 		retvals = ARGSKMALLOC(sizeof(struct wait4_retvals), GFP_KERNEL);
@@ -5489,7 +5428,7 @@ record_ipc (uint call, int first, u_long second, u_long third, void __user *ptr,
 	u_long len = 0;
 	long rc;
 
-	new_syscall_enter (117, NULL);
+	new_syscall_enter (117);
 	rc = sys_ipc (call, first, second, third, ptr, fifth);
 	if (rc >= 0) {
 		switch (call) {
@@ -5751,7 +5690,7 @@ record_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 
 	prg = current->record_thrd->rp_group;
 
-	new_syscall_enter (120, NULL);
+	new_syscall_enter (120);
 
 	if (!(clone_flags&CLONE_VM)) {
 		/* The intent here is to change the next pointer for the child - the easiest way to do this is to change
@@ -6001,7 +5940,7 @@ record_mprotect (unsigned long start, size_t len, unsigned long prot)
 	long rc;
 
 	rg_lock(current->record_thrd->rp_group);
-	new_syscall_enter (125, NULL);
+	new_syscall_enter (125);
 	rc = sys_mprotect (start, len, prot);
 	DPRINT ("Pid %d records mprotect %lx for %lx-%lx returning %ld\n", current->pid, prot, start, start+len, rc);
 	new_syscall_exit (125, rc, NULL);
@@ -6046,7 +5985,7 @@ record_quotactl (unsigned int cmd, const char __user *special, qid_t id, void __
 	long rc;
 	u_long len = 0;
 
-	new_syscall_enter (131, NULL);
+	new_syscall_enter (131);
 	rc = sys_quotactl (cmd, special, id, addr);
 	if (rc >= 0) {
 		
@@ -6113,7 +6052,7 @@ record_bdflush (int func, long data)
 	long rc;							
 	long *pretval = NULL;						
 									
-	new_syscall_enter (134, NULL);				
+	new_syscall_enter (134);				
 	rc = sys_bdflush (func, data);
 	if (rc >= 0 && func > 2 && func%2 == 0) {
 	        pretval = ARGSKMALLOC (sizeof(long), GFP_KERNEL);
@@ -6152,7 +6091,7 @@ record_sysfs (int option, unsigned long arg1, unsigned long arg2)
 	long rc, len;							
 	char *pretval = NULL;						
 									
-	new_syscall_enter (135, NULL);				
+	new_syscall_enter (135);				
 	rc = sys_sysfs (option, arg1, arg2);
 	if (rc >= 0 && option == 2) {
 		len = strlen_user ((char __user *) arg2)+1;
@@ -6204,8 +6143,7 @@ record_select (int n, fd_set __user *inp, fd_set __user *outp, fd_set __user *ex
 	long rc;
 	struct select_retvals* pretvals;
 
-	new_syscall_enter (142, NULL);
-
+	new_syscall_enter (142);
 	rc = sys_select (n, inp, outp, exp, tvp);
 
 	/* Record user's memory regardless of return value in order to
@@ -6263,7 +6201,7 @@ record_readv (unsigned long fd, const struct iovec __user *vec, unsigned long vl
 {
 	long size;
 
-	new_syscall_enter (145, NULL);
+	new_syscall_enter (145);
 	size = sys_readv (fd, vec, vlen);
 	new_syscall_exit (145, size, copy_iovec_to_args(size, vec, vlen));
 	return size;
@@ -6298,7 +6236,7 @@ record_sysctl (struct __sysctl_args __user *args)
 	struct __sysctl_args kargs;
 	size_t oldlen = 0;
 
-	new_syscall_enter (149, NULL);				
+	new_syscall_enter (149);				
 	rc = sys_sysctl (args);
 	if (rc >= 0) {
 		if (copy_from_user (&kargs, args, sizeof(struct __sysctl_args))) {
@@ -6423,11 +6361,8 @@ record_mremap (unsigned long addr, unsigned long old_len, unsigned long new_len,
 	unsigned long rc;
 
 	rg_lock(current->record_thrd->rp_group);
-	new_syscall_enter (163, NULL);
-
+	new_syscall_enter (163);
 	rc = sys_mremap (addr, old_len, new_len, flags, new_addr);
-	DPRINT ("Pid %d records mremap with address %lx returning %lx\n", current->pid, addr, rc);
-
 	new_syscall_exit (163, rc, NULL);
 	rg_unlock(current->record_thrd->rp_group);
 	
@@ -6458,7 +6393,7 @@ record_getresuid16 (old_uid_t __user *ruid, old_uid_t __user *euid, old_uid_t __
 	long rc;
 	old_uid_t* pretval = NULL;
 
-	new_syscall_enter (165, NULL);
+	new_syscall_enter (165);
 	rc = sys_getresuid16 (ruid, euid, suid);
 	if (rc >= 0) {
 		pretval = ARGSKMALLOC(sizeof(old_uid_t)*3, GFP_KERNEL);
@@ -6509,8 +6444,7 @@ record_poll (struct pollfd __user *ufds, unsigned int nfds, long timeout_msecs)
 	long rc;
 	char* pretvals;
 
-	new_syscall_enter (168, NULL);
-
+	new_syscall_enter (168);
 	rc = sys_poll (ufds, nfds, timeout_msecs);
 
 	/* Record user's memory regardless of return value in order to capture partial output. */
@@ -6565,7 +6499,7 @@ record_getresgid16 (old_gid_t __user *rgid, old_gid_t __user *egid, old_gid_t __
 	long rc;
 	old_gid_t* pretval = NULL;
 
-	new_syscall_enter (171, NULL);
+	new_syscall_enter (171);
 	rc = sys_getresgid16 (rgid, egid, sgid);
 	if (rc >= 0) {
 		pretval = ARGSKMALLOC(sizeof(old_gid_t)*3, GFP_KERNEL);
@@ -6615,7 +6549,7 @@ record_prctl (int option, unsigned long arg2, unsigned long arg3, unsigned long 
 	u_long len = 0;
 	long rc;
 
-	new_syscall_enter (172, NULL);
+	new_syscall_enter (172);
 	rc = sys_prctl (option, arg2, arg3, arg4, arg5);
 	if (rc >= 0) {
 		switch (option) {
@@ -6698,37 +6632,13 @@ long shim_rt_sigreturn(struct pt_regs* regs)
 /* Can't find a definition of this in header files */
 asmlinkage long sys_rt_sigaction (int sig, const struct sigaction __user *act, struct sigaction __user *oact, size_t sigsetsize);
 
-struct rt_sigaction_args {
-	int sig;
-	const struct sigaction __user *act;		// pointer to user-space struct
-	struct sigaction *kact;				// pointer to the kernel memory struct
-	struct sigaction sa;				// A copy of the struct (used to distinguish between replay and pin rt_sigactions)	
-	struct sigaction __user *oact;
-	size_t sigsetsize;
-};
-
 static asmlinkage long
 record_rt_sigaction (int sig, const struct sigaction __user *act, struct sigaction __user *oact, size_t sigsetsize)
 {
 	long rc;
-	struct sigaction* pargs = NULL;
 	struct sigaction* pretval = NULL;
 	
-	if (act) {
-		// Save sigaction which will be used later in case we attach Pin to diffentiate Pin calls from app calls
-		pargs = ARGSKMALLOC (sizeof(struct sigaction), GFP_KERNEL);
-		if (pargs == NULL) {			
-			printk ("Pid %d record_rt_sigaction: can't allocate args\n", current->pid);
-			return -ENOMEM;
-		}
-		if (copy_from_user (pargs, act, sizeof (struct sigaction))) {
-			ARGSKFREE (pargs, sizeof(struct sigaction));
-			printk("Pid %d record_rt_sigaction: can't copy sigaction from user\n", current->pid);
-			return -ENOMEM;
-		}
-	}
-	__new_syscall_enter (174, pargs);
-
+	new_syscall_enter (174);
 	rc = sys_rt_sigaction (sig, act, oact, sigsetsize);
 
 #ifdef MCPRINT
@@ -6745,12 +6655,10 @@ record_rt_sigaction (int sig, const struct sigaction __user *act, struct sigacti
 	if (rc == 0 && oact) {
 		pretval = ARGSKMALLOC(sizeof(struct sigaction), GFP_KERNEL);
 		if (pretval == NULL) {
-			ARGSKFREE (pargs, sizeof(struct sigaction));
 			printk("record_rt_sigaction: can't allocate buffer\n");
 			return -ENOMEM;
 		}
 		if (copy_from_user (pretval, oact, sizeof(struct sigaction))) {
-			ARGSKFREE (pargs, sizeof(struct sigaction));
 			ARGSKFREE (pretval, sizeof(struct sigaction));
 			pretval = NULL;
 			rc = -EFAULT;
@@ -6766,10 +6674,9 @@ static asmlinkage long
 replay_rt_sigaction (int sig, const struct sigaction __user *act, struct sigaction __user *oact, size_t sigsetsize)
 {
 	long rc;
-	struct sigaction* args;
 	char* retparams = NULL;
 	
-	rc = get_next_syscall (174, &retparams, (char **) &args);
+	rc = get_next_syscall (174, &retparams, NULL);
 
 	if (retparams) {
 		if (!oact) {
@@ -6809,8 +6716,8 @@ shim_rt_sigaction (int sig, const struct sigaction __user *act, struct sigaction
 {
 	struct syscall_result* psr;
 	struct replay_thread* prt = current->replay_thrd;
-	struct sigaction* record_act;
-	struct sigaction* replay_act;
+	//struct sigaction* record_act;
+	//struct sigaction* replay_act;
 
 	if (current->record_thrd) return record_rt_sigaction(sig,act,oact,sigsetsize); 
 	if (current->replay_thrd && test_app_syscall(174)) {
@@ -6827,6 +6734,9 @@ shim_rt_sigaction (int sig, const struct sigaction __user *act, struct sigaction
 		// checking the sigaction sa_handler
 		// if it's not the same as record, then don't replay this sigaction
 		// it probably belongs to pin
+
+#if 0
+		// No longer works - but Mike says this is not needed
 		replay_act = (struct sigaction*) copy_struct((const char __user *)act, sizeof(struct sigaction));
 		record_act = (struct sigaction*) (psr->args);
 		if (replay_act && record_act) {
@@ -6840,7 +6750,7 @@ shim_rt_sigaction (int sig, const struct sigaction __user *act, struct sigaction
 			return sys_rt_sigaction (sig, act, oact, sigsetsize);
 		}
 		KFREE(replay_act);
-
+#endif
 		// done checking args, this is an application syscall (with Pin)
 		(*(int*)(prt->app_syscall_addr)) = 999;
 		// actually perform rt_sigaction
@@ -6858,8 +6768,7 @@ record_rt_sigprocmask (int how, sigset_t __user *set, sigset_t __user *oset, siz
 	long rc;
 	char* buf = NULL;
 
-	new_syscall_enter (175, args);
-
+	new_syscall_enter (175);
 	rc = sys_rt_sigprocmask (how, set, oset, sigsetsize);
 	DPRINT ("Pid %d records rt_sigprocmask returning %ld\n", current->pid, rc);
 
@@ -6949,7 +6858,7 @@ record_rt_sigpending (sigset_t __user *set, size_t sigsetsize)
 	long rc;							
 	char *pretval = NULL;						
 									
-	new_syscall_enter (176, NULL);				
+	new_syscall_enter (176);				
 	rc = sys_rt_sigpending (set, sigsetsize);
 	if (rc >= 0 && set) {						
 		pretval = ARGSKMALLOC (sizeof(long) + sigsetsize, GFP_KERNEL);	
@@ -7000,10 +6909,8 @@ record_getcwd (char __user *buf, unsigned long size)
 	long rc;
 	char *recbuf = NULL;
 
-	new_syscall_enter (183, NULL);
-
+	new_syscall_enter (183);
 	rc = sys_getcwd (buf, size);
-	DPRINT ("Pid %d records getcwd returning %ld\n", current->pid, rc);
 	if (rc >= 0) {
 		recbuf = ARGSKMALLOC(rc, GFP_KERNEL);
 		if (recbuf == NULL) {
@@ -7037,7 +6944,7 @@ record_capget (cap_user_header_t header, cap_user_data_t dataptr)
 	long rc;
 	struct capget_retvals* retvals = NULL;
 
-	new_syscall_enter (184, NULL);
+	new_syscall_enter (184);
 	rc = sys_capget (header, dataptr);
 	if (rc >= 0) {
 		retvals = ARGSKMALLOC(sizeof(struct capget_retvals), GFP_KERNEL);
@@ -7134,7 +7041,7 @@ record_vfork (unsigned long clone_flags, unsigned long stack_start, struct pt_re
 {
 	long rc;
 
-	new_syscall_enter (190, NULL);
+	new_syscall_enter (190);
 
 	/* On clone, we reset the user log.  On, vfork we do not do this because the parent and child share one
            address space.  This sharing will get fixed on exec. */
@@ -7309,21 +7216,9 @@ record_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, un
 {
 	long rc;
 	struct mmap_pgoff_retvals* recbuf = NULL;
-	struct mmap_pgoff_args* args = ARGSKMALLOC (sizeof(struct mmap_pgoff_args), GFP_KERNEL);
-
-	if (args == NULL) {
-		printk ("record_mmap_pgoff: can't allocate args\n");
-		return -ENOMEM;
-	}
-	args->addr = addr;
-	args->len = len;
-	args->prot = prot;
-	args->flags = flags;
-	args->fd = fd;
-	args->pgoff = pgoff;
 
 	rg_lock(current->record_thrd->rp_group);
-	__new_syscall_enter (192, args);
+	new_syscall_enter (192);
 	rc = sys_mmap_pgoff (addr, len, prot, flags, fd, pgoff);
 
 	/* Good thing we have the extra synchronization and rg_lock
@@ -7354,7 +7249,6 @@ record_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, un
 static asmlinkage long 
 replay_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, unsigned long flags, unsigned long fd, unsigned long pgoff)
 {
-	struct mmap_pgoff_args* args;
 	u_long retval, rc;
 	int given_fd = fd;
 	struct mmap_pgoff_retvals* recbuf = NULL;
@@ -7367,7 +7261,7 @@ replay_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, un
 		psr = prt->rp_saved_psr;
 		(*(int*)(prt->app_syscall_addr)) = 999;
 	} else {
-		rc = get_next_syscall (192, (char **) &recbuf, (char **) &args);
+		rc = get_next_syscall (192, (char **) &recbuf, NULL);
 	}
 
 	if (recbuf) {
@@ -7417,8 +7311,7 @@ record_getgroups (int gidsetsize, gid_t __user *grouplist)
 	long rc;
 	gid_t* pretval = NULL;
 
-	new_syscall_enter (205, NULL);
-
+	new_syscall_enter (205);
 	rc = sys_getgroups (gidsetsize, grouplist);
 	if (gidsetsize > 0 && rc > 0) {
 		pretval = ARGSKMALLOC(sizeof(gid_t)*rc, GFP_KERNEL);
@@ -7461,7 +7354,7 @@ record_getresuid (uid_t __user *ruid, uid_t __user *euid, uid_t __user *suid)
 	long rc;
 	uid_t* pretval = NULL;
 
-	new_syscall_enter (209, NULL);
+	new_syscall_enter (209);
 	rc = sys_getresuid (ruid, euid, suid);
 	if (rc >= 0) {
 		pretval = ARGSKMALLOC(sizeof(uid_t)*3, GFP_KERNEL);
@@ -7512,7 +7405,7 @@ record_getresgid (gid_t __user *rgid, gid_t __user *egid, gid_t __user *sgid)
 	long rc;
 	gid_t* pretval = NULL;
 
-	new_syscall_enter (211, NULL);
+	new_syscall_enter (211);
 	rc = sys_getresgid (rgid, egid, sgid);
 	if (rc >= 0) {
 		pretval = ARGSKMALLOC(sizeof(gid_t)*3, GFP_KERNEL);
@@ -7569,7 +7462,7 @@ record_mincore (unsigned long start, size_t len, unsigned char __user * vec)
 	unsigned long pages;
 	long rc;
 
-	new_syscall_enter (218, NULL);
+	new_syscall_enter (218);
 	rc = sys_mincore (start, len, vec);
 	if (rc >= 0) {
 		pages = len >> PAGE_SHIFT;
@@ -7612,7 +7505,7 @@ record_madvise (unsigned long start, size_t len_in, int behavior)
 	long rc;
 
 	rg_lock(current->record_thrd->rp_group);
-	new_syscall_enter (219, NULL);
+	new_syscall_enter (219);
 	rc = sys_madvise (start, len_in, behavior);
 	new_syscall_exit (219, rc, NULL);
 	rg_unlock(current->record_thrd->rp_group);
@@ -7644,7 +7537,7 @@ record_fcntl64 (unsigned int fd, unsigned int cmd, unsigned long arg)
 	char* recbuf = NULL;
 	long rc;
 
-	new_syscall_enter (221, NULL);
+	new_syscall_enter (221);
 	rc = sys_fcntl64 (fd, cmd, arg);
 	if (rc >= 0) {
 		if (cmd == F_GETLK) {
@@ -7714,7 +7607,7 @@ record_futex (u32 __user *uaddr, int op, u32 val, struct timespec __user *utime,
 {
 	long rc;
 
-	new_syscall_enter (240, NULL);
+	new_syscall_enter (240);
 	rc = sys_futex (uaddr, op, val, utime, uaddr2, val3);
 	new_syscall_exit (240, rc, NULL);
 
@@ -7743,8 +7636,7 @@ record_sched_getaffinity (pid_t pid, unsigned int len, unsigned long __user *use
 	long rc;
 	cpumask_t* pretval = NULL;
 
-	new_syscall_enter (242, NULL);
-
+	new_syscall_enter (242);
 	rc = sys_sched_getaffinity (pid, len, user_mask_ptr);
 	if (rc == 0) {
 		pretval = ARGSKMALLOC(sizeof(u_long) + len, GFP_KERNEL);
@@ -7793,8 +7685,7 @@ record_io_getevents(aio_context_t ctx_id, long min_nr, long nr, struct io_event 
 	long rc;
 	char* pretvals = NULL;
 
-	new_syscall_enter (247, NULL);
-
+	new_syscall_enter (247);
 	rc = sys_io_getevents (ctx_id, min_nr, nr, events, timeout);
 	
 	if (rc > 0) {
@@ -7839,7 +7730,7 @@ SIMPLE_SHIM4(fadvise64, 250, int, fd, loff_t, offset, size_t, len, int, advice);
 static asmlinkage void 
 record_exit_group (int error_code)
 {
-	new_syscall_enter (252, NULL);
+	new_syscall_enter (252);
 	new_syscall_exit (252, 0, NULL);
 
 	MPRINT ("Pid %d recording exit group with code %d\n", current->pid, error_code);
@@ -7890,10 +7781,8 @@ record_epoll_wait(int epfd, struct epoll_event __user *events, int maxevents, in
 	long rc;
 	char* pretvals = NULL;
 
-	new_syscall_enter (256, NULL);
-
+	new_syscall_enter (256);
 	rc = sys_epoll_wait (epfd, events, maxevents, timeout);
-	
 	if (rc > 0) {
 		pretvals = ARGSKMALLOC (rc * sizeof(struct epoll_event), GFP_KERNEL);
 		if (pretvals == NULL) {
@@ -7935,7 +7824,7 @@ record_remap_file_pages (unsigned long start, unsigned long size, unsigned long 
 	unsigned long rc;
 
 	rg_lock(current->record_thrd->rp_group);
-	new_syscall_enter (257, NULL);
+	new_syscall_enter (257);
 	rc = sys_remap_file_pages (start, size, prot, pgoff, flags);
 	new_syscall_exit (257, rc, NULL);
 	rg_unlock(current->record_thrd->rp_group);
@@ -7990,7 +7879,7 @@ record_get_mempolicy (int __user *policy, unsigned long __user *nmask, unsigned 
 	char* pretvals = NULL;
 	long rc;
 
-	new_syscall_enter (275, NULL);
+	new_syscall_enter (275);
 	rc = sys_get_mempolicy (policy, nmask, maxnode, addr, flags);
 	if (rc >= 0) {
 		unsigned long copy = ALIGN(maxnode-1, 64) / 8;
@@ -8050,7 +7939,7 @@ record_waitid (int which, pid_t upid, struct siginfo __user *infop, int options,
 	long rc;
 	struct waitid_retvals* retvals = NULL;
 
-	new_syscall_enter (284, NULL);
+	new_syscall_enter (284);
 	rc = sys_waitid (which, upid, infop, options, ru);
 	if (rc >= 0) {
 		retvals = ARGSKMALLOC(sizeof(struct waitid_retvals), GFP_KERNEL);
@@ -8112,7 +8001,7 @@ record_keyctl (int option, unsigned long arg2, unsigned long arg3, unsigned long
 	char* recbuf = NULL;
 	long rc;
 
-	new_syscall_enter (288, NULL);
+	new_syscall_enter (288);
 	rc = sys_keyctl (option, arg2, arg3, arg4, arg5);
 	if (rc >= 0) {
 		if (option == KEYCTL_DESCRIBE || option == KEYCTL_READ || option == KEYCTL_GET_SECURITY) {
@@ -8173,8 +8062,7 @@ record_pselect6 (int n, fd_set __user *inp, fd_set __user *outp, fd_set __user *
 	long rc;
 	struct pselect6_retvals* pretvals;
 
-	new_syscall_enter (308, NULL);
-
+	new_syscall_enter (308);
 	rc = sys_pselect6 (n, inp, outp, exp, tsp, sig);
 
 	/* Record user's memory regardless of return value in order to capture partial output. */
@@ -8228,8 +8116,7 @@ record_ppoll (struct pollfd __user *ufds, unsigned int nfds, struct timespec __u
 	long rc;
 	char* pretvals;
 
-	new_syscall_enter (309, NULL);
-
+	new_syscall_enter (309);
 	rc = sys_ppoll (ufds, nfds, tsp, sigmask, sigsetsize);
 
 	/* Record user's memory regardless of return value in order to capture partial output. */
@@ -8280,7 +8167,7 @@ record_get_robust_list (int pid, struct robust_list_head __user * __user *head_p
 	long rc;
 	struct get_robust_list_retvals* retvals = NULL;
 
-	new_syscall_enter (312, NULL);
+	new_syscall_enter (312);
 	rc = sys_get_robust_list (pid, head_ptr, len_ptr);
 	if (rc >= 0) {
 		retvals = ARGSKMALLOC(sizeof(struct get_robust_list_retvals), GFP_KERNEL);
@@ -8335,8 +8222,7 @@ record_splice (int fd_in, loff_t __user *off_in, int fd_out, loff_t __user *off_
 	long rc;
 	struct splice_retvals* pretvals = NULL;
 
-	new_syscall_enter (313, NULL);
-
+	new_syscall_enter (313);
 	rc = sys_splice (fd_in, off_in, fd_out, off_out, len, flags); 
 	if (rc == 0) {
 		pretvals = ARGSKMALLOC(sizeof(struct splice_retvals), GFP_KERNEL);
@@ -8401,7 +8287,7 @@ record_move_pages (pid_t pid, unsigned long nr_pages, const void __user * __user
 	char* pretvals = NULL;
 	long rc;
 
-	new_syscall_enter (317, NULL);
+	new_syscall_enter (317);
 	rc = sys_move_pages (pid, nr_pages, pages, nodes, status, flags);
 	if (rc >= 0) {
 		pretvals = ARGSKMALLOC(sizeof(u_long) + nr_pages*sizeof(int), GFP_KERNEL);
@@ -8441,7 +8327,7 @@ record_getcpu (unsigned __user *cpup, unsigned __user *nodep, struct getcpu_cach
 	long rc;
 	old_uid_t* pretval = NULL;
 
-	new_syscall_enter (318, NULL);
+	new_syscall_enter (318);
 	rc = sys_getcpu (cpup, nodep, unused);
 	if (rc >= 0) {
 		pretval = ARGSKMALLOC(sizeof(unsigned)*2, GFP_KERNEL);
@@ -8499,10 +8385,8 @@ record_epoll_pwait(int epfd, struct epoll_event __user *events, int maxevents, i
 	long rc;
 	char* pretvals = NULL;
 
-	new_syscall_enter (319, NULL);
-
+	new_syscall_enter (319);
 	rc = sys_epoll_pwait (epfd, events, maxevents, timeout, sigmask, sigsetsize);
-	
 	if (rc > 0) {
 		pretvals = ARGSKMALLOC (rc * sizeof(struct epoll_event), GFP_KERNEL);
 		if (pretvals == NULL) {
@@ -8556,8 +8440,7 @@ record_pipe2 (int __user *fildes, int flags)
 	long rc;
 	int* pretval = NULL;
 
-	new_syscall_enter (331, NULL);
-
+	new_syscall_enter (331);
 	rc = sys_pipe2 (fildes, flags);
 	DPRINT ("Pid %d records pipe2 returning %ld\n", current->pid, rc);
 	if (rc == 0) {
@@ -8588,7 +8471,7 @@ record_preadv (unsigned long fd, const struct iovec __user *vec,  unsigned long 
 {
 	long size;
 
-	new_syscall_enter (333, NULL);
+	new_syscall_enter (333);
 	size = sys_preadv (fd, vec, vlen, pos_l, pos_h);
 	new_syscall_exit (333, size, copy_iovec_to_args(size, vec, vlen));
 	return size;
@@ -8621,8 +8504,7 @@ record_recvmmsg(int fd, struct mmsghdr __user *msg, unsigned int vlen, unsigned 
 	long rc, retval;
 	long* plogsize = NULL;
 
-	new_syscall_enter (337, NULL);
-
+	new_syscall_enter (337);
 	rc = sys_recvmmsg (fd, msg, vlen, flags, timeout);
 	if (rc > 0) {
 		retval = log_mmsghdr(msg, rc, plogsize);
@@ -8687,8 +8569,7 @@ record_name_to_handle_at(int dfd, const char __user *name, struct file_handle __
 	long rc;
 	struct name_to_handle_at_retvals* pretvals = NULL;
 
-	new_syscall_enter (341, NULL);
-
+	new_syscall_enter (341);
 	rc = sys_name_to_handle_at (dfd, name, handle, mnt_id, flag);
 	if (rc == 0) {
 		pretvals = ARGSKMALLOC(sizeof(struct name_to_handle_at_retvals), GFP_KERNEL);
@@ -8764,7 +8645,7 @@ record_process_vm_readv(pid_t pid, const struct iovec __user *lvec, unsigned lon
 		} // Now we know two tasks are in same record group, so memory ops should be deterministic (unless they incorrectly involve replay-specific structures) */
 	}
 
-	new_syscall_enter (347, NULL);
+	new_syscall_enter (347);
 	rc =  sys_process_vm_readv(pid, lvec, liovcnt, rvec, riovcnt, flags);
 	new_syscall_exit (347, rc, NULL);				
 	return rc;						
@@ -8812,7 +8693,7 @@ record_process_vm_writev(pid_t pid, const struct iovec __user *lvec, unsigned lo
 		} // Now we know two tasks are in same record group, so memory ops should be deterministic (unless they incorrectly involve replay-specific structures) */
 	}
 
-	new_syscall_enter (348, NULL);
+	new_syscall_enter (348);
 	rc =  sys_process_vm_writev(pid, lvec, liovcnt, rvec, riovcnt, flags);
 	new_syscall_exit (348, rc, NULL);				
 	return rc;						
@@ -8947,6 +8828,7 @@ static ssize_t write_log_data (struct file* file, loff_t* ppos, struct record_th
 	ssize_t copyed = 0;
 	struct iovec* pvec; // Concurrent writes need their own vector
 	int kcnt = 0;
+	u_long data_len;
 #ifdef USE_HPC
 	unsigned long long hpc1;	
 	unsigned long long hpc2;	
@@ -9009,6 +8891,19 @@ static ssize_t write_log_data (struct file* file, loff_t* ppos, struct record_th
 		return -EINVAL;
 	}
 
+	/* Now write ancillary data - count of bytes goes first */
+	data_len = 0;
+	list_for_each_entry_reverse (node, &prect->rp_argsalloc_list, list) {
+		data_len += node->pos - node->head;
+	}
+	printk ("Ancillary data written is %lu\n", data_len);
+	copyed = vfs_write(file, (char *) &data_len, sizeof(data_len), ppos);
+	if (copyed != sizeof(count)) {
+		printk ("write_log_data: tried to write ancillary data length, got rc %d\n", copyed);
+		KFREE (pvec);
+		return -EINVAL;
+	}
+
 	list_for_each_entry_reverse (node, &prect->rp_argsalloc_list, list) {
 		MPRINT ("Pid %d logid %d argssize write buffer slab size %d\n", current->pid, log, node->pos - node->head);
 		pvec[kcnt].iov_base = node->head;
@@ -9035,7 +8930,7 @@ free_kernel_log_internal (struct syscall_result* psr, int syscall_count)
 	DPRINT("Pid %d free_kernel_log_internal\n", current->pid);
 
 	for (i=0; i < syscall_count; i++) {
-		DPRINT ("    freeing sysnum: log_ptr: %d, sysnum: %d, signal %p, ret %p, arg %p\n", i, psr[i].sysnum, psr[i].signal, psr[i].retparams, psr[i].args);
+		DPRINT ("    freeing sysnum: log_ptr: %d, sysnum: %d, signal %p, ret %p\n", i, psr[i].sysnum, psr[i].signal, psr[i].retparams);
 
 		while (psr[i].signal) {
 			struct repsignal *r = psr[i].signal;
@@ -9088,6 +8983,7 @@ int read_log_data_internal (struct record_thread* prect, struct syscall_result* 
 	int rc, size, cnt = 0;
 	mm_segment_t old_fs;
 	int count, i;
+	u_long data_len;
 
 #ifdef USE_HPC
 	// for those calibration constants
@@ -9138,37 +9034,15 @@ int read_log_data_internal (struct record_thread* prect, struct syscall_result* 
 		goto error;
 	}
 
+	rc = vfs_read (file, (char *) &data_len, sizeof(data_len), pos);
+	if (rc != sizeof(data_len)) {
+		printk ("vfs_read returns %d, sizeof(data_len) %d\n", rc, sizeof(data_len));
+		*syscall_count = 0;
+		goto error;
+	}
+
 	for (i = 0; i < count; i++) {
 		DPRINT ("syscall sysnum %3d retval %ld\n", psr[cnt].sysnum, psr[cnt].retval);
-		if (psr[cnt].args) {
-			psr[cnt].args = NULL;
-			switch (psr[cnt].sysnum) {
-				case 174: size = sizeof(struct sigaction); break;
-				case 192: size = sizeof(struct mmap_pgoff_args); break;
-				default: 
-					  size = 0;
-					  printk ("read_log_data: unrecognized syscall %d\n", psr[cnt].sysnum);
-			}
-			if (size > 0) {
-				char *buf = KMALLOC(size, GFP_KERNEL);
-				if (buf == NULL) {
-					printk ("Cannot allocate log memory, args size = %d\n", size);
-					rc = sys_close (fd);
-					if (rc < 0) printk ("read_log_data: file close failed with rc %d\n", rc);
-					set_fs (old_fs);
-					return -ENOMEM;
-				}
-				rc = vfs_read (file, buf, size, pos);
-				if (rc != size) {
-					printk ("vfs_read of data returns %d\n", rc);
-					KFREE(buf);
-					goto error;
-				}
-
-				psr[cnt].args = buf;
-				DPRINT ("\t%d bytes of args included\n", size);
-			}
-		}
 		if (psr[cnt].retparams) {
 			int do_vmalloc = 0;
 			loff_t peekpos;
@@ -9358,6 +9232,7 @@ int read_log_data_internal (struct record_thread* prect, struct syscall_result* 
 			case 319: size = psr[cnt].retval*sizeof(struct epoll_event); break;
 			case 325: size = sizeof(struct itimerspec); break;
 			case 326: size = sizeof(struct itimerspec); break;
+			case 331: size = 2*sizeof(int); break;
 			case 333: size = psr[cnt].retval;	
 				if (size > KMALLOC_THRESHOLD) do_vmalloc = 1;	
 				break;
