@@ -54,7 +54,6 @@ struct syscall_result {
 	long			retval;		// return code from the system call
 	struct repsignal*	signal;		// Set if sig should be delivered
 	void*			retparams;	// system-call-specific return data
-	void*			args;		// system-call-specific arguments
 	long                    start_clock;    // total order over start
         long                    stop_clock;     // and stop of all system calls
 };
@@ -92,32 +91,6 @@ struct pselect6_retvals {
 	fd_set          outp;
 	fd_set          exp;
 	struct timespec tsp;
-};
-
-struct mmap_pgoff_args {
-	unsigned long addr;
-	unsigned long len;
-	unsigned long prot;
-	unsigned long flags;
-	unsigned long fd;
-	unsigned long pgoff;
-};
-
-struct rt_sigaction_args {
-	int sig;
-	const struct sigaction* act;
-	struct sigaction* kact;
-	struct sigaction sa;
-	struct sigaction* oact;
-	size_t sigsetsize;
-};
-
-struct rt_sigprocmask_args {
-	int how;
-	sigset_t set;
-	char* kset;
-	sigset_t oset;
-	size_t sigsetsize;
 };
 
 struct generic_socket_retvals {
@@ -263,6 +236,7 @@ static u_long varsize (int fd, int stats, struct syscall_result* psr)
 		printf ("cannot read variable length field\n");
 		return -1;
 	}
+	printf ("\t4 bytes of variable length field header included\n");
 	if (stats) {
 		bytes[psr->sysnum] += sizeof(u_long);
 	}
@@ -273,14 +247,13 @@ int main (int argc, char* argv[])
 {
 	struct syscall_result psr;
 	struct syscall_result* psrs;
-	//struct repsignal sig;
 	char sig[172];
 	int dfd, fd, rc, size, call, print_recv = 0, dump_recv = 0;
 	char buf[65536*16];
 	int count, i, rcv_total = 0;
 	int stats = 0;
-	//int count, i;
 	int index = 0;
+	u_long data_size;
 #ifdef USE_HPC
 	// calibration to determine how long a tick is
 	unsigned long long hpc1;
@@ -356,6 +329,12 @@ int main (int argc, char* argv[])
 			printf ("read of psrs returns %d, expected %d, errno = %d\n", rc, sizeof(struct syscall_result)*count, errno);
 			return rc;
 		}
+		rc = read (fd, &data_size, sizeof(data_size));
+		if (rc != sizeof(data_size)) {
+			printf ("read returns %d, expected %d, errno = %d\n", rc, sizeof(data_size), errno);
+			return rc;
+		}
+		printf ("ancillary data size is %lu\n", data_size);
 		for (i = 0; i < count; i++) {
 			psr = psrs[i];
 			if (stats) {
@@ -369,32 +348,6 @@ int main (int argc, char* argv[])
 #endif
 			printf ("\n");
 
-                        if (psr.args) {
-                                switch (psr.sysnum) {
-				// mcc: struct sigaction is defined differently in the kernel and
-				// in user-space so we need to hard-code the size to be 40 
-				case 174: size = 20 /* sizeof(struct sigaction)*/; break;
-				case 175: size = sizeof (struct rt_sigprocmask_args); break;
-                                case 192: size = sizeof (struct mmap_pgoff_args); break;
-				default: 
-					size = 0;
-					printf ("write_log_data: unrecognized syscall %d\n", psr.sysnum);
-				}
-				rc = read (fd, buf, size);
-				if (rc != size) {
-					printf ("read of args returns %d, errno = %d\n", rc, errno);
-					return rc;
-				}
-				if (stats) {
-					bytes[psr.sysnum] += size;
-				}
-				printf ("\t%d bytes of args included\n", size);
-				if (psr.sysnum == 192) {
-					struct mmap_pgoff_args *args;
-					args = (struct mmap_pgoff_args *) buf;
-					printf ("\tmmap_pgoff_args: addr %lx, len %lu, fd %lu, pgoff %lu\n", args->addr, args->len, args->fd, args->pgoff);
-				}
-                        }
 			if (psr.retparams) {
 				switch (psr.sysnum) {
 				case 3: size = psr.retval; break;
@@ -590,6 +543,7 @@ int main (int argc, char* argv[])
 				case 319: size = psr.retval*sizeof(struct epoll_event); break;
 				case 325: size = sizeof(struct itimerspec); break;
 				case 326: size = sizeof(struct itimerspec); break;
+				case 331: size = 2*sizeof(int); break;
 				case 333: size = psr.retval; break;
 				case 337: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
 			        case 340: size = sizeof(struct rlimit64); break;
