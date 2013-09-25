@@ -189,9 +189,9 @@ struct syscall_result {
 	unsigned long long	hpc_end;	// Time-stamp counter value when system call finished
 #endif
 	short			sysnum;		// system call number executed
+	u_char			retparams;	// is there any returned data for this system call?
+	u_char	                signal;		// Set if sig should be delivered
 	long			retval;		// return code from the system call
-	struct repsignal*	signal;		// Set if sig should be delivered
-	void*			retparams;	// system-call-specific return data
 	long                    start_clock;    // total order over start
         long                    stop_clock;     // and stop of all system calls
 };
@@ -391,6 +391,7 @@ struct record_thread {
 	struct repsignal_context* rp_repsignal_context_stack;  // Saves replay context on signal delivery
 	u_long rp_record_hook;          // Used for dumbass linking in glibc
 	struct repsignal *rp_signals;   // Stores delayed signals
+	struct repsignal* rp_last_signal; // Points to last signal recorded for this process
 };
 
 #define REPLAY_STATUS_RUNNING         0 // I am the running thread - should only be one of these per group
@@ -408,7 +409,7 @@ struct replay_thread {
 	pid_t rp_replay_pid;           // Pid of replaying task (0 if not set)
 	u_long rp_out_ptr;             // Next record to read
 	short rp_replay_exit;          // Set after a rollback
-	struct repsignal *rp_signals;  // Set if sig should be delivered
+	u_char rp_signals;             // Set if sig should be delivered
 	u_long app_syscall_addr;       // Address in user-land that is set when the syscall should be replayed
 
 	int rp_status;                  // One of the replay statuses above
@@ -434,8 +435,7 @@ static ssize_t write_log_data(struct file* file, loff_t* ppos, struct record_thr
 static void destroy_record_group (struct record_group *prg);
 static void destroy_replay_group (struct replay_group *prepg);
 static void __destroy_replay_thread (struct replay_thread* prp);
-static void free_kernel_log(struct record_thread *prect);
-static void free_kernel_log_internal(struct syscall_result* psr, int syscall_count);
+static void argsfreeall (struct record_thread* prect);
 void write_begin_log (struct file* file, loff_t* ppos, struct record_thread* prect);
 static void write_and_free_kernel_log(struct record_thread *prect);
 //static int add_sysv_mapping (struct replay_thread* prt, int record_id, int replay_id);
@@ -828,6 +828,7 @@ new_record_thread (struct record_group* prg, u_long recpid, int logid)
 	prp->rp_repsignal_context_stack = NULL;
 	prp->rp_record_hook = 0;
 	prp->rp_signals = NULL;
+	prp->rp_last_signal = NULL;
 
 	// XXX refcounts are probably buggy!
 	get_record_group(prg);
@@ -856,11 +857,8 @@ new_replay_thread (struct replay_group* prg, struct record_thread* prec_thrd, u_
 	prp->rp_replay_pid = reppid;
 	prp->rp_out_ptr = out_ptr;
 	prp->rp_replay_exit = 0;
-
-	prp->rp_signals = NULL;
-
+	prp->rp_signals = 0;
 	prp->rp_saved_psr = NULL;
-
 	prp->rp_status = REPLAY_STATUS_ELIGIBLE; // We should be able to run immediately
 	init_waitqueue_head (&prp->rp_waitq);
 
@@ -907,7 +905,7 @@ __destroy_record_thread (struct record_thread* prp)
 		current->pid, prp->rp_record_pid, prp, atomic_read(&prp->rp_refcnt));
 
 	DPRINT (" destroy_record_thread freeing log %p: start\n", prp->rp_log);
-	free_kernel_log (prp);
+	argsfreeall (prp);
 	VFREE (prp->rp_log); 
 	DPRINT ("       destroy_record_thread freeing log %p: end\n", prp->rp_log);
 
@@ -944,8 +942,7 @@ __destroy_replay_thread (struct replay_thread* prp)
 		return;
 	}
 
-	for (prev = prp; prev->rp_next_thread != prp;
-	     prev = prev->rp_next_thread);
+	for (prev = prp; prev->rp_next_thread != prp; prev = prev->rp_next_thread);
 	prev->rp_next_thread = prp->rp_next_thread;
 
 	// remove sys mappings
@@ -1392,6 +1389,36 @@ static void* argsalloc (size_t size)
 	return ptr;
 }
 
+/* Simplified method to return pointer to next data to consume on replay */
+static char* 
+argshead (struct record_thread* prect)
+{
+	struct argsalloc_node* node;
+	node = list_first_entry(&prect->rp_argsalloc_list, struct argsalloc_node, list);
+	if (unlikely(list_empty(&prect->rp_argsalloc_list))) {
+		printk ("argshead: pid %d sanity check failed - no anc. data\n", current->pid);
+		BUG();
+	}
+	return node->pos;
+}
+
+/* Simplified method to advance pointer on replay */
+static void 
+argsconsume (struct record_thread* prect, u_long size)
+{
+	struct argsalloc_node* node;
+	node = list_first_entry(&prect->rp_argsalloc_list, struct argsalloc_node, list);
+	if (unlikely(list_empty(&prect->rp_argsalloc_list))) {
+		printk ("argsconsume: pid %d sanity check failed - no anc. data\n", current->pid);
+		BUG();
+	}
+	if (unlikely (node->head + node->size - node->pos < size)) {
+		printk ("argsconsume: pid %d sanity check failed - head %p size %lu pos %p size %lu\n", current->pid, node->head, (u_long) node->size, node->pos, size);
+		BUG();
+	}
+	node->pos += size;
+}
+
 /*
  * Adding support for freeing...
  * The only use case for this is in case of an error (like copying from user)
@@ -1422,7 +1449,20 @@ static void argsfree (const void* ptr, size_t size)
 	}
 }
 
-// functiosn to keep track of the sysv identifiers, since we always want to return the record identifier
+// Free all allocated data values at once
+static void argsfreeall (struct record_thread* prect)
+{
+	struct argsalloc_node* node;
+	struct argsalloc_node* next_node;
+
+	list_for_each_entry_safe (node, next_node, &prect->rp_argsalloc_list, list) {
+		VFREE(node->head);
+		list_del(&node->list);
+		KFREE(node);	
+	}
+}
+
+// function to keep track of the sysv identifiers, since we always want to return the record identifier
 static int add_sysv_mapping (struct replay_thread* prt, int record_id, int replay_id) { 
 	struct sysv_mapping* tmp;
 	tmp = KMALLOC(sizeof(struct sysv_mapping), GFP_KERNEL); 
@@ -1699,9 +1739,9 @@ new_syscall_enter (long sysnum)
 	}
 
 	psr = &prt->rp_log[prt->rp_in_ptr]; 
-	psr->signal = NULL;
+	psr->signal = 0;
 	psr->sysnum = sysnum;
-	psr->retparams = NULL;
+	psr->retparams = 0;
 	psr->retval = 0;
 	psr->start_clock = atomic_add_return (1, prt->rp_precord_clock) - 1;
 	psr->stop_clock = -1;
@@ -1725,7 +1765,7 @@ new_syscall_exit (long sysnum, long retval, void* retparams)
 
 	psr = &prt->rp_log[prt->rp_in_ptr];
 	psr->retval = retval;
-	psr->retparams = retparams;
+	psr->retparams = retparams ? 1 : 0;
 #ifdef USE_HPC
 	psr->hpc_end = rdtsc();
 #endif
@@ -1772,7 +1812,7 @@ long
 record_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 {
 	struct record_thread* prt = current->record_thrd;
-	struct repsignal* psignal, *tmp;
+	struct repsignal* psignal;
 	struct syscall_result* psr = &prt->rp_log[(prt->rp_in_ptr-1)]; 
 	struct repsignal_context* pcontext;
 	struct pthread_log_head* phead = (struct pthread_log_head __user *) prt->rp_user_log_addr;
@@ -1891,14 +1931,12 @@ record_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 	psignal->next = NULL;
 	
 	// Add signal to last record in log - will be delivered after syscall on replay
-	if (psr->signal == NULL) 
-		psr->signal = psignal;
-	else {
-		// Add to tail of list
-		tmp = psr->signal;
-		while (tmp->next != NULL) tmp = tmp->next;
-		tmp->next = psignal;
+	if (psr->signal == 0) {
+		psr->signal = 1;
+	} else {
+		prt->rp_last_signal->next = psignal;
 	}
+	prt->rp_last_signal = psignal;
 
 	if (ka->sa.sa_handler > SIG_IGN) {
 		// Also save context from before signal
@@ -1919,15 +1957,16 @@ replay_signal_delivery (int* signr, siginfo_t* info)
 	struct replay_thread* prt = current->replay_thrd;
 	struct repsignal* psignal;
 	
-	if (prt->rp_signals == NULL) {
-		MPRINT ("pid %d replay_signal called but no signals, signr is %d\n", 
-			current->pid, *signr);
+	if (!prt->rp_signals) {
+		MPRINT ("pid %d replay_signal called but no signals, signr is %d\n", current->pid, *signr);
 		*signr = 0;
 		return;
 	}
-	psignal = prt->rp_signals;
+	psignal = (struct repsignal *) argshead (prt->rp_record_thread);
+	argsconsume (prt->rp_record_thread, sizeof(struct repsignal));
+
 	MPRINT ("Pid %d replaying signal delivery signo %d, clock %lu\n", current->pid, psignal->signr, *(prt->rp_preplay_clock));
-	prt->rp_signals = psignal->next;
+	prt->rp_signals = psignal->next ? 1 : 0;
 
 	*signr = psignal->signr;
 	memcpy (info, &psignal->info, sizeof (siginfo_t));
@@ -1958,31 +1997,6 @@ int replay_has_pending_signal (void) {
 	return 0;
 }
 
-/* Free every individual syscall record */
-static void
-free_kernel_log (struct record_thread *prect)
-{
-	struct argsalloc_node* node;
-	struct argsalloc_node* next_node;
-
-	MPRINT ("Pid %d free_kernel_log\n", current->pid);
-
-	if (current->record_thrd) {
-		list_for_each_entry_safe (node, next_node, &prect->rp_argsalloc_list, list) {
-			VFREE(node->head);
-			list_del(&node->list);
-			KFREE(node);	
-		}
-	}
-	
-	// we don't use slabs during replay, and the args/signals/retparams are loaded separately 
-	// so we need to free the old-fashioned way
-	if (current->replay_thrd) {
-		MPRINT ("Pid %d going to call free_kernel_log_internal, count: %lu\n", current->pid, prect->rp_in_ptr);
-		free_kernel_log_internal (prect->rp_log, prect->rp_in_ptr);
-	}
-}
-
 static void
 write_and_free_kernel_log(struct record_thread *prect)
 {
@@ -2001,7 +2015,7 @@ write_and_free_kernel_log(struct record_thread *prect)
 	}
 	set_fs(old_fs);
 
-	free_kernel_log (prect);
+	argsfreeall (prect);
 }
 
 #ifdef WRITE_ASYNC
@@ -2039,7 +2053,7 @@ write_and_free_handler (struct work_struct *work)
 	}
 	set_fs(old_fs);
 
-	free_kernel_log (prect);
+	argsfreeall (prect);
 	 __destroy_record_thread(prect);
 	KFREE(awp);
 	return;
@@ -2268,7 +2282,7 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 		}
 		// log overflowed and we need to read in next batch of records
 		MPRINT ("Pid %d recpid %d syscall %d reached end of in-memory log -- free previous syscall records and rad in new ones\n", current->pid, prt->rp_record_thread->rp_record_pid, syscall);
-		free_kernel_log (prt->rp_record_thread);
+		argsfreeall (prt->rp_record_thread);
 		prt->rp_record_thread->rp_in_ptr = 0;
 		read_log_data (prt->rp_record_thread);
 		if (prt->rp_record_thread->rp_in_ptr == 0) {
@@ -2292,7 +2306,7 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 	}
 
 	if (ppretparams) {
-		*ppretparams = psr->retparams;
+		*ppretparams = (psr->retparams) ? argshead(prt->rp_record_thread) : NULL;
 	} else if (unlikely(psr->retparams)) {
 		printk ("[ERROR]Pid %d record pid %d not expecting return parameters, syscall %d start clock %ld stop clock %ld\n", 
 			current->pid, prt->rp_record_thread->rp_record_pid, syscall, psr->start_clock, psr->stop_clock);
@@ -2408,7 +2422,7 @@ get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, stru
 
 	if (unlikely(psr->signal)) {
 		MPRINT ("Pid %d set deliver signal flag before clock %ld incrment\n", current->pid, *(prt->rp_preplay_clock));
-		prt->rp_signals = psr->signal;
+		prt->rp_signals = 1;
 		signal_wake_up (current, 0);
 	}
 
@@ -3095,6 +3109,7 @@ static asmlinkage long replay_##name (args)				\
 									\
 	if (retparams) {						\
 		if (copy_to_user (dest, retparams, size)) printk ("replay_##name: pid %d cannot copy to user\n", current->pid); \
+		argsconsume (current->replay_thrd->rp_record_thread, size); \
 	}								\
 									\
 	return rc;							\
@@ -3213,6 +3228,7 @@ static asmlinkage long replay_##name (args)				\
 									\
 	if (retparams) {						\
 		if (copy_to_user (dest, retparams, rc)) printk ("replay_##name: pid %d cannot copy to user\n", current->pid); \
+		argsconsume (current->replay_thrd->rp_record_thread, rc); \
 	}								\
 									\
 	return rc;							\
@@ -3611,7 +3627,6 @@ replay_write (unsigned int fd, const char __user * buf, size_t count)
 	return rc;
 }
 
-
 asmlinkage ssize_t shim_write (unsigned int fd, const char __user * buf, size_t count) SHIM_CALL (write, 4, fd, buf, count);
 
 SIMPLE_SHIM3(open, 5, const char __user *, filename, int, flags, int, mode);
@@ -3697,6 +3712,7 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 	get_next_syscall_enter (prt, prg, 11, (char **) &retparams, &psr);  // Need to split enter/exit because of vfork/exec wait
 	MPRINT ("Replay pid %d performing execve of %s\n", current->pid, filename);
 	memcpy (&current->replay_thrd->random_values, retparams, sizeof(struct rvalues));
+	argsconsume(prt->rp_record_thread, sizeof(struct rvalues));      
 	current->replay_thrd->random_values.cnt = 0;
 	rc = do_execve(filename, __argv, __envp, regs);
 
@@ -4102,8 +4118,11 @@ replay_ioctl (unsigned int fd, unsigned int cmd, unsigned long arg)
 	long rc = get_next_syscall (54, &retparams);
 	if (retparams) {
 		my_size = *((u_long *)retparams);
-		if (copy_to_user((void __user *)arg, retparams+sizeof(int), my_size))
+		if (copy_to_user((void __user *)arg, retparams+sizeof(u_long), my_size)) {
 			printk("replay_ioctl: pid %d faulted\n", current->pid);
+			return -EFAULT;
+		}
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(u_long) + my_size);
 	}
 	return rc;
 }
@@ -4158,6 +4177,7 @@ replay_fcntl (unsigned int fd, unsigned int cmd, unsigned long arg)
 	if (retparams) {
 		u_long bytes = *((u_long *) retparams);
 		if (copy_to_user((void __user *)arg, retparams + sizeof(u_long), bytes)) return syscall_mismatch();
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(u_long) + bytes);
 	}
 	return rc;
 }
@@ -4190,6 +4210,7 @@ static asmlinkage long replay_sigaction (int sig, const struct old_sigaction __u
 	rc = get_next_syscall (67, (char **) &retparams); 
 	if (retparams) {						
 		if (copy_to_user (oact, retparams, sizeof(struct old_sigaction))) printk ("replay_sigaction: pid %d cannot copy to user\n", current->pid); 
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct old_sigaction));
 	}								
 	return rc;							
 }									
@@ -4283,6 +4304,7 @@ replay_gettimeofday (struct timeval __user *tv, struct timezone __user *tz)
 				return syscall_mismatch();
 			}
 		}
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct gettimeofday_retvals));
 	}
 	return rc;
 }
@@ -4324,6 +4346,7 @@ replay_getgroups16 (int gidsetsize, old_gid_t __user *grouplist)
 	long rc = get_next_syscall (80, (char **) &retparams);
 	if (retparams) {
 		if (copy_to_user (grouplist, retparams, sizeof(old_gid_t)*rc)) printk ("Pid %d cannot copy groups to user\n", current->pid);
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(old_gid_t)*rc);
 	}
 	return rc;
 }
@@ -4401,6 +4424,7 @@ replay_uselib (const char __user * library)
 			printk ("Replay mmap_pgoff returns different value %lx than %lx\n", retval, rc);
 			syscall_mismatch ();
 		}
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct mmap_pgoff_retvals));
 	}
 	return rc;
 }
@@ -5068,6 +5092,7 @@ extract_mmsghdr (char* retparams, struct mmsghdr __user *msg, long rc)
 	struct iovec __user *iovec;
 	unsigned long iovlen;
 
+	argsconsume(current->replay_thrd->rp_record_thread, sizeof(u_long) + *((u_long *) retparams));
 	retparams += sizeof(u_long);
 	for (i = 0; i < rc; i++) {
 		phdr = (struct mmsghdr *) retparams;
@@ -5142,47 +5167,36 @@ replay_socketcall (int call, unsigned long __user *args)
 	case SYS_SETSOCKOPT:
 	case SYS_SENDMSG:
 	case SYS_SENDMMSG:
+		if (retparams) argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct generic_socket_retvals));
 		return rc;
 	case SYS_ACCEPT:
-	case SYS_ACCEPT4:
-		if (rc >= 0) {
+	case SYS_ACCEPT4: 
+		if (retparams) {
 			struct accept_retvals* retvals = (struct accept_retvals *) retparams;
-			if (retvals == NULL) {
-				printk ("[DIFF] Pid %d replay_socketcall(accept): no return parameters\n", current->pid);
-				goto error;
-			}
 			if (kargs[1]) {
 				*((int *) kargs[2]) = retvals->addrlen;
 				if (copy_to_user ((char *) args[1], &retvals->addr, retvals->addrlen)) {
 					printk ("Pid %d replay_socketcall_accept cannot copy to user\n", current->pid);
 				}
 			}
+			argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct accept_retvals)+retvals->addrlen);
 		}
 		return rc;
 	case SYS_GETSOCKNAME:
 	case SYS_GETPEERNAME:
-		if (rc >= 0) {
+		if (retparams) {
 			struct accept_retvals* retvals = (struct accept_retvals *) retparams;
-			if (retvals == NULL) {
-				printk ("[DIFF]replay_socketcall(getsockname/getpeername): no return parameters\n");
-				goto error;
-			}
 			*((int *) kargs[2]) = retvals->addrlen;
 			if (copy_to_user ((char *) args[1], &retvals->addr, retvals->addrlen)) {
 				printk ("Pid %d replay_socketcall_getpeername cannot copy to user\n", current->pid);
 			}
+			argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct accept_retvals)+retvals->addrlen);
 		}
 		return rc;
 	case SYS_SOCKETPAIR:
-		if (rc >= 0) {
-			
+		if (retparams) {
 			int* sv;
 			struct socketpair_retvals* retvals = (struct socketpair_retvals *) retparams;
-			if (retvals == NULL) {
-				printk ("[DIFF]replay_socketcall(socketpair): no return parameters\n");
-				goto error;
-			}
-			
 
 			sv = (int *) KMALLOC(2 * sizeof(int), GFP_KERNEL);
 			*sv = retvals->sv0;
@@ -5193,28 +5207,21 @@ replay_socketcall (int call, unsigned long __user *args)
 			}	       
 
 			KFREE(sv);
+			argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct socketpair_retvals));
 		}
 		return rc;
-		
 	case SYS_RECV:
-		if (rc >= 0) {
+		if (retparams) {
 			struct recvfrom_retvals* retvals = (struct recvfrom_retvals *) retparams;
-			if (retvals == NULL) {
-				printk ("[DIFF]replay_socketcall(recv): no return parameters\n");
-				goto error;
-			}
 			if (copy_to_user ((char *) kargs[1], &retvals->buf, rc)) {
 				printk ("Pid %d replay_socketcall_recv cannot copy to user\n", current->pid);
 			}
+			argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct recvfrom_retvals)+rc);
 		}
 		return rc;
 	case SYS_RECVFROM:
-		if (rc >= 0) {
+		if (retparams) {
 			struct recvfrom_retvals* retvals = (struct recvfrom_retvals *) retparams;
-			if (retvals == NULL) {
-				printk ("[DIFF]replay_socketcall(recvfrom): no return parameters\n");
-				goto error;
-			}
 			if (copy_to_user ((char *) kargs[1], &retvals->buf, rc)) {
 				printk ("Pid %d replay_socketcall_recvfrom cannot copy to user\n", current->pid);
 			}
@@ -5225,19 +5232,16 @@ replay_socketcall (int call, unsigned long __user *args)
 				}
 
 			}
+			argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct recvfrom_retvals)+rc-1);
 		}
 		return rc;
-	case SYS_RECVMSG: {
-		struct recvmsg_retvals* retvals = (struct recvmsg_retvals *) retparams;
-		char* pdata = ((char *) retvals) + sizeof (struct recvmsg_retvals);
-		struct msghdr *msg = (struct msghdr __user *) args[1];
-		long rem_size, to_copy, i, iovlen;
-
+	case SYS_RECVMSG: 
 		if (retparams) {
-			if (retvals == NULL) {
-				printk ("[DIFF]replay_socketcall(recvmsg): no return parameters\n");
-				goto error;
-			}
+			struct recvmsg_retvals* retvals = (struct recvmsg_retvals *) retparams;
+			char* pdata = ((char *) retvals) + sizeof (struct recvmsg_retvals);
+			struct msghdr *msg = (struct msghdr __user *) args[1];
+			long rem_size, to_copy, i, iovlen;
+
 			put_user (retvals->msg_controllen, &msg->msg_controllen); // This is a in-out parameter
 			put_user (retvals->msg_flags, &msg->msg_flags);           // Out parameter
 
@@ -5276,25 +5280,20 @@ replay_socketcall (int call, unsigned long __user *args)
 				printk ("replay_socketcall(recvmsg): %ld bytes remaining\n", rem_size);
 				syscall_mismatch();
 			}
+			argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct recvmsg_retvals)+retvals->msg_namelen+retvals->msg_controllen+rc);
 		}
 		return rc;
-	}
 	case SYS_RECVMMSG:
-	{
-		if (rc > 0) {
+		if (retparams) {
 			struct mmsghdr __user *pmsghdr = (struct mmsghdr __user *) kargs[1];
+			argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct generic_socket_retvals));
 			retval = extract_mmsghdr (retparams, pmsghdr, rc);
 			if (retval < 0) syscall_mismatch();
 		}
 		return rc;
-	}
 	case SYS_GETSOCKOPT:
-		if (rc >= 0) {
+		if (retparams) {
 			struct getsockopt_retvals* retvals = (struct getsockopt_retvals *) retparams;
-			if (retvals == NULL) {
-				printk ("[DIFF]replay_socketcall(getsockopt): no return parameters\n");
-				goto error;
-			}
 
 			if (copy_to_user ((char*) args[3], &retvals->optval, retvals->optlen)) {
 				printk ("Pid %d cannot copy optval to user\n", current->pid);
@@ -5303,10 +5302,10 @@ replay_socketcall (int call, unsigned long __user *args)
 			if (copy_to_user ((char *) args[4], &retvals->optlen, sizeof(int))) {
 				printk ("Pid %d cannot copy optlen to user\n", current->pid);
 			}
+			argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct getsockopt_retvals)+retvals->optlen);
 		}
 		return rc;
 	}
-error:
 	return syscall_mismatch();
 }
 
@@ -5397,7 +5396,7 @@ replay_wait4 (pid_t upid, int __user *stat_addr, int options, struct rusage __us
 {
 	struct wait4_retvals* pretvals;
 	long rc = get_next_syscall (114, (char **) &pretvals);
-	if (rc >= 0) {
+	if (pretvals) {
 		if (stat_addr) {
 			if (copy_to_user (stat_addr, &pretvals->stat_addr, sizeof(int))) {
 				printk ("Pid %d replay_wait4 cannot copy status to user\n", current->pid);
@@ -5410,6 +5409,7 @@ replay_wait4 (pid_t upid, int __user *stat_addr, int options, struct rusage __us
 				return syscall_mismatch();
 			}
 		}
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct wait4_retvals));
 	}
 	return rc;
 }
@@ -5591,6 +5591,7 @@ replay_ipc (uint call, int first, u_long second, u_long third, void __user *ptr,
 				printk ("replay_ipc (call %d): pid %d cannot copy to user\n", call, current->pid);
 				return syscall_mismatch();
 			}
+			argsconsume(current->replay_thrd->rp_record_thread, sizeof(u_long) + len);
 		}
 		return rc;
 	case SHMAT: 
@@ -5620,6 +5621,7 @@ replay_ipc (uint call, int first, u_long second, u_long third, void __user *ptr,
 					printk ("replay_ipc(shmat) returns different address %lx than %lx\n", raddr, atretparams->raddr);
 				}
 			}
+			argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct shmat_retvals));
 		}
 		return rc;
 	case SHMDT: 
@@ -5656,6 +5658,7 @@ replay_ipc (uint call, int first, u_long second, u_long third, void __user *ptr,
 					printk ("replay_ipc (call %d): pid %d cannot copy to user\n", call, current->pid);
 					return syscall_mismatch();
 				}
+				argsconsume(current->replay_thrd->rp_record_thread, sizeof(u_long) + len);
 			}
 			break;
 		case IPC_RMID:
@@ -6036,6 +6039,7 @@ replay_quotactl (unsigned int cmd, const char __user *special, qid_t id, void __
 			printk ("replay_quotactl: pid %d cannot copy to user\n", current->pid);
 			return syscall_mismatch();
 		}
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(u_long) + len);
 	}
 	return rc;
 }
@@ -6077,6 +6081,7 @@ static asmlinkage long replay_bdflush (int func, long data)
 	long rc = get_next_syscall (134, &retparams); 
 	if (retparams) {						
 		if (copy_to_user ((long __user *) data, retparams, sizeof(long))) printk ("replay_bdflush: pid %d cannot copy to user\n", current->pid); 
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(long));
 	}								
 									
 	return rc;							
@@ -6123,6 +6128,7 @@ replay_sysfs (int option, unsigned long arg1, unsigned long arg2)
 	if (retparams) {						
 		u_long len = *((u_long *) retparams);
 		if (copy_to_user ((char __user *) arg2, retparams+sizeof(u_long), len)) printk ("replay_sysfs: pid %d cannot copy to user\n", current->pid); 
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(u_long) + len);
 	}								
 									
 	return rc;							
@@ -6186,6 +6192,7 @@ replay_select (int n, fd_set __user *inp, fd_set __user *outp, fd_set __user *ex
 	if (retparams->has_tv && copy_to_user (tvp, &retparams->tv, sizeof(struct timeval))) {
 		printk ("Pid %d cannot copy tvp to user\n", current->pid);
 	}
+	argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct select_retvals));
 	
 	return rc;
 }
@@ -6216,6 +6223,7 @@ replay_readv (unsigned long fd, const struct iovec __user *vec, unsigned long vl
 	if (retparams) {
 		retval = copy_args_to_iovec (retparams, rc, vec, vlen);
 		if (retval < 0) return retval;
+		argsconsume(current->replay_thrd->rp_record_thread, rc);
 	}
 
 	return rc;
@@ -6280,6 +6288,7 @@ replay_sysctl (struct __sysctl_args __user *args)
 		}
 		oldlen = *((u_long *) retparams);
 		if (copy_to_user (kargs.oldval, retparams+sizeof(u_long), oldlen)) printk ("replay_sysctl: pid %d cannot copy to user\n", current->pid); 
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(u_long) + oldlen);
 	}								
 									
 	return rc;							
@@ -6426,6 +6435,7 @@ replay_getresuid16 (old_uid_t __user *ruid, old_uid_t __user *euid, old_uid_t __
 			    copy_to_user (suid, retparams+2, sizeof(old_uid_t))) {
 				printk ("replay_getresuid16: pid %d cannot copy uids to user\n", current->pid);
 			}
+			argsconsume(current->replay_thrd->rp_record_thread, 3*sizeof(old_uid_t));
 		} else {
 			printk ("getresuid16 has return values but non-negative rc?\n");
 		}
@@ -6474,6 +6484,7 @@ replay_poll (struct pollfd __user *ufds, unsigned int nfds, long timeout_msecs)
 	if (copy_to_user (ufds, retparams+sizeof(u_long), nfds*sizeof(struct pollfd))) {
 		printk ("Pid %d cannot copy inp to user\n", current->pid);
 	}
+	argsconsume(current->replay_thrd->rp_record_thread, sizeof(u_long) + *((u_long *) retparams));
 	if (rc == -ERESTART_RESTARTBLOCK) { // Save info for restart of syscall
 		struct restart_block *restart_block;
 		
@@ -6532,6 +6543,7 @@ replay_getresgid16 (old_gid_t __user *rgid, old_gid_t __user *egid, old_gid_t __
 			    copy_to_user (sgid, retparams+2, sizeof(old_gid_t))) {
 				printk ("replay_getresgid16: pid %d cannot copy gids to user\n", current->pid);
 			}
+			argsconsume(current->replay_thrd->rp_record_thread, 3*sizeof(old_gid_t));
 		} else {
 			printk ("getresgid16 has return values but non-negative rc?\n");
 		}
@@ -6603,6 +6615,7 @@ replay_prctl (int option, unsigned long arg2, unsigned long arg3, unsigned long 
 			printk ("replay_quotactl: pid %d cannot copy to user\n", current->pid);
 			return syscall_mismatch();
 		}
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(u_long) + len);
 	}
 	return rc;
 }
@@ -6685,6 +6698,7 @@ replay_rt_sigaction (int sig, const struct sigaction __user *act, struct sigacti
 		else if (copy_to_user (oact, retparams, sizeof(struct sigaction))) {
 			printk ("Pid %d replay_rt_sigaction cannot copy oact %p to user\n", current->pid, oact);
 		}
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct sigaction));
 	}
 
 	// pass through to kernel so that it will save act in the task_struct
@@ -6802,6 +6816,7 @@ replay_rt_sigprocmask (int how, sigset_t __user *set, sigset_t __user *oset, siz
 		size = *((u_long *) retparams);
 		if (size != sigsetsize) printk ("Pid %d has diff sigsetsize %d than %lu\n", current->pid, sigsetsize, size);
 		if (copy_to_user (oset, retparams+sizeof(u_long), size)) printk ("Pid %d cannot copy to user\n", current->pid);
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(u_long) + size);
 	}
 	return rc;
 }
@@ -6887,6 +6902,7 @@ replay_rt_sigpending (sigset_t __user *set, size_t sigsetsize)
 	if (retparams) {						
 		len = *((u_long *) retparams);
 		if (copy_to_user (set, retparams + sizeof(u_long), len)) printk ("replay_rt_sigpending: pid %d cannot copy to user\n", current->pid); 
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(u_long) + len);
 	}								
 									
 	return rc;							
@@ -6982,6 +6998,7 @@ replay_capget (cap_user_header_t header, cap_user_data_t dataptr)
 			printk ("Pid %d replay_capget cannot copy dataptr to user\n", current->pid);
 			return syscall_mismatch();
 		}
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct capget_retvals));
 	}
 	return rc;
 }
@@ -7272,6 +7289,7 @@ replay_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, un
 			printk ("replay_mmap_pgoff: can't open cache file, rc=%d\n", given_fd);
 			syscall_mismatch();
 		}
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct mmap_pgoff_retvals));
 	} else if (given_fd >= 0) {
 		printk ("replay_mmap_pgoff: fd is %d but there are no return values recorded\n", given_fd);
 	}
@@ -7337,6 +7355,7 @@ replay_getgroups (int gidsetsize, gid_t __user *grouplist)
 	long rc = get_next_syscall (205, (char **) &retparams);
 	if (retparams) {
 		if (copy_to_user (grouplist, retparams, sizeof(gid_t)*rc)) printk ("Pid %d cannot copy groups to user\n", current->pid);
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(gid_t)*rc);
 	}
 	return rc;
 }
@@ -7387,6 +7406,7 @@ replay_getresuid (uid_t __user *ruid, uid_t __user *euid, uid_t __user *suid)
 			    copy_to_user (suid, retparams+2, sizeof(uid_t))) {
 				printk ("replay_getresuid: pid %d cannot copy uids to user\n", current->pid);
 			}
+			argsconsume(current->replay_thrd->rp_record_thread, 3*sizeof(uid_t));
 		} else {
 			printk ("getresuid has return values but non-negative rc?\n");
 		}
@@ -7438,6 +7458,7 @@ replay_getresgid (gid_t __user *rgid, gid_t __user *egid, gid_t __user *sgid)
 			    copy_to_user (sgid, retparams+2, sizeof(gid_t))) {
 				printk ("replay_getresgid: pid %d cannot copy gids to user\n", current->pid);
 			}
+			argsconsume(current->replay_thrd->rp_record_thread, 3*sizeof(gid_t));
 		} else {
 			printk ("getresgid has return values but non-negative rc?\n");
 		}
@@ -7492,6 +7513,7 @@ replay_mincore (unsigned long start, size_t len, unsigned char __user * vec)
 	if (retparams) {
 		u_long pages = *((u_long *) retparams);
 		if (copy_to_user(vec, retparams + sizeof(u_long), pages)) return syscall_mismatch();
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(u_long) + pages);
 	}
 	return rc;
 }
@@ -7578,6 +7600,7 @@ replay_fcntl64 (unsigned int fd, unsigned int cmd, unsigned long arg)
 	if (retparams) {
 		u_long bytes = *((u_long *) retparams);
 		if (copy_to_user((void __user *)arg, retparams + sizeof(u_long), bytes)) return syscall_mismatch();
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(u_long) + bytes);
 	}
 	return rc;
 }
@@ -7662,6 +7685,7 @@ replay_sched_getaffinity (pid_t pid, unsigned int len, unsigned long __user *use
 	if (retparams) {
 		u_long bytes = *((u_long *) retparams);
 		if (copy_to_user(user_mask_ptr, retparams + sizeof(u_long), bytes)) return syscall_mismatch();
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(u_long) + bytes);
 	}
 	return rc;
 }
@@ -7715,6 +7739,7 @@ replay_io_getevents(aio_context_t ctx_id, long min_nr, long nr, struct io_event 
 		if (copy_to_user (events, retparams, rc * sizeof(struct io_event))) {
 			printk ("Pid %d cannot copy io_getevents retvals to user\n", current->pid);
 		}
+		argsconsume(current->replay_thrd->rp_record_thread, rc * sizeof(struct io_event));
 	}
 
 	return rc;
@@ -7810,6 +7835,7 @@ replay_epoll_wait(int epfd, struct epoll_event __user *events, int maxevents, in
 		if (copy_to_user (events, retparams, rc * sizeof(struct epoll_event))) {
 			printk ("Pid %d cannot copy epoll_wait retvals to user\n", current->pid);
 		}
+		argsconsume(current->replay_thrd->rp_record_thread, rc * sizeof(struct epoll_event));
 	}
 
 	return rc;
@@ -7912,6 +7938,7 @@ replay_get_mempolicy (int __user *policy, unsigned long __user *nmask, unsigned 
 		u_long bytes = *((u_long *) retparams);
 		if (policy) put_user (*((int *) (retparams + sizeof(u_long))), policy);
 		if (copy_to_user(nmask, retparams + sizeof(u_long) + sizeof(int), bytes - sizeof(int))) return syscall_mismatch();
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(u_long) + bytes);
 	}
 	return rc;
 }
@@ -7985,6 +8012,7 @@ replay_waitid (int which, pid_t upid, struct siginfo __user *infop, int options,
 				return syscall_mismatch();
 			}
 		}
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct waitid_retvals));
 	}
 	return rc;
 }
@@ -8029,6 +8057,7 @@ replay_keyctl (int option, unsigned long arg2, unsigned long arg3, unsigned long
 	if (retparams) {
 		u_long bytes = *((u_long *) retparams);
 		if (copy_to_user((char __user *)arg3, retparams + sizeof(u_long), bytes)) return syscall_mismatch();
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(u_long) + bytes);
 	}
 	return rc;
 }
@@ -8103,6 +8132,7 @@ replay_pselect6 (int n, fd_set __user *inp, fd_set __user *outp, fd_set __user *
 	if (retparams->has_tsp && copy_to_user (tsp, &retparams->tsp, sizeof(struct timespec))) {
 		printk ("Pid %d cannot copy tvp to user\n", current->pid);
 	}
+	argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct pselect6_retvals));
 	
 	return rc;
 }
@@ -8146,6 +8176,7 @@ replay_ppoll (struct pollfd __user *ufds, unsigned int nfds, struct timespec __u
 	if (copy_to_user (ufds, retparams+sizeof(u_long), nfds*sizeof(struct pollfd))) {
 		printk ("Pid %d cannot copy inp to user\n", current->pid);
 	}
+	argsconsume(current->replay_thrd->rp_record_thread, nfds*sizeof(struct pollfd));
 	
 	return rc;
 }
@@ -8204,6 +8235,7 @@ replay_get_robust_list (int pid, struct robust_list_head __user * __user *head_p
 			printk ("Pid %d replay_get_robust_list cannot copy len to user\n", current->pid);
 			return syscall_mismatch();
 		}
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct get_robust_list_retvals));
 	}
 	return rc;
 }
@@ -8269,7 +8301,8 @@ replay_splice (int fd_in, loff_t __user *off_in, int fd_out, loff_t __user *off_
 				printk ("replay_splice: pid %d cannot copy tz to user\n", current->pid);
 				return syscall_mismatch();
 			}
-		}
+		}	
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct splice_retvals));
 	}
 	return rc;
 }
@@ -8314,6 +8347,7 @@ replay_move_pages (pid_t pid, unsigned long nr_pages, const void __user * __user
 	if (retparams) {
 		u_long bytes = *((u_long *) retparams);
 		if (copy_to_user(status, retparams + sizeof(u_long), bytes)) return syscall_mismatch();
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(u_long) + bytes);
 	}
 	return rc;
 }
@@ -8357,7 +8391,7 @@ record_getcpu (unsigned __user *cpup, unsigned __user *nodep, struct getcpu_cach
 static asmlinkage long
 replay_getcpu (unsigned __user *cpup, unsigned __user *nodep, struct getcpu_cache __user *unused)
 {
-	old_uid_t* retparams = NULL;
+	unsigned* retparams = NULL;
 	long rc = get_next_syscall (318, (char **) &retparams);
 	if (rc >= 0) {
 		if (retparams) {
@@ -8371,6 +8405,7 @@ replay_getcpu (unsigned __user *cpup, unsigned __user *nodep, struct getcpu_cach
 					printk ("replay_getcpu: pid %d cannot copy nodep to user\n", current->pid);
 				}
 			}
+			argsconsume(current->replay_thrd->rp_record_thread, 2*sizeof(unsigned));
 		}
 	}
 	return rc;
@@ -8414,6 +8449,7 @@ replay_epoll_pwait(int epfd, struct epoll_event __user *events, int maxevents, i
 		if (copy_to_user (events, retparams, rc * sizeof(struct epoll_event))) {
 			printk ("Pid %d cannot copy epoll_pwait retvals to user\n", current->pid);
 		}
+		argsconsume(current->replay_thrd->rp_record_thread, rc * sizeof(struct epoll_event));
 	}
 
 	return rc;
@@ -8486,6 +8522,7 @@ replay_preadv (unsigned long fd, const struct iovec __user *vec,  unsigned long 
 	if (retparams) {
 		retval = copy_args_to_iovec (retparams, rc, vec, vlen);
 		if (retval < 0) return retval;
+		argsconsume(current->replay_thrd->rp_record_thread, rc);
 	}
 
 	return rc;
@@ -8549,6 +8586,7 @@ replay_prlimit64 (pid_t pid, unsigned int resource, const struct rlimit64 __user
 	}
 	if (retparams) {
 		if (copy_to_user (old_rlim, retparams, sizeof(struct rlimit64))) printk ("Pid %d replay_prlimit cannot copy to user\n", current->pid);
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct rlimit64));
 	}
 	DPRINT ("replay_prlimit64 pid %d resource %u returns %ld\n", pid, resource, rc_orig);
 
@@ -8616,6 +8654,7 @@ replay_name_to_handle_at(int dfd, const char __user *name, struct file_handle __
 				return syscall_mismatch();
 			}
 		}
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct name_to_handle_at_retvals));
 	}
 	return rc;
 }
@@ -8921,39 +8960,6 @@ static ssize_t write_log_data (struct file* file, loff_t* ppos, struct record_th
 	return copyed;
 }
 
-static void
-free_kernel_log_internal (struct syscall_result* psr, int syscall_count)
-{
-	int i;
-
-	DPRINT("Pid %d free_kernel_log_internal\n", current->pid);
-
-	for (i=0; i < syscall_count; i++) {
-		DPRINT ("    freeing sysnum: log_ptr: %d, sysnum: %d, signal %p, ret %p\n", i, psr[i].sysnum, psr[i].signal, psr[i].retparams);
-
-		while (psr[i].signal) {
-			struct repsignal *r = psr[i].signal;
-			psr[i].signal = psr[i].signal->next;
-			r->signr = 0x6b6b6b6b;
-			check_KFREE(r);
-		}
-		if (psr[i].retparams) {
-			DPRINT ("    freeing sysnum: log_ptr: %d, sysnum: %d, ret %p\n", i, psr[i].sysnum, psr[i].retparams);
-			if (psr[i].sysnum == 3 || psr[i].sysnum == 145 || psr[i].sysnum == 333) {
-				if (psr[i].retval > KMALLOC_THRESHOLD) {
-					VFREE(psr[i].retparams);
-				}
-				else {
-					check_KFREE (psr[i].retparams);
-				}
-			} else {
-				check_KFREE (psr[i].retparams);
-			}
-		}
-	}
-}
-
-
 int read_log_data (struct record_thread* prect)
 {
  	int rc;
@@ -8964,25 +8970,15 @@ int read_log_data (struct record_thread* prect)
  	return rc;
 }
 
-static u_long varsize(struct file* file, loff_t peekpos)
-{
-	u_long val;
-	if (vfs_read(file, (char *)&val, sizeof(u_long), &peekpos) != sizeof(u_long)) {
-		printk("cannot read variable argument length\n");
-		return -1;
-	}
-	return val + sizeof(u_long);
-}
-
 int read_log_data_internal (struct record_thread* prect, struct syscall_result* psr, int logid, int* syscall_count, loff_t* pos)
 {
 	char filename[MAX_LOGDIR_STRLEN+20];
-	int fd;
 	struct file* file;
-	int rc, size, cnt = 0;
+	int fd, rc, count;
 	mm_segment_t old_fs;
-	int count, i;
 	u_long data_len;
+	struct argsalloc_node* node;
+	char* slab;
 
 #ifdef USE_HPC
 	// for those calibration constants
@@ -9027,7 +9023,7 @@ int read_log_data_internal (struct record_thread* prect, struct syscall_result* 
 
 	MPRINT ("read_log_data syscall count is %d\n", count);
 
-	rc = vfs_read (file, (char *) &psr[cnt], sizeof(struct syscall_result)*count, pos);
+	rc = vfs_read (file, (char *) &psr[0], sizeof(struct syscall_result)*count, pos);
 	if (rc != sizeof(struct syscall_result)*count) {
 		printk ("vfs_read returns %d when %d of records expected\n", rc, sizeof(struct syscall_result)*count);
 		goto error;
@@ -9040,255 +9036,26 @@ int read_log_data_internal (struct record_thread* prect, struct syscall_result* 
 		goto error;
 	}
 
-	for (i = 0; i < count; i++) {
-		DPRINT ("syscall sysnum %3d retval %ld\n", psr[cnt].sysnum, psr[cnt].retval);
-		if (psr[cnt].retparams) {
-			int do_vmalloc = 0;
-			loff_t peekpos;
-			psr[cnt].retparams = NULL;
-			switch (psr[cnt].sysnum) {
-			case 3: size = psr[cnt].retval;	
-				if (size > KMALLOC_THRESHOLD) do_vmalloc = 1;	
-				break;
-			case 7: size = sizeof(int); break;
-			case 11: size = sizeof(struct rvalues); break;
-			case 13: size = sizeof(time_t); break;
-			case 18: size = sizeof(struct __old_kernel_stat); break;
-			case 28: size = sizeof(struct __old_kernel_stat); break;
-			case 42: size = 2*sizeof(int); break;
-			case 43: size = sizeof(struct tms); break;
-			case 54: size = varsize(file, *pos); if (size < 0) goto error; break;
-			case 55: size = varsize(file, *pos); if (size < 0) goto error; break;
-			case 59: size = sizeof(struct oldold_utsname); break;
-			case 62: size = sizeof(struct ustat); break;
-			case 67: size = sizeof(struct old_sigaction); break;
-			case 73: size = sizeof(old_sigset_t); break;
-			case 76: size = sizeof(struct rlimit); break;
-			case 77: size = sizeof(struct rusage); break;
-			case 78: size = sizeof(struct gettimeofday_retvals); break;
-			case 80: size = sizeof(old_gid_t)*psr[cnt].retval; break;
-			case 84: size = sizeof(struct __old_kernel_stat); break;
-			case 85: size = psr[cnt].retval; break;
-			case 86: size = sizeof(struct mmap_pgoff_retvals); break;
-			case 89: size = sizeof(struct old_linux_dirent); break;
-			case 99: size = sizeof(struct statfs); break;
-			case 100: size = sizeof(struct statfs); break;
-			case 102: {
-				int call, addrlen;
-				peekpos = *pos;
-				rc = vfs_read(file, (char *)&call, sizeof(int), &peekpos);
-				if (rc != sizeof(int)) {
-					printk ("vfs_read cannot read socketcall value\n");
-					goto error;
-				}
-				DPRINT ("\tsocketcall %d\n", call);
-				switch (call) {
-#ifdef MULTI_COMPUTER
-				case SYS_CONNECT:
-#endif
-				case SYS_ACCEPT:
-				case SYS_ACCEPT4:
-				case SYS_GETSOCKNAME:
-				case SYS_GETPEERNAME: {	
-					rc = vfs_read(file, (char *)&addrlen, sizeof(int), &peekpos);
-					if (rc != sizeof(int)) {
-						printk ("vfs_read cannot read accept value\n");
-						goto error;
-					}
-								  size = sizeof(struct accept_retvals) + addrlen;
-								  break;
-							  }
-				case SYS_SOCKETPAIR:
-					size = sizeof(struct socketpair_retvals);
-					break;
-				case SYS_RECV:
-					size = sizeof(struct recvfrom_retvals) + psr[cnt].retval; 
-					break;
-				case SYS_RECVFROM:
-					size = sizeof(struct recvfrom_retvals) + psr[cnt].retval-1; 
-					break;
-				case SYS_RECVMSG: {
-					struct recvmsg_retvals msg;
-					rc = vfs_read(file, ((char *)&msg)+sizeof(int), sizeof(struct recvmsg_retvals)-sizeof(int), &peekpos);
-					if (rc != sizeof(struct recvmsg_retvals)-sizeof(int)) {
-						printk ("vfs_read cannot read recvfrom values\n");
-						goto error;
-					}
-					size = sizeof(struct recvmsg_retvals) + msg.msg_namelen + msg.msg_controllen + psr[cnt].retval; 
-					break;
-				}
-				case SYS_RECVMMSG: {
-					if (psr[cnt].retval > 0) {
-						long len;
-						rc = vfs_read(file, (char *)&len, sizeof(int), &peekpos);
-						if (rc != sizeof(long)) {
-							printk ("vfs_read cannot read accept value\n");
-							goto error;
-						}
-						size = sizeof(struct generic_socket_retvals) + len;
-						break;
-					}
-				}
-				case SYS_GETSOCKOPT: {
-					int optlen;
-					rc = vfs_read(file, (char *)&optlen, sizeof(int), &peekpos);
-					if (rc != sizeof(int)) {
-						printk ("vfs_read cannot read accept value\n");
-						goto error;
-					}
-					size = sizeof(struct getsockopt_retvals) + optlen;
-					break;
-				}
-				default:
-					size = sizeof(struct generic_socket_retvals);
-				}
-				break;
-			}
-			case 103: size = psr[cnt].retval; break;
-			case 104: size = sizeof(struct itimerval); break;
-			case 105: size = sizeof(struct itimerval); break;
-			case 106: size = sizeof(struct stat); break;
-			case 107: size = sizeof(struct stat); break;
-			case 108: size = sizeof(struct stat); break;
-			case 109: size = sizeof(struct old_utsname); break;
-			case 114: size = sizeof(struct wait4_retvals); break;
-			case 116: size = sizeof(struct sysinfo); break;
-			case 117: size = varsize(file, *pos); if (size < 0) goto error; break;
-			case 122: size = sizeof(struct new_utsname); break;
-			case 124: size = sizeof(struct timex); break;
-			case 126: size = sizeof(old_sigset_t); break;
-			case 131: size = varsize(file, *pos); if (size < 0) goto error; break;
-			case 134: size = sizeof(long); break;
-			case 135: size = varsize(file, *pos); if (size < 0) goto error; break;
-			case 140: size = sizeof(loff_t); break;
-			case 141: size = psr[cnt].retval; break;
-			case 142: size = sizeof(struct select_retvals); break;
-			case 145: size = psr[cnt].retval;	
-				if (size > KMALLOC_THRESHOLD) do_vmalloc = 1;	
-				break;
-			case 149: size = varsize(file, *pos); if (size < 0) goto error; break;
-			case 155: size = sizeof(struct sched_param); break;
-			case 161: size = sizeof(struct timespec); break;
-			case 162: size = sizeof(struct timespec); break;
-			case 165: size = sizeof(old_uid_t)*3; break;
-			case 168: size = varsize(file, *pos); if (size < 0) goto error; break;
-			case 171: size = sizeof(old_gid_t)*3; break;
-			case 172: size = varsize(file, *pos); if (size < 0) goto error; break;
-			case 174: size = sizeof(struct sigaction); break;
-			case 175: size = varsize(file, *pos); if (size < 0) goto error; break;
-			case 176: size = varsize(file, *pos); if (size < 0) goto error; break;
-			case 177: size = sizeof(siginfo_t); break;
-			case 180: size = psr[cnt].retval; break;
-			case 183: size = psr[cnt].retval; break;
-			case 184: size = sizeof(struct capget_retvals); break;
-			case 185: size = sizeof(struct __user_cap_header_struct); break;
-			case 187: size = sizeof(off_t); break;
-			case 191: size = sizeof(struct rlimit); break;
-			case 192: size = sizeof(struct mmap_pgoff_retvals); break;
-			case 195: size = sizeof(struct stat64); break;
-			case 196: size = sizeof(struct stat64); break;
-			case 197: size = sizeof(struct stat64); break;
-			case 205: size = sizeof(gid_t)*psr[cnt].retval; break;
-			case 209: size = sizeof(uid_t)*3; break;
-			case 211: size = sizeof(gid_t)*3; break;
-			case 218: size = varsize(file, *pos); if (size < 0) goto error; break;
-			case 220: size = psr[cnt].retval; break;
-			case 221: size = varsize(file, *pos); if (size < 0) goto error; break;
-			case 229: size = psr[cnt].retval; break;
-			case 230: size = psr[cnt].retval; break;
-			case 231: size = psr[cnt].retval; break;
-			case 232: size = psr[cnt].retval; break;
-			case 233: size = psr[cnt].retval; break;
-			case 234: size = psr[cnt].retval; break;
-			case 239: size = sizeof(loff_t); break;
-			case 242: size = varsize(file, *pos); if (size < 0) goto error; break;
-			case 245: size = sizeof(aio_context_t); break;
-			case 247: size = psr[cnt].retval*sizeof(struct io_event); break;
-			case 249: size = sizeof(struct io_event); break;
-			case 253: size = psr[cnt].retval; break;
-			case 256: size = psr[cnt].retval*sizeof(struct epoll_event); break;
-			case 259: size = sizeof(timer_t); break;
-			case 260: size = sizeof(struct itimerspec); break;
-			case 261: size = sizeof(struct itimerspec); break;
-			case 265: size = sizeof(struct timespec); break;
-			case 266: size = sizeof(struct timespec); break;
-			case 267: size = sizeof(struct timespec); break;
-			case 268: size = sizeof(struct statfs64); break;
-			case 269: size = sizeof(struct statfs64); break;
-			case 275: size = varsize(file, *pos); if (size < 0) goto error; break;
-			case 280: size = psr[cnt].retval; break;
-			case 282: size = sizeof(struct mq_attr); break;
-			case 284: size = sizeof(struct waitid_retvals); break;
-			case 288: size = varsize(file, *pos); if (size < 0) goto error; break;
-			case 300: size = sizeof(struct stat64); break;
-			case 305: size = psr[cnt].retval; break;
-			case 308: size = sizeof(struct pselect6_retvals); break;
-			case 309: size = varsize(file, *pos); if (size < 0) goto error; break;
-			case 312: size = sizeof(struct get_robust_list_retvals); break;
-			case 313: size = sizeof(struct splice_retvals); break;
-			case 317: size = varsize(file, *pos); if (size < 0) goto error; break;
-			case 318: size = sizeof(unsigned)*2; break;
-			case 319: size = psr[cnt].retval*sizeof(struct epoll_event); break;
-			case 325: size = sizeof(struct itimerspec); break;
-			case 326: size = sizeof(struct itimerspec); break;
-			case 331: size = 2*sizeof(int); break;
-			case 333: size = psr[cnt].retval;	
-				if (size > KMALLOC_THRESHOLD) do_vmalloc = 1;	
-				break;
-			case 337: size = varsize(file, *pos); if (size < 0) goto error; break;
-			case 340: size = sizeof(struct rlimit64); break;
-			case 341: size = sizeof(struct name_to_handle_at_retvals); break;
-			case 343: size = sizeof(struct timex); break;
-			default: 
-				size = 0;
-				printk ("read_log_data: unrecognized syscall %d\n", psr[cnt].sysnum);
-			}
-			if (size > 0) {
-				char *buf;
-				if (do_vmalloc) {
-					buf = VMALLOC(size);
-				} else {
-					buf = KMALLOC(size, GFP_KERNEL);
-
-				}
-				if (buf == NULL) {
-					printk ("Pid %d cannot allocate log memory, logid=%d, count=%d, size=%d, sysnum=%d\n", current->pid, logid, count, size, psr[cnt].sysnum);
-					return -ENOMEM;
-				}
-				rc = vfs_read (file, buf, size, pos);
-				if (rc != size) {
-					printk ("vfs_read of data returns %d\n", rc);
-					if (do_vmalloc) {
-						VFREE(buf);
-					} else {
-						KFREE(buf);
-					}
-					goto error;
-				}
-
-				psr[cnt].retparams = buf;
-				DPRINT ("\t%d bytes of return parameters included\n", size);
-			}
-		}
-		if (psr[cnt].signal) {
-			struct repsignal **next = &psr[cnt].signal;
-			struct repsignal *r;
-			while (*next) {
-				r = KMALLOC(sizeof(struct repsignal), GFP_KERNEL);
-				rc = vfs_read(file, (char *)r, sizeof(*r), pos);
-				if (rc != sizeof(struct repsignal)) {
-					printk("vfs_read returns %d\n", rc);
-					*next = NULL;
-					goto error;
-				}
-				*next = r;
-				next = &r->next;
-			}
-			DPRINT ("\tsignal info included\n");
-		}
-		cnt++;
+	/* Read in length of ancillary data, and add it to the argsalloc list */
+	printk ("read_log_data data length is %lu\n", data_len);
+	slab = VMALLOC(data_len);
+	rc = add_argsalloc_node(prect, slab, data_len);
+	if (rc) {
+		printk("read_log_data_internal: pid %d argalloc: problem adding argsalloc_node\n", current->pid);
+		VFREE(slab);
+		*syscall_count = 0;
+		goto error;
 	}
-	*syscall_count = cnt;  
+
+	node = list_first_entry(&prect->rp_argsalloc_list, struct argsalloc_node, list);
+	rc = vfs_read (file, node->pos, data_len, pos);
+	if (rc != data_len) {
+		printk ("read_log_data_internal: vfs_read of ancillary data returns %d, epected %lu\n", rc, data_len);
+		*syscall_count = 0;
+		goto error;
+	}
+
+	*syscall_count = count;  
 	fput(file);
 
 	rc = sys_close (fd);
