@@ -51,9 +51,9 @@ struct syscall_result {
 	unsigned long long	hpc_end;	// Time-stamp counter value when system call finished
 #endif
 	short			sysnum;		// system call number executed
+	u_char			retparams;	// system-call-specific return data
+	u_char	                signal;		// Set if sig should be delivered
 	long			retval;		// return code from the system call
-	struct repsignal*	signal;		// Set if sig should be delivered
-	void*			retparams;	// system-call-specific return data
 	long                    start_clock;    // total order over start
         long                    stop_clock;     // and stop of all system calls
 };
@@ -240,6 +240,7 @@ static u_long varsize (int fd, int stats, struct syscall_result* psr)
 	if (stats) {
 		bytes[psr->sysnum] += sizeof(u_long);
 	}
+	printf ("\t%lu variable bytes\n", val);
 	return val;
 }
 
@@ -467,7 +468,7 @@ int main (int argc, char* argv[])
 				case 109: size = sizeof(struct old_utsname); break;
 				case 114: size = sizeof(struct wait4_retvals); break;
 				case 116: size = sizeof(struct sysinfo); break;
-				case 117: size = sizeof(struct shmat_retvals); break;
+				case 117: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
 				case 122: size = sizeof(struct new_utsname); break;
 				case 124: size = sizeof(struct timex); break;
 				case 126: size = sizeof(unsigned long); break; // old_sigset_t - def in asm/signal.h but cannot include
