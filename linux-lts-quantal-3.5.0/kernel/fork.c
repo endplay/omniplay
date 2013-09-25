@@ -806,7 +806,7 @@ void mm_release(struct task_struct *tsk, struct mm_struct *mm)
 
 			struct syscall_result* psr; /* REPLAY */
 			if (current->record_thrd) new_syscall_enter_external (TID_WAKE_CALL);                                /* REPLAY */
-			else if (current->replay_thrd) get_next_syscall_enter_external (TID_WAKE_CALL, NULL, NULL, &psr);    /* REPLAY */
+			else if (current->replay_thrd) get_next_syscall_enter_external (TID_WAKE_CALL, NULL, &psr);          /* REPLAY */
 
 			/*
 			 * We don't check the error code - if userspace has

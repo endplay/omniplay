@@ -417,7 +417,6 @@ struct replay_thread {
 
 	long rp_saved_rc;               // Stores syscall result when blocking in syscall conflicts with a pin lock
 	char* rp_saved_retparams;       // Stores syscall results when blocking in syscall conflicts with a pin lock
-	char* rp_saved_args;
 	struct syscall_result* rp_saved_psr; // Stores syscall info when blocking in syscall conflicts with a pin lock
 	struct rvalues random_values;   // Tracks kernel randomness during syscalls (currently execve only) 
 
@@ -2235,7 +2234,7 @@ close_out:
 }
 
 static inline long
-get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int syscall, char** ppretparams, char** ppargs, struct syscall_result** ppsr)
+get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int syscall, char** ppretparams, struct syscall_result** ppsr)
 {
 	struct syscall_result* psr;
 	struct replay_thread* tmp;
@@ -2420,9 +2419,9 @@ get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, stru
 }
 
 long
-get_next_syscall_enter_external (int syscall, char** ppretparams, char** ppargs, struct syscall_result** ppsr)
+get_next_syscall_enter_external (int syscall, char** ppretparams, struct syscall_result** ppsr)
 {
-	return get_next_syscall_enter (current->replay_thrd, current->replay_thrd->rp_group, syscall, ppretparams, ppargs, ppsr);
+	return get_next_syscall_enter (current->replay_thrd, current->replay_thrd->rp_group, syscall, ppretparams, ppsr);
 }
 
 void
@@ -2437,14 +2436,14 @@ get_next_syscall_exit_external (struct syscall_result* psr)
    On an error, it calls sys_exit, and so never returns 
    */
 static inline long
-get_next_syscall (int syscall, char** ppretparams, char** ppargs)
+get_next_syscall (int syscall, char** ppretparams)
 {
 	struct replay_thread* prt = current->replay_thrd;
 	struct replay_group* prg = prt->rp_group;
 	struct syscall_result* psr;
 	long retval;
 
-	retval = get_next_syscall_enter (prt, prg, syscall, ppretparams, ppargs, &psr);
+	retval = get_next_syscall_enter (prt, prg, syscall, ppretparams, &psr);
 	get_next_syscall_exit (prt, prg, psr);
 	return retval;
 }
@@ -2459,7 +2458,7 @@ void consume_remaining_records (void)
 		psr = &prt->rp_record_thread->rp_log[prt->rp_out_ptr];
 		MPRINT ("Pid %d recpid %d consuming unused record: sysnum %d start clock %lu stop clock %lu\n", 
 			current->pid, prt->rp_record_thread->rp_record_pid, psr->sysnum, psr->start_clock, psr->stop_clock);
-		get_next_syscall (psr->sysnum, &tmp, NULL);
+		get_next_syscall (psr->sysnum, &tmp);
 	}
 	DPRINT ("Pid %d recpid %d done consuming unused records clock now %ld\n", current->pid, prt->rp_record_thread->rp_record_pid, *prt->rp_preplay_clock);
 }
@@ -2495,7 +2494,7 @@ long check_clock_before_syscall (int syscall)
 
 	get_user (ignore_flag, current->replay_thrd->rp_record_thread->rp_ignore_flag_addr); 
 	if (!ignore_flag) {						
-		prt->rp_saved_rc = get_next_syscall_enter (prt, prt->rp_group, syscall, &prt->rp_saved_retparams, &prt->rp_saved_args, &prt->rp_saved_psr);
+		prt->rp_saved_rc = get_next_syscall_enter (prt, prt->rp_group, syscall, &prt->rp_saved_retparams, &prt->rp_saved_psr);
 	}
 
 	return 0;
@@ -2799,7 +2798,7 @@ asmlinkage long sys_pthread_sysign (void)
 {
 	// This replays an ignored syscall which delivers a signal
 	DPRINT ("In sys_pthread_sysign\n");
-	return get_next_syscall (SIGNAL_WHILE_SYSCALL_IGNORED, NULL, NULL); 
+	return get_next_syscall (SIGNAL_WHILE_SYSCALL_IGNORED, NULL); 
 }
 
 
@@ -2920,7 +2919,7 @@ asmlinkage long sys_pthread_sysign (void)
   static asmlinkage long				\
   replay_##name (args)					\
   {							\
-    return get_next_syscall (sysnum, NULL, NULL);	\
+	  return get_next_syscall (sysnum, NULL);	\
   }
 
 #define SIMPLE_SHIM0(name, sysnum)					\
@@ -3092,7 +3091,7 @@ static asmlinkage long record_##name (arg0type arg0name, arg1type arg1name, arg2
 static asmlinkage long replay_##name (args)				\
 {									\
 	char *retparams = NULL;						\
-	long rc = get_next_syscall (sysnum, (char **) &retparams, NULL); \
+	long rc = get_next_syscall (sysnum, (char **) &retparams);	\
 									\
 	if (retparams) {						\
 		if (copy_to_user (dest, retparams, size)) printk ("replay_##name: pid %d cannot copy to user\n", current->pid); \
@@ -3210,7 +3209,7 @@ static asmlinkage long record_##name (arg0type arg0name, arg1type arg1name, arg2
 static asmlinkage long replay_##name (args)				\
 {									\
 	char *retparams = NULL;						\
-	long rc = get_next_syscall (sysnum, &retparams, NULL);		\
+	long rc = get_next_syscall (sysnum, &retparams);		\
 									\
 	if (retparams) {						\
 		if (copy_to_user (dest, retparams, rc)) printk ("replay_##name: pid %d cannot copy to user\n", current->pid); \
@@ -3606,7 +3605,7 @@ replay_write (unsigned int fd, const char __user * buf, size_t count)
 		printk ("Pid %d (recpid %d) clock %ld replays: %s", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid, *(current->replay_thrd->rp_preplay_clock), kbuf);
 	}
 
-	rc = get_next_syscall (4, NULL, NULL);
+	rc = get_next_syscall (4, NULL);
 	DPRINT ("Pid %d replays write returning %d\n", current->pid,rc);
 
 	return rc;
@@ -3695,7 +3694,7 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 	struct rvalues* retparams = NULL;
 	prp = current->replay_thrd;
 
-	get_next_syscall_enter (prt, prg, 11, (char **) &retparams, NULL, &psr);  // Need to split enter/exit because of vfork/exec wait
+	get_next_syscall_enter (prt, prg, 11, (char **) &retparams, &psr);  // Need to split enter/exit because of vfork/exec wait
 	MPRINT ("Replay pid %d performing execve of %s\n", current->pid, filename);
 	memcpy (&current->replay_thrd->random_values, retparams, sizeof(struct rvalues));
 	current->replay_thrd->random_values.cnt = 0;
@@ -3809,7 +3808,7 @@ replay_ptrace(long request, long pid, long addr, long data)
 	struct replay_thread* tmp;
 	long rc, retval;
 
-	rc = get_next_syscall (26, NULL, NULL);	
+	rc = get_next_syscall (26, NULL);	
 
 	// Need to adjust pid to reflect the replay process, not the record process
 	tmp = current->replay_thrd->rp_next_thread;
@@ -3900,7 +3899,7 @@ record_brk (unsigned long brk)
 static asmlinkage unsigned long 
 replay_brk (unsigned long brk)
 {
-	u_long retval, rc = get_next_syscall (45, NULL, NULL);
+	u_long retval, rc = get_next_syscall (45, NULL);
 	retval = sys_brk(brk);
 	if (rc != retval) {
 		printk ("Replay brk returns different value %lx than %lx\n", retval, rc);
@@ -4100,7 +4099,7 @@ replay_ioctl (unsigned int fd, unsigned int cmd, unsigned long arg)
 {
 	char* retparams = NULL;
 	u_long my_size;
-	long rc = get_next_syscall (54, &retparams, NULL);
+	long rc = get_next_syscall (54, &retparams);
 	if (retparams) {
 		my_size = *((u_long *)retparams);
 		if (copy_to_user((void __user *)arg, retparams+sizeof(int), my_size))
@@ -4155,7 +4154,7 @@ static asmlinkage long
 replay_fcntl (unsigned int fd, unsigned int cmd, unsigned long arg)
 {
 	char* retparams = NULL;
-	long rc = get_next_syscall (55, &retparams, NULL);
+	long rc = get_next_syscall (55, &retparams);
 	if (retparams) {
 		u_long bytes = *((u_long *) retparams);
 		if (copy_to_user((void __user *)arg, retparams + sizeof(u_long), bytes)) return syscall_mismatch();
@@ -4188,7 +4187,7 @@ static asmlinkage long replay_sigaction (int sig, const struct old_sigaction __u
 		return sys_sigaction (sig, act, oact); // do actual syscall when PIN is attached
 	}
 
-	rc = get_next_syscall (67, (char **) &retparams, NULL); 
+	rc = get_next_syscall (67, (char **) &retparams); 
 	if (retparams) {						
 		if (copy_to_user (oact, retparams, sizeof(struct old_sigaction))) printk ("replay_sigaction: pid %d cannot copy to user\n", current->pid); 
 	}								
@@ -4211,7 +4210,7 @@ static asmlinkage long
 replay_setrlimit (unsigned int resource, struct rlimit __user *rlim)
 {
 	long rc;
-	long rc_orig = get_next_syscall (75, NULL, NULL);
+	long rc_orig = get_next_syscall (75, NULL);
 	rc = sys_setrlimit (resource, rlim);
 	if (rc != rc_orig) printk ("setrlim changed its return in replay\n");
 	return rc_orig;
@@ -4268,7 +4267,7 @@ static asmlinkage long
 replay_gettimeofday (struct timeval __user *tv, struct timezone __user *tz)
 {
 	struct gettimeofday_retvals* retparams = NULL;
-	long rc = get_next_syscall (78, (char **) &retparams, NULL);
+	long rc = get_next_syscall (78, (char **) &retparams);
 
 	DPRINT ("Pid %d replays gettimeofday(tv=%p,tz=%p) returning %ld\n", current->pid, tv, tz, rc);
 	if (retparams) {
@@ -4322,7 +4321,7 @@ static asmlinkage long
 replay_getgroups16 (int gidsetsize, old_gid_t __user *grouplist)
 {
 	old_gid_t* retparams = NULL;
-	long rc = get_next_syscall (80, (char **) &retparams, NULL);
+	long rc = get_next_syscall (80, (char **) &retparams);
 	if (retparams) {
 		if (copy_to_user (grouplist, retparams, sizeof(old_gid_t)*rc)) printk ("Pid %d cannot copy groups to user\n", current->pid);
 	}
@@ -4387,7 +4386,7 @@ replay_uselib (const char __user * library)
 	mm_segment_t old_fs;
 	char name[CACHE_FILENAME_SIZE];
 
-	rc = get_next_syscall (86, (char **) &recbuf, NULL);
+	rc = get_next_syscall (86, (char **) &recbuf);
 
 	if (recbuf) {
 		rg_lock(prt->rp_record_thread->rp_group);
@@ -4446,7 +4445,7 @@ replay_munmap (unsigned long addr, size_t len)
 		rc = current->replay_thrd->rp_saved_rc;
 		(*(int*)(current->replay_thrd->app_syscall_addr)) = 999;
 	} else {
-		rc = get_next_syscall (91, NULL, NULL);
+		rc = get_next_syscall (91, NULL);
 	}
 
 	retval = sys_munmap (addr, len);
@@ -5122,7 +5121,7 @@ replay_socketcall (int call, unsigned long __user *args)
 		}
 	}
 
-	rc = get_next_syscall (102, &retparams, NULL);
+	rc = get_next_syscall (102, &retparams);
 	
 	if (retval < 0) {
 		if (rc == retval) return rc;
@@ -5397,7 +5396,7 @@ static asmlinkage long
 replay_wait4 (pid_t upid, int __user *stat_addr, int options, struct rusage __user *ru) 
 {
 	struct wait4_retvals* pretvals;
-	long rc = get_next_syscall (114, (char **) &pretvals, NULL);
+	long rc = get_next_syscall (114, (char **) &pretvals);
 	if (rc >= 0) {
 		if (stat_addr) {
 			if (copy_to_user (stat_addr, &pretvals->stat_addr, sizeof(int))) {
@@ -5579,7 +5578,7 @@ replay_ipc (uint call, int first, u_long second, u_long third, void __user *ptr,
 {
 	char* retparams;
 	long retval;
-	long rc = get_next_syscall (117, (char **) &retparams, NULL);
+	long rc = get_next_syscall (117, (char **) &retparams);
 	int repid, cmd;
 
 	switch (call) {
@@ -5785,7 +5784,7 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 		rc = current->replay_thrd->rp_saved_rc;
 		(*(int*)(current->replay_thrd->app_syscall_addr)) = 999;
 	} else {
-		rc = get_next_syscall (120, NULL, NULL);
+		rc = get_next_syscall (120, NULL);
 	}
 
 	if (rc > 0) {
@@ -5958,7 +5957,7 @@ replay_mprotect (unsigned long start, size_t len, unsigned long prot)
 		rc = current->replay_thrd->rp_saved_rc;
 		(*(int*)(current->replay_thrd->app_syscall_addr)) = 999;
 	} else {
-		rc = get_next_syscall (125, NULL, NULL);
+		rc = get_next_syscall (125, NULL);
 	}
 
 	retval = sys_mprotect (start, len, prot);
@@ -6030,7 +6029,7 @@ replay_quotactl (unsigned int cmd, const char __user *special, qid_t id, void __
 	u_long len;
 	long rc;
 
-	rc = get_next_syscall (131, &retparams, NULL);
+	rc = get_next_syscall (131, &retparams);
 	if (retparams && addr) {
 		len = *((u_long *) retparams);
 		if (copy_to_user (addr, retparams+sizeof(u_long), len)) {
@@ -6075,7 +6074,7 @@ record_bdflush (int func, long data)
 static asmlinkage long replay_bdflush (int func, long data)
 {									
 	char *retparams = NULL;						
-	long rc = get_next_syscall (134, &retparams, NULL); 
+	long rc = get_next_syscall (134, &retparams); 
 	if (retparams) {						
 		if (copy_to_user ((long __user *) data, retparams, sizeof(long))) printk ("replay_bdflush: pid %d cannot copy to user\n", current->pid); 
 	}								
@@ -6120,7 +6119,7 @@ static asmlinkage long
 replay_sysfs (int option, unsigned long arg1, unsigned long arg2)
 {									
 	char *retparams = NULL;						
-	long rc = get_next_syscall (134, &retparams, NULL); 
+	long rc = get_next_syscall (135, &retparams); 
 	if (retparams) {						
 		u_long len = *((u_long *) retparams);
 		if (copy_to_user ((char __user *) arg2, retparams+sizeof(u_long), len)) printk ("replay_sysfs: pid %d cannot copy to user\n", current->pid); 
@@ -6174,7 +6173,7 @@ asmlinkage long
 replay_select (int n, fd_set __user *inp, fd_set __user *outp, fd_set __user *exp, struct timeval __user *tvp)
 {
 	struct select_retvals* retparams = NULL;
-	long rc = get_next_syscall (142, (char **) &retparams, NULL);
+	long rc = get_next_syscall (142, (char **) &retparams);
 	if (retparams->has_inp && copy_to_user (inp, &retparams->inp, sizeof(fd_set))) {
 		printk ("Pid %d cannot copy inp to user\n", current->pid);
 	}
@@ -6213,7 +6212,7 @@ replay_readv (unsigned long fd, const struct iovec __user *vec, unsigned long vl
 	char* retparams;
 	long retval, rc;
 
-	rc = get_next_syscall (145, &retparams, NULL);
+	rc = get_next_syscall (145, &retparams);
 	if (retparams) {
 		retval = copy_args_to_iovec (retparams, rc, vec, vlen);
 		if (retval < 0) return retval;
@@ -6273,7 +6272,7 @@ replay_sysctl (struct __sysctl_args __user *args)
 	struct __sysctl_args kargs;
 	u_long oldlen;
 
-	long rc = get_next_syscall (149, &retparams, NULL); 
+	long rc = get_next_syscall (149, &retparams); 
 	if (retparams) {						
 		if (copy_from_user (&kargs, args, sizeof(struct __sysctl_args))) {
 			printk ("replay_sysctl: pid %d cannot copy args struct from user\n", current->pid);
@@ -6372,7 +6371,7 @@ record_mremap (unsigned long addr, unsigned long old_len, unsigned long new_len,
 static asmlinkage unsigned long 
 replay_mremap (unsigned long addr, unsigned long old_len, unsigned long new_len, unsigned long flags, unsigned long new_addr)
 {
-	u_long retval, rc = get_next_syscall (163, NULL, NULL);
+	u_long retval, rc = get_next_syscall (163, NULL);
 	retval = sys_mremap (addr, old_len, new_len, flags, new_addr);
 	DPRINT ("Pid %d replays mremap with address %lx returning %lx\n", current->pid, addr, retval);
 
@@ -6419,7 +6418,7 @@ static asmlinkage long
 replay_getresuid16 (old_uid_t __user *ruid, old_uid_t __user *euid, old_uid_t __user *suid) 
 {
 	old_uid_t* retparams = NULL;
-	long rc = get_next_syscall (165, (char **) &retparams, NULL);
+	long rc = get_next_syscall (165, (char **) &retparams);
 	if (rc >= 0) {
 		if (retparams) {
 			if (copy_to_user (ruid, retparams, sizeof(old_uid_t)) ||
@@ -6471,7 +6470,7 @@ replay_poll (struct pollfd __user *ufds, unsigned int nfds, long timeout_msecs)
 	char* retparams = NULL;
 	long rc;
 
-	rc = get_next_syscall (168, (char **) &retparams, NULL);
+	rc = get_next_syscall (168, (char **) &retparams);
 	if (copy_to_user (ufds, retparams+sizeof(u_long), nfds*sizeof(struct pollfd))) {
 		printk ("Pid %d cannot copy inp to user\n", current->pid);
 	}
@@ -6525,7 +6524,7 @@ static asmlinkage long
 replay_getresgid16 (old_gid_t __user *rgid, old_gid_t __user *egid, old_gid_t __user *sgid) 
 {
 	old_gid_t* retparams = NULL;
-	long rc = get_next_syscall (171, (char **) &retparams, NULL);
+	long rc = get_next_syscall (171, (char **) &retparams);
 	if (rc >= 0) {
 		if (retparams) {
 			if (copy_to_user (rgid, retparams, sizeof(old_gid_t)) ||
@@ -6589,7 +6588,7 @@ replay_prctl (int option, unsigned long arg2, unsigned long arg3, unsigned long 
 {
 	char* retparams = NULL;
 	long retval;
-	long rc = get_next_syscall (172, &retparams, NULL);
+	long rc = get_next_syscall (172, &retparams);
 
 	if (option == PR_SET_NAME || option == PR_SET_MM) { // Do this also during recording
 		retval = sys_prctl(option, arg2, arg3, arg4, arg5);
@@ -6676,7 +6675,7 @@ replay_rt_sigaction (int sig, const struct sigaction __user *act, struct sigacti
 	long rc;
 	char* retparams = NULL;
 	
-	rc = get_next_syscall (174, &retparams, NULL);
+	rc = get_next_syscall (174, &retparams);
 
 	if (retparams) {
 		if (!oact) {
@@ -6798,7 +6797,7 @@ replay_rt_sigprocmask (int how, sigset_t __user *set, sigset_t __user *oset, siz
 {
 	char* retparams = NULL;
 	u_long size;
-	long rc = get_next_syscall (175, &retparams, NULL);
+	long rc = get_next_syscall (175, &retparams);
 	if (retparams) {
 		size = *((u_long *) retparams);
 		if (size != sigsetsize) printk ("Pid %d has diff sigsetsize %d than %lu\n", current->pid, sigsetsize, size);
@@ -6883,7 +6882,7 @@ replay_rt_sigpending (sigset_t __user *set, size_t sigsetsize)
 {									
 	u_long len;
 	char *retparams = NULL;						
-	long rc = get_next_syscall (176, &retparams, NULL);		
+	long rc = get_next_syscall (176, &retparams);		
 
 	if (retparams) {						
 		len = *((u_long *) retparams);
@@ -6973,7 +6972,7 @@ static asmlinkage long
 replay_capget (cap_user_header_t header, cap_user_data_t dataptr)
 {
 	struct capget_retvals* pretvals;
-	long rc = get_next_syscall (184, (char **) &pretvals, NULL);
+	long rc = get_next_syscall (184, (char **) &pretvals);
 	if (rc >= 0) {
 		if (copy_to_user (header, &pretvals->header, sizeof(struct __user_cap_header_struct))) {
 			printk ("Pid %d replay_capget cannot copy header to user\n", current->pid);
@@ -7152,7 +7151,7 @@ replay_vfork (unsigned long clone_flags, unsigned long stack_start, struct pt_re
 		rc = prt->rp_saved_rc;
 		(*(int*)(prt->app_syscall_addr)) = 999;
 	} else {
-		rc = get_next_syscall_enter (prt, prg, 190, NULL, NULL, &psr);
+		rc = get_next_syscall_enter (prt, prg, 190, NULL, &psr);
 	}
 
 	DPRINT ("Pid %d replay_vfork syscall exit:rc=%ld\n", current->pid, rc);
@@ -7261,7 +7260,7 @@ replay_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, un
 		psr = prt->rp_saved_psr;
 		(*(int*)(prt->app_syscall_addr)) = 999;
 	} else {
-		rc = get_next_syscall (192, (char **) &recbuf, NULL);
+		rc = get_next_syscall (192, (char **) &recbuf);
 	}
 
 	if (recbuf) {
@@ -7335,7 +7334,7 @@ static asmlinkage long
 replay_getgroups (int gidsetsize, gid_t __user *grouplist)
 {
 	gid_t* retparams = NULL;
-	long rc = get_next_syscall (205, (char **) &retparams, NULL);
+	long rc = get_next_syscall (205, (char **) &retparams);
 	if (retparams) {
 		if (copy_to_user (grouplist, retparams, sizeof(gid_t)*rc)) printk ("Pid %d cannot copy groups to user\n", current->pid);
 	}
@@ -7380,7 +7379,7 @@ static asmlinkage long
 replay_getresuid (uid_t __user *ruid, uid_t __user *euid, uid_t __user *suid) 
 {
 	uid_t* retparams = NULL;
-	long rc = get_next_syscall (209, (char **) &retparams, NULL);
+	long rc = get_next_syscall (209, (char **) &retparams);
 	if (rc >= 0) {
 		if (retparams) {
 			if (copy_to_user (ruid, retparams, sizeof(uid_t)) ||
@@ -7431,7 +7430,7 @@ static asmlinkage long
 replay_getresgid (gid_t __user *rgid, gid_t __user *egid, gid_t __user *sgid) 
 {
 	gid_t* retparams = NULL;
-	long rc = get_next_syscall (211, (char **) &retparams, NULL);
+	long rc = get_next_syscall (211, (char **) &retparams);
 	if (rc >= 0) {
 		if (retparams) {
 			if (copy_to_user (rgid, retparams, sizeof(gid_t)) ||
@@ -7489,7 +7488,7 @@ static asmlinkage long
 replay_mincore (unsigned long start, size_t len, unsigned char __user * vec) 
 {
 	char* retparams = NULL;
-	long rc = get_next_syscall (218, &retparams, NULL);
+	long rc = get_next_syscall (218, &retparams);
 	if (retparams) {
 		u_long pages = *((u_long *) retparams);
 		if (copy_to_user(vec, retparams + sizeof(u_long), pages)) return syscall_mismatch();
@@ -7516,7 +7515,7 @@ record_madvise (unsigned long start, size_t len_in, int behavior)
 static asmlinkage long 
 replay_madvise (unsigned long start, size_t len_in, int behavior)
 {
-	long retval, rc = get_next_syscall (219, NULL, NULL);
+	long retval, rc = get_next_syscall (219, NULL);
 	retval = sys_madvise (start, len_in, behavior);
 
 	if (rc != retval) {
@@ -7575,7 +7574,7 @@ static asmlinkage long
 replay_fcntl64 (unsigned int fd, unsigned int cmd, unsigned long arg)
 {
 	char* retparams = NULL;
-	long rc = get_next_syscall (221, &retparams, NULL);
+	long rc = get_next_syscall (221, &retparams);
 	if (retparams) {
 		u_long bytes = *((u_long *) retparams);
 		if (copy_to_user((void __user *)arg, retparams + sizeof(u_long), bytes)) return syscall_mismatch();
@@ -7618,7 +7617,7 @@ static asmlinkage long
 replay_futex (u32 __user *uaddr, int op, u32 val, struct timespec __user *utime, u32 __user *uaddr2, u32 val3)
 {
 	struct pt_regs* pregs;
-	long rc = get_next_syscall (240, NULL, NULL);
+	long rc = get_next_syscall (240, NULL);
 	pregs = get_pt_regs (NULL);
 	// Really should not get here because it means we are missing synchronizations at user level
 	printk ("Pid %d in replay futex uaddr=%p, op=%d, val=%d, ip=%lx, sp=%lx, bp=%lx\n", current->pid, uaddr, op, val, pregs->ip, pregs->sp, pregs->bp);
@@ -7659,7 +7658,7 @@ static asmlinkage long
 replay_sched_getaffinity (pid_t pid, unsigned int len, unsigned long __user *user_mask_ptr)
 {
 	char* retparams = NULL;
-	long rc = get_next_syscall (242, &retparams, NULL);
+	long rc = get_next_syscall (242, &retparams);
 	if (retparams) {
 		u_long bytes = *((u_long *) retparams);
 		if (copy_to_user(user_mask_ptr, retparams + sizeof(u_long), bytes)) return syscall_mismatch();
@@ -7711,7 +7710,7 @@ replay_io_getevents(aio_context_t ctx_id, long min_nr, long nr, struct io_event 
 {
 	long rc;
 	char* retparams = NULL;
-	rc = get_next_syscall (247, &retparams, NULL);
+	rc = get_next_syscall (247, &retparams);
 	if (rc > 0) {
 		if (copy_to_user (events, retparams, rc * sizeof(struct io_event))) {
 			printk ("Pid %d cannot copy io_getevents retvals to user\n", current->pid);
@@ -7743,7 +7742,7 @@ replay_exit_group (int error_code)
 	struct replay_group* prg;
 	struct task_struct* t;
 
-	get_next_syscall (252, NULL, NULL);
+	get_next_syscall (252, NULL);
 	MPRINT ("Pid %d replaying exit group with code %d\n", current->pid, error_code);
 
 	/* We need to force any other replay threads that are running and part of this process to exit */
@@ -7806,7 +7805,7 @@ replay_epoll_wait(int epfd, struct epoll_event __user *events, int maxevents, in
 {
 	long rc;
 	char* retparams = NULL;
-	rc = get_next_syscall (256, &retparams, NULL);
+	rc = get_next_syscall (256, &retparams);
 	if (rc > 0) {
 		if (copy_to_user (events, retparams, rc * sizeof(struct epoll_event))) {
 			printk ("Pid %d cannot copy epoll_wait retvals to user\n", current->pid);
@@ -7835,7 +7834,7 @@ record_remap_file_pages (unsigned long start, unsigned long size, unsigned long 
 static asmlinkage unsigned long 
 replay_remap_file_pages (unsigned long start, unsigned long size, unsigned long prot, unsigned long pgoff, unsigned long flags)
 {
-	u_long retval, rc = get_next_syscall (257, NULL, NULL);
+	u_long retval, rc = get_next_syscall (257, NULL);
 	retval = sys_remap_file_pages (start, size, prot, pgoff, flags);
 	if (rc != retval) {
 		printk ("replay_remap_file_pages for pid %d returns different value %lu than %lu\n", current->pid, retval, rc);
@@ -7852,7 +7851,7 @@ static asmlinkage long
 replay_set_tid_address (int __user* tidptr)
 {
 	sys_set_tid_address(tidptr);
-	return get_next_syscall (258, NULL, NULL);
+	return get_next_syscall (258, NULL);
 }
 
 asmlinkage long shim_set_tid_address (int __user* tidptr) SHIM_CALL(set_tid_address, 258, tidptr);
@@ -7908,7 +7907,7 @@ static asmlinkage long
 replay_get_mempolicy (int __user *policy, unsigned long __user *nmask, unsigned long maxnode, unsigned long addr, unsigned long flags) 
 {
 	char* retparams = NULL;
-	long rc = get_next_syscall (275, &retparams, NULL);
+	long rc = get_next_syscall (275, &retparams);
 	if (retparams) {
 		u_long bytes = *((u_long *) retparams);
 		if (policy) put_user (*((int *) (retparams + sizeof(u_long))), policy);
@@ -7972,7 +7971,7 @@ static asmlinkage long
 replay_waitid (int which, pid_t upid, struct siginfo __user *infop, int options, struct rusage __user *ru)
 {
 	struct waitid_retvals* pretvals;
-	long rc = get_next_syscall (284, (char **) &pretvals, NULL);
+	long rc = get_next_syscall (284, (char **) &pretvals);
 	if (rc >= 0) {
 		if (infop) {
 			if (copy_to_user (infop, &pretvals->info, sizeof(struct siginfo))) {
@@ -8026,7 +8025,7 @@ static asmlinkage long
 replay_keyctl (int option, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5)
 {
 	char* retparams = NULL;
-	long rc = get_next_syscall (288, &retparams, NULL);
+	long rc = get_next_syscall (288, &retparams);
 	if (retparams) {
 		u_long bytes = *((u_long *) retparams);
 		if (copy_to_user((char __user *)arg3, retparams + sizeof(u_long), bytes)) return syscall_mismatch();
@@ -8091,7 +8090,7 @@ asmlinkage long
 replay_pselect6 (int n, fd_set __user *inp, fd_set __user *outp, fd_set __user *exp, struct timespec __user *tsp, void __user *sig) 
 {
 	struct pselect6_retvals* retparams = NULL;
-	long rc = get_next_syscall (308, (char **) &retparams, NULL);
+	long rc = get_next_syscall (308, (char **) &retparams);
 	if (retparams->has_inp && copy_to_user (inp, &retparams->inp, sizeof(fd_set))) {
 		printk ("Pid %d cannot copy inp to user\n", current->pid);
 	}
@@ -8143,7 +8142,7 @@ replay_ppoll (struct pollfd __user *ufds, unsigned int nfds, struct timespec __u
 	char* retparams = NULL;
 	long rc;
 
-	rc = get_next_syscall (309, (char **) &retparams, NULL);
+	rc = get_next_syscall (309, (char **) &retparams);
 	if (copy_to_user (ufds, retparams+sizeof(u_long), nfds*sizeof(struct pollfd))) {
 		printk ("Pid %d cannot copy inp to user\n", current->pid);
 	}
@@ -8195,7 +8194,7 @@ static asmlinkage long
 replay_get_robust_list (int pid, struct robust_list_head __user * __user *head_ptr, size_t __user *len_ptr)
 {
 	struct get_robust_list_retvals* pretvals;
-	long rc = get_next_syscall (312, (char **) &pretvals, NULL);
+	long rc = get_next_syscall (312, (char **) &pretvals);
 	if (rc >= 0) {
 		if (copy_to_user (head_ptr, &pretvals->head_ptr, sizeof(struct robust_list_head __user *))) {
 			printk ("Pid %d replay_get_robust_list cannot copy head_ptr to user\n", current->pid);
@@ -8256,7 +8255,7 @@ static asmlinkage long
 replay_splice (int fd_in, loff_t __user *off_in, int fd_out, loff_t __user *off_out, size_t len, unsigned int flags) 
 {
 	struct splice_retvals* retparams = NULL;
-	long rc = get_next_syscall (313, (char **) &retparams, NULL);
+	long rc = get_next_syscall (313, (char **) &retparams);
 
 	if (retparams) {
 		if (off_in) {
@@ -8311,7 +8310,7 @@ static asmlinkage long
 replay_move_pages (pid_t pid, unsigned long nr_pages, const void __user * __user *pages, const int __user *nodes, int __user *status, int flags) 
 {
 	char* retparams = NULL;
-	long rc = get_next_syscall (317, &retparams, NULL);
+	long rc = get_next_syscall (317, &retparams);
 	if (retparams) {
 		u_long bytes = *((u_long *) retparams);
 		if (copy_to_user(status, retparams + sizeof(u_long), bytes)) return syscall_mismatch();
@@ -8359,7 +8358,7 @@ static asmlinkage long
 replay_getcpu (unsigned __user *cpup, unsigned __user *nodep, struct getcpu_cache __user *unused)
 {
 	old_uid_t* retparams = NULL;
-	long rc = get_next_syscall (318, (char **) &retparams, NULL);
+	long rc = get_next_syscall (318, (char **) &retparams);
 	if (rc >= 0) {
 		if (retparams) {
 			if (cpup) {
@@ -8410,7 +8409,7 @@ replay_epoll_pwait(int epfd, struct epoll_event __user *events, int maxevents, i
 {
 	long rc;
 	char* retparams = NULL;
-	rc = get_next_syscall (319, &retparams, NULL);
+	rc = get_next_syscall (319, &retparams);
 	if (rc > 0) {
 		if (copy_to_user (events, retparams, rc * sizeof(struct epoll_event))) {
 			printk ("Pid %d cannot copy epoll_pwait retvals to user\n", current->pid);
@@ -8483,7 +8482,7 @@ replay_preadv (unsigned long fd, const struct iovec __user *vec,  unsigned long 
 	char* retparams;
 	long retval, rc;
 
-	rc = get_next_syscall (333, &retparams, NULL);
+	rc = get_next_syscall (333, &retparams);
 	if (retparams) {
 		retval = copy_args_to_iovec (retparams, rc, vec, vlen);
 		if (retval < 0) return retval;
@@ -8521,7 +8520,7 @@ replay_recvmmsg(int fd, struct mmsghdr __user *msg, unsigned int vlen, unsigned 
 	char* retparams;
 	long rc, retval;
 
-	rc = get_next_syscall (337, &retparams, NULL);
+	rc = get_next_syscall (337, &retparams);
 	if (retparams) {
 		retval = extract_mmsghdr (retparams, msg, rc);
 		if (retval < 0) syscall_mismatch();
@@ -8543,7 +8542,7 @@ replay_prlimit64 (pid_t pid, unsigned int resource, const struct rlimit64 __user
 	struct rlimit64 *retparams = NULL;
 	long rc_orig, rc;
 
-	rc_orig = get_next_syscall (340, (char **) &retparams, NULL);
+	rc_orig = get_next_syscall (340, (char **) &retparams);
 	if (new_rlim) {
 		rc = sys_prlimit64 (pid, resource, new_rlim, old_rlim);
 		if (rc != rc_orig) printk ("Pid %d: prlimit64 pid %d resource %u changed its return in replay, rec %ld rep %ld\n", current->pid, pid, resource, rc_orig, rc);
@@ -8602,7 +8601,7 @@ static asmlinkage long
 replay_name_to_handle_at(int dfd, const char __user *name, struct file_handle __user *handle, int __user *mnt_id, int flag)
 {
 	struct name_to_handle_at_retvals* retparams = NULL;
-	long rc = get_next_syscall (341, (char **) &retparams, NULL);
+	long rc = get_next_syscall (341, (char **) &retparams);
 
 	if (retparams) {
 		if (handle) {
@@ -8657,7 +8656,7 @@ replay_process_vm_readv(pid_t pid, const struct iovec __user *lvec, unsigned lon
 	struct replay_thread* tmp;
 	long rc, retval;
 
-	rc = get_next_syscall (347, NULL, NULL);	
+	rc = get_next_syscall (347, NULL);	
 
 	// Need to adjust pid to reflect the replay process, not the record process
 	tmp = current->replay_thrd->rp_next_thread;
@@ -8705,7 +8704,7 @@ replay_process_vm_writev(pid_t pid, const struct iovec __user *lvec, unsigned lo
 	struct replay_thread* tmp;
 	long rc, retval;
 
-	rc = get_next_syscall (348, NULL, NULL);	
+	rc = get_next_syscall (348, NULL);	
 
 	// Need to adjust pid to reflect the replay process, not the record process
 	tmp = current->replay_thrd->rp_next_thread;

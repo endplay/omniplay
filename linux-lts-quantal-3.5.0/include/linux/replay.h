@@ -55,7 +55,7 @@ struct syscall_result;
 
 long new_syscall_enter_external (long sysnum);
 long new_syscall_exit_external (long sysnum, long retval, void* retparams);
-long get_next_syscall_enter_external (int syscall, char** ppretparams, char** ppargs, struct syscall_result** ppsr);
+long get_next_syscall_enter_external (int syscall, char** ppretparams, struct syscall_result** ppsr);
 void get_next_syscall_exit_external (struct syscall_result* psr);
 
 /* For handling randomness within the kernel */
