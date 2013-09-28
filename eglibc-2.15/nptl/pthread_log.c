@@ -26,7 +26,6 @@ unsigned long* ppthread_log_clock = 0;
 #define __NR_pthread_full       44
 #define __NR_pthread_sysign     53
 #define __NR_pthread_status     56
-#define __NR_pthread_get_clock  58
 #define __NR_pthread_shm_path   98
 
 // This prints a message outside of the record/replay mechanism - useful for debugging
@@ -51,39 +50,27 @@ void pthread_log_stat (void)
 static void pthread_log_init (void)
 {
     void* ppage;
-    int page_exists;
+    int fd;
 
-    // see if the kernel already put the replay clock in the user's address space
     INTERNAL_SYSCALL_DECL(__err);
-    page_exists = INTERNAL_SYSCALL(pthread_get_clock,__err,1,&ppage);
-    
-    if (page_exists) {
-        // we'll just set the clock to the one that the kernel set up for us
-        ppthread_log_clock = (unsigned long *) ppage;
-	DPRINT ("the page exists and was set by the kernel %p\n", ppage);
-    } else {
-        // else, the kernel never set up our page
-        int fd;
-        INTERNAL_SYSCALL_DECL(__err);
-        fd = INTERNAL_SYSCALL(pthread_shm_path,__err,0);
-	if (fd < 0) {
-	    printf("shm_open failed\n");
-	    exit (0);
-	}
-
-        ppage = mmap (0, 4096, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
-
-        DPRINT ("Initial mmap returns %p\n", ppage);
-        if (ppage == MAP_FAILED) {
-            printf ("Cannot setup shared page for clock\n");
-            exit (0);
-        }
-
-        ppthread_log_clock = (unsigned long *) ppage;
-
-        INTERNAL_SYSCALL_DECL(__err);
-        INTERNAL_SYSCALL(pthread_init,__err,4,&pthread_log_status,ppthread_log_clock,(u_long)pthread_log_record,(u_long)pthread_log_replay);
+    fd = INTERNAL_SYSCALL(pthread_shm_path,__err,0);
+    if (fd < 0) {
+	pthread_log_debug("shm_open failed\n");
+	exit (0);
     }
+    
+    ppage = mmap (0, 4096, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+    
+    pthread_log_debug ("Initial mmap returns %p\n", ppage);
+    if (ppage == MAP_FAILED) {
+	pthread_log_debug ("Cannot setup shared page for clock\n");
+	exit (0);
+    }
+    
+    ppthread_log_clock = (unsigned long *) ppage;
+    
+    INTERNAL_SYSCALL_DECL(__err);
+    INTERNAL_SYSCALL(pthread_init,__err,3,&pthread_log_status,(u_long)pthread_log_record,(u_long)pthread_log_replay);
 }
 
 // This informs the kernel about a newly allocated log
