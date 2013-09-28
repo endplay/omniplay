@@ -64,7 +64,7 @@
 55	i386	fcntl			shim_fcntl			compat_sys_fcntl64
 56	i386	mpx			sys_pthread_status
 57	i386	setpgid			shim_setpgid
-58	i386	ulimit			sys_pthread_get_clock
+58	i386	ulimit			
 59	i386	oldolduname		shim_olduname
 60	i386	umask			shim_umask
 61	i386	chroot			shim_chroot

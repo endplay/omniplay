@@ -216,10 +216,12 @@ struct record_group {
 	short* rg_free_logids;		// Free log ids
 
 	int rg_log_opened[REPLAY_MAX_THREADS];  // If file for this log has been opened
-	atomic_t rg_krecord_clock;   // Recording clock - used only until user-level clock is initialized
 	char rg_logdir[MAX_LOGDIR_STRLEN+1]; // contains the directory to which we will write the log
-	char rg_shmpath[MAX_LOGDIR_STRLEN+1]; // contains the path of the shared-memory file that we will use for the user-clock
-	atomic_t rg_shmpath_set; // flag to indicate whether or not a shared memory page has been set up
+
+	struct page* rg_shared_page;          // Used for shared clock below
+	atomic_t* rg_pkrecord_clock;          // Where clock is mapped into kernel address space for this record/replay 
+	char rg_shmpath[MAX_LOGDIR_STRLEN+1]; // contains the path of the shared-memory file that we will used for user-level mapping of clock
+
 	char rg_linker[MAX_LOGDIR_STRLEN+1]; // contains the name of a special linker to use - for user level pthread library
 
 	char rg_mismatch_flag;  // Set when an error has occurred and we want to abandon ship
@@ -230,7 +232,6 @@ struct replay_group {
 	struct record_group* rg_rec_group; // Pointer to record group
 	ds_list_t* rg_replay_threads; // List of replay threads for this group
 	atomic_t rg_refcnt;         // Refs to this structure
-	u_long rg_kreplay_clock;    // Clock for sync. ops such as ipc sems
 	ds_list_t* rg_reserved_mem_list; // List of addresses we should preallocate to keep pin from using them
 	u_long rg_max_brk;          // Maximum value of brk address
 	ds_list_t* rg_used_address_list; // List of addresses that will be used by the application (and hence, not by pin)
@@ -290,13 +291,6 @@ static void rg_unlock(struct record_group* prg)
 #define rg_lock(prg) mutex_lock(&(prg)->rg_mutex); 
 #define rg_unlock(prg) mutex_unlock(&(prg)->rg_mutex);
 #endif
-
-static __always_inline u_long tv_diff(const struct timeval *tv1, const struct timeval *tv2)
-{
-	return (tv1->tv_sec - tv2->tv_sec)*USEC_PER_SEC + (tv1->tv_usec - tv2->tv_usec);
-}
-
-typedef void (*rb_free_fn)(void);
 
 static inline void*
 my_kmalloc(size_t size, gfp_t flags, int line)
@@ -421,7 +415,7 @@ struct replay_thread {
 	struct syscall_result* rp_saved_psr; // Stores syscall info when blocking in syscall conflicts with a pin lock
 	struct rvalues random_values;   // Tracks kernel randomness during syscalls (currently execve only) 
 
-	u_long* rp_preplay_clock;   // Points to the replay clock in use
+	u_long* rp_preplay_clock;       // Points to the replay clock in use
 	struct list_head rp_sysv_list;	// List of mappings from replay SYSV IDs to reocrd SYSV IDs
 	u_long rp_replay_hook;          // Used for dumbass linking in glibc
 };
@@ -604,6 +598,62 @@ void print_memory_areas (void)
 	}
 }
 
+/* Creates a new clock for a record group */
+static int
+create_shared_clock (struct record_group* prg)
+{
+	u_long uaddr;
+	int fd, rc;
+	mm_segment_t old_fs = get_fs();
+
+	snprintf (prg->rg_shmpath, MAX_LOGDIR_STRLEN+1, "/dev/shm/uclock%d", current->pid);
+	set_fs(KERNEL_DS);
+	fd = sys_open (prg->rg_shmpath, O_CREAT | O_EXCL | O_RDWR | O_NOFOLLOW, 0644);
+	if (fd < 0) {
+		printk ("create_shared_clock: pid %d cannot open shared file %s, rc=%d\n", current->pid, prg->rg_shmpath, fd);
+		goto out_oldfs;
+	}
+
+	rc = sys_ftruncate (fd, 4096);
+	if (rc < 0) {
+		printk ("create_shared_clock: pid %d cannot create new shm page, rc=%d\n", current->pid, rc);
+		goto out_close;
+	}	
+
+	uaddr = sys_mmap_pgoff (0, 4096, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+	if (IS_ERR((void *) uaddr)) {
+		printk ("create_shared_clock: pid %d cannot map shm page, rc=%ld\n", current->pid, PTR_ERR((void *) uaddr));
+		goto out_close;
+	}
+
+	rc = get_user_pages (current, current->mm, uaddr, 1, 1, 0, &prg->rg_shared_page, NULL);
+	if (rc != 1) {
+		printk ("creare_shared_clock: pid %d cannot get shm page, rc=%d\n", current->pid, rc);
+		goto out_unmap;
+	}
+
+	prg->rg_pkrecord_clock = (atomic_t *) kmap (prg->rg_shared_page);
+	printk ("record/replay clock is at %p\n", prg->rg_pkrecord_clock);
+
+	rc = sys_munmap (uaddr, 4096);
+	if (rc < 0) printk ("create_shared_clock: pid %d cannot munmap shared page, rc=%d\n", current->pid, rc);
+
+	rc = sys_close(fd);
+	if (rc < 0) printk ("create_shared_clock: pid %d cannot close shared file %s, rc=%d\n", current->pid, prg->rg_shmpath, rc);
+
+	return 0;
+
+out_unmap:
+	sys_munmap (uaddr, 4096);
+out_close:
+	sys_close (fd);
+	sys_unlink (prg->rg_shmpath);
+out_oldfs:
+	set_fs(old_fs);
+
+	return -1;
+}
+
 /* Creates a new replay group for the replaying process info */
 static struct replay_group*
 new_replay_group (struct record_group* prec_group)
@@ -627,8 +677,6 @@ new_replay_group (struct record_group* prec_group)
 	}
 
 	atomic_set (&prg->rg_refcnt, 0);
-
-	prg->rg_kreplay_clock = 0;
 
 	prg->rg_reserved_mem_list = ds_list_create (rm_cmp, 0, 1);
 	prg->rg_used_address_list = NULL;
@@ -679,11 +727,9 @@ new_record_group (char* logdir)
 	for (i = 0; i < REPLAY_MAX_THREADS; i++) {
 		prg->rg_log_opened[i] = 0;
 	}
-	atomic_set (&prg->rg_krecord_clock, 0);
+	if (create_shared_clock (prg) < 0) goto err_logids;
 
 	strncpy (prg->rg_logdir, logdir, MAX_LOGDIR_STRLEN+1);
-	memset (prg->rg_shmpath, 0, MAX_LOGDIR_STRLEN+1);
-	atomic_set(&prg->rg_shmpath_set, 0);
 	memset (prg->rg_linker, 0, MAX_LOGDIR_STRLEN+1);
 
 	prg->rg_mismatch_flag = 0;
@@ -744,6 +790,9 @@ static void
 destroy_record_group (struct record_group *prg)
 {
 	MPRINT ("Pid %d destroying record group %p\n", current->pid, prg);
+
+	kunmap (prg->rg_shared_page);
+	put_page (prg->rg_shared_page);
 
 	// Destroy free_logids
 	if (prg->rg_free_logids) KFREE (prg->rg_free_logids);
@@ -820,8 +869,7 @@ new_record_thread (struct record_group* prg, u_long recpid, int logid)
 
 	prp->rp_user_log_addr = 0;
 
-	// init the clock for this thread to be kernel clock
-	prp->rp_precord_clock = &prp->rp_group->rg_krecord_clock;
+	prp->rp_precord_clock = prp->rp_group->rg_pkrecord_clock;
 	
 	prp->rp_ulog_opened = 0;			
 	prp->rp_read_ulog_pos = 0;	
@@ -873,8 +921,7 @@ new_replay_thread (struct replay_group* prg, struct record_thread* prec_thrd, u_
 	// PARSPEC: add replay thread to replay_group's ds_list
 	ds_list_append(prg->rg_replay_threads, prp);
 	
-	// init clocks
-        prp->rp_preplay_clock = &prp->rp_group->rg_kreplay_clock;
+        prp->rp_preplay_clock = (u_long *) prp->rp_group->rg_rec_group->rg_pkrecord_clock;
 
 	// init the sys v id mappings list
 	INIT_LIST_HEAD(&prp->rp_sysv_list);
@@ -2564,22 +2611,15 @@ sys_pthread_print (const char __user * buf, size_t count)
 }
 
 asmlinkage long
-sys_pthread_init (int __user * status, u_long __user * replay_clock, u_long record_hook, u_long replay_hook)
+sys_pthread_init (int __user * status, u_long record_hook, u_long replay_hook)
 {
 	if (current->record_thrd) {
 		struct record_thread* prt = current->record_thrd;
-		printk ("Pid %d pthread_init: User-level recording initialized to %d\n", current->pid, atomic_read(prt->rp_precord_clock));
 		put_user (1, status);
-		put_user (atomic_read(prt->rp_precord_clock),replay_clock);
-		prt->rp_precord_clock = (atomic_t *) replay_clock;
 		prt->rp_record_hook = record_hook;
-		printk ("Pid %d pthread_init: user clock set to %p, value is %d\n", current->pid, (replay_clock), atomic_read(prt->rp_precord_clock));
 	} else if (current->replay_thrd) {
 		struct replay_thread* prt = current->replay_thrd;
-		MPRINT ("Pid %d pthread_init: User-level replay initialized to %ld\n", current->pid, *(prt->rp_preplay_clock));
 		put_user (2, status);
-		put_user (*(prt->rp_preplay_clock),replay_clock);
-		prt->rp_preplay_clock = replay_clock;
 		prt->rp_replay_hook = replay_hook;
 	} else {
 		printk ("Pid %d calls sys_pthread_init, but not a record/replay process\n", current->pid);
@@ -2726,41 +2766,6 @@ asmlinkage long sys_pthread_status (int __user * status)
 	return 0;
 }
 
-/* Asks the kernel to see if it has mapped the user-level page into
- * the user's address space yet (the kernel will have to map
- * the user-level page into the user's address space after
- * an exec, and the user needs to know whether or not the kernel
- * has done this yet). 
- *
- * If it has it returns 1 and sets usr_page.
- * If it hasn't it returns 0 and does nothing with usr_page
- */
-asmlinkage long sys_pthread_get_clock (void __user ** usr_page)
-{
-	if (current->record_thrd) {
-		if (atomic_read(&current->record_thrd->rp_group->rg_shmpath_set)) {
-			MPRINT ("Pid %d (record) pthread_get_clock: has user clock %p\n", current->pid, (current->record_thrd->rp_precord_clock));
-			copy_to_user(usr_page, &(current->record_thrd->rp_precord_clock), sizeof(atomic_t *));
-			return 1;
-		} else {
-			MPRINT ("Pid %d (record) pthread_get_clock: does not have user clock set up yet\n", current->pid);
-			return 0;
-		}
-	} else if (current->replay_thrd) {
-		if (atomic_read(&current->replay_thrd->rp_record_thread->rp_group->rg_shmpath_set)) {
-			MPRINT ("Pid %d (replay) pthread_get_clock: has user clock %p\n", current->pid, (current->replay_thrd->rp_preplay_clock));
-			copy_to_user(usr_page, &(current->replay_thrd->rp_preplay_clock), sizeof(u_long *));
-			return 1;
-		}  else {
-			MPRINT ("Pid %d (replay) pthread_get_clock: does not have user clock set up yet\n", current->pid);
-			return 0;
-		}
-	} else {
-		printk("[WARN]Pid %d, neither record/replay is asking for the user clock\n", current->pid);
-		return -EINVAL;
-	}
-}
-
 /* Returns a fd for the shared memory page back to the user */
 asmlinkage long sys_pthread_shm_path (void)
 {
@@ -2770,34 +2775,12 @@ asmlinkage long sys_pthread_shm_path (void)
 
 	if (current->record_thrd) {
 		struct record_group* prg = current->record_thrd->rp_group;
-		if (atomic_read(&prg->rg_shmpath_set)) {
-			MPRINT ("Pid %d (record) returning existing shmpath %s\n", current->pid, prg->rg_shmpath);
-			fd = sys_open(prg->rg_shmpath, O_RDWR | O_NOFOLLOW, 0644);
-		} else {
-			snprintf(prg->rg_shmpath, MAX_LOGDIR_STRLEN+1, "/dev/shm/uclock%d", current->pid);
-			MPRINT ("Pid %d (record) returning new shmpath %s\n", current->pid, prg->rg_shmpath);
-			fd = sys_open(prg->rg_shmpath, O_CREAT | O_RDWR | O_NOFOLLOW, 0644);
-			if(sys_ftruncate(fd,4096) == -1) {
-				printk ("Pid %d could not create new shm page of size 4096\n", current->pid);
-				sys_exit_group (0);
-			}	
-			atomic_set(&prg->rg_shmpath_set, 1);
-		}
+		MPRINT ("Pid %d (record) returning existing shmpath %s\n", current->pid, prg->rg_shmpath);
+		fd = sys_open(prg->rg_shmpath, O_RDWR | O_NOFOLLOW, 0644);
 	} else if (current->replay_thrd) {
 		struct record_group* prg = current->replay_thrd->rp_group->rg_rec_group;
-		if (atomic_read(&prg->rg_shmpath_set)) {
-			MPRINT ("Pid %d (replay) returning existing shmpath %s\n", current->pid, prg->rg_shmpath);
-			fd = sys_open(prg->rg_shmpath, O_RDWR | O_NOFOLLOW, 0644);
-		} else {
-			snprintf(prg->rg_shmpath, MAX_LOGDIR_STRLEN+1, "/dev/shm/uclock%d", current->replay_thrd->rp_record_thread->rp_record_pid);
-			MPRINT ("Pid %d (replay) returning new shmpath %s\n", current->pid, prg->rg_shmpath);
-			fd = sys_open(prg->rg_shmpath, O_CREAT | O_RDWR | O_NOFOLLOW, 0644);
-			if(sys_ftruncate(fd,4096) == -1) {
-				printk ("Pid %d could not create new shm page of size 4096\n", current->pid);
-				sys_exit_group (0);
-			}	
-			atomic_set(&prg->rg_shmpath_set, 1);
-		}
+		MPRINT ("Pid %d (replay) returning existing shmpath %s\n", current->pid, prg->rg_shmpath);
+		fd = sys_open(prg->rg_shmpath, O_RDWR | O_NOFOLLOW, 0644);
 	} else {
 		printk("[WARN]Pid %d, neither record/replay is asking for the shm_path???\n", current->pid);
 		fd = -EINVAL;
@@ -2815,15 +2798,6 @@ asmlinkage long sys_pthread_sysign (void)
 	return get_next_syscall (SIGNAL_WHILE_SYSCALL_IGNORED, NULL); 
 }
 
-
-/* Custom versions exist for:
- *	- exit
- *	- clone
- *	- exit_group
- *	- rt_sigaction
- *	- rt_sigprocmask
- *
- */
 #define SHIM_CALL_MAIN(number, F_RECORD, F_REPLAY, F_SYS)	\
 { \
 	int ignore_flag;						\
@@ -3322,15 +3296,9 @@ recplay_exit_start(void)
 void 
 recplay_exit_middle(void)
 {
-	struct vm_area_struct* mpnt;
-	struct page* page = NULL;
 	struct replay_thread* tmp;
-	struct task_struct* tsk;
-	struct mm_struct* mm;
-	u_long addr, clock;
+	u_long clock;
 	int num_blocked;
-	pid_t pid = 0;
-	u_long* p;
 
 	if (current->record_thrd) {
 		struct record_thread* prt = current->record_thrd;
@@ -3356,88 +3324,7 @@ recplay_exit_middle(void)
 			return;
 		}
 
-		// This is ugly - we want to read the user clock but cannot get it from this thread because we have already detached the address space
-		// So, find a thead that has not exited, map the shared page, and read it from there (bleah)
-		tmp = current->replay_thrd->rp_next_thread;
-		while (tmp != current->replay_thrd) {
-			MPRINT ("Pid %d: Replay pid %d record pid %d has status %d\n", current->pid, tmp->rp_replay_pid, tmp->rp_record_thread->rp_record_pid, tmp->rp_status);
-			if (tmp->rp_status != REPLAY_STATUS_DONE) {
-				tsk = find_task_by_vpid(tmp->rp_replay_pid);
-				if (tsk == NULL) {
-					MPRINT ("recplay_exit_middle: cannot find replay task %d\n", pid);
-				} else {
-					task_lock (tsk);
-					if (tsk->mm == NULL) {
-						MPRINT ("replay_exit_middle: task %d has no mm\n", pid);
-						task_unlock (tsk);
-					} else {
-						// Make sure that mm doesn't go away on us
-						mm = tsk->mm;
-						down_read (&mm->mmap_sem);
-						task_unlock (tsk);
-						pid = tmp->rp_replay_pid; 
-						break;
-					}
-				}
-			}
-			tmp = tmp->rp_next_thread;
-		}
-		if (pid == 0) {
-			int rc;
-			mm_segment_t old_fs;
-			printk ("No non-exited threads left in replay group, so noone to wake up\n");
-
-			// unlink shm path here
-			if (atomic_read(&current->replay_thrd->rp_group->rg_rec_group->rg_shmpath_set)) {
-
-				old_fs = get_fs();
-				set_fs(KERNEL_DS);
-				rc = sys_unlink(current->replay_thrd->rp_group->rg_rec_group->rg_shmpath);
-				set_fs(old_fs);
-				if (rc) {
-					printk ("Pid %d could not unlink the shmpath %s, rc %d\n", current->pid, current->replay_thrd->rp_group->rg_rec_group->rg_shmpath, rc); 
-				}
-			}
-			
-
-			rg_unlock (current->replay_thrd->rp_group->rg_rec_group);
-			return;
-		} else { // mcc: added debugging
-			MPRINT ("Pid %d, found another replay_thrd in group with pid %d\n", current->pid, pid);
-		}
-
-		// mcc: Checks to see if we've ever used a user-level clock
-		// In the single-threaded case (using no pthread primitives, we may not have)
-		addr = (u_long) tsk->replay_thrd->rp_preplay_clock;
-		if (addr == (u_long) (&(tsk->replay_thrd->rp_group->rg_kreplay_clock))) {
-			// just use the kernel clock
-			clock = tsk->replay_thrd->rp_group->rg_kreplay_clock;
-		} else {
-
-			for (mpnt = mm->mmap; mpnt; mpnt = mpnt->vm_next) {
-				if (mpnt->vm_start <= addr && mpnt->vm_end > addr) {
-					page = follow_page (mpnt, addr, FOLL_GET);
-					if (!page) {
-						int ret = handle_mm_fault (mm, mpnt, addr, 0);
-						if (ret & VM_FAULT_ERROR) BUG();
-						page = follow_page (mpnt, addr, FOLL_GET);
-					}
-					if (IS_ERR(page) || !page) {
-						printk ("recplay_exit_middle: cannot get page at addr %lx\n", addr);
-						page = NULL;
-					} 
-					break;
-				}
-			}
-			if (page == NULL) {
-				printk ("recplay_exit_middle: could not retrieve page with user clock for addr %lx\n", addr);
-				up_read (&mm->mmap_sem);
-				rg_unlock (current->replay_thrd->rp_group->rg_rec_group);
-				return;
-			}
-			p = (u_long *) kmap(page);
-			clock = *p;
-		}
+		clock = *current->replay_thrd->rp_preplay_clock;
 		current->replay_thrd->rp_status = REPLAY_STATUS_DONE;  // Will run no more 	
 		tmp = current->replay_thrd->rp_next_thread;
 		num_blocked = 0;
@@ -3463,14 +3350,6 @@ recplay_exit_middle(void)
 			}
 			
 		} 
-
-		// free the page, if we found a user page
-		if (addr != (u_long) (&(tsk->replay_thrd->rp_group->rg_kreplay_clock))) {
-			kunmap (page);
-			put_page (page);
-		}
-
-		up_read (&mm->mmap_sem);
 		rg_unlock (current->replay_thrd->rp_group->rg_rec_group);
 	}
 }
@@ -3641,7 +3520,6 @@ static int
 record_execve(const char *filename, const char __user *const __user *__argv, const char __user *const __user *__envp, struct pt_regs *regs) 
 {
 	struct ravlues* pretval;
-	char* shm_path;
 	long rc;
 
 	MPRINT ("Record pid %d performing execve of %s\n", current->pid, filename);
@@ -3663,33 +3541,8 @@ record_execve(const char *filename, const char __user *const __user *__argv, con
 
 	rc = do_execve(filename, __argv, __envp, regs);
 	memcpy (pretval, &current->record_thrd->random_values, sizeof (struct rvalues));
-
-	if (rc >= 0) {
-		// If exec succeeded...
-
-		shm_path = current->record_thrd->rp_group->rg_shmpath;
-		// After an execve, we need to set back up the user clock if it was set up before
-		if(atomic_read(&current->record_thrd->rp_group->rg_shmpath_set)) {
-			int fd;
-			mm_segment_t old_fs;
-			u_long ppage;
-			
-			DPRINT ("Pid %d after an execve, need to set back up the user clock, shmpath %s\n", current->pid, shm_path);
-
-			old_fs = get_fs();
-			set_fs(KERNEL_DS);
-			fd = sys_open(shm_path, O_RDWR | O_NOFOLLOW, 0644);
-
-			// set the user clock - does not to be at the same location in the new address space (note that precord_clock may be invalid)
-			ppage = sys_mmap_pgoff(0, 4096, PROT_READ|PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
-			DPRINT("Pid %d after execve, the user clock value is %d\n", current->pid, atomic_read((atomic_t *)ppage));
-			current->record_thrd->rp_precord_clock = (atomic_t *) ppage;
-			
-			set_fs(old_fs);
-			sys_close(fd);
-		}
-	}
 	new_syscall_exit (11, rc, pretval);
+
 	return rc;
 }
 
@@ -3702,12 +3555,8 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 	struct replay_thread* prt = current->replay_thrd;
 	struct replay_group* prg = prt->rp_group;
 	struct syscall_result* psr;
-	char* shm_path;
-
-	long rc;
-	struct replay_thread* prp;
 	struct rvalues* retparams = NULL;
-	prp = current->replay_thrd;
+	long rc;
 
 	get_next_syscall_enter (prt, prg, 11, (char **) &retparams, &psr);  // Need to split enter/exit because of vfork/exec wait
 	MPRINT ("Replay pid %d performing execve of %s\n", current->pid, filename);
@@ -3715,32 +3564,10 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 	argsconsume(prt->rp_record_thread, sizeof(struct rvalues));      
 	current->replay_thrd->random_values.cnt = 0;
 	rc = do_execve(filename, __argv, __envp, regs);
-
-	shm_path = prp->rp_record_thread->rp_group->rg_shmpath;
-	/* After an execve, we need to set back up the user clock if it was set up before */
-	if(atomic_read(&prp->rp_record_thread->rp_group->rg_shmpath_set)) {
-		int fd;
-		mm_segment_t old_fs;
-		u_long ppage;
-
-	        DPRINT ("Pid %d after an execve, need to set back up the user clock, shmpath %s\n", current->pid, shm_path);
-
-		old_fs = get_fs();
-		set_fs(KERNEL_DS);
-		fd = sys_open(shm_path, O_RDWR | O_NOFOLLOW, 0644);
-
-		// set the user clock - does not to be at the same location in the new address space (note that precord_clock may be invalid)
-		ppage = sys_mmap_pgoff(0, 4096, PROT_READ|PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
-		current->replay_thrd->rp_preplay_clock = (u_long *) ppage;
-
-		set_fs(old_fs);
-		sys_close(fd);
-	}
-	
 	get_next_syscall_exit (prt, prg, psr);
 
 	if (is_pin_attached()) {
-		prp->app_syscall_addr = 1; /* We need to reattach the pin tool after exec */
+		prt->app_syscall_addr = 1; /* We need to reattach the pin tool after exec */
 		preallocate_memory (); /* And preallocate memory again - our previous preallocs were just destroyed */
 		create_used_address_list ();
 	}
@@ -5747,8 +5574,6 @@ record_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 			put_user (old_num_expected_records, &phead->num_expected_records);
 #endif			
 		}
-		// also inherit the parent's pointer to the user-clock
-		tsk->record_thrd->rp_precord_clock = current->record_thrd->rp_precord_clock;
 
 		// allocate a slab for retparams
 		slab = VMALLOC (argsalloc_size);
@@ -5880,10 +5705,6 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 			tsk->replay_thrd->rp_record_thread->rp_ignore_flag_addr = current->replay_thrd->rp_record_thread->rp_ignore_flag_addr;
 		}
 		
-
-		// also inherit the parent's pointer to the user-clock
-		tsk->replay_thrd->rp_preplay_clock = current->replay_thrd->rp_preplay_clock;
-
 		// read the rest of the log
 		read_log_data (tsk->replay_thrd->rp_record_thread);
 
@@ -7031,9 +6852,6 @@ record_vfork_handler (struct task_struct* tsk)
 	tsk->record_thrd->rp_user_log_addr = current->record_thrd->rp_user_log_addr;
 	tsk->record_thrd->rp_ignore_flag_addr = current->record_thrd->rp_ignore_flag_addr;
 	
-	// also inherit the parent's pointer to the user-clock
-	tsk->record_thrd->rp_precord_clock = current->record_thrd->rp_precord_clock;
-	
 	// allocate a slab for retparams
 	slab = VMALLOC (argsalloc_size);
 	if (slab == NULL) {
@@ -7132,13 +6950,9 @@ replay_vfork_handler (struct task_struct* tsk)
 	MPRINT ("Pid %d, tsk->pid %d refcnt for record thread pid %d now %d\n", current->pid, tsk->pid, prt->rp_record_pid,
 		atomic_read(&prt->rp_refcnt));
 	
-	
 	// Fix up the circular thread list
 	tsk->replay_thrd->rp_next_thread = current->replay_thrd->rp_next_thread;
 	current->replay_thrd->rp_next_thread = tsk->replay_thrd;
-	
-	// also inherit the parent's pointer to the user-clock
-	tsk->replay_thrd->rp_preplay_clock = current->replay_thrd->rp_preplay_clock;
 	
 	// read the rest of the log
 	read_log_data (tsk->replay_thrd->rp_record_thread);
