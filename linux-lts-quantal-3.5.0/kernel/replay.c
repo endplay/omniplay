@@ -418,6 +418,8 @@ struct replay_thread {
 	u_long* rp_preplay_clock;       // Points to the replay clock in use
 	struct list_head rp_sysv_list;	// List of mappings from replay SYSV IDs to reocrd SYSV IDs
 	u_long rp_replay_hook;          // Used for dumbass linking in glibc
+
+	const char* rp_exec_filename;   // Used during execve to pass same arguments as recording (despite use of cache file)
 };
 
 /* Prototypes */
@@ -1826,6 +1828,11 @@ new_syscall_exit (long sysnum, long retval, void* retparams)
 #endif
 	prt->rp_in_ptr += 1;
 	return 0;
+}
+
+const char* replay_get_exec_filename (void) 
+{
+	return current->replay_thrd->rp_exec_filename;
 }
 
 long new_syscall_exit_external (long sysnum, long retval, void* retparams)
@@ -3313,7 +3320,7 @@ recplay_exit_middle(void)
 	} else if (current->replay_thrd) {
 		MPRINT ("Replay thread %d recpid %d in middle of exit\n", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid);	
 		rg_lock (current->replay_thrd->rp_group->rg_rec_group);
-		if (current->replay_thrd->rp_status != REPLAY_STATUS_RUNNING) {
+		if (current->replay_thrd->rp_status != REPLAY_STATUS_RUNNING || current->replay_thrd->rp_group->rg_rec_group->rg_mismatch_flag) {
 			if (!current->replay_thrd->rp_replay_exit && !current->replay_thrd->rp_group->rg_rec_group->rg_mismatch_flag) { 
 				// Usually get here by terminating when we see the exit flag and all records have been consumed
 				printk ("Non-running pid %d is exiting with status %d - abnormal termination?\n", current->pid, current->replay_thrd->rp_status);
@@ -3515,22 +3522,53 @@ SIMPLE_SHIM2(creat, 8, const char __user *, pathname, int, mode);
 SIMPLE_SHIM2(link, 9, const char __user *, oldname, const char __user *, newname);
 SIMPLE_SHIM1(unlink, 10, const char __user *, pathname);
 
+// This should be called with the record group lock
+static int
+add_file_to_cache_by_name (const char __user * filename, dev_t* pdev, u_long* pino, struct timespec* pmtime)
+{
+	mm_segment_t old_fs;
+	struct file* file;
+	int fd;
+
+	old_fs = get_fs();
+	set_fs (KERNEL_DS);
+	fd = sys_open (filename, O_RDONLY, 0); // note that there is a race here if library is changedafter syscall
+	if (fd < 0) {
+		printk ("add_file_to_cache_by_name: pid %d cannot open file %s\n", current->pid, filename);
+		set_fs(old_fs);
+		return -EINVAL;
+	}
+	file = fget (fd);
+	if (file == NULL) {
+		printk ("add_file_to_cache_by_name: pid %d cannot get file\n", current->pid);
+		set_fs(old_fs);
+		return -EINVAL;
+	}
+	add_file_to_cache (file, pdev, pino, pmtime);
+	fput (file);
+	sys_close (fd);
+	set_fs (old_fs);
+
+	return 0;
+}
+
+struct execve_retvals {
+	struct rvalues  rvalues;
+	dev_t           dev;
+	u_long          ino;
+	struct timespec mtime;
+};
+
 // Simply recording the fact that an execve takes place, we won't replay it
 static int 
 record_execve(const char *filename, const char __user *const __user *__argv, const char __user *const __user *__envp, struct pt_regs *regs) 
 {
-	struct ravlues* pretval;
+	struct execve_retvals* pretval = NULL;
 	long rc;
 
 	MPRINT ("Record pid %d performing execve of %s\n", current->pid, filename);
 	new_syscall_enter (11);
 
-	// Will be used to store random vars for address space layout
-	pretval = ARGSKMALLOC(sizeof(struct rvalues), GFP_KERNEL);
-	if (pretval == NULL) {
-		printk ("Unable to allocate space for execve random vars\n");
-		return -ENOMEM;
-	}
 	current->record_thrd->random_values.cnt = 0;
 
 	// (flush) and write out the user log before exec-ing
@@ -3540,7 +3578,17 @@ record_execve(const char *filename, const char __user *const __user *__argv, con
 	write_user_log (current->record_thrd);
 
 	rc = do_execve(filename, __argv, __envp, regs);
-	memcpy (pretval, &current->record_thrd->random_values, sizeof (struct rvalues));
+	if (rc >= 0) {
+		pretval = ARGSKMALLOC(sizeof(struct execve_retvals), GFP_KERNEL);
+		if (pretval == NULL) {
+			printk ("Unable to allocate space for execve retvals\n");
+			return -ENOMEM;
+		}
+		memcpy (&pretval->rvalues, &current->record_thrd->random_values, sizeof (struct rvalues));
+		rg_lock(current->record_thrd->rp_group);
+		add_file_to_cache_by_name (filename, &pretval->dev, &pretval->ino, &pretval->mtime);
+		rg_unlock(current->record_thrd->rp_group);
+	}
 	new_syscall_exit (11, rc, pretval);
 
 	return rc;
@@ -3555,15 +3603,33 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 	struct replay_thread* prt = current->replay_thrd;
 	struct replay_group* prg = prt->rp_group;
 	struct syscall_result* psr;
-	struct rvalues* retparams = NULL;
-	long rc;
+	struct execve_retvals* retparams = NULL;
+	mm_segment_t old_fs;
+	long rc, retval;
+	char name[CACHE_FILENAME_SIZE];
 
-	get_next_syscall_enter (prt, prg, 11, (char **) &retparams, &psr);  // Need to split enter/exit because of vfork/exec wait
-	MPRINT ("Replay pid %d performing execve of %s\n", current->pid, filename);
-	memcpy (&current->replay_thrd->random_values, retparams, sizeof(struct rvalues));
-	argsconsume(prt->rp_record_thread, sizeof(struct rvalues));      
-	current->replay_thrd->random_values.cnt = 0;
-	rc = do_execve(filename, __argv, __envp, regs);
+	retval = get_next_syscall_enter (prt, prg, 11, (char **) &retparams, &psr);  // Need to split enter/exit because of vfork/exec wait
+	if (retval >= 0) {
+		MPRINT ("Replay pid %d performing execve of %s\n", current->pid, filename);
+		memcpy (&current->replay_thrd->random_values, &retparams->rvalues, sizeof(struct rvalues));
+		argsconsume(prt->rp_record_thread, sizeof(struct execve_retvals));      
+		current->replay_thrd->random_values.cnt = 0;
+
+		rg_lock(prt->rp_record_thread->rp_group);
+		get_cache_file_name (name, retparams->dev, retparams->ino, retparams->mtime);
+		rg_unlock(prt->rp_record_thread->rp_group);
+
+		old_fs = get_fs();
+		set_fs(KERNEL_DS);
+		prt->rp_exec_filename = filename;
+		rc = do_execve (name, __argv, __envp, regs);
+		set_fs(old_fs);
+
+		if (rc != retval) {
+			printk ("[ERROR] Replay pid %d sees execve return %ld, recorded rc was %ld\n", current->pid, retval, rc);
+			syscall_mismatch();
+		}
+	}
 	get_next_syscall_exit (prt, prg, psr);
 
 	if (is_pin_attached()) {
@@ -3572,7 +3638,7 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 		create_used_address_list ();
 	}
 
-	return rc;
+	return retval;
 }
 
 int shim_execve(const char *filename, const char __user *const __user *__argv, const char __user *const __user *__envp, struct pt_regs *regs) 
@@ -4190,36 +4256,18 @@ static asmlinkage long
 record_uselib (const char __user * library)
 {
 	long rc;
-	int fd;
-	struct file* file;
 	struct mmap_pgoff_retvals* recbuf = NULL; // Shouldn't be called - new code uses mmap
-	mm_segment_t old_fs;
 
 	rg_lock(current->record_thrd->rp_group);
 	new_syscall_enter (86);
 	rc = sys_uselib (library);
 	if (rc == 0) {
-		old_fs = get_fs();
-		set_fs(KERNEL_DS);
-		fd = sys_open(library, O_RDONLY, 0); // note that there is a race here if library is changedafter syscall
-		if (fd < 0) {
-			printk ("record_uselib: pid %d cannot open library\n", fd);
-			return -EINVAL;
-		}
-		set_fs(old_fs);
-		file = fget(fd);
-		if (file == NULL) {
-			printk ("record_uselib: pid %d cannot get file\n", fd);
-			return -EINVAL;
-		}
 		recbuf = ARGSKMALLOC(sizeof(struct mmap_pgoff_retvals), GFP_KERNEL);
 		if (recbuf == NULL) {
-			printk ("record_uselib: pid %d cannot allocate return buffer\n", fd);
-			fput(file);
+			printk ("record_uselib: pid %d cannot allocate return buffer\n", current->pid);
 			return -EINVAL;
 		}
-		add_file_to_cache (file, &recbuf->dev, &recbuf->ino, &recbuf->mtime);
-		fput(file);
+		if (add_file_to_cache_by_name (library, &recbuf->dev, &recbuf->ino, &recbuf->mtime) < 0) return -EINVAL;
 	}
 	new_syscall_exit (86, rc, recbuf);
 	rg_unlock(current->record_thrd->rp_group);
@@ -4246,7 +4294,6 @@ replay_uselib (const char __user * library)
 		set_fs(KERNEL_DS);
 		retval = sys_uselib (name);
 		set_fs(old_fs);
-		KFREE(name);
 		if (rc != retval) {
 			printk ("Replay mmap_pgoff returns different value %lx than %lx\n", retval, rc);
 			syscall_mismatch ();
@@ -8748,7 +8795,7 @@ static ssize_t write_log_data (struct file* file, loff_t* ppos, struct record_th
 	list_for_each_entry_reverse (node, &prect->rp_argsalloc_list, list) {
 		data_len += node->pos - node->head;
 	}
-	printk ("Ancillary data written is %lu\n", data_len);
+	MPRINT ("Ancillary data written is %lu\n", data_len);
 	copyed = vfs_write(file, (char *) &data_len, sizeof(data_len), ppos);
 	if (copyed != sizeof(count)) {
 		printk ("write_log_data: tried to write ancillary data length, got rc %d\n", copyed);
@@ -8851,7 +8898,7 @@ int read_log_data_internal (struct record_thread* prect, struct syscall_result* 
 	}
 
 	/* Read in length of ancillary data, and add it to the argsalloc list */
-	printk ("read_log_data data length is %lu\n", data_len);
+	MPRINT ("read_log_data data length is %lu\n", data_len);
 	slab = VMALLOC(data_len);
 	rc = add_argsalloc_node(prect, slab, data_len);
 	if (rc) {

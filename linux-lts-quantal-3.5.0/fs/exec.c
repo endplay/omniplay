@@ -55,6 +55,7 @@
 #include <linux/pipe_fs_i.h>
 #include <linux/oom.h>
 #include <linux/compat.h>
+#include <linux/replay.h> // REPLAY 
 
 #include <trace/events/fs.h>
 
@@ -1535,6 +1536,7 @@ static int do_execve_common(const char *filename,
 
 	file = open_exec(filename);
 	retval = PTR_ERR(file);
+
 	if (IS_ERR(file))
 		goto out_unmark;
 
@@ -1560,7 +1562,15 @@ static int do_execve_common(const char *filename,
 	if (retval < 0)
 		goto out;
 
-	retval = copy_strings_kernel(1, &bprm->filename, bprm);
+	/* Begin REPLAY */
+	if (current->replay_thrd) {
+		const char* fname = replay_get_exec_filename();
+		retval = copy_strings_kernel(1, &fname, bprm);
+	} else {
+		retval = copy_strings_kernel(1, &bprm->filename, bprm);
+	}
+	/* End REPLAY */
+
 	if (retval < 0)
 		goto out;
 

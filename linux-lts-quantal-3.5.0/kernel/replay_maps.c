@@ -71,7 +71,7 @@ int add_file_to_cache (struct file* vm_file, dev_t* pdev, unsigned long* pino, s
 	// xxx - would a by-hash content index also be useful???  
  	
 	// else add to cache 
-	fd = sys_open (cname, O_CREAT|O_TRUNC|O_WRONLY, 0600);
+	fd = sys_open (cname, O_CREAT|O_TRUNC|O_WRONLY, 0755);
 	if (fd < 0) {
 		DPRINT ("add_file_to_cache: cannot create cache file %s, rc=%d\n", cname, fd);
 		set_fs(old_fs);
@@ -139,7 +139,7 @@ int get_cache_file_name (char* cname, dev_t dev, u_long ino, struct timespec mti
 	DPRINT ("cache time: %lu.%u\n", st.st_mtime, st.st_mtime_nsec);
 	DPRINT ("replay mod time: %ld.%ld\n", mtime.tv_sec, mtime.tv_nsec);
 	
-	if (st.st_mtime != mtime.tv_sec || st.st_mtime_nsec == mtime.tv_nsec) {
+	if (st.st_mtime != mtime.tv_sec || st.st_mtime_nsec != mtime.tv_nsec) {
 		sprintf (cname, "%s/%x_%lx_%lu_%lu", cache_dir, dev, ino, mtime.tv_sec, mtime.tv_nsec);
 	}
 	set_fs(old_fs);

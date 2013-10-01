@@ -13,6 +13,7 @@
 #include <linux/file.h>
 #include <linux/err.h>
 #include <linux/fs.h>
+#include <linux/replay.h> // REPLAY
 
 static int load_script(struct linux_binprm *bprm,struct pt_regs *regs)
 {
@@ -69,7 +70,14 @@ static int load_script(struct linux_binprm *bprm,struct pt_regs *regs)
 	retval = remove_arg_zero(bprm);
 	if (retval)
 		return retval;
-	retval = copy_strings_kernel(1, &bprm->interp, bprm);
+	/* Begin REPLAY */
+	if (current->replay_thrd) {
+		const char* fname = replay_get_exec_filename();
+		retval = copy_strings_kernel(1, &fname, bprm);
+	} else {	
+		retval = copy_strings_kernel(1, &bprm->interp, bprm);
+	}
+	/* End REPLAY */
 	if (retval < 0) return retval; 
 	bprm->argc++;
 	if (i_arg) {

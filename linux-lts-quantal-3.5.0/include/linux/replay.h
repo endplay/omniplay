@@ -62,7 +62,7 @@ void get_next_syscall_exit_external (struct syscall_result* psr);
 void record_randomness(u_long);
 u_long replay_randomness(void);
 
-// agreed upon length of the SHM_PATH_LENGTH
-#define SHM_PATH_LENGTH 64
+/* For replaying exec from a cache file */
+const char* replay_get_exec_filename (void);
 
 #endif
