@@ -103,6 +103,13 @@ struct accept_retvals {
 	char addr; // Variable length buffer follows
 };
 
+struct execve_retvals {
+	struct rvalues  rvalues;
+	dev_t           dev;
+	u_long          ino;
+	struct timespec mtime;
+};
+
 struct socketpair_retvals {
 	int call;
 	int sv0;
@@ -353,7 +360,7 @@ int main (int argc, char* argv[])
 				switch (psr.sysnum) {
 				case 3: size = psr.retval; break;
 				case 7: size = sizeof(int); break;
-				case 11: size = sizeof(struct rvalues); break;
+				case 11: size = sizeof(struct execve_retvals); break;
 				case 13: size = sizeof(time_t); break;
 				case 18: size = sizeof(struct __old_kernel_stat); break;
 				case 28: size = sizeof(struct __old_kernel_stat); break;
