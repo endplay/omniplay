@@ -635,7 +635,7 @@ create_shared_clock (struct record_group* prg)
 	}
 
 	prg->rg_pkrecord_clock = (atomic_t *) kmap (prg->rg_shared_page);
-	printk ("record/replay clock is at %p\n", prg->rg_pkrecord_clock);
+	DPRINT ("record/replay clock is at %p\n", prg->rg_pkrecord_clock);
 
 	rc = sys_munmap (uaddr, 4096);
 	if (rc < 0) printk ("create_shared_clock: pid %d cannot munmap shared page, rc=%d\n", current->pid, rc);
@@ -1587,6 +1587,10 @@ int fork_replay (char* logdir, const char __user *const __user *args, const char
 	void* slab;
 
 	MPRINT ("in fork_replay for pid %d\n", current->pid);
+	if (current->record_thrd || current->replay_thrd) {
+		printk ("fork_replay: pid %d cannot start a new recording while already recording or replaying\n", current->pid);
+		return -EINVAL;
+	}
 
 	if (atomic_read (&current->mm->mm_users) > 1) {
 		printk ("fork with multiple threads is not currently supported\n");
@@ -1685,6 +1689,10 @@ replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd)
 	mm_segment_t old_fs = get_fs();
 
 	MPRINT ("In replay_ckpt_wakeup\n");
+	if (current->record_thrd || current->replay_thrd) {
+		printk ("fork_replay: pid %d cannot start a new replay while already recording or replaying\n", current->pid);
+		return -EINVAL;
+	}
 
 	// First create a record group and thread for this replay
 	precg = new_record_group (logdir);
@@ -2811,7 +2819,7 @@ asmlinkage long sys_pthread_sysign (void)
 	if (current->record_thrd) {					\
 		get_user (ignore_flag, current->record_thrd->rp_ignore_flag_addr); \
 		if (ignore_flag) {					\
-			if (number != 240) MPRINT ("Pid %d ignoring syscall %d at user-level request (value %d address %p)\n", current->pid, number, ignore_flag, current->record_thrd->rp_ignore_flag_addr); \
+		  /* if (number != 240) */ printk ("Pid %d ignoring syscall %d at user-level request (value %d address %p)\n", current->pid, number, ignore_flag, current->record_thrd->rp_ignore_flag_addr); \
 			return F_SYS;					\
 		}							\
 		return F_RECORD;					\
@@ -7488,10 +7496,15 @@ RET1_SHIM4(sendfile64, 239, loff_t, offset, int, out_fd, int, in_fd, loff_t __us
 static asmlinkage long 
 record_futex (u32 __user *uaddr, int op, u32 val, struct timespec __user *utime, u32 __user *uaddr2, u32 val3)
 {
+	struct pt_regs* pregs;
 	long rc;
 
 	new_syscall_enter (240);
 	rc = sys_futex (uaddr, op, val, utime, uaddr2, val3);
+	pregs = get_pt_regs (NULL);
+	// Really should not get here because it means we are missing synchronizations at user level
+	printk ("Pid %d in replay futex uaddr=%p, op=%d, val=%d, ip=%lx, sp=%lx, bp=%lx\n", current->pid, uaddr, op, val, pregs->ip, pregs->sp, pregs->bp);
+	dump_user_stack();
 	new_syscall_exit (240, rc, NULL);
 
 	return rc;
