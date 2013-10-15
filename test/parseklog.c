@@ -105,7 +105,7 @@ struct accept_retvals {
 
 struct execve_retvals {
 	struct rvalues  rvalues;
-	dev_t           dev;
+	u_long          dev;
 	u_long          ino;
 	struct timespec mtime;
 };
@@ -573,7 +573,15 @@ int main (int argc, char* argv[])
 				printf ("\t%d bytes of return parameters included\n", size);
 				//printf ("\t%d syscall number in retparams\n", *(short *) buf);
 				
-				if (psr.sysnum == 196 || psr.sysnum == 197) {
+				if (psr.sysnum == 11) {
+					if (psr.retparams) {
+						printf ("\tdev is %lx\n", ((struct execve_retvals *)buf)->dev);
+						printf ("\tino is %lx\n", ((struct execve_retvals *)buf)->ino);
+						printf ("\tmtime is %lx.%lx\n", ((struct execve_retvals *)buf)->mtime.tv_sec, ((struct execve_retvals *)buf)->mtime.tv_nsec);
+					}
+				}
+
+				if (psr.sysnum == 195 || psr.sysnum == 196 || psr.sysnum == 197) {
 					struct stat64* pst = (struct stat64 *) buf;
 					printf ("stat64 size %Ld blksize %lx blocks %Ld ino %Ld\n", 
 						pst->st_size, pst->st_blksize, pst->st_blocks, pst->st_ino);
