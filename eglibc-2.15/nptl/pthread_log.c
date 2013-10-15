@@ -7,6 +7,7 @@
 #include "pthread_log.h"
 #include "semaphore.h"
 #include <fcntl.h>
+#include <unistd.h>
 
 #include <shlib-compat.h>
 
@@ -60,8 +61,8 @@ static void pthread_log_init (void)
     }
     
     ppage = mmap (0, 4096, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
-    
-    pthread_log_debug ("Initial mmap returns %p\n", ppage);
+    DPRINT ("Initial mmap returns %p\n", ppage);
+
     if (ppage == MAP_FAILED) {
 	pthread_log_debug ("Cannot setup shared page for clock\n");
 	exit (0);
@@ -1000,7 +1001,21 @@ int sem_timedwait (sem_t *__sem, const struct timespec *abstime)
   return rc;
 }
 
+/* To be deterministic, we are going to use our own little allocator here */
+struct my_once_lock {
+  int                  lock;
+  int                  refcnt;
+  pthread_once_t*      control;
+  struct my_once_lock* next;
+} my_once_lock;
+
+#define MY_ONCE_ARRAY_SIZE 100
 static int once_lock = LLL_LOCK_INITIALIZER;
+struct my_once_lock* once_head = NULL;
+struct my_once_lock* once_free = NULL;
+int    my_once_init = 0;
+struct my_once_lock once_array[MY_ONCE_ARRAY_SIZE];
+
 static void (*real_init_routine) (void);
 
 static void shim_init_routine (void)
@@ -1014,26 +1029,86 @@ static void shim_init_routine (void)
 }
 
 // I suppose that it could be important *which* thread actually calls the init routine.
-// The simplest way to enforce this ordering on replay is to not allow two threads to simultaneously
-// call a init_routine.  This is pretty heavyweight.
+// Enforce this ordering on replay by not allow two threads to simultaneously
+// call once with the same control.
 int
 __pthread_once (once_control, init_routine)
      pthread_once_t *once_control;
      void (*init_routine) (void);
 {
-  int rc, retval;
+  int i, rc, retval, found = 0;
+  struct my_once_lock* tmp, *prev_tmp;
 
   if (is_recording()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
 
     head->ignore_flag = 1; // don't record this private lock
+    
+    // Get a per-control lock
+  try_again:
     lll_lock (once_lock, LLL_PRIVATE);
+    
+    if (!my_once_init) {
+	    // Set up free list
+	    for (i = 0; i < MY_ONCE_ARRAY_SIZE; i++) {
+		    once_array[i].next = once_free;
+		    once_free = &once_array[i];
+	    }
+	    my_once_init = 1;
+    }
+
+    prev_tmp = NULL;
+    for (tmp = once_head; tmp; tmp = tmp->next) {
+      if (tmp->control == once_control) {
+	tmp->refcnt++;
+	lll_unlock (once_lock, LLL_PRIVATE);
+	lll_lock (tmp->lock, LLL_PRIVATE);
+	found = 1;
+	break;
+      }
+      prev_tmp = tmp;
+    }
+    if (!found) {
+      prev_tmp = NULL;
+      tmp = once_free;
+      if (tmp == NULL) {
+	      pthread_log_debug ("somehow, we ran out of pre-allocated once blocks - just wait (sigh)\n");
+	      lll_unlock (once_lock, LLL_PRIVATE);
+	      usleep (1);
+	      goto try_again;
+      }
+      once_free = tmp->next;
+      tmp->control = once_control;
+      tmp->refcnt = 1;
+      tmp->lock = LLL_LOCK_INITIALIZER;
+      tmp->next = once_head;
+      once_head = tmp;
+      lll_lock (tmp->lock, LLL_PRIVATE);
+      lll_unlock (once_lock, LLL_PRIVATE);
+    }
+
     pthread_log_record (0, PTHREAD_ONCE_ENTER, (u_long) once_control, 1); 
     real_init_routine = init_routine;
     rc = __no_pthread_once (once_control, shim_init_routine);
     pthread_log_record (rc, PTHREAD_ONCE_EXIT, (u_long) once_control, 0); 
     head->ignore_flag = 1;
+
+    // Release the per-control lock
+    lll_lock (once_lock, LLL_PRIVATE);
+    lll_unlock (tmp->lock, LLL_PRIVATE);
+    tmp->refcnt--;
+    if (tmp->refcnt == 0) {
+      if (prev_tmp) {
+	prev_tmp->next = tmp->next;
+      } else {
+	once_head = tmp->next;
+      }
+      // Put back on free list
+      tmp->next = once_free;
+      once_free = tmp;
+    }
     lll_unlock (once_lock, LLL_PRIVATE);
+
     head->ignore_flag = 0;
   } else if (is_replaying()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
