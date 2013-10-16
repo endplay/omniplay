@@ -65,4 +65,8 @@ u_long replay_randomness(void);
 /* For replaying exec from a cache file */
 const char* replay_get_exec_filename (void);
 
+/* In replay_logdb.c */
+__u64 get_replay_id (void);
+int get_logdir_for_replay_id (__u64 id, char* buf);
+
 #endif

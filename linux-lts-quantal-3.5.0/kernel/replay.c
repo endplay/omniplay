@@ -203,6 +203,8 @@ struct reserved_mapping {
 };
 
 struct record_group {
+	__u64 rg_id;                         // Unique identifier for all time for this recording
+
 #ifdef REPLAY_LOCK_DEBUG
 	pid_t rg_locker;
 	struct semaphore rg_sem; 
@@ -709,6 +711,12 @@ new_record_group (char* logdir)
 		goto err;
 	}
 
+	prg->rg_id = get_replay_id();
+	if (prg->rg_id == 0) {
+		printk ("Cannot get replay id\n");
+		goto err_logids;
+	}
+
 #ifdef REPLAY_LOCK_DEBUG
 	sema_init(&prg->rg_sem, 1);
 #else
@@ -731,12 +739,16 @@ new_record_group (char* logdir)
 	}
 	if (create_shared_clock (prg) < 0) goto err_logids;
 
-	strncpy (prg->rg_logdir, logdir, MAX_LOGDIR_STRLEN+1);
+	if (logdir) {
+		strncpy (prg->rg_logdir, logdir, MAX_LOGDIR_STRLEN+1);
+	} else {
+		get_logdir_for_replay_id (prg->rg_id, prg->rg_logdir);
+	}
 	memset (prg->rg_linker, 0, MAX_LOGDIR_STRLEN+1);
 
 	prg->rg_mismatch_flag = 0;
 
-	MPRINT ("new_record_group: exited\n");
+	MPRINT ("new_record_group %lld: exited\n", prg->rg_id);
 	return prg;
 
 err_logids:
