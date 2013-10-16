@@ -14,6 +14,7 @@ struct record_data {
 	u_int                            uid;
 	char *                           linkpath;
 	int                              fd;
+	char *                           logdir;
 };
 
 struct wakeup_data {

@@ -8,12 +8,19 @@
 
 extern char** environ;
 
+void format ()
+{
+    fprintf (stderr, "format: launcher [--uid UID] [--logdir logdir] [--pthread libdir] program [args]\n");
+    exit (1);
+}
+
 int main (int argc, char* argv[])
 {
     int fd, rc, i;
     unsigned int uid = 0; // set to non-zero if uid changed by command line
     int link_debug = 0; // flag if we should debug linking
     char* libdir = NULL;
+    char* logdir = NULL;
     int base;
     char ldpath[4096];
     char* linkpath = NULL;
@@ -21,15 +28,13 @@ int main (int argc, char* argv[])
     for (base = 1; base < argc; base++) {
 	if (argc > base+1 && !strncmp(argv[base], "--uid", 5)) {
 	    rc = sscanf(argv[base+1], "%u", &uid);
-	    if (!rc) {
-		fprintf (stderr, "format: launcher [--uid UID] [--pthread libdir] logdir program args\n");
-		fprintf (stderr, "invalid uid\n");
-		return -1;
-	    }
+	    if (!rc) format ();
 	    base++;
 	} else if (argc > base+1 && !strncmp(argv[base], "--pthread", 8)) {
 	    libdir = argv[base+1];
-	    printf ("libdir is %s\n", libdir);
+	    base++;
+	} else if (argc > base+1 && !strncmp(argv[base], "--logdir", 8)) {
+	    logdir = argv[base+1];
 	    base++;
 	} else if (!strncmp(argv[base], "--link-debug", 8)) {
 	    link_debug = 1;
@@ -38,11 +43,7 @@ int main (int argc, char* argv[])
 	}
     }
 	
-    printf ("argc: %d base: %d\n", argc, base);
-    if (argc-base < 2) {
-	fprintf (stderr, "format: launcher [--uid UID] [--pthread libdir] logdir program args\n");
-	return -1;
-    }
+    if (argc-base < 1) format();
 
     fd = open ("/dev/spec0", O_RDWR);
     if (fd < 0) {
@@ -62,47 +63,15 @@ int main (int argc, char* argv[])
 	strcat (ldpath, "ld-linux.so.2");
 	argv[base-1] = ldpath;
 	linkpath = ldpath;
-#if 0
-	if (set_linker (fd, ldpath) < 0) {
-	    fprintf (stderr, "Cannot set linker path\n");
-	    return -1;
-	}
-#endif
+
 	setenv("LD_LIBRARY_PATH", libdir, 1);
     }
     if (link_debug) setenv("LD_DEBUG", "libs", 1);
 
-    rc = replay_fork (fd, (const char**) &argv[base], (const char **) environ, uid, linkpath);
+    rc = replay_fork (fd, (const char**) &argv[base], (const char **) environ, uid, linkpath, logdir);
 
     // replay_fork should never return if it succeeds
     fprintf (stderr, "replay_fork failed, rc = %d\n", rc);
     return rc;
 
-#if 0
-    if (rc < 0) {
-	perror ("replay_fork");
-	return -1;
-    }
-
-    // set the program to run as a user if we have a uid
-    if (have_uid) {
-        rc = setuid(uid);
-        if (rc) {
-            fprintf (stderr, "Error setting uid to %d\n", uid);
-            return -1;
-        }
-    }
-#endif
-
-#if 0
-    //    printf ("Execing %s\n", argv[base+1]);
-    close (fd);
-
-    rc = execv (argv[base+1], &argv[base+1]);
-    if (rc < 0) {
-	perror ("execv");
-	return -1;
-    }
-    return 0;
-#endif
 }

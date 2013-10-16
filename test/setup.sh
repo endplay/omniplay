@@ -6,6 +6,12 @@ then
     chmod a+rwx /replay_cache
 fi
 
+if [ ! -e /replay_logdb ]
+then
+    mkdir /replay_logdb
+    chmod a+rwx /replay_logdb
+fi
+
 /sbin/insmod dev/spec.ko
 
 if [ ! -e /dev/spec0 ]

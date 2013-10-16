@@ -59,7 +59,7 @@ int devspec_init (int* fd_spec)
     return 0;
 }
 
-int replay_fork (int fd_spec, const char** args, const char** env, u_int uid, char* linkpath)
+int replay_fork (int fd_spec, const char** args, const char** env, u_int uid, char* linkpath, char* logdir)
 {
     struct record_data data;
     data.args = args;
@@ -67,6 +67,7 @@ int replay_fork (int fd_spec, const char** args, const char** env, u_int uid, ch
     data.uid = uid;
     data.linkpath = linkpath;
     data.fd = fd_spec;
+    data.logdir = logdir;
     return ioctl (fd_spec, SPECI_REPLAY_FORK, &data);
 }
 

@@ -11,7 +11,7 @@ struct used_address {
 };
 
 int devspec_init (int* fd_spec);
-int replay_fork (int fd_spec, const char** args, const char** env, u_int uid, char* linkpath);
+  int replay_fork (int fd_spec, const char** args, const char** env, u_int uid, char* linkpath, char* logdir);
 int resume (int fd_spec, int attach_pin, char* logdir, char* linker);
 int set_pin_addr (int fd_spec, u_long app_syscall_addr);
 int check_clock_before_syscall (int fd_spec, int syscall);
