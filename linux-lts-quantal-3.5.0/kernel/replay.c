@@ -60,7 +60,7 @@
 //#define MULTI_COMPUTER
 
 //#define REPLAY_PARANOID
-#define REPLAY_MAX_THREADS 1024
+
 // how long we wait on the wait_queue before timing out
 #define SCHED_TO 1000000
 
@@ -213,11 +213,6 @@ struct record_group {
 #endif
 	atomic_t rg_refcnt;         // Refs to this structure
 
-	/* Deals with logid assignmanet */
-	struct mutex rg_logid_mutex;	// Used to logid assignment
-	short* rg_free_logids;		// Free log ids
-
-	int rg_log_opened[REPLAY_MAX_THREADS];  // If file for this log has been opened
 	char rg_logdir[MAX_LOGDIR_STRLEN+1]; // contains the directory to which we will write the log
 
 	struct page* rg_shared_page;          // Used for shared clock below
@@ -362,7 +357,6 @@ struct record_thread {
 	struct record_thread* rp_next_thread; // Circular record thread list
 
 	atomic_t rp_refcnt;            // Reference count for this object
-	short rp_logid;                // Map thread to pthread log
 	pid_t rp_record_pid;           // Pid of recording task (0 if not set)
 	short rp_clone_status;         // Prevent rec task from exiting
 	                               // before rep task is created 
@@ -383,7 +377,8 @@ struct record_thread {
 
 	atomic_t* rp_precord_clock;     // Points to the recording clock in use
 
-	int rp_ulog_opened;		// Flag that says whether or not the user log has been opened 
+	char rp_ulog_opened;		// Flag that says whether or not the user log has been opened 
+	char rp_klog_opened;		// Flag that says whether or not the kernel log has been opened 
 	loff_t rp_read_ulog_pos;	// The current position in the ulog file that is being read
 	struct repsignal_context* rp_repsignal_context_stack;  // Saves replay context on signal delivery
 	u_long rp_record_hook;          // Used for dumbass linking in glibc
@@ -426,11 +421,11 @@ struct replay_thread {
 };
 
 /* Prototypes */
-struct file* init_log_write (struct record_thread* prect, int logid, loff_t* ppos, int* pfd);
+struct file* init_log_write (struct record_thread* prect, loff_t* ppos, int* pfd);
 void term_log_write (struct file* file, int fd);
 int read_log_data (struct record_thread* prt);
 int read_log_data_internal (struct record_thread* prect, struct syscall_result* psr, int logid, int* syscall_count, loff_t* pos);
-static ssize_t write_log_data(struct file* file, loff_t* ppos, struct record_thread* prect, struct syscall_result* psr, int count, int log);
+static ssize_t write_log_data(struct file* file, loff_t* ppos, struct record_thread* prect, struct syscall_result* psr, int count);
 static void destroy_record_group (struct record_group *prg);
 static void destroy_replay_group (struct replay_group *prepg);
 static void __destroy_replay_thread (struct replay_thread* prp);
@@ -702,7 +697,6 @@ static struct record_group*
 new_record_group (char* logdir)
 {
 	struct record_group* prg;
-	int i;
 
 	MPRINT ("new_record_group: entered\n");
 
@@ -715,7 +709,7 @@ new_record_group (char* logdir)
 	prg->rg_id = get_replay_id();
 	if (prg->rg_id == 0) {
 		printk ("Cannot get replay id\n");
-		goto err_logids;
+		goto err_free;
 	}
 
 #ifdef REPLAY_LOCK_DEBUG
@@ -725,20 +719,7 @@ new_record_group (char* logdir)
 #endif	
 	atomic_set(&prg->rg_refcnt, 0);
 
-	mutex_init (&prg->rg_logid_mutex);
-	prg->rg_free_logids = KMALLOC (sizeof(short)*REPLAY_MAX_THREADS, GFP_KERNEL);
-	if (prg->rg_free_logids == NULL) {
-		printk ("Unable to allocate free logids \n");
-		goto err_logids;
-	}
-	for(i = 0 ; i < REPLAY_MAX_THREADS ; i++) {
-		prg->rg_free_logids[i]=0;
-	}
-
-	for (i = 0; i < REPLAY_MAX_THREADS; i++) {
-		prg->rg_log_opened[i] = 0;
-	}
-	if (create_shared_clock (prg) < 0) goto err_logids;
+	if (create_shared_clock (prg) < 0) goto err_free;
 
 	if (logdir) {
 		strncpy (prg->rg_logdir, logdir, MAX_LOGDIR_STRLEN+1);
@@ -752,7 +733,7 @@ new_record_group (char* logdir)
 	MPRINT ("new_record_group %lld: exited\n", prg->rg_id);
 	return prg;
 
-err_logids:
+err_free:
 	KFREE(prg);
 err:
 	return NULL;
@@ -809,9 +790,6 @@ destroy_record_group (struct record_group *prg)
 	kunmap (prg->rg_shared_page);
 	put_page (prg->rg_shared_page);
 
-	// Destroy free_logids
-	if (prg->rg_free_logids) KFREE (prg->rg_free_logids);
-
 	KFREE (prg);
 #ifdef REPLAY_PARANOID
 	printk ("vmalloc cnt: %d\n", atomic_read(&vmalloc_cnt));
@@ -823,7 +801,6 @@ static struct record_thread*
 new_record_thread (struct record_group* prg, u_long recpid)
 {
 	struct record_thread* prp;
-	int i;
 
 	prp = KMALLOC (sizeof(struct record_thread), GFP_KERNEL);
 	if (prp == NULL) {
@@ -836,24 +813,7 @@ new_record_thread (struct record_group* prg, u_long recpid)
 
 	atomic_set(&prp->rp_refcnt, 1);
 
-	// rp_logid init
-	mutex_lock (&prg->rg_logid_mutex);
-	for (i = 0; i < REPLAY_MAX_THREADS; i++) {
-		if(prg->rg_free_logids[i]==0) {
-			prp->rp_logid = i;
-			prg->rg_free_logids[i] = 1;
-			break;
-		}
-	}
-	if(i == REPLAY_MAX_THREADS) {
-		printk("[ERROR]Cannot allocate free logid\n");
-		mutex_unlock (&prg->rg_logid_mutex);
-		KFREE(prp);
-		return NULL;
-	}
-	mutex_unlock (&prg->rg_logid_mutex);
-
-	MPRINT ("Pid %d creates new record thread: %p, recpid %lu, logid: %d\n", current->pid, prp, recpid, prp->rp_logid);
+	MPRINT ("Pid %d creates new record thread: %p, recpid %lu\n", current->pid, prp, recpid);
 
 	prp->rp_record_pid = recpid;
 	prp->rp_clone_status = 0;
@@ -874,6 +834,7 @@ new_record_thread (struct record_group* prg, u_long recpid)
 	prp->rp_precord_clock = prp->rp_group->rg_pkrecord_clock;
 	
 	prp->rp_ulog_opened = 0;			
+	prp->rp_klog_opened = 0;			
 	prp->rp_read_ulog_pos = 0;	
 	prp->rp_repsignal_context_stack = NULL;
 	prp->rp_record_hook = 0;
@@ -2065,10 +2026,10 @@ write_and_free_kernel_log(struct record_thread *prect)
 
 	mm_segment_t old_fs = get_fs();
 	set_fs(KERNEL_DS);
-	file = init_log_write (prect, prect->rp_logid, &pos, &fd);
+	file = init_log_write (prect, &pos, &fd);
 	if (file) {
 		write_psr = &prect->rp_log[0];
-		write_log_data (file, &pos, prect, write_psr, prect->rp_in_ptr, prect->rp_logid);
+		write_log_data (file, &pos, prect, write_psr, prect->rp_in_ptr);
 		term_log_write (file, fd);
 	}
 	set_fs(old_fs);
@@ -2102,11 +2063,11 @@ write_and_free_handler (struct work_struct *work)
 	MPRINT ("Pid %d write_and_free_handler called for record pid %d\n", current->pid, prect->rp_record_pid);
 
 	set_fs(KERNEL_DS);
-	file = init_log_write (prect, prect->rp_logid, &pos, &fd);
+	file = init_log_write (prect, &pos, &fd);
 	if (file) {
-		MPRINT ("Writing %lu records for log %d\n", prect->rp_in_ptr, prect->rp_logid);
+		MPRINT ("Writing %lu records for pid %d\n", prect->rp_in_ptr, current->pid);
 		write_psr = &prect->rp_log[0];
-		write_log_data (file, &pos, prect, write_psr, prect->rp_in_ptr, prect->rp_logid);
+		write_log_data (file, &pos, prect, write_psr, prect->rp_in_ptr);
 		term_log_write (file, fd);
 	}
 	set_fs(old_fs);
@@ -2356,9 +2317,8 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 	MPRINT ("Replay Pid %d, index %ld sys %d\n", current->pid, prt->rp_out_ptr, psr->sysnum);
 
 	if (unlikely(psr->sysnum != syscall)) {
-		printk ("[ERROR]Pid %d record pid %d expected syscall %d in log, got %d, start clock %ld stop clock %ld logid %d\n", 
-			current->pid, prt->rp_record_thread->rp_record_pid, syscall, 
-			psr->sysnum, psr->start_clock, psr->stop_clock, prt->rp_record_thread->rp_logid);
+		printk ("[ERROR]Pid %d record pid %d expected syscall %d in log, got %d, start clock %ld stop clock %ld\n", 
+			current->pid, prt->rp_record_thread->rp_record_pid, syscall, psr->sysnum, psr->start_clock, psr->stop_clock);
 		dump_stack();
 		__syscall_mismatch (prg->rg_rec_group);
 	}
@@ -3233,24 +3193,6 @@ static asmlinkage long replay_##name (args)				\
 	RET1_COUNT_RECORD5(name, sysnum, dest, arg0type, arg0name, arg1type, arg1name, arg2type, arg2name, arg3type, arg3name, arg4type, arg4name); \
 	RET1_COUNT_REPLAY (name, sysnum, dest, arg0type arg0name, arg1type arg1name, arg2type arg2name, arg3type arg3name, arg4type arg4name); \
 	asmlinkage long shim_##name (arg0type arg0name, arg1type arg1name, arg2type arg2name, arg3type arg3name, arg4type arg4name) SHIM_CALL(name, sysnum, arg0name, arg1name, arg2name, arg3name, arg4name);	
-
-long 
-replay_get_logid (struct task_struct* tsk)
-{
-	if (tsk->record_thrd) {
-		return tsk->record_thrd->rp_logid;
-	} else if (tsk->replay_thrd) {
-		return tsk->replay_thrd->rp_record_thread->rp_logid;
-	} else {
-		return -1;
-	}
-}
-
-asmlinkage long 
-sys_get_logid (void)
-{
-	return replay_get_logid(current);
-}
 
 #ifndef USE_DEBUG_LOG
 static void
@@ -8787,7 +8729,7 @@ asmlinkage long shim_process_vm_writev(pid_t pid, const struct iovec __user *lve
 
 SIMPLE_SHIM5(kcmp, 349, pid_t, pid1, pid_t, pid2, int, type, unsigned long, idx1, unsigned long, idx2);
 
-struct file* init_log_write (struct record_thread* prect, int logid, loff_t* ppos, int* pfd)
+struct file* init_log_write (struct record_thread* prect, loff_t* ppos, int* pfd)
 {
 	char filename[MAX_LOGDIR_STRLEN+20];
 	struct stat64 st;
@@ -8798,7 +8740,7 @@ struct file* init_log_write (struct record_thread* prect, int logid, loff_t* ppo
 
 	old_fs = get_fs();
 	set_fs(KERNEL_DS);
-	if (prect->rp_group->rg_log_opened[logid]) {
+	if (prect->rp_klog_opened) {
 		rc = sys_stat64(filename, &st);
 		if (rc < 0) {
 			printk ("Stat of file %s failed\n", filename);
@@ -8811,7 +8753,7 @@ struct file* init_log_write (struct record_thread* prect, int logid, loff_t* ppo
 		*pfd = sys_open(filename, O_WRONLY|O_CREAT|O_TRUNC, 0644);
 		MPRINT ("Opened log file %s\n", filename);
 		*ppos = 0;
-		prect->rp_group->rg_log_opened[logid] = 1;
+		prect->rp_klog_opened = 1;
 	}
 	set_fs(old_fs);
 	if (*pfd < 0) {
@@ -8872,7 +8814,7 @@ void write_begin_log (struct file* file, loff_t* ppos, struct record_thread* pre
 	}
 }
 
-static ssize_t write_log_data (struct file* file, loff_t* ppos, struct record_thread* prect, struct syscall_result* psr, int count, int log)
+static ssize_t write_log_data (struct file* file, loff_t* ppos, struct record_thread* prect, struct syscall_result* psr, int count)
 {
 	struct argsalloc_node* node;
 	ssize_t copyed = 0;
@@ -8932,7 +8874,7 @@ static ssize_t write_log_data (struct file* file, loff_t* ppos, struct record_th
 		return -EINVAL;
 	}
 
-	MPRINT ("Pid %d write_log_data logid %d count %d, size %d\n", current->pid, log, count, sizeof(struct syscall_result)*count);
+	MPRINT ("Pid %d write_log_data count %d, size %d\n", current->pid, count, sizeof(struct syscall_result)*count);
 
 	copyed = vfs_write(file, (char *) psr, sizeof(struct syscall_result)*count, ppos);
 	if (copyed != sizeof(struct syscall_result)*count) {
@@ -8955,7 +8897,7 @@ static ssize_t write_log_data (struct file* file, loff_t* ppos, struct record_th
 	}
 
 	list_for_each_entry_reverse (node, &prect->rp_argsalloc_list, list) {
-		MPRINT ("Pid %d logid %d argssize write buffer slab size %d\n", current->pid, log, node->pos - node->head);
+		MPRINT ("Pid %d argssize write buffer slab size %d\n", current->pid, node->pos - node->head);
 		pvec[kcnt].iov_base = node->head;
 		pvec[kcnt].iov_len = node->pos - node->head;
 		if (++kcnt == UIO_MAXIOV) {
