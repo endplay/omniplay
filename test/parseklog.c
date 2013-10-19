@@ -104,10 +104,18 @@ struct accept_retvals {
 };
 
 struct execve_retvals {
-	struct rvalues  rvalues;
-	u_long          dev;
-	u_long          ino;
-	struct timespec mtime;
+	u_char is_new_group;
+	union {
+		struct {
+			struct rvalues  rvalues;
+			u_long          dev;
+			u_long          ino;
+			struct timespec mtime;
+		} same_group;
+		struct {
+			__u64           log_id;
+		} new_group;
+	} data;
 };
 
 struct socketpair_retvals {
@@ -575,9 +583,14 @@ int main (int argc, char* argv[])
 				
 				if (psr.sysnum == 11) {
 					if (psr.retparams) {
-						printf ("\tdev is %lx\n", ((struct execve_retvals *)buf)->dev);
-						printf ("\tino is %lx\n", ((struct execve_retvals *)buf)->ino);
-						printf ("\tmtime is %lx.%lx\n", ((struct execve_retvals *)buf)->mtime.tv_sec, ((struct execve_retvals *)buf)->mtime.tv_nsec);
+						struct execve_retvals* per = (struct execve_retvals *) buf;
+						if (per->is_new_group) {
+							printf ("\tnew group id: %lld\n", per->data.new_group.log_id);
+						} else {
+							printf ("\tdev is %lx\n", per->data.same_group.dev);
+							printf ("\tino is %lx\n", per->data.same_group.ino);
+							printf ("\tmtime is %lx.%lx\n", per->data.same_group.mtime.tv_sec, per->data.same_group.mtime.tv_nsec);
+						}
 					}
 				}
 

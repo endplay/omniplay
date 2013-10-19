@@ -11,10 +11,9 @@ struct record_data {
 	u_long                           app_syscall_addr;
 	const char __user *const __user *args;
 	const char __user *const __user *env;
-	u_int                            uid;
-	char *                           linkpath;
+	char __user *                    linkpath;
 	int                              fd;
-	char *                           logdir;
+	char __user *                    logdir;
 };
 
 struct wakeup_data {
@@ -22,6 +21,7 @@ struct wakeup_data {
 	char __user * logdir;
 	char __user * linker;
 	int           fd;
+	int           follow_splits;
 };
 	
 struct get_used_addr_data {

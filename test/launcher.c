@@ -10,14 +10,13 @@ extern char** environ;
 
 void format ()
 {
-    fprintf (stderr, "format: launcher [--uid UID] [--logdir logdir] [--pthread libdir] program [args]\n");
+    fprintf (stderr, "format: launcher [--logdir logdir] [--pthread libdir] program [args]\n");
     exit (1);
 }
 
 int main (int argc, char* argv[])
 {
     int fd, rc, i;
-    unsigned int uid = 0; // set to non-zero if uid changed by command line
     int link_debug = 0; // flag if we should debug linking
     char* libdir = NULL;
     char* logdir = NULL;
@@ -26,11 +25,7 @@ int main (int argc, char* argv[])
     char* linkpath = NULL;
 
     for (base = 1; base < argc; base++) {
-	if (argc > base+1 && !strncmp(argv[base], "--uid", 5)) {
-	    rc = sscanf(argv[base+1], "%u", &uid);
-	    if (!rc) format ();
-	    base++;
-	} else if (argc > base+1 && !strncmp(argv[base], "--pthread", 8)) {
+	if (argc > base+1 && !strncmp(argv[base], "--pthread", 8)) {
 	    libdir = argv[base+1];
 	    base++;
 	} else if (argc > base+1 && !strncmp(argv[base], "--logdir", 8)) {
@@ -68,7 +63,7 @@ int main (int argc, char* argv[])
     }
     if (link_debug) setenv("LD_DEBUG", "libs", 1);
 
-    rc = replay_fork (fd, (const char**) &argv[base], (const char **) environ, uid, linkpath, logdir);
+    rc = replay_fork (fd, (const char**) &argv[base], (const char **) environ, linkpath, logdir);
 
     // replay_fork should never return if it succeeds
     fprintf (stderr, "replay_fork failed, rc = %d\n", rc);

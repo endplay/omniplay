@@ -237,6 +237,7 @@ struct replay_group {
 	ds_list_t* rg_reserved_mem_list; // List of addresses we should preallocate to keep pin from using them
 	u_long rg_max_brk;          // Maximum value of brk address
 	ds_list_t* rg_used_address_list; // List of addresses that will be used by the application (and hence, not by pin)
+	int rg_follow_splits;       // Ture if we should replay any split-off replay groups
 };
 
 struct argsalloc_node {
@@ -660,7 +661,7 @@ out_oldfs:
 
 /* Creates a new replay group for the replaying process info */
 static struct replay_group*
-new_replay_group (struct record_group* prec_group)
+new_replay_group (struct record_group* prec_group, int follow_splits)
 {
 	struct replay_group* prg;
 
@@ -673,7 +674,7 @@ new_replay_group (struct record_group* prec_group)
 
 	prg->rg_rec_group = prec_group;
 
-	// PARSPEC
+	prg->rg_follow_splits = follow_splits;
 	prg->rg_replay_threads = ds_list_create(NULL, 0, 1);
 	if (prg->rg_replay_threads == NULL) {
 		printk ("Cannot create replay_group rg_replay_threads\n");
@@ -742,7 +743,7 @@ new_record_group (char* logdir)
 	if (logdir) {
 		strncpy (prg->rg_logdir, logdir, MAX_LOGDIR_STRLEN+1);
 	} else {
-		get_logdir_for_replay_id (prg->rg_id, prg->rg_logdir);
+		make_logdir_for_replay_id (prg->rg_id, prg->rg_logdir);
 	}
 	memset (prg->rg_linker, 0, MAX_LOGDIR_STRLEN+1);
 
@@ -819,7 +820,7 @@ destroy_record_group (struct record_group *prg)
 
 /* Creates a new record thread */
 static struct record_thread* 
-new_record_thread (struct record_group* prg, u_long recpid, int logid)
+new_record_thread (struct record_group* prg, u_long recpid)
 {
 	struct record_thread* prp;
 	int i;
@@ -837,31 +838,18 @@ new_record_thread (struct record_group* prg, u_long recpid, int logid)
 
 	// rp_logid init
 	mutex_lock (&prg->rg_logid_mutex);
-	if (logid >= 0) {
-		if (logid < REPLAY_MAX_THREADS && 
-		    prg->rg_free_logids[logid]==0) {
-			prp->rp_logid = logid;
-			prg->rg_free_logids[logid] = 1;
-		} else {
-			printk ("Pid %d: logid %d already taken\n",
-				current->pid, logid);
-			logid = -1; /* Try to find a free one anyway */
+	for (i = 0; i < REPLAY_MAX_THREADS; i++) {
+		if(prg->rg_free_logids[i]==0) {
+			prp->rp_logid = i;
+			prg->rg_free_logids[i] = 1;
+			break;
 		}
 	}
-	if (logid < 0) {
-		for(i = 0 ; i < REPLAY_MAX_THREADS ; i++) {
-			if(prg->rg_free_logids[i]==0) {
-				prp->rp_logid = i;
-				prg->rg_free_logids[i] = 1;
-				break;
-			}
-		}
-		if(i == REPLAY_MAX_THREADS) {
-			printk("[ERROR]Cannot allocate free logid\n");
-			mutex_unlock (&prg->rg_logid_mutex);
-			KFREE(prp);
-			return NULL;
-		}
+	if(i == REPLAY_MAX_THREADS) {
+		printk("[ERROR]Cannot allocate free logid\n");
+		mutex_unlock (&prg->rg_logid_mutex);
+		KFREE(prp);
+		return NULL;
 	}
 	mutex_unlock (&prg->rg_logid_mutex);
 
@@ -892,7 +880,6 @@ new_record_thread (struct record_group* prg, u_long recpid, int logid)
 	prp->rp_signals = NULL;
 	prp->rp_last_signal = NULL;
 
-	// XXX refcounts are probably buggy!
 	get_record_group(prg);
 	return prp;
 }
@@ -980,7 +967,6 @@ __destroy_record_thread (struct record_thread* prp)
 	     prev = prev->rp_next_thread);
 	prev->rp_next_thread = prp->rp_next_thread;
 
-	// XXX refcounts are probably buggy!
 	put_record_group (prp->rp_group);
 
 	KFREE (prp);
@@ -1589,13 +1575,15 @@ EXPORT_SYMBOL(get_log_id);
 
 /* This function forks off a separate process which replays the
    foreground task.*/
-int fork_replay (char* logdir, const char __user *const __user *args, const char __user *const __user *env, u_int uid, char __user * linker, int fd)
+int fork_replay (char __user* logdir, const char __user *const __user *args, const char __user *const __user *env, char* linker, int fd)
 {
 	struct record_group* prg;
 	long retval;
 	char ckpt[MAX_LOGDIR_STRLEN+10];
 	const char __user * pc;
 	char* filename;
+	char* argbuf;
+	int argbuflen;
 	void* slab;
 
 	MPRINT ("in fork_replay for pid %d\n", current->pid);
@@ -1613,7 +1601,7 @@ int fork_replay (char* logdir, const char __user *const __user *args, const char
 	prg = new_record_group (logdir);
 	if (prg == NULL) return -ENOMEM;
 
-	current->record_thrd = new_record_thread(prg, current->pid, -1);
+	current->record_thrd = new_record_thread(prg, current->pid);
 	if (current->record_thrd == NULL) {
 		destroy_record_group(prg);
 		return -ENOMEM;
@@ -1639,21 +1627,19 @@ int fork_replay (char* logdir, const char __user *const __user *args, const char
 		MPRINT ("Set linker for record process to %s\n", linker);
 	}
 
-	if (uid) {
-		retval = sys_setuid (uid);
-		if (retval < 0) {
-			printk ("replay_fork: unable to setuid to %d, rc=%ld\n", uid, retval);
-		} else {
-			MPRINT ("Set uid to %d\n", uid);
-		}
+	if (fd >= 0) {
+		retval = sys_close (fd);
+		if (retval < 0) printk ("replay_fork: unable to close fd %d, rc=%ld\n", fd, retval);
 	}
-
-	retval = sys_close (fd);
-	if (retval < 0) printk ("replay_fork: unable to close fd %d, rc=%ld\n", fd, retval);
 
 	// Save reduced-size checkpoint with info needed for exec
 	sprintf (ckpt, "%s/ckpt", prg->rg_logdir);
-	retval = replay_checkpoint_to_disk (ckpt, args, env);
+	argbuf = copy_args (args, env, &argbuflen);
+	if (argbuf == NULL) {
+		printk ("replay_checkpoint_to_disk: copy_args failed\n");
+		return -EFAULT;
+	}
+	retval = replay_checkpoint_to_disk (ckpt, argbuf, argbuflen);
 	if (retval) {
 		printk ("replay_checkpoint_to_disk returns %ld\n", retval);
 		return retval;
@@ -1688,7 +1674,7 @@ get_linker (void)
 }
 
 long
-replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd)
+replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd, int follow_splits)
 {
 	struct record_group* precg; 
 	struct record_thread* prect;
@@ -1710,13 +1696,13 @@ replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd)
 	precg = new_record_group (logdir);
 	if (precg == NULL) return -ENOMEM;
 
-	prect = new_record_thread(precg, 0, -1);
+	prect = new_record_thread(precg, 0);
 	if (prect == NULL) {
 		destroy_record_group(precg);
 		return -ENOMEM;
 	}
 
-	prepg = new_replay_group (precg);
+	prepg = new_replay_group (precg, follow_splits);
 	if (prepg == NULL) {
 		destroy_record_group(precg);
 		return -ENOMEM;
@@ -1766,11 +1752,9 @@ replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd)
 		schedule();
 	}
 
-	rc = sys_close (fd);
-	if (rc < 0) {
-		printk ("replay_ckpt_wakeup: unable to close fd %d, rc=%ld\n", fd, rc);
-	} else {
-		MPRINT ("replay_ckpt_wakeup: closed fd %d\n", fd);
+	if (fd >= 0) {
+		rc = sys_close (fd);
+		if (rc < 0) printk ("replay_ckpt_wakeup: unable to close fd %d, rc=%ld\n", fd, rc);
 	}
 
 	set_fs(KERNEL_DS);
@@ -3573,10 +3557,18 @@ add_file_to_cache_by_name (const char __user * filename, dev_t* pdev, u_long* pi
 }
 
 struct execve_retvals {
-	struct rvalues  rvalues;
-	dev_t           dev;
-	u_long          ino;
-	struct timespec mtime;
+	u_char is_new_group;
+	union {
+		struct {
+			struct rvalues  rvalues;
+			dev_t           dev;
+			u_long          ino;
+			struct timespec mtime;
+		} same_group;
+		struct {
+			__u64           log_id;
+		} new_group;
+	} data;
 };
 
 // Simply recording the fact that an execve takes place, we won't replay it
@@ -3584,31 +3576,111 @@ static int
 record_execve(const char *filename, const char __user *const __user *__argv, const char __user *const __user *__envp, struct pt_regs *regs) 
 {
 	struct execve_retvals* pretval = NULL;
-	long rc;
+	struct record_thread* prt = current->record_thrd;
+	struct record_group* precg;
+	struct record_thread* prect;
+	void* slab;
+	char ckpt[MAX_LOGDIR_STRLEN+10];
+	long rc, retval;
+	char* argbuf;
+	int argbuflen;
 
 	MPRINT ("Record pid %d performing execve of %s\n", current->pid, filename);
 	new_syscall_enter (11);
 
 	current->record_thrd->random_values.cnt = 0;
 
-	// (flush) and write out the user log before exec-ing
+	// (flush) and write out the user log before exec-ing (otherwise it disappears)
 #ifndef USE_DEBUG_LOG
-	flush_user_log (current->record_thrd);
+	flush_user_log (prt);
 #endif
-	write_user_log (current->record_thrd);
+	write_user_log (prt);
+
+	// Have to copy arguments out before address space goes away - we will likely need them later
+	argbuf = copy_args (__argv, __envp, &argbuflen);
 
 	rc = do_execve(filename, __argv, __envp, regs);
 	if (rc >= 0) {
+		// Our rule is that we record a split if there is an exec with more than one thread in the group.   Not sure this is best
+		// but I don't know what is better
+		if (prt->rp_next_thread != prt) {
+
+			DPRINT ("New record group\n");
+
+			// First setup new record group
+			precg = new_record_group (NULL);
+			if (precg == NULL) {
+				current->record_thrd = NULL;
+				return -ENOMEM;
+			}
+			strcpy (precg->rg_linker, prt->rp_group->rg_linker);
+
+			prect = new_record_thread (precg, current->pid);
+			if (prect == NULL) {
+				destroy_record_group (precg);
+				current->record_thrd = NULL;
+				return -ENOMEM;
+			}
+			memcpy (&prect->random_values, &prt->random_values, sizeof(prt->random_values));
+
+			slab = VMALLOC (argsalloc_size);
+			if (slab == NULL) {
+				destroy_record_group (precg);
+				current->record_thrd = NULL;
+				return -ENOMEM;
+			}
+
+			if (add_argsalloc_node(current->record_thrd, slab, argsalloc_size)) {
+				VFREE (slab);
+				destroy_record_group (precg);
+				current->record_thrd = NULL;
+				return -ENOMEM;
+			}
+			// Now write last record to log and flush it to disk
+			pretval = ARGSKMALLOC(sizeof(struct execve_retvals), GFP_KERNEL);
+			if (pretval == NULL) {
+				printk ("Unable to allocate space for execve retvals\n");
+				return -ENOMEM;
+			}
+			pretval->is_new_group = 1;
+			pretval->data.new_group.log_id = precg->rg_id;
+			new_syscall_exit (11, rc, pretval); 
+			write_and_free_kernel_log (prt);
+
+			__destroy_record_thread (prt);  // The old group may no longer be valid after this
+
+			// Switch thread to new record group
+			current->record_thrd = prt = prect;
+
+			// Write out checkpoint for the new group
+			sprintf (ckpt, "%s/ckpt", precg->rg_logdir);
+			retval = replay_checkpoint_to_disk (ckpt, argbuf, argbuflen);
+			if (retval) {
+				printk ("record_execve: replay_checkpoint_to_disk returns %ld\n", retval);
+				VFREE (slab);
+				destroy_record_group (precg);
+				current->record_thrd = NULL;
+				return retval;
+			}
+			argbuf = NULL;
+
+			// Write out first log record (exec) for the new group - the code below will finish the job
+			new_syscall_enter (11);
+		}
+
 		pretval = ARGSKMALLOC(sizeof(struct execve_retvals), GFP_KERNEL);
 		if (pretval == NULL) {
 			printk ("Unable to allocate space for execve retvals\n");
 			return -ENOMEM;
 		}
-		memcpy (&pretval->rvalues, &current->record_thrd->random_values, sizeof (struct rvalues));
-		rg_lock(current->record_thrd->rp_group);
-		add_file_to_cache_by_name (filename, &pretval->dev, &pretval->ino, &pretval->mtime);
-		rg_unlock(current->record_thrd->rp_group);
+
+		pretval->is_new_group = 0;
+		memcpy (&pretval->data.same_group.rvalues, &prt->random_values, sizeof (struct rvalues));
+		rg_lock(prt->rp_group);
+		add_file_to_cache_by_name (filename, &pretval->data.same_group.dev, &pretval->data.same_group.ino, &pretval->data.same_group.mtime);
+		rg_unlock(prt->rp_group);
 	}
+	if (argbuf) KFREE (argbuf);
 	new_syscall_exit (11, rc, pretval);
 
 	return rc;
@@ -3621,33 +3693,87 @@ static int
 replay_execve(const char *filename, const char __user *const __user *__argv, const char __user *const __user *__envp, struct pt_regs *regs) 
 {
 	struct replay_thread* prt = current->replay_thrd;
+	struct replay_thread* tmp;
 	struct replay_group* prg = prt->rp_group;
 	struct syscall_result* psr;
 	struct execve_retvals* retparams = NULL;
 	mm_segment_t old_fs;
 	long rc, retval;
-	char name[CACHE_FILENAME_SIZE];
+	char name[CACHE_FILENAME_SIZE], logdir[MAX_LOGDIR_STRLEN+1]; 
+	int num_blocked;
+	u_long clock;
 
 	retval = get_next_syscall_enter (prt, prg, 11, (char **) &retparams, &psr);  // Need to split enter/exit because of vfork/exec wait
 	if (retval >= 0) {
-		MPRINT ("Replay pid %d performing execve of %s\n", current->pid, filename);
-		memcpy (&current->replay_thrd->random_values, &retparams->rvalues, sizeof(struct rvalues));
-		argsconsume(prt->rp_record_thread, sizeof(struct execve_retvals));      
-		current->replay_thrd->random_values.cnt = 0;
+		if (retparams->is_new_group) {
+			get_next_syscall_exit (prt, prg, psr);
 
-		rg_lock(prt->rp_record_thread->rp_group);
-		get_cache_file_name (name, retparams->dev, retparams->ino, retparams->mtime);
-		rg_unlock(prt->rp_record_thread->rp_group);
+			if (prg->rg_follow_splits) {
 
-		old_fs = get_fs();
-		set_fs(KERNEL_DS);
-		prt->rp_exec_filename = filename;
-		rc = do_execve (name, __argv, __envp, regs);
-		set_fs(old_fs);
+				DPRINT ("Following split\n");
 
-		if (rc != retval) {
-			printk ("[ERROR] Replay pid %d sees execve return %ld, recorded rc was %ld\n", current->pid, retval, rc);
-			syscall_mismatch();
+				// Let some other thread in this group run because we are done
+				get_record_group(prg->rg_rec_group);
+				rg_lock (prg->rg_rec_group);
+				clock = *prt->rp_preplay_clock;
+				prt->rp_status = REPLAY_STATUS_DONE;  
+				tmp = prt->rp_next_thread;
+				num_blocked = 0;
+				while (tmp != prt) {
+					DPRINT ("Pid %d considers thread %d status %d clock %ld - clock is %ld\n", current->pid, tmp->rp_replay_pid, tmp->rp_status, tmp->rp_wait_clock, clock);
+					if (tmp->rp_status == REPLAY_STATUS_ELIGIBLE || (tmp->rp_status == REPLAY_STATUS_WAIT_CLOCK && tmp->rp_wait_clock <= clock)) {
+						tmp->rp_status = REPLAY_STATUS_RUNNING;
+						wake_up (&tmp->rp_waitq);
+						break;
+					} else if (tmp->rp_status != REPLAY_STATUS_DONE) {
+						num_blocked++;
+					}
+					tmp = tmp->rp_next_thread;
+					if (tmp == prt && num_blocked) {
+						printk ("Pid %d (recpid %d): Crud! no elgible thread to run on exit, clock is %ld\n", current->pid, prt->rp_record_thread->rp_record_pid, clock);
+						dump_stack(); // how did we get here?
+						// cycle around again and print
+						tmp = tmp->rp_next_thread;
+						while (tmp != current->replay_thrd) {
+							printk("\t thread %d (recpid %d) status %d clock %ld\n", tmp->rp_replay_pid, tmp->rp_record_thread->rp_record_pid, tmp->rp_status, tmp->rp_wait_clock);
+							tmp = tmp->rp_next_thread;
+						}
+					}
+				}
+				
+				// Now remove reference to the replay group
+				put_replay_group (prg);
+				current->replay_thrd = NULL;
+				rg_unlock(prg->rg_rec_group);
+				put_record_group(prg->rg_rec_group);
+				
+				// Now start a new group if needed
+				get_logdir_for_replay_id (retparams->data.new_group.log_id, logdir);
+				return replay_ckpt_wakeup (prt->app_syscall_addr, logdir, prg->rg_rec_group->rg_linker, -1, prg->rg_follow_splits);
+			} else {
+				DPRINT ("Don't follow splits - so just exit\n");
+				sys_exit_group (0);
+			}
+		} else {
+			MPRINT ("Replay pid %d performing execve of %s\n", current->pid, filename);
+			memcpy (&current->replay_thrd->random_values, &retparams->data.same_group.rvalues, sizeof(struct rvalues));
+			argsconsume(prt->rp_record_thread, sizeof(struct execve_retvals));      
+			current->replay_thrd->random_values.cnt = 0;
+			
+			rg_lock(prt->rp_record_thread->rp_group);
+			get_cache_file_name (name, retparams->data.same_group.dev, retparams->data.same_group.ino, retparams->data.same_group.mtime);
+			rg_unlock(prt->rp_record_thread->rp_group);
+			
+			old_fs = get_fs();
+			set_fs(KERNEL_DS);
+			prt->rp_exec_filename = filename;
+			rc = do_execve (name, __argv, __envp, regs);
+			set_fs(old_fs);
+			
+			if (rc != retval) {
+				printk ("[ERROR] Replay pid %d sees execve return %ld, recorded rc was %ld\n", current->pid, retval, rc);
+				syscall_mismatch();
+			}
 		}
 	}
 	get_next_syscall_exit (prt, prg, psr);
@@ -5622,7 +5748,7 @@ record_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 			return -ECHILD;
 		}
 
-		tsk->record_thrd = new_record_thread (prg, tsk->pid, -1);
+		tsk->record_thrd = new_record_thread (prg, tsk->pid);
 		if (tsk->record_thrd == NULL) {
 			rg_unlock(prg);
 			return -ENOMEM; 
@@ -5723,7 +5849,7 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 		// to see if it exists first before creating
 		if (prt == 0 || prt->rp_record_pid != rc) {	
 			/* For replays resumed form disk checkpoint, there will be no record thread.  We should create it here. */
-			prt = new_record_thread (prg->rg_rec_group, rc, -1);
+			prt = new_record_thread (prg->rg_rec_group, rc);
 			// Since there is no recording going on, we need to dec record_thread's refcnt
 			atomic_dec(&prt->rp_refcnt);
 			DPRINT ("Created new record thread %p\n", prt);
@@ -6905,7 +7031,7 @@ record_vfork_handler (struct task_struct* tsk)
 
 	DPRINT ("In record_vfork_handler\n");
 	rg_lock(prg);
-	tsk->record_thrd = new_record_thread (prg, tsk->pid, -1);
+	tsk->record_thrd = new_record_thread (prg, tsk->pid);
 	if (tsk->record_thrd == NULL) {
 		printk ("record_vfork_handler: cannot allocate record thread\n");
 		rg_unlock(prg);
@@ -6985,7 +7111,7 @@ replay_vfork_handler (struct task_struct* tsk)
 	// to see if it exists first before creating
 	if (prt == NULL || prt->rp_record_pid != rc) {	
 		/* For replays resumed form disk checkpoint, there will be no record thread.  We should create it here. */
-		prt = new_record_thread (prg->rg_rec_group, rc, -1);
+		prt = new_record_thread (prg->rg_rec_group, rc);
 		// Since there is no recording going on, we need to dec record_thread's refcnt
 		atomic_dec(&prt->rp_refcnt);
 		DPRINT ("Created new record thread %p\n", prt);

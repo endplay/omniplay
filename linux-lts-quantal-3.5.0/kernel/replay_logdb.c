@@ -40,6 +40,7 @@ get_replay_id (void)
 				RID_UNLOCK;
 				return 0;
 			}
+			last_logid = max_logid;
 
 			rc = sys_lseek (fd, 0, SEEK_SET);
 			if (rc < 0) {
@@ -90,15 +91,22 @@ get_replay_id (void)
 	return ret_id;
 }
 
-int
+void
 get_logdir_for_replay_id (__u64 id, char* buf)
+{
+	sprintf (buf, "%srec_%lld", LOGDB_DIR, id);
+}
+
+int
+make_logdir_for_replay_id (__u64 id, char* buf)
 {
 	mm_segment_t old_fs = get_fs();
 	int rc;
 
 	if (id == 0) return -1;
 
-	sprintf (buf, "%srec_%lld", LOGDB_DIR, id);
+	get_logdir_for_replay_id (id, buf);
+
 	set_fs(KERNEL_DS);
 	rc = sys_mkdir (buf, 0777);
 	if (rc < 0) printk ("get_logdir_for_replayid: cannot create directory %s, rc=%d\n", buf, rc);

@@ -4,11 +4,11 @@
 #define MAX_LOGDIR_STRLEN 80
 
 /* Starts replay with a (possibly) multithreaded fork */
-int fork_replay (char* logdir, const char __user *const __user *args, const char __user *const __user *env, u_int uid, char __user * linker, int fd);
+int fork_replay (char __user * logdir, const char __user *const __user *args, const char __user *const __user *env, char* linker, int fd);
 
 /* Restore ckpt from disk - replaces AS of current process (like exec) */
 /* Linker may be NULL - otherwise points to special libc linker */
-long replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd);
+long replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd, int follow_splits);
 
 /* Returns linker for exec to use */
 char* get_linker (void);
@@ -45,10 +45,6 @@ void replay_vfork_handler (struct task_struct* tsk);
 struct pt_regs* get_pt_regs(struct task_struct* tsk);
 char* get_path_helper (struct vm_area_struct* vma, char* path);
 
-/* Checkpoint functions */
-long replay_checkpoint_to_disk (char* filename, const char __user *const __user *args, const char __user *const __user *env);
-long replay_resume_from_disk (char* filename, char*** argsp, char*** envp);
-
 /* For synchronization points in kernel outside of replay.c */
 #define TID_WAKE_CALL 500
 struct syscall_result;
@@ -67,6 +63,12 @@ const char* replay_get_exec_filename (void);
 
 /* In replay_logdb.c */
 __u64 get_replay_id (void);
-int get_logdir_for_replay_id (__u64 id, char* buf);
+void get_logdir_for_replay_id (__u64 id, char* buf);
+int make_logdir_for_replay_id (__u64 id, char* buf);
+
+/* In replay_ckpt.h */
+char* copy_args (const char __user* const __user* args, const char __user* const __user* env, int* buflen);
+long replay_checkpoint_to_disk (char* filename, char* buf, int buflen);
+long replay_resume_from_disk (char* filename, char*** argsp, char*** envp);
 
 #endif
