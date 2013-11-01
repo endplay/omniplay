@@ -147,7 +147,45 @@ int get_cache_file_name (char* cname, dev_t dev, u_long ino, struct timespec mti
 	return 0;
 }
 
-int open_cache_file (dev_t dev, u_long ino, struct timespec mtime, int is_write)
+int open_cache_file (dev_t dev, u_long ino, struct timespec mtime, int flags)
+{
+	char cname[CACHE_FILENAME_SIZE];
+	mm_segment_t old_fs;
+	struct stat64 st;
+	int fd, rc;
+
+        // check if most recent cache file is still valid
+	sprintf (cname, "%s/%x_%lx", cache_dir, dev, ino);
+	
+	old_fs = get_fs();
+	set_fs(KERNEL_DS);
+	
+	rc = sys_stat64 (cname, &st);
+	if (rc < 0) {
+		printk ("open_cache_file: cannot stat cache file, rc=%d\n", rc);
+		set_fs(old_fs);
+		return -ENOENT;
+	}
+
+	DPRINT ("cache time: %lu.%u\n", st.st_mtime, st.st_mtime_nsec);
+	DPRINT ("replay mod time: %ld.%ld\n", mtime.tv_sec, mtime.tv_nsec);
+	
+	if (st.st_mtime == mtime.tv_sec && st.st_mtime_nsec == mtime.tv_nsec) {
+		// if so, open it and return
+		DPRINT ("opening cache file %s\n", cname);
+		fd = sys_open (cname, flags, 0);
+	} else {
+		// otherwise, open a past versio
+		sprintf (cname, "%s/%x_%lx_%lu_%lu", cache_dir, dev, ino, mtime.tv_sec, mtime.tv_nsec);
+		DPRINT ("opening cache file %s\n", cname);
+		fd = sys_open (cname, flags, 0);
+	}
+	if (fd < 0) printk ("open_cache_file: cannot open cache file %s, rc=%d\n", cname, fd);
+
+	return fd;
+}
+
+int open_mmap_cache_file (dev_t dev, u_long ino, struct timespec mtime, int is_write)
 {
 	char cname[CACHE_FILENAME_SIZE], tname[CACHE_FILENAME_SIZE];
 	mm_segment_t old_fs;

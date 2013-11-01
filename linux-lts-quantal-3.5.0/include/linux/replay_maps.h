@@ -14,6 +14,10 @@ int get_cache_file_name (char* cname, dev_t dev, u_long ino, struct timespec mti
 
 // Opens a cache file corresponding to the given parameters.  The caller must close the file. 
 // The recgroup lock must be held when calling this function
-int open_cache_file (dev_t dev, u_long ino, struct timespec mtime, int is_write);
+int open_cache_file (dev_t dev, u_long ino, struct timespec mtime, int flags);
+
+// Opens a cache file corresponding to the given parameters for an mmap.  The caller must close the file. 
+// The recgroup lock must be held when calling this function
+int open_mmap_cache_file (dev_t dev, u_long ino, struct timespec mtime, int is_write);
 
 #endif

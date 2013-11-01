@@ -61,6 +61,9 @@
 
 //#define REPLAY_PARANOID
 
+// If defined, use file cache for reads of read-only files
+#define CACHE_READS
+
 // how long we wait on the wait_queue before timing out
 #define SCHED_TO 1000000
 
@@ -150,8 +153,6 @@ atomic_t vmalloc_cnt = ATOMIC_INIT(0);
 //#endif
 
 /* Constant defintions */
-#define MAX_PREALLOC_SIZE 20480
-#define KMALLOC_THRESHOLD 16384 /* Threshold in record_read, when over it uses VMALLOC instead of KMALLOC */
 
 #define SIGNAL_WHILE_SYSCALL_IGNORED 53
 
@@ -201,6 +202,35 @@ struct reserved_mapping {
 	u_long m_begin;
 	u_long m_end;
 };
+
+#ifdef CACHE_READS
+struct record_cache_data {
+	char is_cache_file; // True if this is a cache file descriptor
+	struct mutex mutex;  // Only one thread at a time gets to access the descriptor
+};
+
+struct record_cache_chunk {
+	int                        count; // Number of files in this chunk
+	struct record_cache_data*  data;  // Dynamically allocated array of data
+	struct record_cache_chunk* next;  // Next chunk
+};
+
+struct record_cache_files {
+	atomic_t                   refcnt; // Refs to this structure
+	struct rw_semaphore        sem; // Protects this structure
+	int                        count; // Maximum number of files in this struct 
+	struct record_cache_chunk* list;  // Array of flags per file descriptor
+};
+
+struct replay_cache_files {
+	atomic_t refcnt; // Refs to this structure
+	int      count; // Maximum number of files in this struct 
+	int*     data;  // Array of cache fds per file descriptor
+};
+#else
+struct record_cache_files;
+struct replay_cache_files;
+#endif
 
 struct record_group {
 	__u64 rg_id;                         // Unique identifier for all time for this recording
@@ -384,6 +414,9 @@ struct record_thread {
 	u_long rp_record_hook;          // Used for dumbass linking in glibc
 	struct repsignal *rp_signals;   // Stores delayed signals
 	struct repsignal* rp_last_signal; // Points to last signal recorded for this process
+#ifdef CACHE_READS
+	struct record_cache_files* rp_cache_files; // Info about open cache files
+#endif
 };
 
 #define REPLAY_STATUS_RUNNING         0 // I am the running thread - should only be one of these per group
@@ -418,6 +451,9 @@ struct replay_thread {
 	u_long rp_replay_hook;          // Used for dumbass linking in glibc
 
 	const char* rp_exec_filename;   // Used during execve to pass same arguments as recording (despite use of cache file)
+#ifdef CACHE_READS
+	struct replay_cache_files* rp_cache_files; // Info about open cache files
+#endif
 };
 
 /* Prototypes */
@@ -654,6 +690,330 @@ out_oldfs:
 	return -1;
 }
 
+#ifdef CACHE_READS
+#define INIT_RECPLAY_CACHE_SIZE 32
+
+static struct record_cache_files*
+init_record_cache_files (void)
+{
+	struct record_cache_files* pfiles;
+	int i;
+
+	pfiles = KMALLOC(sizeof(struct record_cache_files), GFP_KERNEL);
+	if (pfiles == NULL) {
+		printk ("init_record_cache_files: cannot allocate struct\n");
+		return NULL;
+	}
+
+	atomic_set(&pfiles->refcnt, 1);
+	init_rwsem(&pfiles->sem);
+	pfiles->count = INIT_RECPLAY_CACHE_SIZE;
+	pfiles->list = KMALLOC(sizeof(struct record_cache_chunk), GFP_KERNEL);
+	if (pfiles->list == NULL) {
+		printk ("init_record_cache_files: cannot allocate list\n");
+		KFREE (pfiles);
+		return NULL;
+	}
+	pfiles->list->count = INIT_RECPLAY_CACHE_SIZE;
+	pfiles->list->next = NULL;
+	pfiles->list->data = KMALLOC(INIT_RECPLAY_CACHE_SIZE*sizeof(struct record_cache_data), GFP_KERNEL);
+	if (pfiles->list->data == NULL) {
+		printk ("init_record_cache_files: cannot allocate data\n");
+		KFREE (pfiles);
+		return NULL;
+	}
+	for (i = 0; i < INIT_RECPLAY_CACHE_SIZE; i++) {
+		mutex_init (&pfiles->list->data[i].mutex);
+		pfiles->list->data[i].is_cache_file = 0;
+	}
+
+	return pfiles;
+}
+
+static void
+get_record_cache_files (struct record_cache_files* pfiles)
+{
+	atomic_inc(&pfiles->refcnt);
+}
+
+static void 
+put_record_cache_files (struct record_cache_files* pfiles)
+{
+	struct record_cache_chunk* pchunk;
+
+	if (atomic_dec_and_test(&pfiles->refcnt)) {
+		pfiles->count = 0;
+		while (pfiles->list) {
+			pchunk = pfiles->list;
+			pfiles->list = pchunk->next;
+			KFREE (pchunk->data);
+			KFREE (pchunk);
+		}
+		KFREE (pfiles);
+	}
+}
+
+static int
+is_record_cache_file_lock (struct record_cache_files* pfiles, int fd)
+{
+	struct record_cache_chunk* pchunk;
+	int rc = 0;
+
+	down_read(&pfiles->sem);
+	if (fd < pfiles->count) {
+		pchunk = pfiles->list;
+		while (fd >= pchunk->count) {
+			fd -= pchunk->count;
+			pchunk = pchunk->next;
+		}
+		if (pchunk->data[fd].is_cache_file) {
+			mutex_lock (&pchunk->data[fd].mutex); /* return locked */
+			rc = 1;
+		}
+	}
+	up_read(&pfiles->sem);
+
+	return rc;
+}
+
+static int
+is_record_cache_file (struct record_cache_files* pfiles, int fd)
+{
+	struct record_cache_chunk* pchunk;
+	int rc = 0;
+
+	down_read(&pfiles->sem);
+	if (fd < pfiles->count) {
+		pchunk = pfiles->list;
+		while (fd >= pchunk->count) {
+			fd -= pchunk->count;
+			pchunk = pchunk->next;
+		}
+		if (pchunk->data[fd].is_cache_file) rc = 1;
+	}
+	up_read(&pfiles->sem);
+
+	return rc;
+}
+
+static void
+record_cache_file_unlock (struct record_cache_files* pfiles, int fd)
+{
+	struct record_cache_chunk* pchunk;
+
+	down_read(&pfiles->sem);
+	pchunk = pfiles->list;
+	while (fd >= pchunk->count) {
+		fd -= pchunk->count;
+		pchunk = pchunk->next;
+	}
+	mutex_unlock(&pchunk->data[fd].mutex);	
+	up_read(&pfiles->sem);
+}
+
+static int
+set_record_cache_file (struct record_cache_files* pfiles, int fd)
+{
+	struct record_cache_chunk* tmp, *pchunk;
+	int newcount, chunkcount;
+	int i;
+
+	down_write(&pfiles->sem);
+	if (fd >= pfiles->count) {
+		newcount = pfiles->count;
+		while (fd >= newcount) newcount *= 2;
+		chunkcount = newcount - pfiles->count;
+		tmp = KMALLOC(sizeof(struct record_cache_chunk), GFP_KERNEL);
+		if (tmp == NULL) {
+			printk ("set_record_cache_files: cannot allocate list\n");
+			up_write(&pfiles->sem);
+			return -ENOMEM;
+		}		 
+		tmp->data = KMALLOC(chunkcount*sizeof(struct record_cache_data), GFP_KERNEL);
+		if (tmp->data == NULL) {
+			printk ("set_cache_file: cannot allocate new data buffer of size %d\n", chunkcount*sizeof(struct record_cache_data));
+			KFREE (tmp);
+			up_write(&pfiles->sem);
+			return -ENOMEM;
+		}
+		for (i = 0; i < chunkcount; i++) {
+			mutex_init (&tmp->data[i].mutex);
+			tmp->data[i].is_cache_file = 0;
+		}
+		pchunk = pfiles->list;
+		while (pchunk->next != NULL) pchunk = pchunk->next;
+		pchunk->next = tmp;
+		tmp->count = chunkcount;
+		tmp->next = NULL;
+		pfiles->count = newcount;
+	}
+	pchunk = pfiles->list;
+	while (fd >= pchunk->count) {
+		fd -= pchunk->count;
+		pchunk = pchunk->next;
+	}
+	pchunk->data[fd].is_cache_file = 1;
+	up_write(&pfiles->sem);
+
+	return 0;
+}
+
+static void
+copy_record_cache_files (struct record_cache_files* pfrom, struct record_cache_files* pto)
+{
+	struct record_cache_chunk* pchunk;
+	int i, fd = 0;
+	
+	down_read(&pfrom->sem);
+	pchunk = pfrom->list;
+	while (pchunk) {
+		for (i = 0; i < pchunk->count; i++) {
+			if (pchunk->data[i].is_cache_file) {
+				set_record_cache_file(pto, fd);
+			}
+			fd++;
+		}
+		pchunk = pchunk->next;
+	}
+        up_read(&pfrom->sem);
+}
+
+static void
+clear_record_cache_file (struct record_cache_files* pfiles, int fd)
+{
+	struct record_cache_chunk* pchunk;
+
+	down_read(&pfiles->sem);
+	if (fd < pfiles->count) {
+		pchunk = pfiles->list;
+		while (fd >= pchunk->count) {
+			fd -= pchunk->count;
+			pchunk = pchunk->next;
+		}
+		pchunk->data[fd].is_cache_file = 0;
+	}
+	up_read(&pfiles->sem);
+}
+
+static void
+close_record_cache_files (struct record_cache_files* pfiles)
+{
+	struct record_cache_chunk* pchunk;
+	int i;
+
+	down_read(&pfiles->sem);
+	pchunk = pfiles->list;
+	while (pchunk) {
+		for (i = 0; i < pchunk->count; i++) {
+			pchunk->data[i].is_cache_file = 0;
+		}
+		pchunk = pchunk->next;
+	}
+	up_read(&pfiles->sem);
+}
+
+static struct replay_cache_files*
+init_replay_cache_files (void)
+{
+	struct replay_cache_files* pfiles;
+	int i;
+
+	pfiles = KMALLOC(sizeof(struct replay_cache_files), GFP_KERNEL);
+	if (pfiles == NULL) {
+		printk ("init_replay_cache_files: cannot allocate struct\n");
+		return NULL;
+	}
+	printk ("New replay cache files at %p\n", pfiles);
+	atomic_set(&pfiles->refcnt, 1);
+	pfiles->count = INIT_RECPLAY_CACHE_SIZE;
+	pfiles->data = KMALLOC(INIT_RECPLAY_CACHE_SIZE*sizeof(int), GFP_KERNEL);
+	if (pfiles->data == NULL) {
+		printk ("init_replay_cache_files: cannot allocate data\n");
+		return NULL;
+	}
+	for (i = 0; i < INIT_RECPLAY_CACHE_SIZE; i++) pfiles->data[i] = -1;
+
+	return pfiles;
+}
+
+static void
+get_replay_cache_files (struct replay_cache_files* pfiles)
+{
+	atomic_inc(&pfiles->refcnt);
+}
+
+static void 
+put_replay_cache_files (struct replay_cache_files* pfiles)
+{
+	if (atomic_dec_and_test(&pfiles->refcnt)) {
+		pfiles->count = 0;
+		KFREE (pfiles->data);
+	}
+}
+
+static int
+is_replay_cache_file (struct replay_cache_files* pfiles, int fd, int* cache_fd)
+{
+	if (fd < 0 || fd >= pfiles->count) return 0;
+	*cache_fd = pfiles->data[fd];
+	return (pfiles->data[fd] >= 0); 
+}
+
+static int
+set_replay_cache_file (struct replay_cache_files* pfiles, int fd, int cache_fd)
+{
+	int newcount;
+	int* tmp;
+	int i;
+
+	if (fd >= pfiles->count) {
+		newcount = pfiles->count;
+		while (fd >= newcount) newcount *= 2;
+		tmp = KMALLOC(newcount*sizeof(int), GFP_KERNEL);
+		if (tmp == NULL) {
+			printk ("set_cache_file: cannot allocate new data buffer of size %d\n", newcount);
+			return -ENOMEM;
+		}
+		for (i = 0; i < pfiles->count; i++) tmp[i] = pfiles->data[i];
+		for (i = pfiles->count; i < newcount; i++) tmp[i] = -1;
+		KFREE (pfiles->data);
+		pfiles->data = tmp;
+		pfiles->count = newcount;
+	}
+	pfiles->data[fd] = cache_fd;
+	return 0;
+}
+
+static void
+copy_replay_cache_files (struct replay_cache_files* pfrom, struct replay_cache_files* pto)
+{
+	int i;
+	
+	for (i = pfrom->count-1; i >= 0; i--) { // Backward makes allocation in set efficient
+		if (pfrom->data[i] != -1) {
+			set_replay_cache_file(pto, i, pfrom->data[i]);
+		}
+	}
+}
+
+static void
+clear_replay_cache_file (struct replay_cache_files* pfiles, int fd)
+{
+	if (fd < pfiles->count) pfiles->data[fd] = -1;
+}
+
+static void
+close_replay_cache_files (struct replay_cache_files* pfiles)
+{
+	int i;
+
+	for (i = 0; i < pfiles->count; i++) {
+		pfiles->data[i] = -1;
+	}
+}
+
+#endif
+
 /* Creates a new replay group for the replaying process info */
 static struct replay_group*
 new_replay_group (struct record_group* prec_group, int follow_splits)
@@ -798,7 +1158,7 @@ destroy_record_group (struct record_group *prg)
 
 /* Creates a new record thread */
 static struct record_thread* 
-new_record_thread (struct record_group* prg, u_long recpid)
+new_record_thread (struct record_group* prg, u_long recpid, struct record_cache_files* pfiles)
 {
 	struct record_thread* prp;
 
@@ -823,7 +1183,11 @@ new_record_thread (struct record_group* prg, u_long recpid)
 	// mcc: current in-memory log segment; the log can be bigger than what we hold in memory,
 	// so we just flush it out to disk when this log segment is full and reset the rp_in_ptr
 	prp->rp_log = VMALLOC(sizeof(struct syscall_result)*syslog_recs);
-	BUG_ON(prp->rp_log==NULL);
+	if (prp->rp_log == NULL) {
+		KFREE (prp);
+		return NULL;
+	}
+
 	prp->rp_in_ptr = 0;
 	prp->rp_read_log_pos = 0;
 
@@ -841,13 +1205,27 @@ new_record_thread (struct record_group* prg, u_long recpid)
 	prp->rp_signals = NULL;
 	prp->rp_last_signal = NULL;
 
+#ifdef CACHE_READS
+	if (pfiles) {
+		prp->rp_cache_files = pfiles;
+		get_record_cache_files (pfiles);
+	} else {
+		prp->rp_cache_files = init_record_cache_files ();
+		if (prp->rp_cache_files == NULL) {
+			KFREE (prp->rp_log);
+			KFREE (prp);
+			return NULL;
+		}
+	}
+#endif
+
 	get_record_group(prg);
 	return prp;
 }
 
 /* Creates a new replay thread */
 static struct replay_thread* 
-new_replay_thread (struct replay_group* prg, struct record_thread* prec_thrd, u_long reppid, u_long out_ptr)
+new_replay_thread (struct replay_group* prg, struct record_thread* prec_thrd, u_long reppid, u_long out_ptr, struct replay_cache_files* pfiles)
 {
 	struct replay_thread* prp = KMALLOC (sizeof(struct replay_thread), GFP_KERNEL);
 	if (prp == NULL) {
@@ -890,6 +1268,19 @@ new_replay_thread (struct replay_group* prg, struct record_thread* prec_thrd, u_
 
 	prp->rp_replay_hook = 0;
 
+#ifdef CACHE_READS
+	if (pfiles) {
+		prp->rp_cache_files = pfiles;
+		get_replay_cache_files (pfiles);
+	} else {
+		prp->rp_cache_files = init_replay_cache_files();
+		if (prp->rp_cache_files == NULL) {
+			KFREE (prp);
+			return NULL;
+		}
+	}
+#endif
+
 	get_replay_group(prg);
 
 	return prp;
@@ -928,6 +1319,8 @@ __destroy_record_thread (struct record_thread* prp)
 	     prev = prev->rp_next_thread);
 	prev->rp_next_thread = prp->rp_next_thread;
 
+	put_record_cache_files (prp->rp_cache_files);
+
 	put_record_group (prp->rp_group);
 
 	KFREE (prp);
@@ -957,6 +1350,10 @@ __destroy_replay_thread (struct replay_thread* prp)
 	delete_sysv_mappings (prp);
 
 	BUG_ON (ds_list_remove(prp->rp_group->rg_replay_threads, prp) == NULL);
+
+#ifdef CACHE_READS
+	put_replay_cache_files (prp->rp_cache_files);
+#endif
 
 	// Decrement the record thread's refcnt and maybe destroy it.
 	__destroy_record_thread (prp->rp_record_thread);
@@ -1562,7 +1959,7 @@ int fork_replay (char __user* logdir, const char __user *const __user *args, con
 	prg = new_record_group (logdir);
 	if (prg == NULL) return -ENOMEM;
 
-	current->record_thrd = new_record_thread(prg, current->pid);
+	current->record_thrd = new_record_thread(prg, current->pid, NULL);
 	if (current->record_thrd == NULL) {
 		destroy_record_group(prg);
 		return -ENOMEM;
@@ -1657,7 +2054,7 @@ replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd, int foll
 	precg = new_record_group (logdir);
 	if (precg == NULL) return -ENOMEM;
 
-	prect = new_record_thread(precg, 0);
+	prect = new_record_thread(precg, 0, NULL);
 	if (prect == NULL) {
 		destroy_record_group(precg);
 		return -ENOMEM;
@@ -1669,7 +2066,7 @@ replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd, int foll
 		return -ENOMEM;
 	}
 
-	prept = new_replay_thread (prepg, prect, current->pid, 0);
+	prept = new_replay_thread (prepg, prect, current->pid, 0, NULL);
 	if (prept == NULL) {
 		destroy_replay_group (prepg);
 		destroy_record_group (precg);
@@ -2360,7 +2757,7 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 					printk("\t thread %d (recpid %d) status %d clock %ld\n", tmp->rp_replay_pid, tmp->rp_record_thread->rp_record_pid, tmp->rp_status, tmp->rp_wait_clock);
 					tmp = tmp->rp_next_thread;
 				}
-				sys_exit_group (0);
+				__syscall_mismatch (prg->rg_rec_group);
 			}
 		} while (tmp != prt);
 
@@ -2430,7 +2827,7 @@ get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, stru
 				sys_exit (0);
 			}
 			if (ret == -ERESTARTSYS) {
-				printk ("Pid %d: exiting syscall cannot wait due to signal - try again\n", current->pid);
+				printk ("Pid %d: exiting syscall cannot wait due to signal w/clock %lu - try again\n", current->pid, *(prt->rp_preplay_clock));
 				rg_unlock (prg->rg_rec_group);
 				msleep (1000);
 				rg_lock (prg->rg_rec_group);
@@ -2775,7 +3172,6 @@ asmlinkage long sys_pthread_sysign (void)
 	if (current->record_thrd) {					\
 		get_user (ignore_flag, current->record_thrd->rp_ignore_flag_addr); \
 		if (ignore_flag) {					\
-		  /* if (number != 240) */ printk ("Pid %d ignoring syscall %d at user-level request (value %d address %p)\n", current->pid, number, ignore_flag, current->record_thrd->rp_ignore_flag_addr); \
 			return F_SYS;					\
 		}							\
 		return F_RECORD;					\
@@ -2783,7 +3179,6 @@ asmlinkage long sys_pthread_sysign (void)
 	if (current->replay_thrd && test_app_syscall(number)) {		\
 		get_user (ignore_flag, current->replay_thrd->rp_record_thread->rp_ignore_flag_addr); \
 		if (ignore_flag) {					\
-			if (number != 240) MPRINT ("Pid %d ignoring syscall %d at user-level request (value %d)\n", current->pid, number, ignore_flag); \
 			return F_SYS;					\
 		}							\
 		return F_REPLAY;					\
@@ -3415,7 +3810,103 @@ shim_exit(int error_code)
 
 /* fork system call is handled by shim_clone */
 
+#ifdef CACHE_READS
+static asmlinkage long 
+record_read (unsigned int fd, char __user * buf, size_t count)
+{									
+	long rc;							
+	char *pretval = NULL;						
+	struct files_struct* files;
+	struct fdtable *fdt;
+	struct file* filp;
+	int is_cache_file;
+
+	new_syscall_enter (3);					
+	is_cache_file = is_record_cache_file_lock(current->record_thrd->rp_cache_files, fd);
+	rc = sys_read (fd, buf, count);
+	if (rc > 0 && buf) {					
+		// For now, include a flag that indicates whether this is a cached read or not - this is only
+		// needed for parseklog and so we may take it out later
+		if (is_cache_file) {
+			// Since not all syscalls handled for cached reads, record the position
+			DPRINT ("Cached read of fd %u - record by reference\n", fd);
+			pretval = ARGSKMALLOC (sizeof(u_int) + sizeof(loff_t), GFP_KERNEL);
+			if (pretval == NULL) {				
+				printk ("record_read: can't allocate pos buffer\n"); 
+				record_cache_file_unlock (current->record_thrd->rp_cache_files, fd);
+				return -ENOMEM;				
+			}			
+			*((u_int *) pretval) = 1;
+
+			files = current->files;
+			spin_lock(&files->file_lock);
+			fdt = files_fdtable(files);
+			if (fd >= fdt->max_fds) {
+				printk ("record_read: invalid fd but read succeeded?\n");
+				ARGSKFREE (pretval, sizeof(u_int)+sizeof(loff_t));
+				record_cache_file_unlock (current->record_thrd->rp_cache_files, fd);
+				return -EINVAL;
+			}
+
+			filp = fdt->fd[fd];
+			*((loff_t *) (pretval+sizeof(u_int))) = filp->f_pos - rc;
+			spin_unlock(&files->file_lock);
+			record_cache_file_unlock (current->record_thrd->rp_cache_files, fd);
+		} else {
+			pretval = ARGSKMALLOC (rc+sizeof(u_int), GFP_KERNEL); 
+			if (pretval == NULL) {				
+				printk ("record_read: can't allocate buffer\n"); 
+				return -ENOMEM;				
+			}			
+			*((u_int *) pretval) = 0;
+			if (copy_from_user (pretval+sizeof(u_int), buf, rc)) { 
+				printk ("record_read: can't copy to buffer\n"); 
+				ARGSKFREE(pretval, rc+sizeof(u_int));	
+				return -EFAULT;
+			}							
+		}								
+									
+	} else if (is_cache_file) {
+		record_cache_file_unlock (current->record_thrd->rp_cache_files, fd);
+	}
+
+	new_syscall_exit (3, rc, pretval);				
+	return rc;							
+}
+
+static asmlinkage long 
+replay_read (unsigned int fd, char __user * buf, size_t count)
+{									
+	char *retparams = NULL;						
+	long retval, rc = get_next_syscall (3, &retparams);		
+	int cache_fd;
+
+	if (retparams) {						
+		if (is_replay_cache_file(current->replay_thrd->rp_cache_files, fd, &cache_fd)) {
+			// read from the open cache file
+			loff_t off = *((loff_t *) (retparams+sizeof(u_int)));
+			DPRINT ("read from cache file %d files %p bytes %ld off %ld\n", cache_fd, current->replay_thrd->rp_cache_files, rc, (u_long) off);
+			retval = sys_pread64 (cache_fd, buf, rc, off);
+			if (retval != rc) {
+				printk ("pid %d read from cache file %d files %p orig fd %u off %ld returns %ld not expected %ld\n", current->pid, cache_fd, current->replay_thrd->rp_cache_files, fd, (long) off, retval, rc);
+				return syscall_mismatch();
+			}
+			argsconsume (current->replay_thrd->rp_record_thread, sizeof(u_int)+sizeof(loff_t)); 
+		} else {
+			// uncached read 
+			DPRINT ("uncached read of fd %u\n", fd);
+			if (copy_to_user (buf, retparams+sizeof(u_int), rc)) printk ("replay_read: pid %d cannot copy to user\n", current->pid); 
+			argsconsume (current->replay_thrd->rp_record_thread, rc+sizeof(u_int)); 
+		}
+	}
+									
+	return rc;							
+}									
+
+asmlinkage ssize_t shim_read (unsigned int fd, char __user * buf, size_t count) SHIM_CALL (read, 3, fd, buf, count);
+#else
 RET1_COUNT_SHIM3(read, 3, buf, unsigned int, fd, char __user *, buf, size_t, count);
+#endif
 
 static asmlinkage ssize_t 
 record_write (unsigned int fd, const char __user * buf, size_t count)
@@ -3426,7 +3917,7 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 	if (fd == 99999) {  // Hack that assists in debugging user-level code
 		new_syscall_enter (4);
 		memset (kbuf, 0, sizeof(kbuf));
-		if (copy_from_user (kbuf, buf, count < 80 ? count : 79)) printk ("record_write: cannot copy kstring\n");
+		if (copy_from_user (kbuf, buf, count < 79 ? count : 80)) printk ("record_write: cannot copy kstring\n");
 		printk ("Pid %d clock %d records: %s", current->pid, atomic_read(current->record_thrd->rp_precord_clock)-1, kbuf);
 		new_syscall_exit (4, count, NULL);
 		return count;
@@ -3449,7 +3940,7 @@ replay_write (unsigned int fd, const char __user * buf, size_t count)
 
 	if (fd == 99999) { // Hack that assists in debugging user-level code
 		memset (kbuf, 0, sizeof(kbuf));
-		if (copy_from_user (kbuf, buf, count < 80 ? count : 79)) printk ("record_write: cannot copy kstring\n");
+		if (copy_from_user (kbuf, buf, count < 80 ? count : 79)) printk ("replay_write: cannot copy kstring\n");
 		printk ("Pid %d (recpid %d) clock %ld replays: %s", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid, *(current->replay_thrd->rp_preplay_clock), kbuf);
 	}
 
@@ -3461,8 +3952,103 @@ replay_write (unsigned int fd, const char __user * buf, size_t count)
 
 asmlinkage ssize_t shim_write (unsigned int fd, const char __user * buf, size_t count) SHIM_CALL (write, 4, fd, buf, count);
 
+struct open_retvals {
+	dev_t           dev;
+	u_long          ino;
+	struct timespec mtime;
+};
+
+#ifdef CACHE_READS
+static asmlinkage long							
+record_open (const char __user * filename, int flags, int mode)
+{								
+	struct file* file;
+	struct inode* inode;
+	struct open_retvals* recbuf = NULL;
+	long rc;	
+
+	new_syscall_enter (5);	      
+	rc = sys_open (filename, flags, mode);
+
+	// If opened read-only and a regular file, then use replay cache
+	if (rc >= 0) {
+		MPRINT ("record_open of name %s with flags %x\n", filename, flags);
+		if ((flags&O_ACCMODE) == O_RDONLY && !(flags&O_CREAT)) {
+			file = fget (rc);
+			inode = file->f_dentry->d_inode;
+			DPRINT ("i_rdev is %x\n", inode->i_rdev);
+			DPRINT ("i_sb->s_dev is %x\n", inode->i_sb->s_dev);
+			if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0) {
+				MPRINT ("This is an open that we can cache\n");
+				recbuf = ARGSKMALLOC(sizeof(struct open_retvals), GFP_KERNEL);
+				rg_lock (current->record_thrd->rp_group);
+				add_file_to_cache (file, &recbuf->dev, &recbuf->ino, &recbuf->mtime);
+				if (set_record_cache_file (current->record_thrd->rp_cache_files, rc) < 0) fput(file);
+				rg_unlock (current->record_thrd->rp_group);
+			}
+			fput (file);
+		}
+	}
+
+	new_syscall_exit (5, rc, recbuf);			
+	return rc;
+}								
+
+static asmlinkage long				       
+replay_open (const char __user * filename, int flags, int mode)
+{	
+	struct open_retvals* pretvals;
+	long rc, fd;
+
+	rc = get_next_syscall (5, (char **) &pretvals);	
+	if (pretvals) {
+		fd = open_cache_file (pretvals->dev, pretvals->ino, pretvals->mtime, flags);
+		DPRINT ("replay_open: opened cache file %s flags %x fd is %ld rc is %ld\n", filename, flags, fd, rc);
+		if (set_replay_cache_file (current->replay_thrd->rp_cache_files, rc, fd) < 0) sys_close (fd);
+		argsconsume (current->replay_thrd->rp_record_thread, sizeof(struct open_retvals)); 
+	}
+
+	return rc;
+}
+
+asmlinkage long shim_open (const char __user * filename, int flags, int mode) SHIM_CALL (open, 5, filename, flags, mode);
+#else
 SIMPLE_SHIM3(open, 5, const char __user *, filename, int, flags, int, mode);
+#endif
+
+#ifdef CACHE_READS
+static asmlinkage long							
+record_close (int fd)
+{									
+	long rc;							
+	new_syscall_enter (6);
+	rc = sys_close (fd);
+	if (rc >= 0) clear_record_cache_file (current->record_thrd->rp_cache_files, fd);
+	new_syscall_exit (6, rc, NULL);				
+	return rc;							
+}								
+
+static asmlinkage long				       
+replay_close (int fd)
+{	
+	long rc;
+	int cache_fd; 
+
+	rc = get_next_syscall (6, NULL);
+	if (rc >= 0 && is_replay_cache_file (current->replay_thrd->rp_cache_files, fd, &cache_fd)) {
+		clear_replay_cache_file (current->replay_thrd->rp_cache_files, fd);
+		DPRINT ("pid %d about to close cache fd %d fd %d\n", current->pid, cache_fd, fd);
+		sys_close (cache_fd);
+	}
+
+	return rc;
+}
+
+asmlinkage long shim_close (int fd) SHIM_CALL (close, 6, fd);
+#else
 SIMPLE_SHIM1(close, 6, int, fd);
+#endif
+
 RET1_SHIM3(waitpid, 7, int, stat_addr, pid_t, pid, int __user *, stat_addr, int, options);
 SIMPLE_SHIM2(creat, 8, const char __user *, pathname, int, mode);
 SIMPLE_SHIM2(link, 9, const char __user *, oldname, const char __user *, newname);
@@ -3478,7 +4064,7 @@ add_file_to_cache_by_name (const char __user * filename, dev_t* pdev, u_long* pi
 
 	old_fs = get_fs();
 	set_fs (KERNEL_DS);
-	fd = sys_open (filename, O_RDONLY, 0); // note that there is a race here if library is changedafter syscall
+	fd = sys_open (filename, O_RDONLY, 0); // note that there is a race here if library is changed after syscall
 	if (fd < 0) {
 		printk ("add_file_to_cache_by_name: pid %d cannot open file %s\n", current->pid, filename);
 		set_fs(old_fs);
@@ -3557,7 +4143,7 @@ record_execve(const char *filename, const char __user *const __user *__argv, con
 			}
 			strcpy (precg->rg_linker, prt->rp_group->rg_linker);
 
-			prect = new_record_thread (precg, current->pid);
+			prect = new_record_thread (precg, current->pid, NULL);
 			if (prect == NULL) {
 				destroy_record_group (precg);
 				current->record_thrd = NULL;
@@ -3608,6 +4194,10 @@ record_execve(const char *filename, const char __user *const __user *__argv, con
 
 			// Write out first log record (exec) for the new group - the code below will finish the job
 			new_syscall_enter (11);
+		} else {
+#ifdef CACHE_READS
+			close_record_cache_files(prt->rp_cache_files); // This is conservative - some files may not have been closed on exec - but it is correct
+#endif
 		}
 
 		pretval = ARGSKMALLOC(sizeof(struct execve_retvals), GFP_KERNEL);
@@ -3641,12 +4231,17 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 	struct execve_retvals* retparams = NULL;
 	mm_segment_t old_fs;
 	long rc, retval;
-	char name[CACHE_FILENAME_SIZE], logdir[MAX_LOGDIR_STRLEN+1]; 
-	int num_blocked;
-	u_long clock;
+	char name[CACHE_FILENAME_SIZE], logdir[MAX_LOGDIR_STRLEN+1], linker[MAX_LOGDIR_STRLEN+1]; 
+	int num_blocked, follow_splits;
+	u_long clock, app_syscall_addr;
+	__u64 logid;
 
 	retval = get_next_syscall_enter (prt, prg, 11, (char **) &retparams, &psr);  // Need to split enter/exit because of vfork/exec wait
 	if (retval >= 0) {
+
+#ifdef CACHE_READS
+		close_replay_cache_files (prt->rp_cache_files); // Simpler to just close whether group survives or not
+#endif
 		if (retparams->is_new_group) {
 			get_next_syscall_exit (prt, prg, psr);
 
@@ -3683,6 +4278,12 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 					}
 				}
 				
+				// Save id because group may be deleted
+				logid = retparams->data.new_group.log_id;
+				app_syscall_addr = prt->app_syscall_addr;
+				strcpy (linker, prg->rg_rec_group->rg_linker);
+				follow_splits = prg->rg_follow_splits;
+
 				// Now remove reference to the replay group
 				put_replay_group (prg);
 				current->replay_thrd = NULL;
@@ -3690,8 +4291,8 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 				put_record_group(prg->rg_rec_group);
 				
 				// Now start a new group if needed
-				get_logdir_for_replay_id (retparams->data.new_group.log_id, logdir);
-				return replay_ckpt_wakeup (prt->app_syscall_addr, logdir, prg->rg_rec_group->rg_linker, -1, prg->rg_follow_splits);
+				get_logdir_for_replay_id (logid, logdir);
+				return replay_ckpt_wakeup (app_syscall_addr, logdir, linker, -1, follow_splits);
 			} else {
 				DPRINT ("Don't follow splits - so just exit\n");
 				sys_exit_group (0);
@@ -4435,7 +5036,7 @@ replay_munmap (unsigned long addr, size_t len)
 	}
 
 	retval = sys_munmap (addr, len);
-	MPRINT ("Pid %d replays munmap of addr %lx len %d returning %ld\n", current->pid, addr, len, retval);
+	DPRINT ("Pid %d replays munmap of addr %lx len %d returning %ld\n", current->pid, addr, len, retval);
 	if (rc != retval) {
 		printk ("Replay munmap returns different value %lu than %lu\n",	retval, rc);
 		return syscall_mismatch();
@@ -5690,7 +6291,17 @@ record_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 			return -ECHILD;
 		}
 
-		tsk->record_thrd = new_record_thread (prg, tsk->pid);
+#ifdef CACHE_READS
+		if (clone_flags&CLONE_FILES) {
+			// file descriptor table is shared so share handles to clone files
+			tsk->record_thrd = new_record_thread (prg, tsk->pid, current->record_thrd->rp_cache_files);
+		} else {
+#endif
+			tsk->record_thrd = new_record_thread (prg, tsk->pid, NULL); 
+#ifdef CACHE_READS
+			copy_record_cache_files (current->record_thrd->rp_cache_files, tsk->record_thrd->rp_cache_files);
+		}
+#endif
 		if (tsk->record_thrd == NULL) {
 			rg_unlock(prg);
 			return -ENOMEM; 
@@ -5791,7 +6402,7 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 		// to see if it exists first before creating
 		if (prt == 0 || prt->rp_record_pid != rc) {	
 			/* For replays resumed form disk checkpoint, there will be no record thread.  We should create it here. */
-			prt = new_record_thread (prg->rg_rec_group, rc);
+			prt = new_record_thread (prg->rg_rec_group, rc, NULL);
 			// Since there is no recording going on, we need to dec record_thread's refcnt
 			atomic_dec(&prt->rp_refcnt);
 			DPRINT ("Created new record thread %p\n", prt);
@@ -5812,7 +6423,17 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 		/* Update our replay_thrd with this information */
 		tsk->record_thrd = NULL;
 		DPRINT ("Cloning new replay thread\n");
-		tsk->replay_thrd = new_replay_thread(prg, prt, pid, 0);
+#ifdef CACHE_READS
+		if (clone_flags&CLONE_FILES) {
+			// file descriptor table is shared so share handles to clone files
+			tsk->replay_thrd = new_replay_thread(prg, prt, pid, 0, current->replay_thrd->rp_cache_files);
+		} else {
+#endif
+			tsk->replay_thrd = new_replay_thread(prg, prt, pid, 0, NULL);
+#ifdef CACHE_READS
+			copy_replay_cache_files (current->replay_thrd->rp_cache_files, tsk->replay_thrd->rp_cache_files);
+		}
+#endif
 		BUG_ON (!tsk->replay_thrd);
 
 		// inherit the parent's app_syscall_addr
@@ -6973,13 +7594,17 @@ record_vfork_handler (struct task_struct* tsk)
 
 	DPRINT ("In record_vfork_handler\n");
 	rg_lock(prg);
-	tsk->record_thrd = new_record_thread (prg, tsk->pid);
+	tsk->record_thrd = new_record_thread (prg, tsk->pid, NULL);
 	if (tsk->record_thrd == NULL) {
 		printk ("record_vfork_handler: cannot allocate record thread\n");
 		rg_unlock(prg);
 		return;
 	}
 	tsk->replay_thrd = NULL;
+
+#ifdef CACHE_READS
+	copy_record_cache_files (current->record_thrd->rp_cache_files, tsk->record_thrd->rp_cache_files);
+#endif
 
 	tsk->record_thrd->rp_next_thread = current->record_thrd->rp_next_thread;
 	current->record_thrd->rp_next_thread = tsk->record_thrd;
@@ -7053,7 +7678,7 @@ replay_vfork_handler (struct task_struct* tsk)
 	// to see if it exists first before creating
 	if (prt == NULL || prt->rp_record_pid != rc) {	
 		/* For replays resumed form disk checkpoint, there will be no record thread.  We should create it here. */
-		prt = new_record_thread (prg->rg_rec_group, rc);
+		prt = new_record_thread (prg->rg_rec_group, rc, NULL);
 		// Since there is no recording going on, we need to dec record_thread's refcnt
 		atomic_dec(&prt->rp_refcnt);
 		DPRINT ("Created new record thread %p\n", prt);
@@ -7074,9 +7699,13 @@ replay_vfork_handler (struct task_struct* tsk)
 	/* Update our replay_thrd with this information */
 	tsk->record_thrd = NULL;
 	DPRINT ("Cloning new replay thread\n");
-	tsk->replay_thrd = new_replay_thread(prg, prt, tsk->pid, 0);
+	tsk->replay_thrd = new_replay_thread(prg, prt, tsk->pid, 0, NULL);
 	BUG_ON (!tsk->replay_thrd);
 	
+#ifdef CACHE_READS
+	copy_replay_cache_files (current->replay_thrd->rp_cache_files, tsk->replay_thrd->rp_cache_files);
+#endif
+
 	// inherit the parent's app_syscall_addr
 	tsk->replay_thrd->app_syscall_addr = current->replay_thrd->app_syscall_addr;
 	
@@ -7181,7 +7810,7 @@ record_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, un
 {
 	long rc;
 	struct mmap_pgoff_retvals* recbuf = NULL;
-
+	
 	rg_lock(current->record_thrd->rp_group);
 	new_syscall_enter (192);
 	rc = sys_mmap_pgoff (addr, len, prot, flags, fd, pgoff);
@@ -7191,7 +7820,7 @@ record_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, un
 	 * with the argument list: the mapped file, and the memory
 	 * region allocated (different from that requested).
 	 */
-	if ((rc > 0 || rc < -1024) && fd >= 0) {
+	if ((rc > 0 || rc < -1024) && ((long) fd) >= 0 && !is_record_cache_file(current->record_thrd->rp_cache_files, fd)) {
 		struct vm_area_struct *vma;
 		struct mm_struct *mm = current->mm;
 		down_read(&mm->mmap_sem);
@@ -7214,7 +7843,7 @@ record_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, un
 static asmlinkage long 
 replay_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, unsigned long flags, unsigned long fd, unsigned long pgoff)
 {
-	u_long retval, rc;
+	u_long retval, rc, is_cache_file;
 	int given_fd = fd;
 	struct mmap_pgoff_retvals* recbuf = NULL;
 	struct replay_thread* prt = current->replay_thrd;
@@ -7231,14 +7860,17 @@ replay_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, un
 
 	if (recbuf) {
 		rg_lock(prt->rp_record_thread->rp_group);
-		given_fd = open_cache_file (recbuf->dev, recbuf->ino, recbuf->mtime, (prot&PROT_WRITE) && (flags&MAP_SHARED));
+		given_fd = open_mmap_cache_file (recbuf->dev, recbuf->ino, recbuf->mtime, (prot&PROT_WRITE) && (flags&MAP_SHARED));
 		rg_unlock(prt->rp_record_thread->rp_group);
-		MPRINT ("replay_mmap_pgoff opens cache file %x %lx %lx.%lx, fd = %d\n", recbuf->dev, recbuf->ino, recbuf->mtime.tv_sec, recbuf->mtime.tv_nsec, given_fd);
+		DPRINT ("replay_mmap_pgoff opens cache file %x %lx %lx.%lx, fd = %d\n", recbuf->dev, recbuf->ino, recbuf->mtime.tv_sec, recbuf->mtime.tv_nsec, given_fd);
 		if (given_fd < 0) {
 			printk ("replay_mmap_pgoff: can't open cache file, rc=%d\n", given_fd);
 			syscall_mismatch();
 		}
 		argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct mmap_pgoff_retvals));
+	} else if (is_replay_cache_file (prt->rp_cache_files, fd, &given_fd)) {
+		DPRINT ("replay_mmap_pgoff uses open cache file %d for %lu\n", given_fd, fd);
+		is_cache_file = 1;
 	} else if (given_fd >= 0) {
 		printk ("replay_mmap_pgoff: fd is %d but there are no return values recorded\n", given_fd);
 	}
@@ -7251,7 +7883,7 @@ replay_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, un
 		syscall_mismatch ();
 	}
 
-	if (recbuf && given_fd > 0) sys_close(given_fd);
+	if (recbuf && given_fd > 0 && !is_cache_file) sys_close(given_fd);
 
 	return rc;
 }
@@ -8992,21 +9624,23 @@ int read_log_data_internal (struct record_thread* prect, struct syscall_result* 
 
 	/* Read in length of ancillary data, and add it to the argsalloc list */
 	MPRINT ("read_log_data data length is %lu\n", data_len);
-	slab = VMALLOC(data_len);
-	rc = add_argsalloc_node(prect, slab, data_len);
-	if (rc) {
-		printk("read_log_data_internal: pid %d argalloc: problem adding argsalloc_node\n", current->pid);
-		VFREE(slab);
-		*syscall_count = 0;
-		goto error;
-	}
+	if (data_len > 0) {
+		slab = VMALLOC(data_len);
+		rc = add_argsalloc_node(prect, slab, data_len);
+		if (rc) {
+			printk("read_log_data_internal: pid %d argalloc: problem adding argsalloc_node\n", current->pid);
+			VFREE(slab);
+			*syscall_count = 0;
+			goto error;
+		}
 
-	node = list_first_entry(&prect->rp_argsalloc_list, struct argsalloc_node, list);
-	rc = vfs_read (file, node->pos, data_len, pos);
-	if (rc != data_len) {
-		printk ("read_log_data_internal: vfs_read of ancillary data returns %d, epected %lu\n", rc, data_len);
-		*syscall_count = 0;
-		goto error;
+		node = list_first_entry(&prect->rp_argsalloc_list, struct argsalloc_node, list);
+		rc = vfs_read (file, node->pos, data_len, pos);
+		if (rc != data_len) {
+			printk ("read_log_data_internal: vfs_read of ancillary data returns %d, epected %lu\n", rc, data_len);
+			*syscall_count = 0;
+			goto error;
+		}
 	}
 
 	*syscall_count = count;  
