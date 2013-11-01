@@ -64,6 +64,12 @@ struct rvalues {
 	long val[REPLAY_MAX_RANDOM_VALUES];
 };
 
+struct open_retvals {
+	u_long           dev;
+	u_long          ino;
+	struct timespec mtime;
+};
+
 struct gettimeofday_retvals {
 	short           has_tv;
 	short           has_tz;
@@ -270,6 +276,7 @@ int main (int argc, char* argv[])
 	int stats = 0;
 	int index = 0;
 	u_long data_size;
+	u_int is_cache_read;
 #ifdef USE_HPC
 	// calibration to determine how long a tick is
 	unsigned long long hpc1;
@@ -350,7 +357,6 @@ int main (int argc, char* argv[])
 			printf ("read returns %d, expected %d, errno = %d\n", rc, sizeof(data_size), errno);
 			return rc;
 		}
-		printf ("ancillary data size is %lu\n", data_size);
 		for (i = 0; i < count; i++) {
 			psr = psrs[i];
 			if (stats) {
@@ -366,7 +372,21 @@ int main (int argc, char* argv[])
 
 			if (psr.retparams) {
 				switch (psr.sysnum) {
-				case 3: size = psr.retval; break;
+				case 3: {
+					rc = read (fd, &is_cache_read, sizeof(u_int));
+					if (rc != sizeof(u_int)) {
+						printf ("cannot read is_cache value\n");
+						return rc;
+					}
+					printf ("\tis_cache_file: %d\n", is_cache_read);
+					if (is_cache_read) {
+						size = sizeof (loff_t);
+					} else {
+						size = psr.retval; 
+					}
+					break;
+				}
+				case 5: size = sizeof(struct open_retvals); break;
 				case 7: size = sizeof(int); break;
 				case 11: size = sizeof(struct execve_retvals); break;
 				case 13: size = sizeof(time_t); break;
@@ -626,6 +646,10 @@ int main (int argc, char* argv[])
 
 				if (psr.sysnum == 7) {
 					printf ("status is %d\n", *(buf));
+				}
+
+				if (psr.sysnum == 3 && is_cache_read) {
+					printf ("\toffset is %llx\n", *((long long int *) buf));
 				}
 			}
 
