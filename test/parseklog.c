@@ -77,17 +77,6 @@ struct gettimeofday_retvals {
 	struct timezone tz;
 };
 
-struct select_retvals {
-	char           has_inp;
-	char           has_outp;
-	char           has_exp;
-	char           has_tv;
-	fd_set         inp;
-	fd_set         outp;
-	fd_set         exp;
-	struct timeval tv;
-};
-
 struct pselect6_retvals {
 	char            has_inp;
 	char            has_outp;
@@ -512,7 +501,7 @@ int main (int argc, char* argv[])
 				case 135: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
 				case 140: size = sizeof(loff_t); break;
 				case 141: size = psr.retval; break;
-				case 142: size = sizeof(struct select_retvals); break;
+				case 142: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
 				case 145: size = psr.retval; break;
 				case 149: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
 				case 155: size = sizeof(struct sched_param); break;
@@ -639,11 +628,6 @@ int main (int argc, char* argv[])
 					printf ("pipe returns (%d,%d)\n", *buf, *(buf+4));
 				}
 
-				if (psr.sysnum == 142) {
-					struct select_retvals* srtval = (struct select_retvals*) buf;
-					printf ("select tv.tv_sec %ld, tv.tv_usec %ld\n", srtval->tv.tv_sec, srtval->tv.tv_usec);
-				}
-
 				if (psr.sysnum == 7) {
 					printf ("status is %d\n", *(buf));
 				}
@@ -662,7 +646,8 @@ int main (int argc, char* argv[])
 						return -1;
 					}
 					if (stats) {
-						bytes[psr.sysnum] += 172;
+						scount[511]++;
+						bytes[511] += 172; // Special for signals
 					}
 					//printf ("\tsignal %d info included, next ptr is %p\n", sig.signr, sig.next);
 					printf ("\tsignal %d info included, next ptr is %p\n", *(int *)sig, *(char **)(sig+168));
@@ -704,10 +689,13 @@ int main (int argc, char* argv[])
 	}
 
 	if (stats) {
-		for (i = 0; i < 512; i++) {
+		for (i = 0; i < 511; i++) {
 			if (scount[i]) {
 				printf ("syscall %3d: count %5lu bytes %8lu\n", i, scount[i], bytes[i]);
 			}
+		}
+		if (scount[511]) {
+			printf ("signals    : count %5lu bytes %8lu\n", scount[511], bytes[511]);
 		}
 	}
 
