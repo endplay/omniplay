@@ -487,17 +487,6 @@ struct gettimeofday_retvals {
 	struct timezone tz;
 };
 
-struct select_retvals {
-	char           has_inp;
-	char           has_outp;
-	char           has_exp;
-	char           has_tv;
-	fd_set         inp;
-	fd_set         outp;
-	fd_set         exp;
-	struct timeval tv;
-};
-
 struct pselect6_retvals {
 	char            has_inp;
 	char            has_outp;
@@ -923,7 +912,6 @@ init_replay_cache_files (void)
 		printk ("init_replay_cache_files: cannot allocate struct\n");
 		return NULL;
 	}
-	printk ("New replay cache files at %p\n", pfiles);
 	atomic_set(&pfiles->refcnt, 1);
 	pfiles->count = INIT_RECPLAY_CACHE_SIZE;
 	pfiles->data = KMALLOC(INIT_RECPLAY_CACHE_SIZE*sizeof(int), GFP_KERNEL);
@@ -6723,53 +6711,99 @@ static asmlinkage long
 record_select (int n, fd_set __user *inp, fd_set __user *outp, fd_set __user *exp, struct timeval __user *tvp)
 {
 	long rc;
-	struct select_retvals* pretvals;
-
+	char* pretvals, *p;
+	u_long sets = 0, size;
+	
 	new_syscall_enter (142);
 	rc = sys_select (n, inp, outp, exp, tvp);
 
-	/* Record user's memory regardless of return value in order to
-	 * capture partial output.
-	 */
-	pretvals = ARGSKMALLOC(sizeof(struct select_retvals), GFP_KERNEL);
+	/* Record user's memory regardless of return value in order to capture partial output. */
+	if (inp) sets++;
+	if (outp) sets++;
+	if (exp) sets++;
+	size = FDS_BYTES(n)*sets;
+	if (tvp) size += sizeof(struct timeval);
+	
+	pretvals = ARGSKMALLOC(sizeof(u_long)+size, GFP_KERNEL);
 	if (pretvals == NULL) {
 		printk("record_select: can't allocate buffer\n");
 		return -ENOMEM;
 	}
-	memset(pretvals, 0, sizeof(struct select_retvals));
-	if (inp && copy_from_user (&pretvals->inp, inp, sizeof(fd_set)) == 0)
-		pretvals->has_inp = 1;
-	if (outp && copy_from_user (&pretvals->outp, outp, sizeof(fd_set)) == 0)
-		pretvals->has_outp = 1;
-	if (exp && copy_from_user (&pretvals->exp, exp, sizeof(fd_set)) == 0)
-		pretvals->has_exp = 1;
-	if (tvp && copy_from_user (&pretvals->tv, tvp, sizeof(struct timeval)) == 0)
-		pretvals->has_tv = 1;
+	*((u_long *) pretvals) = size; // Needed for parseklog currently
+	p = pretvals + sizeof(u_long);
+	if (inp) {
+		if (copy_from_user (p, inp, FDS_BYTES(n))) {
+			printk ("record_select: copy of inp failed\n");
+			ARGSKFREE(pretvals, sizeof(u_long)+size);
+			return -EFAULT;
+		}
+		p += FDS_BYTES(n);
+	}
+	if (outp) {
+		if (copy_from_user (p, outp, FDS_BYTES(n))) {
+			printk ("record_select: copy of outp failed\n");
+			ARGSKFREE(pretvals, sizeof(u_long)+size);
+			return -EFAULT;
+		}
+		p += FDS_BYTES(n);
+	}
+	if (exp) {
+		if (copy_from_user (p, exp, FDS_BYTES(n))) {
+			printk ("record_select: copy of exp failed\n");
+			ARGSKFREE(pretvals, sizeof(u_long)+size);
+			return -EFAULT;
+		}
+		p += FDS_BYTES(n);
+	}
+	if (tvp) {
+		if (copy_from_user (p, tvp, sizeof(struct timeval))) {
+			printk ("record_select: copy of exp failed\n");
+			ARGSKFREE(pretvals, sizeof(u_long)+size);
+			return -EFAULT;
+		}
+	}
 
 	new_syscall_exit (142, rc, pretvals);
-	DPRINT ("Pid %d records select returning %ld\n", current->pid, rc);
-
 	return rc;
 }
 
 asmlinkage long 
 replay_select (int n, fd_set __user *inp, fd_set __user *outp, fd_set __user *exp, struct timeval __user *tvp)
 {
-	struct select_retvals* retparams = NULL;
+	char* retparams;
+	u_long size;
 	long rc = get_next_syscall (142, (char **) &retparams);
-	if (retparams->has_inp && copy_to_user (inp, &retparams->inp, sizeof(fd_set))) {
-		printk ("Pid %d cannot copy inp to user\n", current->pid);
+
+	size = *((u_long *) retparams);
+	retparams += sizeof(u_long);
+	if (inp) {
+		if (copy_to_user (inp, retparams, FDS_BYTES(n))) {
+			printk ("Pid %d cannot copy inp to user\n", current->pid);
+			syscall_mismatch();
+		}
+		retparams += FDS_BYTES(n);
 	}
-	if (retparams->has_outp && copy_to_user (outp, &retparams->outp, sizeof(fd_set))) {
-		printk ("Pid %d cannot copy outp to user\n", current->pid);
+	if (outp) {
+		if (copy_to_user (outp, retparams, FDS_BYTES(n))) {
+			printk ("Pid %d cannot copy outp to user\n", current->pid);
+			syscall_mismatch();
+		}
+		retparams += FDS_BYTES(n);
 	}
-	if (retparams->has_exp && copy_to_user (exp, &retparams->exp, sizeof(fd_set))) {
-		printk ("Pid %d cannot copy exp to user\n", current->pid);
+	if (exp) {
+		if (copy_to_user (exp, retparams, FDS_BYTES(n))) {
+			printk ("Pid %d cannot copy exp to user\n", current->pid);
+			syscall_mismatch();
+		}
+		retparams += FDS_BYTES(n);
 	}
-	if (retparams->has_tv && copy_to_user (tvp, &retparams->tv, sizeof(struct timeval))) {
-		printk ("Pid %d cannot copy tvp to user\n", current->pid);
+	if (tvp) {
+		if (copy_to_user (tvp, retparams, sizeof(struct timeval))) {
+			printk ("Pid %d cannot copy tvp to user\n", current->pid);
+			syscall_mismatch();
+		}
 	}
-	argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct select_retvals));
+	argsconsume(current->replay_thrd->rp_record_thread, sizeof(u_long)+size);
 	
 	return rc;
 }
