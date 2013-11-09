@@ -3609,6 +3609,16 @@ flush_user_log (struct record_thread* prt)
 }
 #endif
 
+static void
+deallocate_user_log (struct record_thread* prt)
+{
+	long rc;
+
+	struct pthread_log_head* phead = (struct pthread_log_head __user *) prt->rp_user_log_addr;
+	rc = sys_munmap ((u_long) phead, PTHREAD_LOG_SIZE+4096);
+	if (rc < 0) printk ("pid %d: deallocate_user_log failed, rc=%ld\n", current->pid, rc);
+}
+
 /* Called on enter of do_exit() in kernel/exit.c 
  *
  * recplay_exit_start is called on enter of do_exit in kernel/exit.c
@@ -3626,6 +3636,7 @@ recplay_exit_start(void)
 		flush_user_log (prt);
 #endif
 		write_user_log (prt); // Write this out before we destroy the mm
+		deallocate_user_log (prt); // For multi-threaded programs, we need to reuse the memory
 	}
 }
 
@@ -3739,25 +3750,31 @@ record_restart_syscall(struct restart_block* restart)
 	printk ("Pid %d calls record_restart_syscall\n", current->pid);
 	if (restart->fn == do_restart_poll) {
 		long rc;
-		char* pretvals;
+		char* pretvals = NULL;
+		short* p;
+		int i;
 		
 		new_syscall_enter (168);
 
 		rc = restart->fn (restart); 
+		if (rc > 0) {
+			pretvals = ARGSKMALLOC(sizeof(int)+restart->poll.nfds*sizeof(short), GFP_KERNEL);
+			if (pretvals == NULL) {
+				printk("restart_record_poll: can't allocate buffer\n");
+				return -ENOMEM;
+			}
+			*((u_long *)pretvals) = restart->poll.nfds*sizeof(short);
+			p = (short *) (pretvals+sizeof(u_long));
+			for (i = 0; i < restart->poll.nfds; i++) {
+				if (copy_from_user (p, &restart->poll.ufds[i].revents, sizeof(short))) {
+					printk ("record_poll: can't copy retval %d\n", i);
+					ARGSKFREE (pretvals,sizeof(u_long)+restart->poll.nfds*sizeof(short));
+					return -EFAULT;
+				}
+				p++;
+			}
+		}
 
-		/* Record user's memory regardless of return value in order to capture partial output. */
-		pretvals = ARGSKMALLOC(sizeof(int)+restart->poll.nfds*sizeof(struct pollfd), GFP_KERNEL);
-		if (pretvals == NULL) {
-			printk("record_poll: can't allocate buffer\n");
-			return -ENOMEM;
-		}
-		*((u_long *)pretvals) = restart->poll.nfds*sizeof(struct pollfd);
-		if (copy_from_user (pretvals+sizeof(u_long), restart->poll.ufds, restart->poll.nfds*sizeof(struct pollfd))) {
-			printk ("record_poll: can't copy retvals\n");
-			ARGSKFREE (pretvals,sizeof(u_long)+restart->poll.nfds*sizeof(struct pollfd));
-			return -EFAULT;
-		}
-		
 		new_syscall_exit (168, rc, pretvals);
 		
 		return rc;
@@ -3991,7 +4008,7 @@ replay_open (const char __user * filename, int flags, int mode)
 	rc = get_next_syscall (5, (char **) &pretvals);	
 	if (pretvals) {
 		fd = open_cache_file (pretvals->dev, pretvals->ino, pretvals->mtime, flags);
-		DPRINT ("replay_open: opened cache file %s flags %x fd is %ld rc is %ld\n", filename, flags, fd, rc);
+		printk ("replay_open: opened cache file %s flags %x fd is %ld rc is %ld\n", filename, flags, fd, rc);
 		if (set_replay_cache_file (current->replay_thrd->rp_cache_files, rc, fd) < 0) sys_close (fd);
 		argsconsume (current->replay_thrd->rp_record_thread, sizeof(struct open_retvals)); 
 	}
@@ -7062,22 +7079,28 @@ static asmlinkage long
 record_poll (struct pollfd __user *ufds, unsigned int nfds, long timeout_msecs)
 {
 	long rc;
-	char* pretvals;
+	char* pretvals = NULL;
+	short* p;
+	int i;
 
 	new_syscall_enter (168);
 	rc = sys_poll (ufds, nfds, timeout_msecs);
-
-	/* Record user's memory regardless of return value in order to capture partial output. */
-	pretvals = ARGSKMALLOC(sizeof(int)+nfds*sizeof(struct pollfd), GFP_KERNEL);
-	if (pretvals == NULL) {
-		printk("record_poll: can't allocate buffer\n");
-		return -ENOMEM;
-	}
-	*((u_long *)pretvals) = nfds*sizeof(struct pollfd);
-	if (copy_from_user (pretvals+sizeof(u_long), ufds, nfds*sizeof(struct pollfd))) {
-		printk ("record_poll: can't copy retvals\n");
-		ARGSKFREE (pretvals,sizeof(u_long)+nfds*sizeof(struct pollfd));
-		return -EFAULT;
+	if (rc > 0) {
+		pretvals = ARGSKMALLOC(sizeof(int)+nfds*sizeof(short), GFP_KERNEL);
+		if (pretvals == NULL) {
+			printk("record_poll: can't allocate buffer\n");
+			return -ENOMEM;
+		}
+		*((u_long *)pretvals) = nfds*sizeof(short);
+		p = (short *) (pretvals+sizeof(u_long));
+		for (i = 0; i < nfds; i++) {
+			if (copy_from_user (p, &ufds[i].revents, sizeof(short))) {
+				printk ("record_poll: can't copy retval %d\n", i);
+				ARGSKFREE (pretvals,sizeof(u_long)+nfds*sizeof(short));
+				return -EFAULT;
+			}
+			p++;
+		}
 	}
 		
 	new_syscall_exit (168, rc, pretvals);
@@ -7090,12 +7113,10 @@ replay_poll (struct pollfd __user *ufds, unsigned int nfds, long timeout_msecs)
 {
 	char* retparams = NULL;
 	long rc;
+	int i;
+	short* p;
 
 	rc = get_next_syscall (168, (char **) &retparams);
-	if (copy_to_user (ufds, retparams+sizeof(u_long), nfds*sizeof(struct pollfd))) {
-		printk ("Pid %d cannot copy inp to user\n", current->pid);
-	}
-	argsconsume(current->replay_thrd->rp_record_thread, sizeof(u_long) + *((u_long *) retparams));
 	if (rc == -ERESTART_RESTARTBLOCK) { // Save info for restart of syscall
 		struct restart_block *restart_block;
 		
@@ -7105,6 +7126,21 @@ replay_poll (struct pollfd __user *ufds, unsigned int nfds, long timeout_msecs)
 		restart_block->poll.ufds = ufds;
 		restart_block->poll.nfds = nfds;
 		set_thread_flag(TIF_SIGPENDING); // Apparently necessary to actually restart 
+	}
+	if (retparams) {
+		p = (short *) (retparams+sizeof(u_long));
+		for (i = 0; i < nfds; i++) {
+			if (copy_to_user (&ufds[i].revents, p, sizeof(short))) {
+				printk ("Pid %d cannot copy revent %d to user\n", current->pid, i);
+				syscall_mismatch();
+			}
+			p++;
+		}
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(u_long) + *((u_long *) retparams));
+	} else {
+		for (i = 0; i < nfds; i++) {
+			put_user ((short) 0, &ufds[i].revents);
+		}
 	}
 	
 	return rc;
@@ -7903,7 +7939,7 @@ replay_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, un
 		}
 		argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct mmap_pgoff_retvals));
 	} else if (is_replay_cache_file (prt->rp_cache_files, fd, &given_fd)) {
-		DPRINT ("replay_mmap_pgoff uses open cache file %d for %lu\n", given_fd, fd);
+		printk ("replay_mmap_pgoff uses open cache file %d for %lu\n", given_fd, fd);
 		is_cache_file = 1;
 	} else if (given_fd >= 0) {
 		printk ("replay_mmap_pgoff: fd is %d but there are no return values recorded\n", given_fd);
