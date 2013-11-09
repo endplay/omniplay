@@ -14,13 +14,13 @@ int main (int argc, char* argv[])
     pid_t pid;
     char ldpath[4096];
     int base;
-    int follow_splits = 1;
+    int follow_splits = 0;
 
     for (base = 2; base < argc; base++) {
 	if (!strcmp(argv[base], "-p")) {
 	    attach_pin = 1;
-	} else if (!strcmp(argv[base], "-nf")) {
-	    follow_splits = 0;
+	} else if (!strcmp(argv[base], "-f")) {
+	    follow_splits = 1;
 	} else if (argc > base+1 && !strncmp(argv[base], "--pthread", 8)) {
 	    libdir = argv[base+1];
 	    base++;
@@ -30,7 +30,7 @@ int main (int argc, char* argv[])
     } 
 
     if (argc-base != 0) {
-	fprintf (stderr, "format: resume logdir [-p] [-nf] [--pthread libdir]\n");
+	fprintf (stderr, "format: resume logdir [-p] [-f] [--pthread libdir]\n");
 	return -1;
     }
 
@@ -46,7 +46,7 @@ int main (int argc, char* argv[])
 	return -1;
     }
     pid = getpid();
-    printf("resume pid %d follow %d\n", pid, follow_splits);
+    printf("resume pid %d\n", pid);
     rc = resume (fd, attach_pin, follow_splits, argv[1], libdir);
     if (rc < 0) {
 	perror ("resume");
