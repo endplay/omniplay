@@ -185,7 +185,6 @@ int check_recording (void)
     if (pthread_log_status == PTHREAD_LOG_OFF)
 	return PTHREAD_LOG_OFF;
 
-
     head = allocate_log();
     THREAD_SETMEM (THREAD_SELF, log_head, head);
     DPRINT ("Allocated log for main thread\n");
@@ -207,7 +206,7 @@ allocate_log (void)
     u_long size = sizeof(struct pthread_log_head) + PTHREAD_LOG_SIZE;
     if (size % 4096) size += 4096 - (size%4096);
     head = (struct pthread_log_head *) mmap (0, size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
-    if (head == NULL) {
+    if (head == MAP_FAILED) {
 	pthread_log_debug ("Unable to allocate thread log\n");
 	abort ();
     }
