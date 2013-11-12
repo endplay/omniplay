@@ -183,6 +183,12 @@ struct repsignal_context {
 	struct repsignal_context* next;
 };
 
+#define SR_HAS_RETPARAMS        0x1 
+#define SR_HAS_SIGNAL           0x2
+#define SR_HAS_START_CLOCK_SKIP 0x4
+#define SR_HAS_STOP_CLOCK_SKIP  0x8
+#define SR_HAS_NONZERO_RETVAL   0x10
+
 // This structure records the result of a system call
 struct syscall_result {
 #ifdef USE_HPC
@@ -190,11 +196,7 @@ struct syscall_result {
 	unsigned long long	hpc_end;	// Time-stamp counter value when system call finished
 #endif
 	short			sysnum;		// system call number executed
-	u_char			retparams;	// is there any returned data for this system call?
-	u_char	                signal;		// Set if sig should be delivered
-	long			retval;		// return code from the system call
-	long                    start_clock;    // total order over start
-        long                    stop_clock;     // and stop of all system calls
+	u_char                  flags;          // See defs above
 };
 
 // This holds a memory range that should be preallocated
@@ -406,6 +408,7 @@ struct record_thread {
 	struct rvalues random_values;   // Tracks kernel randomness during syscalls (currently execve only) 
 
 	atomic_t* rp_precord_clock;     // Points to the recording clock in use
+	u_long  rp_expected_clock;      // Used for delta clock
 
 	char rp_ulog_opened;		// Flag that says whether or not the user log has been opened 
 	char rp_klog_opened;		// Flag that says whether or not the kernel log has been opened 
@@ -439,6 +442,7 @@ struct replay_thread {
 
 	int rp_status;                  // One of the replay statuses above
 	u_long rp_wait_clock;           // Valid if waiting for kernel or user-level clock according to rp_status
+	u_long rp_stop_clock_skip;      // Temporary storage while processing syscall
 	wait_queue_head_t rp_waitq;     // Waiting on this queue if in one of the waiting states
 
 	long rp_saved_rc;               // Stores syscall result when blocking in syscall conflicts with a pin lock
@@ -447,6 +451,7 @@ struct replay_thread {
 	struct rvalues random_values;   // Tracks kernel randomness during syscalls (currently execve only) 
 
 	u_long* rp_preplay_clock;       // Points to the replay clock in use
+	u_long  rp_expected_clock;      // Used for delta clock
 	struct list_head rp_sysv_list;	// List of mappings from replay SYSV IDs to reocrd SYSV IDs
 	u_long rp_replay_hook;          // Used for dumbass linking in glibc
 
@@ -1184,7 +1189,7 @@ new_record_thread (struct record_group* prg, u_long recpid, struct record_cache_
 	prp->rp_user_log_addr = 0;
 
 	prp->rp_precord_clock = prp->rp_group->rg_pkrecord_clock;
-	
+	prp->rp_expected_clock = 0;
 	prp->rp_ulog_opened = 0;			
 	prp->rp_klog_opened = 0;			
 	prp->rp_read_ulog_pos = 0;	
@@ -1246,14 +1251,11 @@ new_replay_thread (struct replay_group* prg, struct record_thread* prec_thrd, u_
 		prp->rp_record_thread->rp_record_pid,
 		atomic_read(&prp->rp_record_thread->rp_refcnt));
 
-	// PARSPEC: add replay thread to replay_group's ds_list
 	ds_list_append(prg->rg_replay_threads, prp);
 	
         prp->rp_preplay_clock = (u_long *) prp->rp_group->rg_rec_group->rg_pkrecord_clock;
-
-	// init the sys v id mappings list
+	prp->rp_expected_clock = 0;
 	INIT_LIST_HEAD(&prp->rp_sysv_list);
-
 	prp->rp_replay_hook = 0;
 
 #ifdef CACHE_READS
@@ -2031,7 +2033,7 @@ replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd, int foll
 	char** args;
 	char** env;
 	mm_segment_t old_fs = get_fs();
-
+	
 	MPRINT ("In replay_ckpt_wakeup\n");
 	if (current->record_thrd || current->replay_thrd) {
 		printk ("fork_replay: pid %d cannot start a new replay while already recording or replaying\n", current->pid);
@@ -2116,7 +2118,8 @@ new_syscall_enter (long sysnum)
 {
 	struct syscall_result* psr;
 	struct record_thread* prt = current->record_thrd;
-
+	u_long new_clock, start_clock;
+	u_long* p;
 
 #ifdef MCPRINT
 	if (replay_min_debug || replay_debug) {
@@ -2138,12 +2141,19 @@ new_syscall_enter (long sysnum)
 	}
 
 	psr = &prt->rp_log[prt->rp_in_ptr]; 
-	psr->signal = 0;
 	psr->sysnum = sysnum;
-	psr->retparams = 0;
-	psr->retval = 0;
-	psr->start_clock = atomic_add_return (1, prt->rp_precord_clock) - 1;
-	psr->stop_clock = -1;
+	new_clock = atomic_add_return (1, prt->rp_precord_clock);
+	start_clock = new_clock - prt->rp_expected_clock - 1;
+	if (start_clock == 0) {
+		psr->flags = 0;
+	} else {
+		psr->flags = SR_HAS_START_CLOCK_SKIP;
+		p = ARGSKMALLOC(sizeof(u_long), GFP_KERNEL);
+		if (unlikely (p == NULL)) return -ENOMEM;
+		*p = start_clock;
+	}
+	prt->rp_expected_clock = new_clock;
+
 #ifdef USE_HPC
 	psr->hpc_begin = rdtsc(); // minus cc_calibration
 #endif
@@ -2157,19 +2167,48 @@ long new_syscall_enter_external (long sysnum)
 }
 
 static inline long
-new_syscall_exit (long sysnum, long retval, void* retparams)
+new_syscall_done (long sysnum, long retval) 
+{
+	struct syscall_result* psr;
+	struct record_thread* prt = current->record_thrd;
+	u_long new_clock, stop_clock;
+	u_long* ulp;
+	long *p;
+
+	psr = &prt->rp_log[prt->rp_in_ptr];
+
+	if (retval) {
+		psr->flags |= SR_HAS_NONZERO_RETVAL;
+		p = ARGSKMALLOC(sizeof(long), GFP_KERNEL);
+		if (unlikely (p == NULL)) return -ENOMEM;
+		*p = retval;
+	} 
+
+	new_clock = atomic_add_return (1, prt->rp_precord_clock);
+	stop_clock = new_clock - prt->rp_expected_clock - 1;
+	if (stop_clock) {
+		psr->flags |= SR_HAS_STOP_CLOCK_SKIP;
+		ulp = ARGSKMALLOC(sizeof(u_long), GFP_KERNEL);
+		if (unlikely (ulp == NULL)) return -ENOMEM;
+		*ulp = stop_clock;
+	}
+	prt->rp_expected_clock = new_clock;
+
+	return 0;
+}
+
+static inline long
+new_syscall_exit (long sysnum, void* retparams)
 {
 	struct syscall_result* psr;
 	struct record_thread* prt = current->record_thrd;
 
 	psr = &prt->rp_log[prt->rp_in_ptr];
-	psr->retval = retval;
-	psr->retparams = retparams ? 1 : 0;
+	psr->flags = retparams ? (psr->flags | SR_HAS_RETPARAMS) : psr->flags;
 #ifdef USE_HPC
 	psr->hpc_end = rdtsc();
 #endif
-	psr->stop_clock = atomic_add_return (1, prt->rp_precord_clock) - 1;
-	if (prt->rp_signals) signal_wake_up (current, 0); // we want to deliver signals when this syscall exits
+	if (unlikely(prt->rp_signals)) signal_wake_up (current, 0); // we want to deliver signals when this syscall exits
 
 #ifdef MCPRINT
 	if (replay_min_debug || replay_debug) {
@@ -2187,7 +2226,8 @@ const char* replay_get_exec_filename (void)
 
 long new_syscall_exit_external (long sysnum, long retval, void* retparams)
 {
-	return new_syscall_exit (sysnum, retval, retparams);
+	new_syscall_done (sysnum, retval);
+	return new_syscall_exit (sysnum, retparams);
 }
 
 int
@@ -2248,7 +2288,8 @@ record_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 	if (ignore_flag) {
 		// Signal delivered after an ignored syscall.  We need to add a "fake" syscall for sequencing.  
 		new_syscall_enter (SIGNAL_WHILE_SYSCALL_IGNORED); 
-		new_syscall_exit (SIGNAL_WHILE_SYSCALL_IGNORED, 0, NULL);
+		new_syscall_done (SIGNAL_WHILE_SYSCALL_IGNORED, 0);
+		new_syscall_exit (SIGNAL_WHILE_SYSCALL_IGNORED, NULL);
 		psr = &prt->rp_log[(prt->rp_in_ptr-1)]; 
 
                 // Also, let the user-level know to make syscall on replay by incrementing count in ignore_flag
@@ -2314,7 +2355,8 @@ record_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 		if (!ignore_flag) {
 			// Also need the fake syscall
 			new_syscall_enter (SIGNAL_WHILE_SYSCALL_IGNORED); 
-			new_syscall_exit (SIGNAL_WHILE_SYSCALL_IGNORED, 0, NULL);
+			new_syscall_done (SIGNAL_WHILE_SYSCALL_IGNORED, 0);
+			new_syscall_exit (SIGNAL_WHILE_SYSCALL_IGNORED, NULL);
 			psr = &prt->rp_log[(prt->rp_in_ptr-1)]; 
 		}
 	}
@@ -2335,8 +2377,8 @@ record_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 	psignal->next = NULL;
 	
 	// Add signal to last record in log - will be delivered after syscall on replay
-	if (psr->signal == 0) {
-		psr->signal = 1;
+	if ((psr->flags&SR_HAS_SIGNAL) == 0) {
+		psr->flags |= SR_HAS_SIGNAL;
 	} else {
 		prt->rp_last_signal->next = psignal;
 	}
@@ -2656,6 +2698,9 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 {
 	struct syscall_result* psr;
 	struct replay_thread* tmp;
+	struct record_thread* prect = prt->rp_record_thread;
+	u_long start_clock;
+	u_long* pclock;
 	long retval = 0;
 	int ret;
 
@@ -2676,20 +2721,20 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 	}
 
 	MPRINT ("Replay pid %d, syscall %d\n", current->pid, syscall);
-	while (prt->rp_record_thread->rp_in_ptr == prt->rp_out_ptr) {
+	while (prect->rp_in_ptr == prt->rp_out_ptr) {
 		if (syscall == TID_WAKE_CALL) {
 			// We did not record an exit so there is no record to consume - just ignore this and let the thread exit
-			MPRINT ("pid %d recpid %d syscall mismatch during exit is OK - no more syscalls found\n", current->pid, prt->rp_record_thread->rp_record_pid);
+			MPRINT ("pid %d recpid %d syscall mismatch during exit is OK - no more syscalls found\n", current->pid, prect->rp_record_pid);
 			*ppsr = NULL; // Lets caller know to skip the exit call.
 			rg_unlock (prg->rg_rec_group);
 			return 0;
 		}
 		// log overflowed and we need to read in next batch of records
-		MPRINT ("Pid %d recpid %d syscall %d reached end of in-memory log -- free previous syscall records and rad in new ones\n", current->pid, prt->rp_record_thread->rp_record_pid, syscall);
-		argsfreeall (prt->rp_record_thread);
-		prt->rp_record_thread->rp_in_ptr = 0;
-		read_log_data (prt->rp_record_thread);
-		if (prt->rp_record_thread->rp_in_ptr == 0) {
+		MPRINT ("Pid %d recpid %d syscall %d reached end of in-memory log -- free previous syscall records and rad in new ones\n", current->pid, prect->rp_record_pid, syscall);
+		argsfreeall (prect);
+		prect->rp_in_ptr = 0;
+		read_log_data (prect);
+		if (prect->rp_in_ptr == 0) {
 			// There should be one record there at least
 			printk ("Pid %d waiting for non-existant syscall record %d - recording not synced yet??? \n", current->pid, syscall);
 			__syscall_mismatch(prg->rg_rec_group);
@@ -2697,34 +2742,59 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 		prt->rp_out_ptr = 0;
 	}
 
-	psr = &prt->rp_record_thread->rp_log[prt->rp_out_ptr];
+	psr = &prect->rp_log[prt->rp_out_ptr];
 
 	MPRINT ("Replay Pid %d, index %ld sys %d\n", current->pid, prt->rp_out_ptr, psr->sysnum);
 
+	start_clock = prt->rp_expected_clock;
+	if (psr->flags & SR_HAS_START_CLOCK_SKIP) {
+		pclock = (u_long *) argshead(prect);
+		argsconsume(prect, sizeof(u_long));
+		start_clock += *pclock;
+	}
+	prt->rp_expected_clock = start_clock + 1;
+
 	if (unlikely(psr->sysnum != syscall)) {
-		printk ("[ERROR]Pid %d record pid %d expected syscall %d in log, got %d, start clock %ld stop clock %ld\n", 
-			current->pid, prt->rp_record_thread->rp_record_pid, syscall, psr->sysnum, psr->start_clock, psr->stop_clock);
+		printk ("[ERROR]Pid %d record pid %d expected syscall %d in log, got %d, start clock %ld\n", 
+			current->pid, prect->rp_record_pid, syscall, psr->sysnum, start_clock);
 		dump_stack();
 		__syscall_mismatch (prg->rg_rec_group);
 	}
 
+	if ((psr->flags & SR_HAS_NONZERO_RETVAL) == 0) {
+		retval = 0;
+	} else {
+		retval = *((long *) argshead(prect));
+		argsconsume(prect, sizeof(long));
+	}
+	MPRINT ("Replay Pid %d, index %ld sys %d retval %ld\n", current->pid, prt->rp_out_ptr, psr->sysnum, retval);
+
+	if (psr->flags & SR_HAS_STOP_CLOCK_SKIP) { // Nead to read this in exactly this order but use it later
+		prt->rp_stop_clock_skip = *((u_long *) argshead(prect));
+		MPRINT ("Stop clock skip is %lu\n", prt->rp_stop_clock_skip);
+		argsconsume(prect, sizeof(u_long));
+	}
+
 	if (ppretparams) {
-		*ppretparams = (psr->retparams) ? argshead(prt->rp_record_thread) : NULL;
-	} else if (unlikely(psr->retparams)) {
-		printk ("[ERROR]Pid %d record pid %d not expecting return parameters, syscall %d start clock %ld stop clock %ld\n", 
-			current->pid, prt->rp_record_thread->rp_record_pid, syscall, psr->start_clock, psr->stop_clock);
+		if (psr->flags & SR_HAS_RETPARAMS) {
+			*ppretparams = argshead(prect);
+		} else {
+			*ppretparams = NULL;
+		}
+	} else if (unlikely((psr->flags & SR_HAS_RETPARAMS) != 0)) {
+		printk ("[ERROR]Pid %d record pid %d not expecting return parameters, syscall %d start clock %ld\n", 
+			current->pid, prect->rp_record_pid, syscall, start_clock);
 		__syscall_mismatch (prg->rg_rec_group);
 	}
-	retval = psr->retval;
 
 	// Done with syscall record 
 	prt->rp_out_ptr += 1;
 
 	// Do this twice - once for syscall entry and once for exit
-	while (*(prt->rp_preplay_clock) < psr->start_clock) {
-		MPRINT ("Replay pid %d is waiting for clock value %ld on syscall entry but current clock value is %ld\n", current->pid, psr->start_clock, *(prt->rp_preplay_clock));
+	while (*(prt->rp_preplay_clock) < start_clock) {
+		MPRINT ("Replay pid %d is waiting for clock value %ld on syscall entry but current clock value is %ld\n", current->pid, start_clock, *(prt->rp_preplay_clock));
 		prt->rp_status = REPLAY_STATUS_WAIT_CLOCK;
-		prt->rp_wait_clock = psr->start_clock;
+		prt->rp_wait_clock = start_clock;
 		tmp = prt->rp_next_thread;
 		do {
 			DPRINT ("Consider thread %d status %d clock %ld\n", tmp->rp_replay_pid, tmp->rp_status, tmp->rp_wait_clock);
@@ -2736,8 +2806,8 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 			}
 			tmp = tmp->rp_next_thread;
 			if (tmp == prt) {
-				printk ("Pid %d (recpid %d): Crud! no elgible thread to run on syscall entry\n", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid);
-				printk ("current clock value is %ld waiting for %lu\n", *(prt->rp_preplay_clock), psr->start_clock);
+				printk ("Pid %d (recpid %d): Crud! no elgible thread to run on syscall entry\n", current->pid, prect->rp_record_pid);
+				printk ("current clock value is %ld waiting for %lu\n", *(prt->rp_preplay_clock), start_clock);
 				dump_stack(); // how did we get here?
 				// cycle around again and print
 				tmp = tmp->rp_next_thread;
@@ -2749,14 +2819,14 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 			}
 		} while (tmp != prt);
 
-		while (!(prt->rp_status == REPLAY_STATUS_RUNNING || (prt->rp_replay_exit && prt->rp_record_thread->rp_in_ptr == prt->rp_out_ptr+1))) {	
-			MPRINT ("Replay pid %d waiting for clock value %ld on syscall entry but current clock value is %ld\n", current->pid, psr->start_clock, *(prt->rp_preplay_clock));
+		while (!(prt->rp_status == REPLAY_STATUS_RUNNING || (prt->rp_replay_exit && prect->rp_in_ptr == prt->rp_out_ptr+1))) {	
+			MPRINT ("Replay pid %d waiting for clock value %ld on syscall entry but current clock value is %ld\n", current->pid, start_clock, *(prt->rp_preplay_clock));
 			rg_unlock (prg->rg_rec_group);
-			ret = wait_event_interruptible_timeout (prt->rp_waitq, prt->rp_status == REPLAY_STATUS_RUNNING || prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && prt->rp_record_thread->rp_in_ptr == prt->rp_out_ptr+1), SCHED_TO);
+			ret = wait_event_interruptible_timeout (prt->rp_waitq, prt->rp_status == REPLAY_STATUS_RUNNING || prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && prect->rp_in_ptr == prt->rp_out_ptr+1), SCHED_TO);
 			rg_lock (prg->rg_rec_group);
-			if (ret == 0) printk ("Replay pid %d timed out waiting for clock value %ld on syscall entry but current clock value is %ld\n", current->pid, psr->start_clock, *(prt->rp_preplay_clock));
-			if (prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && (prt->rp_record_thread->rp_in_ptr == prt->rp_out_ptr+1))) {
-				MPRINT ("Replay pid %d woken up to die on entrance in_ptr %lu out_ptr %lu\n", current->pid, prt->rp_record_thread->rp_in_ptr, prt->rp_out_ptr);
+			if (ret == 0) printk ("Replay pid %d timed out waiting for clock value %ld on syscall entry but current clock value is %ld\n", current->pid, start_clock, *(prt->rp_preplay_clock));
+			if (prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && (prect->rp_in_ptr == prt->rp_out_ptr+1))) {
+				MPRINT ("Replay pid %d woken up to die on entrance in_ptr %lu out_ptr %lu\n", current->pid, prect->rp_in_ptr, prt->rp_out_ptr);
 				rg_unlock (prg->rg_rec_group);
 				sys_exit (0);
 			}
@@ -2778,14 +2848,20 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 static inline void
 get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, struct syscall_result* psr)
 {
+	struct record_thread* prect = prt->rp_record_thread;
 	struct replay_thread* tmp;
 	int ret;
+	u_long stop_clock;
+
+	stop_clock = prt->rp_expected_clock;
+	if (psr->flags & SR_HAS_STOP_CLOCK_SKIP) stop_clock += prt->rp_stop_clock_skip;
+	prt->rp_expected_clock = stop_clock + 1;
 
 	rg_lock (prg->rg_rec_group);
-	while (*(prt->rp_preplay_clock) < psr->stop_clock) {
-		MPRINT ("Replay pid %d is waiting for clock value %ld on syscall exit but current clock value is %ld\n", current->pid, psr->stop_clock, *(prt->rp_preplay_clock));
+	while (*(prt->rp_preplay_clock) < stop_clock) {
+		MPRINT ("Replay pid %d is waiting for clock value %ld on syscall exit but current clock value is %ld\n", current->pid, stop_clock, *(prt->rp_preplay_clock));
 		prt->rp_status = REPLAY_STATUS_WAIT_CLOCK;
-		prt->rp_wait_clock = psr->stop_clock;
+		prt->rp_wait_clock = stop_clock;
 		tmp = prt->rp_next_thread;
 		do {
 			DPRINT ("Consider thread %d status %d clock %ld\n", tmp->rp_replay_pid, tmp->rp_status, tmp->rp_wait_clock);
@@ -2798,18 +2874,18 @@ get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, stru
 			tmp = tmp->rp_next_thread;
 			if (tmp == prt) {
 				printk ("Pid %d: Crud! no eligible thread to run on syscall exit\n", current->pid);
-				printk ("replay pid %d waiting for clock value %ld on syscall exit - current clock value is %ld\n", current->pid, psr->stop_clock, *(prt->rp_preplay_clock));
+				printk ("replay pid %d waiting for clock value %ld on syscall exit - current clock value is %ld\n", current->pid, stop_clock, *(prt->rp_preplay_clock));
 				sys_exit_group (0);
 			}
 		} while (tmp != prt);
 
-		while (!(prt->rp_status == REPLAY_STATUS_RUNNING || (prt->rp_replay_exit && prt->rp_record_thread->rp_in_ptr == prt->rp_out_ptr+1))) {   
-			MPRINT ("Replay pid %d waiting for clock value %ld on syscall exit but current clock value is %ld\n", current->pid, psr->stop_clock, *(prt->rp_preplay_clock));
+		while (!(prt->rp_status == REPLAY_STATUS_RUNNING || (prt->rp_replay_exit && prect->rp_in_ptr == prt->rp_out_ptr+1))) {   
+			MPRINT ("Replay pid %d waiting for clock value %ld on syscall exit but current clock value is %ld\n", current->pid, stop_clock, *(prt->rp_preplay_clock));
 			rg_unlock (prg->rg_rec_group);
-			ret = wait_event_interruptible_timeout (prt->rp_waitq, prt->rp_status == REPLAY_STATUS_RUNNING || prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && prt->rp_record_thread->rp_in_ptr == prt->rp_out_ptr+1), SCHED_TO);
+			ret = wait_event_interruptible_timeout (prt->rp_waitq, prt->rp_status == REPLAY_STATUS_RUNNING || prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && prect->rp_in_ptr == prt->rp_out_ptr+1), SCHED_TO);
 			rg_lock (prg->rg_rec_group);
-			if (ret == 0) printk ("Replay pid %d timed out waiting for clock value %ld on syscall exit but current clock value is %ld\n", current->pid, psr->stop_clock, *(prt->rp_preplay_clock));
-			if (prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && (prt->rp_record_thread->rp_in_ptr == prt->rp_out_ptr+1))) {
+			if (ret == 0) printk ("Replay pid %d timed out waiting for clock value %ld on syscall exit but current clock value is %ld\n", current->pid, stop_clock, *(prt->rp_preplay_clock));
+			if (prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && (prect->rp_in_ptr == prt->rp_out_ptr+1))) {
 				rg_unlock (prg->rg_rec_group);
 				MPRINT ("Replay pid %d woken up to die on exit\n", current->pid);
 				sys_exit (0);
@@ -2823,7 +2899,7 @@ get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, stru
 		}
 	}
 
-	if (unlikely(psr->signal)) {
+	if (unlikely((psr->flags & SR_HAS_SIGNAL) != 0)) {
 		MPRINT ("Pid %d set deliver signal flag before clock %ld incrment\n", current->pid, *(prt->rp_preplay_clock));
 		prt->rp_signals = 1;
 		signal_wake_up (current, 0);
@@ -2873,8 +2949,7 @@ void consume_remaining_records (void)
 
 	while (prt->rp_record_thread->rp_in_ptr != prt->rp_out_ptr) {
 		psr = &prt->rp_record_thread->rp_log[prt->rp_out_ptr];
-		MPRINT ("Pid %d recpid %d consuming unused record: sysnum %d start clock %lu stop clock %lu\n", 
-			current->pid, prt->rp_record_thread->rp_record_pid, psr->sysnum, psr->start_clock, psr->stop_clock);
+		MPRINT ("Pid %d recpid %d consuming unused record: sysnum %d\n", current->pid, prt->rp_record_thread->rp_record_pid, psr->sysnum);
 		get_next_syscall (psr->sysnum, &tmp);
 	}
 	DPRINT ("Pid %d recpid %d done consuming unused records clock now %ld\n", current->pid, prt->rp_record_thread->rp_record_pid, *prt->rp_preplay_clock);
@@ -2935,7 +3010,7 @@ long check_clock_after_syscall (int syscall)
 		printk ("Pid %d calls check_clock_after_syscall, but psr not saved\n", current->pid);
 		return -EINVAL;
 	}
-	DPRINT ("Pid %d post-wait for syscall for syscall %d clock %ld\n", current->pid, prt->rp_saved_psr->sysnum, prt->rp_saved_psr->stop_clock);
+	DPRINT ("Pid %d post-wait for syscall for syscall %d\n", current->pid, prt->rp_saved_psr->sysnum);
 	get_next_syscall_exit (prt, prt->rp_group, prt->rp_saved_psr);
 	prt->rp_saved_psr = NULL;
 	return 0;
@@ -3187,7 +3262,8 @@ asmlinkage long sys_pthread_sysign (void)
 		long rc;						\
 		new_syscall_enter (sysnum);				\
 		rc = sys_##name();					\
-		new_syscall_exit (sysnum, rc, NULL);			\
+		new_syscall_done (sysnum, rc);				\
+		new_syscall_exit (sysnum, NULL);			\
 		return rc;						\
 	}								
 
@@ -3198,7 +3274,8 @@ asmlinkage long sys_pthread_sysign (void)
 		long rc;						\
 		new_syscall_enter (sysnum);				\
 		rc = sys_##name(arg0name);				\
-		new_syscall_exit (sysnum, rc, NULL);			\
+		new_syscall_done (sysnum, rc);				\
+		new_syscall_exit (sysnum, NULL);			\
 		return rc;						\
 	}								
 
@@ -3209,7 +3286,8 @@ asmlinkage long sys_pthread_sysign (void)
 		long rc;						\
 		new_syscall_enter (sysnum);				\
 		rc = sys_##name(arg0name, arg1name);			\
-		new_syscall_exit (sysnum, rc, NULL);			\
+		new_syscall_done (sysnum, rc);				\
+		new_syscall_exit (sysnum, NULL);			\
 		return rc;						\
 	}								
 
@@ -3220,7 +3298,8 @@ asmlinkage long sys_pthread_sysign (void)
 		long rc;						\
 		new_syscall_enter (sysnum);				\
 		rc = sys_##name(arg0name, arg1name, arg2name);		\
-		new_syscall_exit (sysnum, rc, NULL);			\
+		new_syscall_done (sysnum, rc);				\
+		new_syscall_exit (sysnum, NULL);			\
 		return rc;						\
 	}								
 
@@ -3231,7 +3310,8 @@ asmlinkage long sys_pthread_sysign (void)
 		long rc;						\
 		new_syscall_enter (sysnum);				\
 		rc = sys_##name(arg0name, arg1name, arg2name, arg3name); \
-		new_syscall_exit (sysnum, rc, NULL);			\
+		new_syscall_done (sysnum, rc);				\
+		new_syscall_exit (sysnum, NULL);			\
 		return rc;						\
 	}								
 
@@ -3242,7 +3322,8 @@ asmlinkage long sys_pthread_sysign (void)
 		long rc;						\
 		new_syscall_enter (sysnum);				\
 		rc = sys_##name(arg0name, arg1name, arg2name, arg3name, arg4name); \
-		new_syscall_exit (sysnum, rc, NULL);			\
+		new_syscall_done (sysnum, rc);				\
+		new_syscall_exit (sysnum, NULL);			\
 		return rc;						\
 	}								
 
@@ -3253,7 +3334,8 @@ asmlinkage long sys_pthread_sysign (void)
 		long rc;						\
 		new_syscall_enter (sysnum);				\
 		rc = sys_##name(arg0name, arg1name, arg2name, arg3name, arg4name, arg5name); \
-		new_syscall_exit (sysnum, rc, NULL);			\
+		new_syscall_done (sysnum, rc);				\
+		new_syscall_exit (sysnum, NULL);			\
 		return rc;						\
 	}								
 
@@ -3307,6 +3389,7 @@ static asmlinkage long record_##name (arg0type arg0name)	\
 									\
 	new_syscall_enter (sysnum);					\
 	rc = sys_##name (arg0name);					\
+	new_syscall_done (sysnum, rc);					\
 	if (rc >= 0 && dest) {						\
 	        pretval = ARGSKMALLOC (sizeof(type), GFP_KERNEL);	\
 		if (pretval == NULL) {					\
@@ -3321,7 +3404,7 @@ static asmlinkage long record_##name (arg0type arg0name)	\
 		}							\
 	}								\
 									\
-	new_syscall_exit (sysnum, rc, pretval);				\
+	new_syscall_exit (sysnum, pretval);				\
 	return rc;							\
 }
 
@@ -3333,6 +3416,7 @@ static asmlinkage long record_##name (arg0type arg0name, arg1type arg1name) \
 									\
 	new_syscall_enter (sysnum);					\
 	rc = sys_##name (arg0name, arg1name);				\
+	new_syscall_done (sysnum, rc);					\
 	if (rc >= 0 && dest) {						\
 	        pretval = ARGSKMALLOC (sizeof(type), GFP_KERNEL);	\
 		if (pretval == NULL) {					\
@@ -3347,7 +3431,7 @@ static asmlinkage long record_##name (arg0type arg0name, arg1type arg1name) \
 		}							\
 	}								\
 									\
-	new_syscall_exit (sysnum, rc, pretval);				\
+	new_syscall_exit (sysnum, pretval);				\
 	return rc;							\
 }
 
@@ -3359,6 +3443,7 @@ static asmlinkage long record_##name (arg0type arg0name, arg1type arg1name, arg2
 									\
 	new_syscall_enter (sysnum);					\
 	rc = sys_##name (arg0name, arg1name, arg2name);			\
+	new_syscall_done (sysnum, rc);					\
 	if (rc >= 0 && dest) {						\
 	        pretval = ARGSKMALLOC (sizeof(type), GFP_KERNEL);	\
 		if (pretval == NULL) {					\
@@ -3373,7 +3458,7 @@ static asmlinkage long record_##name (arg0type arg0name, arg1type arg1name, arg2
 		}							\
 	}								\
 									\
-	new_syscall_exit (sysnum, rc, pretval);				\
+	new_syscall_exit (sysnum, pretval);				\
 	return rc;							\
 }
 
@@ -3385,6 +3470,7 @@ static asmlinkage long record_##name (arg0type arg0name, arg1type arg1name, arg2
 									\
 	new_syscall_enter (sysnum);					\
 	rc = sys_##name (arg0name, arg1name, arg2name, arg3name);	\
+	new_syscall_done (sysnum, rc);					\
 	if (rc >= 0 && dest) {						\
 	        pretval = ARGSKMALLOC (sizeof(type), GFP_KERNEL);	\
 		if (pretval == NULL) {					\
@@ -3399,7 +3485,7 @@ static asmlinkage long record_##name (arg0type arg0name, arg1type arg1name, arg2
 		}							\
 	}								\
 									\
-	new_syscall_exit (sysnum, rc, pretval);				\
+	new_syscall_exit (sysnum, pretval);				\
 	return rc;							\
 }
 
@@ -3411,6 +3497,7 @@ static asmlinkage long record_##name (arg0type arg0name, arg1type arg1name, arg2
 									\
 	new_syscall_enter (sysnum);					\
 	rc = sys_##name (arg0name, arg1name, arg2name, arg3name, arg4name);	\
+	new_syscall_done (sysnum, rc);					\
 	if (rc >= 0 && dest) {						\
 	        pretval = ARGSKMALLOC (sizeof(type), GFP_KERNEL);	\
 		if (pretval == NULL) {					\
@@ -3425,7 +3512,7 @@ static asmlinkage long record_##name (arg0type arg0name, arg1type arg1name, arg2
 		}							\
 	}								\
 									\
-	new_syscall_exit (sysnum, rc, pretval);				\
+	new_syscall_exit (sysnum, pretval);				\
 	return rc;							\
 }
 
@@ -3478,6 +3565,7 @@ static asmlinkage long record_##name (arg0type arg0name, arg1type arg1name, arg2
 									\
 	new_syscall_enter (sysnum);					\
 	rc = sys_##name (arg0name, arg1name, arg2name);			\
+	new_syscall_done (sysnum, rc);					\
 	if (rc >= 0 && dest) {						\
 		pretval = ARGSKMALLOC (rc, GFP_KERNEL);			\
 		if (pretval == NULL) {					\
@@ -3492,7 +3580,7 @@ static asmlinkage long record_##name (arg0type arg0name, arg1type arg1name, arg2
 		}							\
 	}								\
 									\
-	new_syscall_exit (sysnum, rc, pretval);				\
+	new_syscall_exit (sysnum, pretval);				\
 	return rc;							\
 }
 
@@ -3504,6 +3592,7 @@ static asmlinkage long record_##name (arg0type arg0name, arg1type arg1name, arg2
 									\
 	new_syscall_enter (sysnum);					\
 	rc = sys_##name (arg0name, arg1name, arg2name, arg3name);	\
+	new_syscall_done (sysnum, rc);					\
 	if (rc >= 0 && dest) {						\
 		pretval = ARGSKMALLOC (rc, GFP_KERNEL);			\
 		if (pretval == NULL) {					\
@@ -3518,7 +3607,7 @@ static asmlinkage long record_##name (arg0type arg0name, arg1type arg1name, arg2
 		}							\
 	}								\
 									\
-	new_syscall_exit (sysnum, rc, pretval);				\
+	new_syscall_exit (sysnum, pretval);				\
 	return rc;							\
 }
 
@@ -3530,6 +3619,7 @@ static asmlinkage long record_##name (arg0type arg0name, arg1type arg1name, arg2
 									\
 	new_syscall_enter (sysnum);					\
 	rc = sys_##name (arg0name, arg1name, arg2name, arg3name, arg4name); \
+	new_syscall_done (sysnum, rc);					\
 	if (rc >= 0 && dest) {						\
 		pretval = ARGSKMALLOC (rc, GFP_KERNEL);			\
 		if (pretval == NULL) {					\
@@ -3544,7 +3634,7 @@ static asmlinkage long record_##name (arg0type arg0name, arg1type arg1name, arg2
 		}							\
 	}								\
 									\
-	new_syscall_exit (sysnum, rc, pretval);				\
+	new_syscall_exit (sysnum, pretval);				\
 	return rc;							\
 }
 
@@ -3757,6 +3847,7 @@ record_restart_syscall(struct restart_block* restart)
 		new_syscall_enter (168);
 
 		rc = restart->fn (restart); 
+		new_syscall_done (168, rc);			       
 		if (rc > 0) {
 			pretvals = ARGSKMALLOC(sizeof(int)+restart->poll.nfds*sizeof(short), GFP_KERNEL);
 			if (pretvals == NULL) {
@@ -3775,7 +3866,7 @@ record_restart_syscall(struct restart_block* restart)
 			}
 		}
 
-		new_syscall_exit (168, rc, pretvals);
+		new_syscall_exit (168, pretvals);
 		
 		return rc;
 	} else {
@@ -3829,6 +3920,7 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 	new_syscall_enter (3);					
 	is_cache_file = is_record_cache_file_lock(current->record_thrd->rp_cache_files, fd);
 	rc = sys_read (fd, buf, count);
+	new_syscall_done (3, rc);			       
 	if (rc > 0 && buf) {					
 		// For now, include a flag that indicates whether this is a cached read or not - this is only
 		// needed for parseklog and so we may take it out later
@@ -3875,7 +3967,7 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 		record_cache_file_unlock (current->record_thrd->rp_cache_files, fd);
 	}
 
-	new_syscall_exit (3, rc, pretval);				
+	new_syscall_exit (3, pretval);				
 	return rc;							
 }
 
@@ -3921,18 +4013,18 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 
 	if (fd == 99999) {  // Hack that assists in debugging user-level code
 		new_syscall_enter (4);
+		new_syscall_done (4, count);			       
 		memset (kbuf, 0, sizeof(kbuf));
 		if (copy_from_user (kbuf, buf, count < 79 ? count : 80)) printk ("record_write: cannot copy kstring\n");
 		printk ("Pid %d clock %d records: %s", current->pid, atomic_read(current->record_thrd->rp_precord_clock)-1, kbuf);
-		new_syscall_exit (4, count, NULL);
+		new_syscall_exit (4, NULL);
 		return count;
 	}
 
 	new_syscall_enter (4);
 	size = sys_write (fd, buf, count);
-	DPRINT ("Pid %d records write returning %d\n", current->pid,size);
-	new_syscall_exit (4, size, NULL);
-
+	new_syscall_done (4, size);			       
+	new_syscall_exit (4,  NULL);
 
 	return size;
 }
@@ -3974,6 +4066,7 @@ record_open (const char __user * filename, int flags, int mode)
 
 	new_syscall_enter (5);	      
 	rc = sys_open (filename, flags, mode);
+	new_syscall_done (5, rc);
 
 	// If opened read-only and a regular file, then use replay cache
 	if (rc >= 0) {
@@ -3995,7 +4088,7 @@ record_open (const char __user * filename, int flags, int mode)
 		}
 	}
 
-	new_syscall_exit (5, rc, recbuf);			
+	new_syscall_exit (5, recbuf);			
 	return rc;
 }								
 
@@ -4008,7 +4101,7 @@ replay_open (const char __user * filename, int flags, int mode)
 	rc = get_next_syscall (5, (char **) &pretvals);	
 	if (pretvals) {
 		fd = open_cache_file (pretvals->dev, pretvals->ino, pretvals->mtime, flags);
-		printk ("replay_open: opened cache file %s flags %x fd is %ld rc is %ld\n", filename, flags, fd, rc);
+		DPRINT ("replay_open: opened cache file %s flags %x fd is %ld rc is %ld\n", filename, flags, fd, rc);
 		if (set_replay_cache_file (current->replay_thrd->rp_cache_files, rc, fd) < 0) sys_close (fd);
 		argsconsume (current->replay_thrd->rp_record_thread, sizeof(struct open_retvals)); 
 	}
@@ -4028,8 +4121,9 @@ record_close (int fd)
 	long rc;							
 	new_syscall_enter (6);
 	rc = sys_close (fd);
+	new_syscall_done (6, rc);
 	if (rc >= 0) clear_record_cache_file (current->record_thrd->rp_cache_files, fd);
-	new_syscall_exit (6, rc, NULL);				
+	new_syscall_exit (6, NULL);				
 	return rc;							
 }								
 
@@ -4133,6 +4227,7 @@ record_execve(const char *filename, const char __user *const __user *__argv, con
 	argbuf = copy_args (__argv, __envp, &argbuflen);
 
 	rc = do_execve(filename, __argv, __envp, regs);
+	new_syscall_done (11, rc);
 	if (rc >= 0) {
 		// Our rule is that we record a split if there is an exec with more than one thread in the group.   Not sure this is best
 		// but I don't know what is better
@@ -4177,7 +4272,7 @@ record_execve(const char *filename, const char __user *const __user *__argv, con
 			}
 			pretval->is_new_group = 1;
 			pretval->data.new_group.log_id = precg->rg_id;
-			new_syscall_exit (11, rc, pretval); 
+			new_syscall_exit (11, pretval); 
 			write_and_free_kernel_log (prt);
 
 			__destroy_record_thread (prt);  // The old group may no longer be valid after this
@@ -4218,7 +4313,7 @@ record_execve(const char *filename, const char __user *const __user *__argv, con
 		rg_unlock(prt->rp_group);
 	}
 	if (argbuf) KFREE (argbuf);
-	new_syscall_exit (11, rc, pretval);
+	new_syscall_exit (11, pretval);
 
 	return rc;
 }
@@ -4348,6 +4443,7 @@ record_time(time_t __user * tloc)
 
 	new_syscall_enter (13);
 	rc = sys_time (tloc);
+	new_syscall_done (13, rc);
 	DPRINT ("Pid %d records time returning %ld\n", current->pid, rc);
 	if (tloc) {
 		pretval = ARGSKMALLOC(sizeof(time_t), GFP_KERNEL);
@@ -4361,8 +4457,7 @@ record_time(time_t __user * tloc)
 			return -EFAULT;
 		}
 	}
-
-	new_syscall_exit (13, rc, pretval); 
+	new_syscall_exit (13, pretval); 
 
 	return rc;
 }
@@ -4401,7 +4496,8 @@ record_ptrace(long request, long pid, long addr, long data)
 
 	new_syscall_enter (26);
 	rc = sys_ptrace(request, pid, addr, data);
-	new_syscall_exit (26, rc, NULL);				
+	new_syscall_done (26, rc);
+	new_syscall_exit (26, NULL);				
 	return rc;						
 }
 
@@ -4462,6 +4558,7 @@ record_pipe (int __user *fildes)
 
 	new_syscall_enter (42);
 	rc = sys_pipe (fildes);
+	new_syscall_done (42, rc);
 	if (rc == 0) {
 		pretval = ARGSKMALLOC(2*sizeof(int), GFP_KERNEL);
 		if (pretval == NULL) {
@@ -4473,8 +4570,7 @@ record_pipe (int __user *fildes)
 			return -EFAULT;
 		}
 	}
-
-	new_syscall_exit (42, rc, pretval);
+	new_syscall_exit (42, pretval);
 
 	return rc;
 }
@@ -4493,7 +4589,8 @@ record_brk (unsigned long brk)
 	rg_lock(current->record_thrd->rp_group);
 	new_syscall_enter (45);
 	rc = sys_brk (brk);
-	new_syscall_exit (45, rc, NULL);
+	new_syscall_done (45, rc);
+	new_syscall_exit (45, NULL);
 	rg_unlock(current->record_thrd->rp_group);
 
 	return rc;
@@ -4671,8 +4768,8 @@ record_ioctl (unsigned int fd, unsigned int cmd, unsigned long arg)
 	}
 
 	new_syscall_enter (54);
-
 	if (rc == 0) rc = sys_ioctl (fd, cmd, arg);
+	new_syscall_done (54, rc);
 
 	DPRINT ("Pid %d records ioctl fd %d cmd 0x%x arg 0x%lx returning %ld\n", current->pid, fd, cmd, arg, rc);
 
@@ -4692,7 +4789,7 @@ record_ioctl (unsigned int fd, unsigned int cmd, unsigned long arg)
 		}
 	}
 
-	new_syscall_exit (54, rc, recbuf);
+	new_syscall_exit (54, recbuf);
 
 	return rc;
 }
@@ -4724,6 +4821,7 @@ record_fcntl (unsigned int fd, unsigned int cmd, unsigned long arg)
 
 	new_syscall_enter (55);
 	rc = sys_fcntl (fd, cmd, arg);
+	new_syscall_done (55, rc);
 	if (rc >= 0) {
 		if (cmd == F_GETLK) {
 			recbuf = ARGSKMALLOC(sizeof(int) + sizeof(struct flock), GFP_KERNEL);
@@ -4751,7 +4849,7 @@ record_fcntl (unsigned int fd, unsigned int cmd, unsigned long arg)
 			}
 		}
 	}
-	new_syscall_exit (55, rc, recbuf);
+	new_syscall_exit (55, recbuf);
 
 	return rc;
 }
@@ -4837,6 +4935,7 @@ record_gettimeofday (struct timeval __user *tv, struct timezone __user *tz)
 
 	new_syscall_enter (78);
 	rc = sys_gettimeofday (tv, tz);
+	new_syscall_done (78, rc);
 	if (rc == 0) {
 		pretvals = ARGSKMALLOC(sizeof(struct gettimeofday_retvals), GFP_KERNEL);
 		if (pretvals == NULL) {
@@ -4866,7 +4965,7 @@ record_gettimeofday (struct timeval __user *tv, struct timezone __user *tz)
 
 	}
 
-	new_syscall_exit (78, rc, pretvals);
+	new_syscall_exit (78, pretvals);
 
 	return rc;
 }
@@ -4908,6 +5007,7 @@ record_getgroups16 (int gidsetsize, old_gid_t __user *grouplist)
 
 	new_syscall_enter (80);
 	rc = sys_getgroups16 (gidsetsize, grouplist);
+	new_syscall_done (80, rc);
 	if (gidsetsize > 0 && rc > 0) {
 		pretval = ARGSKMALLOC(sizeof(old_gid_t)*rc, GFP_KERNEL);
 		if (pretval == NULL) {
@@ -4920,8 +5020,7 @@ record_getgroups16 (int gidsetsize, old_gid_t __user *grouplist)
 			return -EFAULT;
 		}
 	}
-
-	new_syscall_exit (80, rc, pretval);
+	new_syscall_exit (80, pretval);
 
 	return rc;
 }
@@ -4955,6 +5054,7 @@ record_uselib (const char __user * library)
 	rg_lock(current->record_thrd->rp_group);
 	new_syscall_enter (86);
 	rc = sys_uselib (library);
+	new_syscall_done (86, rc);
 	if (rc == 0) {
 		recbuf = ARGSKMALLOC(sizeof(struct mmap_pgoff_retvals), GFP_KERNEL);
 		if (recbuf == NULL) {
@@ -4963,7 +5063,7 @@ record_uselib (const char __user * library)
 		}
 		if (add_file_to_cache_by_name (library, &recbuf->dev, &recbuf->ino, &recbuf->mtime) < 0) return -EINVAL;
 	}
-	new_syscall_exit (86, rc, recbuf);
+	new_syscall_exit (86, recbuf);
 	rg_unlock(current->record_thrd->rp_group);
 
 	return rc;
@@ -5021,7 +5121,8 @@ record_munmap (unsigned long addr, size_t len)
 	rg_lock(current->record_thrd->rp_group);
 	new_syscall_enter (91);
 	rc = sys_munmap (addr, len);
-	new_syscall_exit (91, rc, NULL);
+	new_syscall_done (91, rc);
+	new_syscall_exit (91, NULL);
 	DPRINT ("Pid %d records munmap of addr %lx returning %ld\n", current->pid, addr, rc);
 	rg_unlock(current->record_thrd->rp_group);
 
@@ -5205,24 +5306,28 @@ record_socketcall(int call, unsigned long __user *args)
 
 	if (call < 1 || call > SYS_SENDMMSG) {
 		printk ("record_socketcall: out of range call %d\n", call);
-		new_syscall_exit (102, -EINVAL, NULL);
+		new_syscall_done (102, -EINVAL);
+		new_syscall_exit (102, NULL);
 		return -EINVAL;
 	}
 
 	len = nargs[call];
 	if (len > sizeof(a)) {
 		printk ("record_socketcall: invalid length\n");
-		new_syscall_exit (102, -EINVAL, NULL);
+		new_syscall_done (102, -EINVAL);
+		new_syscall_exit (102, NULL);
 		return -EINVAL;
 	}
 
 	if (copy_from_user (a, args, len)) {
 		printk ("record_socketcall: cannot copy arguments\n");
-		new_syscall_exit (102, -EFAULT, NULL);
+		new_syscall_done (102, -EFAULT);
+		new_syscall_exit (102, NULL);
 		return -EFAULT;
 	}
 
 	rc = sys_socketcall (call, args);
+	new_syscall_done (102, rc);
 
 	DPRINT ("Pid %d records socketcall %d returning %ld\n", current->pid, call, rc);
 
@@ -5255,14 +5360,14 @@ record_socketcall(int call, unsigned long __user *args)
 				printk("Pid %d - record_socketcall(connect) - the extra getsockname call failed\n", current->pid);
 				ARGSKFREE (pretvals, sizeof(struct accept_retvals) + addrlen);
 				pretvals = NULL;
-				new_syscall_exit(102, rc, pretvals);
+				new_syscall_exit(102, pretvals);
 				return rc;
 			}
 
 			tmp = (struct sockaddr_in*)(&pretvals->addr);
 
 			pretvals->call = call;
-			new_syscall_exit (102, rc, pretvals);
+			new_syscall_exit (102, pretvals);
 			return rc;
 		} else {
 			struct accept_retvals* pretvals = NULL;
@@ -5273,7 +5378,7 @@ record_socketcall(int call, unsigned long __user *args)
 			}
 			pretvals->call = call;
 			pretvals->addrlen = 0;
-			new_syscall_exit (102, rc, pretvals);
+			new_syscall_exit (102, pretvals);
 			return rc;
 		}
 #else
@@ -5284,7 +5389,7 @@ record_socketcall(int call, unsigned long __user *args)
 			return -ENOMEM;
 		}
 		pretvals->call = call;
-		new_syscall_exit (102, rc, pretvals);
+		new_syscall_exit (102, pretvals);
 		return rc;
 #endif
 	}
@@ -5305,7 +5410,7 @@ record_socketcall(int call, unsigned long __user *args)
 			return -ENOMEM;
 		}
 		pretvals->call = call;
-		new_syscall_exit (102, rc, pretvals);
+		new_syscall_exit (102, pretvals);
 		return rc;
 	}
 	case SYS_ACCEPT:
@@ -5356,7 +5461,7 @@ record_socketcall(int call, unsigned long __user *args)
 				printk("  Pid %d - record_socketcall(accept) pretvals->addrlen is %d\n", current->pid, pretvals->addrlen);
 				printk("  Pid %d - ntohs(sin6->sin_port) %d\n", current->pid, ntohs(sin6->sin6_port));
 
-				new_syscall_exit (102, rc, pretvals);
+				new_syscall_exit (102, pretvals);
 				return rc;
 			} else { // we don't save them, so we'll have to save them
 				int prc;
@@ -5385,17 +5490,17 @@ record_socketcall(int call, unsigned long __user *args)
 					printk("Pid %d - record_socketcall(accept) - the extra getpeername call failed\n", current->pid);
 					ARGSKFREE (peer_retvals, sizeof(struct accept_retvals) + peerlen);
 					peer_retvals = NULL;
-					new_syscall_exit(102, rc, peer_retvals);
+					new_syscall_exit(102, peer_retvals);
 					return rc;
 				}
 
 				peer_retvals->call = call;
-				new_syscall_exit (102, rc, peer_retvals);
+				new_syscall_exit (102, peer_retvals);
 				return rc;
 			}
 		}
 		printk("Pid %d - record_socketcall(accept) returned %d\n", current->pid, rc);
-		new_syscall_exit (102, rc, NULL);
+		new_syscall_exit (102, NULL);
 		return rc;
 	}
 #endif
@@ -5426,7 +5531,7 @@ record_socketcall(int call, unsigned long __user *args)
 			} 
 			pretvals->call = call;
 		}
-		new_syscall_exit (102, rc, pretvals);
+		new_syscall_exit (102, pretvals);
 		return rc;
 	}
 	case SYS_SOCKETPAIR:
@@ -5445,7 +5550,7 @@ record_socketcall(int call, unsigned long __user *args)
 			pretvals->sv1 = *(sv+1);
 			DPRINT ("pid %d records socketpair retuning %ld, sockets %d and %d\n", current->pid, rc, pretvals->sv0, pretvals->sv1);
 		}
-		new_syscall_exit (102, rc, pretvals);
+		new_syscall_exit (102, pretvals);
 		return rc;
 
 	}
@@ -5466,7 +5571,7 @@ record_socketcall(int call, unsigned long __user *args)
 			pretvals->call = call;
 		}
 
-		new_syscall_exit (102, rc, pretvals);
+		new_syscall_exit (102, pretvals);
 		return rc;
 	}
 	case SYS_RECVFROM: 
@@ -5501,7 +5606,7 @@ record_socketcall(int call, unsigned long __user *args)
 			pretvals->call = call;
 		}
 
-		new_syscall_exit (102, rc, pretvals);
+		new_syscall_exit (102, pretvals);
 		return rc;
 	}
 	case SYS_RECVMSG:
@@ -5562,7 +5667,7 @@ record_socketcall(int call, unsigned long __user *args)
 			if (rem_size != 0) printk ("record_socketcall(recvmsg): %ld bytes of data remain???\n", rem_size);
 		}
 
-		new_syscall_exit (102, rc, pretvals);
+		new_syscall_exit (102, pretvals);
 		return rc;
 
 	}
@@ -5583,7 +5688,7 @@ record_socketcall(int call, unsigned long __user *args)
 			retval = log_mmsghdr(pmsghdr, rc, &logsize);
 			if (retval < 0) return retval;
 		}
-		new_syscall_exit (102, rc, pretvals);
+		new_syscall_exit (102, pretvals);
 		return rc;
 	}
 	case SYS_GETSOCKOPT: 
@@ -5605,7 +5710,7 @@ record_socketcall(int call, unsigned long __user *args)
 			pretvals->call = call;
 			pretvals->optlen = sockopt_size;
 		}
-		new_syscall_exit (102, rc, pretvals);
+		new_syscall_exit (102, pretvals);
 		return rc;
 	}
 	default:
@@ -5899,8 +6004,7 @@ record_syslog (int type, char __user *buf, int len)
 			return -EFAULT;
 		}
 	}
-
-	new_syscall_exit (103, rc, recbuf);
+	new_syscall_exit (103, recbuf);
 
 	return rc;
 }
@@ -5932,6 +6036,7 @@ record_wait4 (pid_t upid, int __user *stat_addr, int options, struct rusage __us
 
 	new_syscall_enter (114);
 	rc = sys_wait4 (upid, stat_addr, options, ru);
+	new_syscall_done (114, rc);
 	if (rc >= 0) {
 		retvals = ARGSKMALLOC(sizeof(struct wait4_retvals), GFP_KERNEL);
 		if (retvals == NULL) {
@@ -5954,7 +6059,7 @@ record_wait4 (pid_t upid, int __user *stat_addr, int options, struct rusage __us
 			}
 		}
 	}
-	new_syscall_exit (114, rc, retvals);
+	new_syscall_exit (114, retvals);
 
 	return rc;
 }
@@ -5997,6 +6102,7 @@ record_ipc (uint call, int first, u_long second, u_long third, void __user *ptr,
 
 	new_syscall_enter (117);
 	rc = sys_ipc (call, first, second, third, ptr, fifth);
+	new_syscall_done (117, rc);
 	if (rc >= 0) {
 		switch (call) {
 		case MSGCTL: 
@@ -6137,7 +6243,7 @@ record_ipc (uint call, int first, u_long second, u_long third, void __user *ptr,
 		}
 		}
 	}
-	new_syscall_exit (117, rc, pretval);
+	new_syscall_exit (117, pretval);
 	return rc;
 }
 
@@ -6285,7 +6391,8 @@ record_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 	MPRINT ("Pid %d records clone with flags %lx fork %d returning %ld\n", current->pid, clone_flags, (clone_flags&CLONE_VM) ? 0 : 1, rc);
 
 	rg_lock(prg);
-	new_syscall_exit (120, rc, NULL);
+	new_syscall_done (120, rc);
+	new_syscall_exit (120, NULL);
 
 	if (rc > 0) {
 		// Create a record thread struct for the child
@@ -6526,8 +6633,9 @@ record_mprotect (unsigned long start, size_t len, unsigned long prot)
 	rg_lock(current->record_thrd->rp_group);
 	new_syscall_enter (125);
 	rc = sys_mprotect (start, len, prot);
+	new_syscall_done (125, rc);
 	DPRINT ("Pid %d records mprotect %lx for %lx-%lx returning %ld\n", current->pid, prot, start, start+len, rc);
-	new_syscall_exit (125, rc, NULL);
+	new_syscall_exit (125, NULL);
 	rg_unlock(current->record_thrd->rp_group);
 
 	return rc;
@@ -6571,6 +6679,7 @@ record_quotactl (unsigned int cmd, const char __user *special, qid_t id, void __
 
 	new_syscall_enter (131);
 	rc = sys_quotactl (cmd, special, id, addr);
+	new_syscall_done (131, rc);
 	if (rc >= 0) {
 		
 		switch (cmds) {
@@ -6603,7 +6712,7 @@ record_quotactl (unsigned int cmd, const char __user *special, qid_t id, void __
 			}
 		}
 	}
-	new_syscall_exit (131, rc, pretval);
+	new_syscall_exit (131, pretval);
 	return rc;
 }
 
@@ -6639,6 +6748,7 @@ record_bdflush (int func, long data)
 									
 	new_syscall_enter (134);				
 	rc = sys_bdflush (func, data);
+	new_syscall_done (134, rc);
 	if (rc >= 0 && func > 2 && func%2 == 0) {
 	        pretval = ARGSKMALLOC (sizeof(long), GFP_KERNEL);
 		if (pretval == NULL) {				
@@ -6653,7 +6763,7 @@ record_bdflush (int func, long data)
 		}							
 	}								
 									
-	new_syscall_exit (134, rc, pretval);				
+	new_syscall_exit (134, pretval);				
 	return rc;							
 }
 
@@ -6679,6 +6789,7 @@ record_sysfs (int option, unsigned long arg1, unsigned long arg2)
 									
 	new_syscall_enter (135);				
 	rc = sys_sysfs (option, arg1, arg2);
+	new_syscall_done (135, rc);
 	if (rc >= 0 && option == 2) {
 		len = strlen_user ((char __user *) arg2)+1;
 		if (len <= 0) {
@@ -6698,7 +6809,7 @@ record_sysfs (int option, unsigned long arg1, unsigned long arg2)
 		}							
 	}								
 									
-	new_syscall_exit (134, rc, pretval);				
+	new_syscall_exit (135, pretval);				
 	return rc;							
 }
 
@@ -6733,6 +6844,7 @@ record_select (int n, fd_set __user *inp, fd_set __user *outp, fd_set __user *ex
 	
 	new_syscall_enter (142);
 	rc = sys_select (n, inp, outp, exp, tvp);
+	new_syscall_done (142, rc);
 
 	/* Record user's memory regardless of return value in order to capture partial output. */
 	if (inp) sets++;
@@ -6780,7 +6892,7 @@ record_select (int n, fd_set __user *inp, fd_set __user *outp, fd_set __user *ex
 		}
 	}
 
-	new_syscall_exit (142, rc, pretvals);
+	new_syscall_exit (142, pretvals);
 	return rc;
 }
 
@@ -6837,7 +6949,8 @@ record_readv (unsigned long fd, const struct iovec __user *vec, unsigned long vl
 
 	new_syscall_enter (145);
 	size = sys_readv (fd, vec, vlen);
-	new_syscall_exit (145, size, copy_iovec_to_args(size, vec, vlen));
+	new_syscall_done (145, size);
+	new_syscall_exit (145, copy_iovec_to_args(size, vec, vlen));
 	return size;
 }
 
@@ -6873,6 +6986,7 @@ record_sysctl (struct __sysctl_args __user *args)
 
 	new_syscall_enter (149);				
 	rc = sys_sysctl (args);
+	new_syscall_done (149, rc);
 	if (rc >= 0) {
 		if (copy_from_user (&kargs, args, sizeof(struct __sysctl_args))) {
 			printk ("record_sysctl: pid %d cannot copy args struct from user\n", current->pid);
@@ -6895,9 +7009,8 @@ record_sysctl (struct __sysctl_args __user *args)
 				return -EFAULT;
 			}			
 		}				
-	}								
-									
-	new_syscall_exit (149, rc, pretval);				
+	}																	
+	new_syscall_exit (149, pretval);				
 	return rc;							
 }
 
@@ -6999,7 +7112,8 @@ record_mremap (unsigned long addr, unsigned long old_len, unsigned long new_len,
 	rg_lock(current->record_thrd->rp_group);
 	new_syscall_enter (163);
 	rc = sys_mremap (addr, old_len, new_len, flags, new_addr);
-	new_syscall_exit (163, rc, NULL);
+	new_syscall_done (163, rc);
+	new_syscall_exit (163, NULL);
 	rg_unlock(current->record_thrd->rp_group);
 	
 	return rc;
@@ -7031,6 +7145,7 @@ record_getresuid16 (old_uid_t __user *ruid, old_uid_t __user *euid, old_uid_t __
 
 	new_syscall_enter (165);
 	rc = sys_getresuid16 (ruid, euid, suid);
+	new_syscall_done (165, rc);
 	if (rc >= 0) {
 		pretval = ARGSKMALLOC(sizeof(old_uid_t)*3, GFP_KERNEL);
 		if (pretval == NULL) {
@@ -7044,9 +7159,7 @@ record_getresuid16 (old_uid_t __user *ruid, old_uid_t __user *euid, old_uid_t __
 			return -EFAULT;
 		}
 	}
-
-	DPRINT ("Pid %d records getresuid16 returning %ld\n", current->pid, rc);
-	new_syscall_exit (165, rc, pretval);
+	new_syscall_exit (165, pretval);
 
 	return rc;
 }
@@ -7085,6 +7198,7 @@ record_poll (struct pollfd __user *ufds, unsigned int nfds, long timeout_msecs)
 
 	new_syscall_enter (168);
 	rc = sys_poll (ufds, nfds, timeout_msecs);
+	new_syscall_done (168, rc);
 	if (rc > 0) {
 		pretvals = ARGSKMALLOC(sizeof(int)+nfds*sizeof(short), GFP_KERNEL);
 		if (pretvals == NULL) {
@@ -7101,9 +7215,8 @@ record_poll (struct pollfd __user *ufds, unsigned int nfds, long timeout_msecs)
 			}
 			p++;
 		}
-	}
-		
-	new_syscall_exit (168, rc, pretvals);
+	}		
+	new_syscall_exit (168, pretvals);
 
 	return rc;
 }
@@ -7158,6 +7271,7 @@ record_getresgid16 (old_gid_t __user *rgid, old_gid_t __user *egid, old_gid_t __
 
 	new_syscall_enter (171);
 	rc = sys_getresgid16 (rgid, egid, sgid);
+	new_syscall_done (171, rc);
 	if (rc >= 0) {
 		pretval = ARGSKMALLOC(sizeof(old_gid_t)*3, GFP_KERNEL);
 		if (pretval == NULL) {
@@ -7171,9 +7285,7 @@ record_getresgid16 (old_gid_t __user *rgid, old_gid_t __user *egid, old_gid_t __
 			return -EFAULT;
 		}
 	}
-
-	DPRINT ("Pid %d records getresgid16 returning %ld\n", current->pid, rc);
-	new_syscall_exit (171, rc, pretval);
+	new_syscall_exit (171, pretval);
 
 	return rc;
 }
@@ -7209,6 +7321,7 @@ record_prctl (int option, unsigned long arg2, unsigned long arg3, unsigned long 
 
 	new_syscall_enter (172);
 	rc = sys_prctl (option, arg2, arg3, arg4, arg5);
+	new_syscall_done (172, rc);
 	if (rc >= 0) {
 		switch (option) {
 		case PR_GET_CHILD_SUBREAPER:
@@ -7237,7 +7350,7 @@ record_prctl (int option, unsigned long arg2, unsigned long arg3, unsigned long 
 			}
 		}
 	}
-	new_syscall_exit (172, rc, NULL);
+	new_syscall_exit (172, NULL);
 
 	return rc;
 }
@@ -7299,6 +7412,7 @@ record_rt_sigaction (int sig, const struct sigaction __user *act, struct sigacti
 	
 	new_syscall_enter (174);
 	rc = sys_rt_sigaction (sig, act, oact, sigsetsize);
+	new_syscall_done (174, rc);
 
 #ifdef MCPRINT
 	DPRINT ("Record Pid %d rt_sigaction sig %d, act %p, oact %p, rc %ld\n", current->pid, sig, act,	oact, rc);
@@ -7323,8 +7437,7 @@ record_rt_sigaction (int sig, const struct sigaction __user *act, struct sigacti
 			rc = -EFAULT;
 		}
 	}
-
-	new_syscall_exit (174, rc, pretval);
+	new_syscall_exit (174, pretval);
 	
 	return rc;
 }
@@ -7430,6 +7543,7 @@ record_rt_sigprocmask (int how, sigset_t __user *set, sigset_t __user *oset, siz
 
 	new_syscall_enter (175);
 	rc = sys_rt_sigprocmask (how, set, oset, sigsetsize);
+	new_syscall_done (175, rc);
 	DPRINT ("Pid %d records rt_sigprocmask returning %ld\n", current->pid, rc);
 
 	if (rc == 0 && oset) {
@@ -7446,8 +7560,7 @@ record_rt_sigprocmask (int how, sigset_t __user *set, sigset_t __user *oset, siz
 			rc = -EFAULT;
 		}
 	}
-
-	new_syscall_exit (175, rc, buf);
+	new_syscall_exit (175, buf);
 	
 	return rc;
 
@@ -7521,6 +7634,7 @@ record_rt_sigpending (sigset_t __user *set, size_t sigsetsize)
 									
 	new_syscall_enter (176);				
 	rc = sys_rt_sigpending (set, sigsetsize);
+	new_syscall_done (176, rc);
 	if (rc >= 0 && set) {						
 		pretval = ARGSKMALLOC (sizeof(long) + sigsetsize, GFP_KERNEL);	
 		if (pretval == NULL) {					
@@ -7533,9 +7647,9 @@ record_rt_sigpending (sigset_t __user *set, size_t sigsetsize)
 			ARGSKFREE(pretval, sizeof(u_long) + sigsetsize);		
 			rc = -EFAULT;					
 		}							
-	}								
-									
-	new_syscall_exit (176, rc, pretval);				
+	}																	
+	new_syscall_exit (176, pretval);				
+
 	return rc;							
 }
 
@@ -7573,6 +7687,7 @@ record_getcwd (char __user *buf, unsigned long size)
 
 	new_syscall_enter (183);
 	rc = sys_getcwd (buf, size);
+	new_syscall_done (183, rc);
 	if (rc >= 0) {
 		recbuf = ARGSKMALLOC(rc, GFP_KERNEL);
 		if (recbuf == NULL) {
@@ -7585,8 +7700,7 @@ record_getcwd (char __user *buf, unsigned long size)
 			rc = -EFAULT;
 		}
 	}
-		
-	new_syscall_exit (183, rc, recbuf);
+	new_syscall_exit (183, recbuf);
 
 	return rc;
 }
@@ -7608,6 +7722,7 @@ record_capget (cap_user_header_t header, cap_user_data_t dataptr)
 
 	new_syscall_enter (184);
 	rc = sys_capget (header, dataptr);
+	new_syscall_done (184, rc);
 	if (rc >= 0) {
 		retvals = ARGSKMALLOC(sizeof(struct capget_retvals), GFP_KERNEL);
 		if (retvals == NULL) {
@@ -7626,7 +7741,7 @@ record_capget (cap_user_header_t header, cap_user_data_t dataptr)
 			return -EFAULT;
 		}
 	}
-	new_syscall_exit (184, rc, retvals);
+	new_syscall_exit (184, retvals);
 
 	return rc;
 }
@@ -7712,8 +7827,8 @@ record_vfork (unsigned long clone_flags, unsigned long stack_start, struct pt_re
 
 	rc = do_fork (clone_flags, stack_start, regs, stack_size, parent_tidptr, child_tidptr);		
 	MPRINT ("Pid %d records vfork returning %ld\n", current->pid, rc);
-
-	new_syscall_exit (190, rc, NULL);
+	new_syscall_done (190, rc);
+	new_syscall_exit (190, NULL);
 	
 	return rc;
 }
@@ -7725,7 +7840,7 @@ replay_vfork_handler (struct task_struct* tsk)
 	struct record_thread* prt;
 	struct replay_thread* prept;
 	ds_list_iter_t* iter;
-	long rc = current->replay_thrd->rp_record_thread->rp_log[current->replay_thrd->rp_out_ptr-1].retval;
+	long rc = current->replay_thrd->rp_saved_rc;
 
 	// Attach the replay thread struct to the child
 	rg_lock(prg->rg_rec_group);
@@ -7817,6 +7932,7 @@ replay_vfork (unsigned long clone_flags, unsigned long stack_start, struct pt_re
 		(*(int*)(prt->app_syscall_addr)) = 999;
 	} else {
 		rc = get_next_syscall_enter (prt, prg, 190, NULL, &psr);
+		prt->rp_saved_rc = rc;
 	}
 
 	DPRINT ("Pid %d replay_vfork syscall exit:rc=%ld\n", current->pid, rc);
@@ -7884,6 +8000,7 @@ record_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, un
 	rg_lock(current->record_thrd->rp_group);
 	new_syscall_enter (192);
 	rc = sys_mmap_pgoff (addr, len, prot, flags, fd, pgoff);
+	new_syscall_done (192, rc);
 
 	/* Good thing we have the extra synchronization and rg_lock
 	 * held, since we need to store some return values of mmap
@@ -7904,7 +8021,7 @@ record_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, un
 
 	DPRINT ("Pid %d records mmap_pgoff with addr %lx len %lx prot %lx flags %lx fd %lu ret %lx\n", current->pid, addr, len, prot, flags, fd, rc);
 
-	new_syscall_exit (192, rc, recbuf);
+	new_syscall_exit (192, recbuf);
 	rg_unlock(current->record_thrd->rp_group);
 
 	return rc;
@@ -7939,7 +8056,7 @@ replay_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, un
 		}
 		argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct mmap_pgoff_retvals));
 	} else if (is_replay_cache_file (prt->rp_cache_files, fd, &given_fd)) {
-		printk ("replay_mmap_pgoff uses open cache file %d for %lu\n", given_fd, fd);
+		DPRINT ("replay_mmap_pgoff uses open cache file %d for %lu\n", given_fd, fd);
 		is_cache_file = 1;
 	} else if (given_fd >= 0) {
 		printk ("replay_mmap_pgoff: fd is %d but there are no return values recorded\n", given_fd);
@@ -7981,6 +8098,7 @@ record_getgroups (int gidsetsize, gid_t __user *grouplist)
 
 	new_syscall_enter (205);
 	rc = sys_getgroups (gidsetsize, grouplist);
+	new_syscall_done (205, rc);
 	if (gidsetsize > 0 && rc > 0) {
 		pretval = ARGSKMALLOC(sizeof(gid_t)*rc, GFP_KERNEL);
 		if (pretval == NULL) {
@@ -7993,8 +8111,7 @@ record_getgroups (int gidsetsize, gid_t __user *grouplist)
 			return -EFAULT;
 		}
 	}
-
-	new_syscall_exit (205, rc, pretval);
+	new_syscall_exit (205, pretval);
 
 	return rc;
 }
@@ -8025,6 +8142,7 @@ record_getresuid (uid_t __user *ruid, uid_t __user *euid, uid_t __user *suid)
 
 	new_syscall_enter (209);
 	rc = sys_getresuid (ruid, euid, suid);
+	new_syscall_done (209, rc);
 	if (rc >= 0) {
 		pretval = ARGSKMALLOC(sizeof(uid_t)*3, GFP_KERNEL);
 		if (pretval == NULL) {
@@ -8038,9 +8156,7 @@ record_getresuid (uid_t __user *ruid, uid_t __user *euid, uid_t __user *suid)
 			return -EFAULT;
 		}
 	}
-
-	DPRINT ("Pid %d records getresuid returning %ld\n", current->pid, rc);
-	new_syscall_exit (209, rc, pretval);
+	new_syscall_exit (209, pretval);
 
 	return rc;
 }
@@ -8077,6 +8193,7 @@ record_getresgid (gid_t __user *rgid, gid_t __user *egid, gid_t __user *sgid)
 
 	new_syscall_enter (211);
 	rc = sys_getresgid (rgid, egid, sgid);
+	new_syscall_done (211, rc);
 	if (rc >= 0) {
 		pretval = ARGSKMALLOC(sizeof(gid_t)*3, GFP_KERNEL);
 		if (pretval == NULL) {
@@ -8090,9 +8207,7 @@ record_getresgid (gid_t __user *rgid, gid_t __user *egid, gid_t __user *sgid)
 			return -EFAULT;
 		}
 	}
-
-	DPRINT ("Pid %d records getresgid returning %ld\n", current->pid, rc);
-	new_syscall_exit (211, rc, pretval);
+	new_syscall_exit (211, pretval);
 
 	return rc;
 }
@@ -8135,6 +8250,7 @@ record_mincore (unsigned long start, size_t len, unsigned char __user * vec)
 
 	new_syscall_enter (218);
 	rc = sys_mincore (start, len, vec);
+	new_syscall_done (218, rc);
 	if (rc >= 0) {
 		pages = len >> PAGE_SHIFT;
 		pages += (len & ~PAGE_MASK) != 0;
@@ -8151,7 +8267,7 @@ record_mincore (unsigned long start, size_t len, unsigned char __user * vec)
 			return -EFAULT;
 		}
 	}
-	new_syscall_exit (218, rc, pretvals);
+	new_syscall_exit (218, pretvals);
 
 	return rc;
 }
@@ -8179,7 +8295,8 @@ record_madvise (unsigned long start, size_t len_in, int behavior)
 	rg_lock(current->record_thrd->rp_group);
 	new_syscall_enter (219);
 	rc = sys_madvise (start, len_in, behavior);
-	new_syscall_exit (219, rc, NULL);
+	new_syscall_done (219, rc);
+	new_syscall_exit (219, NULL);
 	rg_unlock(current->record_thrd->rp_group);
 
 	return rc;
@@ -8211,6 +8328,7 @@ record_fcntl64 (unsigned int fd, unsigned int cmd, unsigned long arg)
 
 	new_syscall_enter (221);
 	rc = sys_fcntl64 (fd, cmd, arg);
+	new_syscall_done (221, rc);
 	if (rc >= 0) {
 		if (cmd == F_GETLK) {
 			recbuf = ARGSKMALLOC(sizeof(u_long) + sizeof(struct flock64), GFP_KERNEL);
@@ -8238,7 +8356,7 @@ record_fcntl64 (unsigned int fd, unsigned int cmd, unsigned long arg)
 			}
 		}
 	}
-	new_syscall_exit (221, rc, recbuf);
+	new_syscall_exit (221, recbuf);
 
 	return rc;
 }
@@ -8283,11 +8401,12 @@ record_futex (u32 __user *uaddr, int op, u32 val, struct timespec __user *utime,
 
 	new_syscall_enter (240);
 	rc = sys_futex (uaddr, op, val, utime, uaddr2, val3);
+	new_syscall_done (240, rc);
 	pregs = get_pt_regs (NULL);
 	// Really should not get here because it means we are missing synchronizations at user level
 	printk ("Pid %d in replay futex uaddr=%p, op=%d, val=%d, ip=%lx, sp=%lx, bp=%lx\n", current->pid, uaddr, op, val, pregs->ip, pregs->sp, pregs->bp);
 	dump_user_stack();
-	new_syscall_exit (240, rc, NULL);
+	new_syscall_exit (240, NULL);
 
 	return rc;
 }
@@ -8316,6 +8435,7 @@ record_sched_getaffinity (pid_t pid, unsigned int len, unsigned long __user *use
 
 	new_syscall_enter (242);
 	rc = sys_sched_getaffinity (pid, len, user_mask_ptr);
+	new_syscall_done (242, rc);
 	if (rc == 0) {
 		pretval = ARGSKMALLOC(sizeof(u_long) + len, GFP_KERNEL);
 		if (pretval == NULL) {
@@ -8328,7 +8448,7 @@ record_sched_getaffinity (pid_t pid, unsigned int len, unsigned long __user *use
 			rc = -EFAULT;
 		}
 	}
-	new_syscall_exit (242, rc, pretval);
+	new_syscall_exit (242, pretval);
 
 	return rc;
 }
@@ -8366,7 +8486,7 @@ record_io_getevents(aio_context_t ctx_id, long min_nr, long nr, struct io_event 
 
 	new_syscall_enter (247);
 	rc = sys_io_getevents (ctx_id, min_nr, nr, events, timeout);
-	
+	new_syscall_done (247, rc);	
 	if (rc > 0) {
 		pretvals = ARGSKMALLOC (rc * sizeof(struct io_event), GFP_KERNEL);
 		if (pretvals == NULL) {
@@ -8379,8 +8499,7 @@ record_io_getevents(aio_context_t ctx_id, long min_nr, long nr, struct io_event 
 			return -EFAULT;
 		}
 	}
-
-	new_syscall_exit (247, rc, pretvals);
+	new_syscall_exit (247, pretvals);
 
 	return rc;
 }
@@ -8411,8 +8530,8 @@ static asmlinkage void
 record_exit_group (int error_code)
 {
 	new_syscall_enter (252);
-	new_syscall_exit (252, 0, NULL);
-
+	new_syscall_done (252, 0);
+	new_syscall_exit (252, NULL);
 	MPRINT ("Pid %d recording exit group with code %d\n", current->pid, error_code);
 	sys_exit_group (error_code);
 }
@@ -8463,6 +8582,7 @@ record_epoll_wait(int epfd, struct epoll_event __user *events, int maxevents, in
 
 	new_syscall_enter (256);
 	rc = sys_epoll_wait (epfd, events, maxevents, timeout);
+	new_syscall_done (256, rc);
 	if (rc > 0) {
 		pretvals = ARGSKMALLOC (rc * sizeof(struct epoll_event), GFP_KERNEL);
 		if (pretvals == NULL) {
@@ -8475,8 +8595,7 @@ record_epoll_wait(int epfd, struct epoll_event __user *events, int maxevents, in
 			return -EFAULT;
 		}
 	}
-
-	new_syscall_exit (256, rc, pretvals);
+	new_syscall_exit (256, pretvals);
 
 	return rc;
 }
@@ -8507,7 +8626,8 @@ record_remap_file_pages (unsigned long start, unsigned long size, unsigned long 
 	rg_lock(current->record_thrd->rp_group);
 	new_syscall_enter (257);
 	rc = sys_remap_file_pages (start, size, prot, pgoff, flags);
-	new_syscall_exit (257, rc, NULL);
+	new_syscall_done (257, rc);
+	new_syscall_exit (257, NULL);
 	rg_unlock(current->record_thrd->rp_group);
 	
 	return rc;
@@ -8562,6 +8682,7 @@ record_get_mempolicy (int __user *policy, unsigned long __user *nmask, unsigned 
 
 	new_syscall_enter (275);
 	rc = sys_get_mempolicy (policy, nmask, maxnode, addr, flags);
+	new_syscall_done (275, rc);
 	if (rc >= 0) {
 		unsigned long copy = ALIGN(maxnode-1, 64) / 8;
 		pretvals = ARGSKMALLOC(sizeof(u_long) + sizeof(int) + copy, GFP_KERNEL);
@@ -8580,7 +8701,7 @@ record_get_mempolicy (int __user *policy, unsigned long __user *nmask, unsigned 
 			return -EFAULT;
 		}
 	}
-	new_syscall_exit (275, rc, pretvals);
+	new_syscall_exit (275, pretvals);
 
 	return rc;
 }
@@ -8623,6 +8744,7 @@ record_waitid (int which, pid_t upid, struct siginfo __user *infop, int options,
 
 	new_syscall_enter (284);
 	rc = sys_waitid (which, upid, infop, options, ru);
+	new_syscall_done (284, rc);
 	if (rc >= 0) {
 		retvals = ARGSKMALLOC(sizeof(struct waitid_retvals), GFP_KERNEL);
 		if (retvals == NULL) {
@@ -8645,7 +8767,7 @@ record_waitid (int which, pid_t upid, struct siginfo __user *infop, int options,
 			}
 		}
 	}
-	new_syscall_exit (284, rc, retvals);
+	new_syscall_exit (284, retvals);
 
 	return rc;
 }
@@ -8686,6 +8808,7 @@ record_keyctl (int option, unsigned long arg2, unsigned long arg3, unsigned long
 
 	new_syscall_enter (288);
 	rc = sys_keyctl (option, arg2, arg3, arg4, arg5);
+	new_syscall_done (288, rc);
 	if (rc >= 0) {
 		if (option == KEYCTL_DESCRIBE || option == KEYCTL_READ || option == KEYCTL_GET_SECURITY) {
 			recbuf = ARGSKMALLOC(arg4 + sizeof(u_long), GFP_KERNEL);
@@ -8700,7 +8823,7 @@ record_keyctl (int option, unsigned long arg2, unsigned long arg3, unsigned long
 			}
 		}
 	}
-	new_syscall_exit (288, rc, recbuf);
+	new_syscall_exit (288, recbuf);
 
 	return rc;
 }
@@ -8748,6 +8871,7 @@ record_pselect6 (int n, fd_set __user *inp, fd_set __user *outp, fd_set __user *
 
 	new_syscall_enter (308);
 	rc = sys_pselect6 (n, inp, outp, exp, tsp, sig);
+	new_syscall_done (308, rc);
 
 	/* Record user's memory regardless of return value in order to capture partial output. */
 	pretvals = ARGSKMALLOC(sizeof(struct pselect6_retvals), GFP_KERNEL);
@@ -8765,8 +8889,7 @@ record_pselect6 (int n, fd_set __user *inp, fd_set __user *outp, fd_set __user *
 	if (tsp && copy_from_user (&pretvals->tsp, tsp, sizeof(struct timespec)) == 0)
 		pretvals->has_tsp = 1;
 
-	new_syscall_exit (308, rc, pretvals);
-	DPRINT ("Pid %d records pselect6 returning %ld\n", current->pid, rc);
+	new_syscall_exit (308, pretvals);
 
 	return rc;
 }
@@ -8803,6 +8926,7 @@ record_ppoll (struct pollfd __user *ufds, unsigned int nfds, struct timespec __u
 
 	new_syscall_enter (309);
 	rc = sys_ppoll (ufds, nfds, tsp, sigmask, sigsetsize);
+	new_syscall_done (309, rc);
 
 	/* Record user's memory regardless of return value in order to capture partial output. */
 	pretvals = ARGSKMALLOC(sizeof(u_long)+nfds*sizeof(struct pollfd), GFP_KERNEL);
@@ -8817,7 +8941,7 @@ record_ppoll (struct pollfd __user *ufds, unsigned int nfds, struct timespec __u
 		return -EFAULT;
 	}
 		
-	new_syscall_exit (309, rc, pretvals);
+	new_syscall_exit (309, pretvals);
 
 	return rc;
 }
@@ -8855,6 +8979,7 @@ record_get_robust_list (int pid, struct robust_list_head __user * __user *head_p
 
 	new_syscall_enter (312);
 	rc = sys_get_robust_list (pid, head_ptr, len_ptr);
+	new_syscall_done (312, rc);
 	if (rc >= 0) {
 		retvals = ARGSKMALLOC(sizeof(struct get_robust_list_retvals), GFP_KERNEL);
 		if (retvals == NULL) {
@@ -8872,7 +8997,7 @@ record_get_robust_list (int pid, struct robust_list_head __user * __user *head_p
 			return -EFAULT;
 		}
 	}
-	new_syscall_exit (312, rc, retvals);
+	new_syscall_exit (312, retvals);
 
 	return rc;
 }
@@ -8911,6 +9036,7 @@ record_splice (int fd_in, loff_t __user *off_in, int fd_out, loff_t __user *off_
 
 	new_syscall_enter (313);
 	rc = sys_splice (fd_in, off_in, fd_out, off_out, len, flags); 
+	new_syscall_done (313, rc);
 	if (rc == 0) {
 		pretvals = ARGSKMALLOC(sizeof(struct splice_retvals), GFP_KERNEL);
 		if (pretvals == NULL) {
@@ -8933,8 +9059,7 @@ record_splice (int fd_in, loff_t __user *off_in, int fd_out, loff_t __user *off_
 		}
 
 	}
-
-	new_syscall_exit (313, rc, pretvals);
+	new_syscall_exit (313, pretvals);
 
 	return rc;
 }
@@ -8977,6 +9102,7 @@ record_move_pages (pid_t pid, unsigned long nr_pages, const void __user * __user
 
 	new_syscall_enter (317);
 	rc = sys_move_pages (pid, nr_pages, pages, nodes, status, flags);
+	new_syscall_done (317, rc);
 	if (rc >= 0) {
 		pretvals = ARGSKMALLOC(sizeof(u_long) + nr_pages*sizeof(int), GFP_KERNEL);
 		if (!pretvals) {
@@ -8990,7 +9116,7 @@ record_move_pages (pid_t pid, unsigned long nr_pages, const void __user * __user
 			return -EFAULT;
 		}
 	}
-	new_syscall_exit (317, rc, pretvals);
+	new_syscall_exit (317, pretvals);
 
 	return rc;
 }
@@ -9018,6 +9144,7 @@ record_getcpu (unsigned __user *cpup, unsigned __user *nodep, struct getcpu_cach
 
 	new_syscall_enter (318);
 	rc = sys_getcpu (cpup, nodep, unused);
+	new_syscall_done (318, rc);
 	if (rc >= 0) {
 		pretval = ARGSKMALLOC(sizeof(unsigned)*2, GFP_KERNEL);
 		if (pretval == NULL) {
@@ -9039,7 +9166,7 @@ record_getcpu (unsigned __user *cpup, unsigned __user *nodep, struct getcpu_cach
 			}
 		}
 	}
-	new_syscall_exit (318, rc, pretval);
+	new_syscall_exit (318, pretval);
 
 	return rc;
 }
@@ -9077,6 +9204,7 @@ record_epoll_pwait(int epfd, struct epoll_event __user *events, int maxevents, i
 
 	new_syscall_enter (319);
 	rc = sys_epoll_pwait (epfd, events, maxevents, timeout, sigmask, sigsetsize);
+	new_syscall_done (319, rc);
 	if (rc > 0) {
 		pretvals = ARGSKMALLOC (rc * sizeof(struct epoll_event), GFP_KERNEL);
 		if (pretvals == NULL) {
@@ -9089,8 +9217,7 @@ record_epoll_pwait(int epfd, struct epoll_event __user *events, int maxevents, i
 			return -EFAULT;
 		}
 	}
-
-	new_syscall_exit (319, rc, pretvals);
+	new_syscall_exit (319, pretvals);
 
 	return rc;
 }
@@ -9133,7 +9260,7 @@ record_pipe2 (int __user *fildes, int flags)
 
 	new_syscall_enter (331);
 	rc = sys_pipe2 (fildes, flags);
-	DPRINT ("Pid %d records pipe2 returning %ld\n", current->pid, rc);
+	new_syscall_done (331, rc);
 	if (rc == 0) {
 		pretval = ARGSKMALLOC(2*sizeof(int), GFP_KERNEL);
 		if (pretval == NULL) {
@@ -9145,8 +9272,7 @@ record_pipe2 (int __user *fildes, int flags)
 			return -EFAULT;
 		}
 	}
-
-	new_syscall_exit (331, rc, pretval);
+	new_syscall_exit (331, pretval);
 
 	return rc;
 }
@@ -9164,7 +9290,8 @@ record_preadv (unsigned long fd, const struct iovec __user *vec,  unsigned long 
 
 	new_syscall_enter (333);
 	size = sys_preadv (fd, vec, vlen, pos_l, pos_h);
-	new_syscall_exit (333, size, copy_iovec_to_args(size, vec, vlen));
+	new_syscall_done (333, size);
+	new_syscall_exit (333, copy_iovec_to_args(size, vec, vlen));
 	return size;
 }
 
@@ -9198,11 +9325,12 @@ record_recvmmsg(int fd, struct mmsghdr __user *msg, unsigned int vlen, unsigned 
 
 	new_syscall_enter (337);
 	rc = sys_recvmmsg (fd, msg, vlen, flags, timeout);
+	new_syscall_done (337, rc);
 	if (rc > 0) {
 		retval = log_mmsghdr(msg, rc, plogsize);
 		if (retval < 0) return retval;
 	}
-	new_syscall_exit (337, rc, plogsize);
+	new_syscall_exit (337, plogsize);
 
 	return rc;
 }
@@ -9264,6 +9392,7 @@ record_name_to_handle_at(int dfd, const char __user *name, struct file_handle __
 
 	new_syscall_enter (341);
 	rc = sys_name_to_handle_at (dfd, name, handle, mnt_id, flag);
+	new_syscall_done (341, rc);
 	if (rc == 0) {
 		pretvals = ARGSKMALLOC(sizeof(struct name_to_handle_at_retvals), GFP_KERNEL);
 		if (pretvals == NULL) {
@@ -9285,8 +9414,7 @@ record_name_to_handle_at(int dfd, const char __user *name, struct file_handle __
 			}
 		}
 	}
-
-	new_syscall_exit (341, rc, pretvals);
+	new_syscall_exit (341, pretvals);
 
 	return rc;
 }
@@ -9341,7 +9469,8 @@ record_process_vm_readv(pid_t pid, const struct iovec __user *lvec, unsigned lon
 
 	new_syscall_enter (347);
 	rc =  sys_process_vm_readv(pid, lvec, liovcnt, rvec, riovcnt, flags);
-	new_syscall_exit (347, rc, NULL);				
+	new_syscall_done (347, rc);
+	new_syscall_exit (347, NULL);				
 	return rc;						
 }
 
@@ -9389,7 +9518,8 @@ record_process_vm_writev(pid_t pid, const struct iovec __user *lvec, unsigned lo
 
 	new_syscall_enter (348);
 	rc =  sys_process_vm_writev(pid, lvec, liovcnt, rvec, riovcnt, flags);
-	new_syscall_exit (348, rc, NULL);				
+	new_syscall_done (348, rc);
+	new_syscall_exit (348, NULL);				
 	return rc;						
 }
 
