@@ -45,17 +45,19 @@ struct repsignal {
 	struct repsignal* next;
 };
 
+#define SR_HAS_RETPARAMS        0x1 
+#define SR_HAS_SIGNAL           0x2
+#define SR_HAS_START_CLOCK_SKIP 0x4
+#define SR_HAS_STOP_CLOCK_SKIP  0x8
+#define SR_HAS_NONZERO_RETVAL   0x10
+
 struct syscall_result {
 #ifdef USE_HPC
 	unsigned long long	hpc_begin;	// Time-stamp counter value when system call started
 	unsigned long long	hpc_end;	// Time-stamp counter value when system call finished
 #endif
 	short			sysnum;		// system call number executed
-	u_char			retparams;	// system-call-specific return data
-	u_char	                signal;		// Set if sig should be delivered
-	long			retval;		// return code from the system call
-	long                    start_clock;    // total order over start
-        long                    stop_clock;     // and stop of all system calls
+	u_char			flags;          // See defs above
 };
 
 #define REPLAY_MAX_RANDOM_VALUES 6
@@ -264,7 +266,8 @@ int main (int argc, char* argv[])
 	int count, i, rcv_total = 0;
 	int stats = 0;
 	int index = 0;
-	u_long data_size;
+	u_long data_size, start_clock, stop_clock, clock, expected_clock = 0;
+	long retval;
 	u_int is_cache_read;
 #ifdef USE_HPC
 	// calibration to determine how long a tick is
@@ -352,14 +355,49 @@ int main (int argc, char* argv[])
 				scount[psr.sysnum]++;
 				bytes[psr.sysnum] += sizeof(struct syscall_result);
 			}
-			printf ("%6d: sysnum %3d retval %ld (%lx) begin %lu end %lu", index++, psr.sysnum, psr.retval, psr.retval, psr.start_clock, psr.stop_clock);
+
+			start_clock = expected_clock;
+			if ((psr.flags & SR_HAS_START_CLOCK_SKIP) != 0) {
+				rc = read (fd, &clock, sizeof(u_long));
+				if (rc != sizeof(u_long)) {
+					printf ("cannot read start clock value\n");
+					return rc;
+				}
+				start_clock += clock;
+				bytes[psr.sysnum] += sizeof(u_long);
+			}
+			expected_clock = start_clock+1;
+
+			if ((psr.flags & SR_HAS_NONZERO_RETVAL) == 0) {
+				retval = 0;
+			} else {
+				rc = read (fd, &retval, sizeof(long));
+				if (rc != sizeof(long)) {
+					printf ("cannot read return value\n");
+					return rc;
+				}
+			}
+
+			stop_clock = expected_clock;
+			if ((psr.flags & SR_HAS_STOP_CLOCK_SKIP) != 0) {
+				rc = read (fd, &clock, sizeof(u_long));
+				if (rc != sizeof(u_long)) {
+					printf ("cannot read stop clock value\n");
+					return rc;
+				}
+				stop_clock += clock;
+				bytes[psr.sysnum] += sizeof(u_long);
+			}
+			expected_clock = stop_clock+1;
+
+			printf ("%6d: sysnum %3d flags %x retval %ld (%lx) begin %lu end %lu", index++, psr.sysnum, psr.flags, retval, retval, start_clock, stop_clock);
 #ifdef USE_HPC
 			printf (" %Lu", psr.hpc_begin);
 			printf (" %Lu ticks ", (psr.hpc_end - psr.hpc_begin));
 #endif
 			printf ("\n");
 
-			if (psr.retparams) {
+			if ((psr.flags & SR_HAS_RETPARAMS) != 0) {
 				switch (psr.sysnum) {
 				case 3: {
 					rc = read (fd, &is_cache_read, sizeof(u_int));
@@ -371,7 +409,7 @@ int main (int argc, char* argv[])
 					if (is_cache_read) {
 						size = sizeof (loff_t);
 					} else {
-						size = psr.retval; 
+						size = retval; 
 					}
 					break;
 				}
@@ -392,9 +430,9 @@ int main (int argc, char* argv[])
 				case 76: size = sizeof(struct rlimit); break;
 				case 77: size = sizeof(struct rusage); break;
 				case 78: size = sizeof(struct gettimeofday_retvals); break;
-			        case 80: size = sizeof(u_short)*psr.retval; break;
+			        case 80: size = sizeof(u_short)*retval; break;
 				case 84: size = sizeof(struct __old_kernel_stat); break;
-				case 85: size = psr.retval; break;
+				case 85: size = retval; break;
 				case 86: size = sizeof(struct mmap_pgoff_retvals); break;
 				case 89: size = 266; break; /* sizeof old_linux_dirent??? */
 				case 99: size = sizeof(struct statfs); break;
@@ -428,10 +466,10 @@ int main (int argc, char* argv[])
 						break;
 					}	
 					case SYS_RECV:
-						size = sizeof(struct recvfrom_retvals) - sizeof(int) + psr.retval; 
+						size = sizeof(struct recvfrom_retvals) - sizeof(int) + retval; 
 						break;
 					case SYS_RECVFROM:
-						size = sizeof(struct recvfrom_retvals) - sizeof(int) + psr.retval-1; 
+						size = sizeof(struct recvfrom_retvals) - sizeof(int) + retval-1; 
 						break;
 					case SYS_RECVMSG: {
 						struct recvmsg_retvals msg;
@@ -444,11 +482,11 @@ int main (int argc, char* argv[])
 						if (stats) {
 							bytes[psr.sysnum] += sizeof(struct recvfrom_retvals) - sizeof(int);
 						}
-						size = msg.msg_namelen + msg.msg_controllen + psr.retval; 
+						size = msg.msg_namelen + msg.msg_controllen + retval; 
 						break;
 					}
 					case SYS_RECVMMSG: {
-						if (psr.retval > 0) {
+						if (retval > 0) {
 							long len;
 							rc = read(fd, ((char *)&len), sizeof(long));
 							if (rc != sizeof(long)) {
@@ -483,7 +521,7 @@ int main (int argc, char* argv[])
 					}
 					break;
 				}
-				case 103: size = psr.retval; break;
+				case 103: size = retval; break;
 				case 104: size = sizeof(struct itimerval); break;
 				case 105: size = sizeof(struct itimerval); break;
 				case 106: size = sizeof(struct stat); break;
@@ -500,9 +538,9 @@ int main (int argc, char* argv[])
 				case 134: size = sizeof(long); break;
 				case 135: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
 				case 140: size = sizeof(loff_t); break;
-				case 141: size = psr.retval; break;
+				case 141: size = retval; break;
 				case 142: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
-				case 145: size = psr.retval; break;
+				case 145: size = retval; break;
 				case 149: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
 				case 155: size = sizeof(struct sched_param); break;
 				case 161: size = sizeof(struct timespec); break;
@@ -515,8 +553,8 @@ int main (int argc, char* argv[])
 				case 175: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
 				case 176: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
 				case 177: size = sizeof(siginfo_t); break;
-				case 180: size = psr.retval; break;
-				case 183: size = psr.retval; break;
+				case 180: size = retval; break;
+				case 183: size = retval; break;
 				case 184: size = sizeof(struct capget_retvals); break;
 				case 185: size = sizeof(struct __user_cap_header_struct); break;
 				case 187: size = sizeof(off_t); break;
@@ -525,25 +563,25 @@ int main (int argc, char* argv[])
 				case 195: size = sizeof(struct stat64); break;
 				case 196: size = sizeof(struct stat64); break;
 				case 197: size = sizeof(struct stat64); break;
-			        case 205: size = sizeof(gid_t)*psr.retval; break;
+			        case 205: size = sizeof(gid_t)*retval; break;
 				case 209: size = sizeof(uid_t)*3; break;
 				case 211: size = sizeof(gid_t)*3; break;
 				case 218: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
-				case 220: size = psr.retval; break;
+				case 220: size = retval; break;
 				case 221: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
-				case 229: size = psr.retval; break;
-				case 230: size = psr.retval; break;
-				case 231: size = psr.retval; break;
-				case 232: size = psr.retval; break;
-				case 233: size = psr.retval; break;
-				case 234: size = psr.retval; break;
+				case 229: size = retval; break;
+				case 230: size = retval; break;
+				case 231: size = retval; break;
+				case 232: size = retval; break;
+				case 233: size = retval; break;
+				case 234: size = retval; break;
 				case 239: size = sizeof(struct sendfile64_retvals); break;
 				case 242: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
 				case 245: size = sizeof(u_long); break;
-				case 247: size = psr.retval*32; break; /* struct ioevents */
+				case 247: size = retval*32; break; /* struct ioevents */
 				case 249: size = 32; break; /* struct ioevent */
-				case 253: size = psr.retval; break;
-				case 256: size = psr.retval*sizeof(struct epoll_event); break;
+				case 253: size = retval; break;
+				case 256: size = retval*sizeof(struct epoll_event); break;
 				case 259: size = sizeof(timer_t); break;
 				case 260: size = sizeof(struct itimerspec); break;
 				case 261: size = sizeof(struct itimerspec); break;
@@ -553,23 +591,23 @@ int main (int argc, char* argv[])
 				case 268: size = 84; break; /* statfs 64 */
 				case 269: size = 84; break; /* statfs 64 */
 				case 275: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
-				case 280: size = psr.retval; break;
+				case 280: size = retval; break;
 				case 282: size = sizeof(struct mq_attr); break;
 				case 284: size = sizeof(struct waitid_retvals); break;
 				case 288: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
 				case 300: size = sizeof(struct stat64); break;
-				case 305: size = psr.retval; break;
+				case 305: size = retval; break;
 				case 308: size = sizeof(struct pselect6_retvals); break;
 				case 309: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
 				case 312: size = sizeof(struct get_robust_list_retvals); break;
 				case 313: size = sizeof(struct splice_retvals); break;
 				case 317: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
 				case 318: size = sizeof(unsigned)*2; break;
-				case 319: size = psr.retval*sizeof(struct epoll_event); break;
+				case 319: size = retval*sizeof(struct epoll_event); break;
 				case 325: size = sizeof(struct itimerspec); break;
 				case 326: size = sizeof(struct itimerspec); break;
 				case 331: size = 2*sizeof(int); break;
-				case 333: size = psr.retval; break;
+				case 333: size = retval; break;
 				case 337: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
 			        case 340: size = sizeof(struct rlimit64); break;
 				case 341: size = sizeof(struct name_to_handle_at_retvals); break;
@@ -591,7 +629,7 @@ int main (int argc, char* argv[])
 				//printf ("\t%d syscall number in retparams\n", *(short *) buf);
 				
 				if (psr.sysnum == 11) {
-					if (psr.retparams) {
+					if ((psr.flags & SR_HAS_RETPARAMS) != 0) {
 						struct execve_retvals* per = (struct execve_retvals *) buf;
 						if (per->is_new_group) {
 							printf ("\tnew group id: %lld\n", per->data.new_group.log_id);
@@ -637,7 +675,7 @@ int main (int argc, char* argv[])
 				}
 			}
 
-			if (psr.signal) {
+			if ((psr.flags & SR_HAS_SIGNAL) != 0) {
 				do {
 					//rc = read (fd, &sig, sizeof(sig));
 					rc = read (fd, &sig, 172);
@@ -657,19 +695,19 @@ int main (int argc, char* argv[])
 			if (print_recv && psr.sysnum == 102 && call == SYS_RECV) {
 				char* data = buf + sizeof(struct recvfrom_retvals) - sizeof(int)*3;
 				int i;
-				for (i = 0; i < psr.retval; i++) {
+				for (i = 0; i < retval; i++) {
 					printf ("%c", data[i]);
 				}
 				printf ("\n");
 			}
-			if (dump_recv && psr.sysnum == 102 && call == SYS_RECV && psr.retval > 0) {
+			if (dump_recv && psr.sysnum == 102 && call == SYS_RECV && retval > 0) {
 				char* data = buf + sizeof(struct recvfrom_retvals) - sizeof(int)*3;
-				if (write (dfd, data, psr.retval) != psr.retval) {
+				if (write (dfd, data, retval) != retval) {
 					perror ("write dumpfile");
 				}
 			}
-			if (psr.sysnum == 102 && call == SYS_RECV && psr.retval > 0) {
-				rcv_total += psr.retval;
+			if (psr.sysnum == 102 && call == SYS_RECV && retval > 0) {
+				rcv_total += retval;
 				printf ("Received %d bytes total\n", rcv_total);
 			}
 			if (psr.sysnum == 183) {
@@ -679,7 +717,7 @@ int main (int argc, char* argv[])
 				}
 			}
 			if (psr.sysnum == 192) {
-				if (psr.retparams) {
+				if ((psr.flags & SR_HAS_RETPARAMS) != 0) {
 					printf ("\tdev is %lx\n", ((struct mmap_pgoff_retvals *)buf)->dev);
 					printf ("\tino is %lx\n", ((struct mmap_pgoff_retvals *)buf)->ino);
 					printf ("\tmtime is %lx.%lx\n", ((struct mmap_pgoff_retvals *)buf)->mtime.tv_sec, ((struct mmap_pgoff_retvals *)buf)->mtime.tv_nsec);
