@@ -9,7 +9,6 @@
   "LD_DEBUG\0"								      \
   "LD_DEBUG_OUTPUT\0"							      \
   "LD_DYNAMIC_WEAK\0"							      \
-  "LD_LIBRARY_PATH\0"							      \
   "LD_ORIGIN_PATH\0"							      \
   "LD_PRELOAD\0"							      \
   "LD_PROFILE\0"							      \

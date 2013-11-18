@@ -513,9 +513,12 @@ fillin_rpath (char *rpath, struct r_search_path_elem **result, const char *sep,
       if (len > 0 && cp[len - 1] != '/')
 	cp[len++] = '/';
 
+#if 0
+      // disable to allow hack of separate dir for record and non-record glibc
       /* Make sure we don't use untrusted directories if we run SUID.  */
       if (__builtin_expect (check_trusted, 0) && !is_trusted_path (cp, len))
 	continue;
+#endif
 
       /* See if this directory is already known.  */
       for (dirp = GL(dl_all_dirs); dirp != NULL; dirp = dirp->next)
@@ -2024,7 +2027,7 @@ open_path (const char *name, size_t namelen, int secure,
 	      return -1;
 	    }
 	}
-      if (here_any && (err = errno) != ENOENT && err != EACCES)
+      if (here_any && (err = errno) != ENOENT && err != EACCES) 
 	/* The file exists and is readable, but something went wrong.  */
 	return -1;
 
@@ -2138,7 +2141,6 @@ _dl_map_object (struct link_map *loader, const char *name,
   if (strchr (name, '/') == NULL)
     {
       /* Search for NAME in several places.  */
-
       size_t namelen = strlen (name) + 1;
 
       if (__builtin_expect (GLRO_dl_debug_mask & DL_DEBUG_LIBS, 0))
