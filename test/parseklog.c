@@ -60,7 +60,7 @@ struct syscall_result {
 	u_char			flags;          // See defs above
 };
 
-#define REPLAY_MAX_RANDOM_VALUES 6
+#define REPLAY_MAX_RANDOM_VALUES 10
 struct rvalues {
 	int cnt;
 	long val[REPLAY_MAX_RANDOM_VALUES];
@@ -100,14 +100,23 @@ struct accept_retvals {
 	char addr; // Variable length buffer follows
 };
 
+struct exec_values {
+	int uid;
+	int euid;
+	int gid;
+	int egid; 
+	int secureexec;
+};
+
 struct execve_retvals {
 	u_char is_new_group;
 	union {
 		struct {
-			struct rvalues  rvalues;
-			u_long          dev;
-			u_long          ino;
-			struct timespec mtime;
+			struct rvalues     rvalues;
+			struct exec_values evalues;
+			u_long             dev;
+			u_long             ino;
+			struct timespec    mtime;
 		} same_group;
 		struct {
 			__u64           log_id;
@@ -637,6 +646,11 @@ int main (int argc, char* argv[])
 							printf ("\tdev is %lx\n", per->data.same_group.dev);
 							printf ("\tino is %lx\n", per->data.same_group.ino);
 							printf ("\tmtime is %lx.%lx\n", per->data.same_group.mtime.tv_sec, per->data.same_group.mtime.tv_nsec);
+							printf ("\tuid is %d\n", per->data.same_group.evalues.uid);
+							printf ("\teuid is %d\n", per->data.same_group.evalues.euid);
+							printf ("\tgid is %d\n", per->data.same_group.evalues.gid);
+							printf ("\tegid is %d\n", per->data.same_group.evalues.egid);
+							printf ("\tAT_SECURE is %d\n", per->data.same_group.evalues.secureexec);
 						}
 					}
 				}
