@@ -127,7 +127,6 @@ copy_args (const char __user* const __user* args, const char __user* const __use
 	return buf;
 }
 
-
 // This function writes the process state to a disk file
 long 
 replay_checkpoint_to_disk (char* filename, char* buf, int buflen)

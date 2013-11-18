@@ -2305,6 +2305,9 @@ relock:
 				/* End REPLAY */
 				signr = dequeue_signal(current, &current->blocked, info);
 				/* Begin REPLAY (again) */
+				if (current->replay_thrd && signr) {
+					printk ("Replaying pid %d dequeues signal %d\n", current->pid, signr);
+				}
 			}
 			if (current->record_thrd && signr > 0) {
 				if (!(signr == 9 && SI_FROMKERNEL(info))) {

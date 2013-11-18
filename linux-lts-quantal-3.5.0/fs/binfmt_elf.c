@@ -194,7 +194,27 @@ create_elf_tables(struct linux_binprm *bprm, struct elfhdr *exec,
 	/*
 	 * Generate 16 random bytes for userspace PRNG seeding.
 	 */
-	get_random_bytes(k_rand_bytes, sizeof(k_rand_bytes));
+	/* Begin REPLAY */
+	if (current->record_thrd) {
+		u_long* pul = (u_long *) k_rand_bytes;
+		int i;
+		get_random_bytes(k_rand_bytes, sizeof(k_rand_bytes));
+		for (i = 0; i < 4; i++) {
+			record_randomness (*pul);
+			pul++;
+		}
+	} else if (current->replay_thrd) {
+		u_long* pul = (u_long *) k_rand_bytes;
+		int i;
+		for (i = 0; i < 4; i++) {
+			*pul = replay_randomness();
+			pul++;
+		}
+	} else {
+		get_random_bytes(k_rand_bytes, sizeof(k_rand_bytes));
+	}
+	/* End REPLAY */
+
 	u_rand_bytes = (elf_addr_t __user *)
 		       STACK_ALLOC(p, sizeof(k_rand_bytes));
 	if (__copy_to_user(u_rand_bytes, k_rand_bytes, sizeof(k_rand_bytes)))
@@ -227,11 +247,35 @@ create_elf_tables(struct linux_binprm *bprm, struct elfhdr *exec,
 	NEW_AUX_ENT(AT_BASE, interp_load_addr);
 	NEW_AUX_ENT(AT_FLAGS, 0);
 	NEW_AUX_ENT(AT_ENTRY, exec->e_entry);
-	NEW_AUX_ENT(AT_UID, from_kuid_munged(cred->user_ns, cred->uid));
-	NEW_AUX_ENT(AT_EUID, from_kuid_munged(cred->user_ns, cred->euid));
-	NEW_AUX_ENT(AT_GID, from_kgid_munged(cred->user_ns, cred->gid));
-	NEW_AUX_ENT(AT_EGID, from_kgid_munged(cred->user_ns, cred->egid));
- 	NEW_AUX_ENT(AT_SECURE, security_bprm_secureexec(bprm));
+	/* Begin REPLAY */
+	if (current->record_thrd) {
+		int uid = from_kuid_munged(cred->user_ns, cred->uid);
+		int euid = from_kuid_munged(cred->user_ns, cred->euid);
+		int gid = from_kgid_munged(cred->user_ns, cred->gid);
+		int egid = from_kgid_munged(cred->user_ns, cred->egid);
+		int secureexec = security_bprm_secureexec(bprm);
+		record_execval (uid, euid, gid, egid, secureexec);
+		NEW_AUX_ENT(AT_UID, uid);
+		NEW_AUX_ENT(AT_EUID, euid);
+		NEW_AUX_ENT(AT_GID, gid);
+		NEW_AUX_ENT(AT_EGID, egid);
+		NEW_AUX_ENT(AT_SECURE, secureexec);
+	} else if (current->replay_thrd) {
+		int uid, euid, gid, egid, secureexec;
+		replay_execval (&uid, &euid, &gid, &egid, &secureexec);
+		NEW_AUX_ENT(AT_UID, uid);
+		NEW_AUX_ENT(AT_EUID, euid);
+		NEW_AUX_ENT(AT_GID, gid);
+		NEW_AUX_ENT(AT_EGID, egid);
+		NEW_AUX_ENT(AT_SECURE, secureexec);
+	} else {
+		NEW_AUX_ENT(AT_UID, from_kuid_munged(cred->user_ns, cred->uid));
+		NEW_AUX_ENT(AT_EUID, from_kuid_munged(cred->user_ns, cred->euid));
+		NEW_AUX_ENT(AT_GID, from_kgid_munged(cred->user_ns, cred->gid));
+		NEW_AUX_ENT(AT_EGID, from_kgid_munged(cred->user_ns, cred->egid));
+		NEW_AUX_ENT(AT_SECURE, security_bprm_secureexec(bprm));
+	}
+	/* End REPLAY */
 	NEW_AUX_ENT(AT_RANDOM, (elf_addr_t)(unsigned long)u_rand_bytes);
 	NEW_AUX_ENT(AT_EXECFN, bprm->exec);
 	if (k_platform) {

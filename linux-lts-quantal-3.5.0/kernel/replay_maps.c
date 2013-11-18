@@ -37,6 +37,8 @@ int add_file_to_cache (struct file* vm_file, dev_t* pdev, unsigned long* pino, s
 	char* buffer;
 	struct file* ofile;
 	struct inode* inode = vm_file->f_dentry->d_inode;
+	struct kstat stat;
+	int mode;
 
 	*pino = inode->i_ino;
 	*pdev = inode->i_sb->s_dev;
@@ -69,9 +71,19 @@ int add_file_to_cache (struct file* vm_file, dev_t* pdev, unsigned long* pino, s
 	}
 
 	// xxx - would a by-hash content index also be useful???  
- 	
-	// else add to cache 
-	fd = sys_open (cname, O_CREAT|O_TRUNC|O_WRONLY, 0755);
+
+	// check if the file is suid or sgid
+	rc = vfs_getattr(vm_file->f_path.mnt, vm_file->f_path.dentry, &stat);
+	if (rc) {
+		DPRINT ("add_file_to_cache: cannot stat file, rc=%d\n", rc);
+		set_fs(old_fs);
+		return -1;
+	}
+	mode = 0755;
+	if (stat.mode&S_ISUID) mode |= S_ISUID;
+	if (stat.mode&S_ISGID) mode |= S_ISGID;
+
+	fd = sys_open (cname, O_CREAT|O_TRUNC|O_WRONLY, mode);
 	if (fd < 0) {
 		DPRINT ("add_file_to_cache: cannot create cache file %s, rc=%d\n", cname, fd);
 		set_fs(old_fs);
