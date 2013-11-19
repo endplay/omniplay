@@ -4,7 +4,7 @@
 #define MAX_LOGDIR_STRLEN 80
 
 /* Starts replay with a (possibly) multithreaded fork */
-int fork_replay (char __user * logdir, const char __user *const __user *args, const char __user *const __user *env, char* linker, int fd);
+int fork_replay (char __user * logdir, const char __user *const __user *args, const char __user *const __user *env, char* linker, int save_mmap, int fd);
 
 /* Restore ckpt from disk - replaces AS of current process (like exec) */
 /* Linker may be NULL - otherwise points to special libc linker */

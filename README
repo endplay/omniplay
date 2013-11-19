@@ -51,3 +51,42 @@ $ dmesg
 
 Use parseklog to examine a kernel log.
 $ omniplay/test/parseklog /tmp/logs/klog.id.* > parsed_klog
+
+
+Building Firefox:
+Dependencies (apt-get install these first)
+autoconf2.13
+autotools-dev
+cdbs
+dbus-x11
+debhelper (>= 7)
+hardening-wrapper
+libasound2-dev
+libcurl4-openssl-dev
+libdbus-glib-1-dev (>= 0.60)
+libfontconfig1-dev
+libfreetype6-dev (>= 2.0.1)
+libgconf2-dev (>= 1.2.1)
+libglib2.0-dev (>= 2.18)
+libgnomeui-dev (>= 2.2.0)
+libgtk2.0-dev (>= 2.14)
+libiw-dev
+libnotify-dev (>= 0.4)
+libpango1.0-dev (>= 1.14.0)
+libstartup-notification0-dev
+libx11-dev
+libxext-dev
+libxrender-dev
+libxt-dev
+locales
+lsb-release
+mesa-common-dev
+python (>= 2.7)
+quilt
+unzip
+xvfb
+yasm (>= 1.1)
+zip
+
+Use the .mzconfig file.
+$ make -f client.mk build

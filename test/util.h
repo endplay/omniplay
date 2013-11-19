@@ -1,6 +1,8 @@
 #ifndef _UTIL_H_
 #define _UTIL_H_
 
+#include <sys/types.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -11,7 +13,7 @@ struct used_address {
 };
 
 int devspec_init (int* fd_spec);
-int replay_fork (int fd_spec, const char** args, const char** env, char* linkpath, char* logdir);
+int replay_fork (int fd_spec, const char** args, const char** env, char* linkpath, char* logdir, int save_mmap);
 int resume (int fd_spec, int attach_pin, int follow_splits, char* logdir, char* linker);
 int set_pin_addr (int fd_spec, u_long app_syscall_addr);
 int check_clock_before_syscall (int fd_spec, int syscall);

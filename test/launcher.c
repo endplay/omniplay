@@ -10,7 +10,7 @@ extern char** environ;
 
 void format ()
 {
-    fprintf (stderr, "format: launcher [--logdir logdir] [--pthread libdir] program [args]\n");
+    fprintf (stderr, "format: launcher [--logdir logdir] [--pthread libdir] [-m] program [args]\n");
     exit (1);
 }
 
@@ -23,6 +23,7 @@ int main (int argc, char* argv[])
     int base;
     char ldpath[4096];
     char* linkpath = NULL;
+    int save_mmap = 0;
 
     for (base = 1; base < argc; base++) {
 	if (argc > base+1 && !strncmp(argv[base], "--pthread", 8)) {
@@ -33,6 +34,8 @@ int main (int argc, char* argv[])
 	    base++;
 	} else if (!strncmp(argv[base], "--link-debug", 8)) {
 	    link_debug = 1;
+	} else if (!strncmp(argv[base], "-m", 2)) {
+	    save_mmap = 1;
 	} else {
 	    break; // unrecognized arg - should be logdir
 	}
@@ -63,7 +66,7 @@ int main (int argc, char* argv[])
     }
     if (link_debug) setenv("LD_DEBUG", "libs", 1);
 
-    rc = replay_fork (fd, (const char**) &argv[base], (const char **) environ, linkpath, logdir);
+    rc = replay_fork (fd, (const char**) &argv[base], (const char **) environ, linkpath, logdir, save_mmap);
 
     // replay_fork should never return if it succeeds
     fprintf (stderr, "replay_fork failed, rc = %d\n", rc);

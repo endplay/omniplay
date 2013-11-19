@@ -11,6 +11,7 @@ struct record_data {
 	u_long                           app_syscall_addr;
 	const char __user *const __user *args;
 	const char __user *const __user *env;
+	int				 save_mmap;
 	char __user *                    linkpath;
 	int                              fd;
 	char __user *                    logdir;
