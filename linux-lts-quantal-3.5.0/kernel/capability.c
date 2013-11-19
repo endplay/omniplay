@@ -87,7 +87,7 @@ static void warn_deprecated_v2(void)
  * Version check. Return the number of u32s in each capability flag
  * array, or a negative value on error.
  */
-static int cap_validate_magic(cap_user_header_t header, unsigned *tocopy)
+int cap_validate_magic(cap_user_header_t header, unsigned *tocopy) // REPLAY
 {
 	__u32 version;
 

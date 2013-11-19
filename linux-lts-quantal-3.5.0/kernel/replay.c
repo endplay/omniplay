@@ -1484,11 +1484,31 @@ void
 print_vmas (struct task_struct* tsk)
 {
 	struct vm_area_struct* mpnt;
+	char buf[256];
 
 	printk ("vmas for task %d mm %p\n", tsk->pid, tsk->mm);
 	down_read (&tsk->mm->mmap_sem);
 	for (mpnt = tsk->mm->mmap; mpnt; mpnt = mpnt->vm_next) {
-		printk ("VMA start %lx end %lx\n", mpnt->vm_start, mpnt->vm_end);
+		printk ("VMA start %lx end %lx", mpnt->vm_start, mpnt->vm_end);
+		if (mpnt->vm_file) {
+			printk (" file %s", dentry_path (mpnt->vm_file->f_dentry, buf, sizeof(buf)));
+			if (mpnt->vm_flags & VM_READ) {
+				printk ("r");
+			} else {
+				printk ("-");
+			}
+			if (mpnt->vm_flags & VM_WRITE) {
+				printk ("w");
+			} else {
+				printk ("-");
+			}
+			if (mpnt->vm_flags & VM_EXEC) {
+				printk ("x");
+			} else {
+				printk ("-");
+			}
+		}
+		printk ("\n");
 	}
 	up_read (&tsk->mm->mmap_sem);
 }
@@ -3534,6 +3554,8 @@ sys_pthread_block (u_long clock)
 					printk ("\tthread %d (recpid %d) status %d clock %ld\n", tmp->rp_replay_pid, tmp->rp_record_thread->rp_record_pid, tmp->rp_status, tmp->rp_wait_clock);
 					tmp = tmp->rp_next_thread;
 				} while (tmp != prt);
+				print_vmas (current);
+				dump_user_stack ();
 				sys_exit_group (0);
 			}
 		} while (tmp != prt);
@@ -8166,36 +8188,40 @@ RET1_COUNT_REPLAY(getcwd, 183, buf, char __user *buf, unsigned long size);
 
 asmlinkage long shim_getcwd (char __user *buf, unsigned long size) SHIM_CALL(getcwd, 183, buf, size);
 
-struct capget_retvals {
-	struct __user_cap_header_struct header;
-	struct __user_cap_data_struct dataptr;
-};
+extern int cap_validate_magic(cap_user_header_t header, unsigned *tocopy); // In kernel/capability.h
 
 static asmlinkage long 
 record_capget (cap_user_header_t header, cap_user_data_t dataptr)
 {
 	long rc;
-	struct capget_retvals* retvals = NULL;
+	char* retvals = NULL;
+	unsigned tocopy;
+	u_long size;
 
 	new_syscall_enter (184);
+	cap_validate_magic(header, &tocopy);
 	rc = sys_capget (header, dataptr);
 	new_syscall_done (184, rc);
 	if (rc >= 0) {
-		retvals = ARGSKMALLOC(sizeof(struct capget_retvals), GFP_KERNEL);
+		size = sizeof(struct __user_cap_header_struct);
+		if (dataptr) size += tocopy*sizeof(struct __user_cap_data_struct);
+
+		retvals = ARGSKMALLOC(sizeof(u_long)+size, GFP_KERNEL);
 		if (retvals == NULL) {
 			printk("record_capget: can't allocate buffer\n");
 			return -ENOMEM;
 		}
+		*((u_long *) retvals) = size;
 
-		if (copy_from_user (&retvals->header, header, sizeof(struct __user_cap_header_struct))) {
+		if (copy_from_user (retvals+sizeof(u_long), header, sizeof(struct __user_cap_header_struct))) {
 			printk ("record_capget: unable to copy header from user\n");
-			ARGSKFREE (retvals, sizeof(struct capget_retvals));
+			ARGSKFREE (retvals, sizeof(u_long) + size);
 			return -EFAULT;
 		}
 		if (dataptr) {
-			if (copy_from_user (&retvals->dataptr, dataptr, sizeof(struct __user_cap_data_struct))) {
+			if (copy_from_user (retvals+sizeof(u_long)+sizeof(struct __user_cap_header_struct), dataptr, tocopy*sizeof(struct __user_cap_data_struct))) {
 				printk ("record_capget: pid %d unable to copy dataptr from user address %p\n", current->pid, dataptr);
-				ARGSKFREE (retvals, sizeof(struct capget_retvals));
+				ARGSKFREE (retvals, sizeof(u_long) + size);
 				return -EFAULT;
 			}
 		}
@@ -8208,20 +8234,26 @@ record_capget (cap_user_header_t header, cap_user_data_t dataptr)
 static asmlinkage long 
 replay_capget (cap_user_header_t header, cap_user_data_t dataptr)
 {
-	struct capget_retvals* pretvals;
-	long rc = get_next_syscall (184, (char **) &pretvals);
-	if (rc >= 0) {
-		if (copy_to_user (header, &pretvals->header, sizeof(struct __user_cap_header_struct))) {
+	char* pretvals = NULL;
+	unsigned tocopy;
+	u_long size;
+	long rc;
+
+	cap_validate_magic(header, &tocopy);
+	rc = get_next_syscall (184, &pretvals);
+	if (pretvals) {
+		size = *((u_long *) pretvals);
+		if (copy_to_user (header, pretvals + sizeof(u_long), sizeof(struct __user_cap_header_struct))) {
 			printk ("Pid %d replay_capget cannot copy header to user\n", current->pid);
 			return syscall_mismatch();
 		}
 		if (dataptr) {
-			if (copy_to_user (dataptr, &pretvals->dataptr, sizeof(struct __user_cap_data_struct))) {
+			if (copy_to_user (dataptr, pretvals + sizeof(u_long) + sizeof (struct __user_cap_header_struct), tocopy*sizeof(struct __user_cap_data_struct))) {
 				printk ("Pid %d replay_capget cannot copy dataptr to user\n", current->pid);
 				return syscall_mismatch();
 			}
 		}
-		argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct capget_retvals));
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(u_long) + size);
 	}
 	return rc;
 }
