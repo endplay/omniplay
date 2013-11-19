@@ -1,0 +1,14 @@
+README
+
+To build a Pintool:
+$ make PIN_ROOT=/home/mcchow/pin-2.13 obj-ia32/print_instructions.so
+
+where PIN_ROOT is the root directory of the Pin binary
+
+To run:
+$ pin -pid <pid> [-follow_exec] -t <absolute path to tool>
+
+Ex:
+/home/mcchow/pin-2.13/pin -pid 2345 -t /home/mcchow/omniplay/pin_tools/obj-ia32/print_instructions.so
+
+Use -follow_exec if following splits on replay
