@@ -191,11 +191,6 @@ struct splice_retvals {
 	loff_t off_out;
 };
 
-struct capget_retvals {
-	struct __user_cap_header_struct header;
-	struct __user_cap_data_struct dataptr;
-};
-
 u_long scount[512];
 u_long bytes[512];
 
@@ -564,7 +559,7 @@ int main (int argc, char* argv[])
 				case 177: size = sizeof(siginfo_t); break;
 				case 180: size = retval; break;
 				case 183: size = retval; break;
-				case 184: size = sizeof(struct capget_retvals); break;
+				case 184: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
 				case 185: size = sizeof(struct __user_cap_header_struct); break;
 				case 187: size = sizeof(off_t); break;
 				case 191: size = sizeof(struct rlimit); break;
