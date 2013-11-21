@@ -1,0 +1,15 @@
+To make queries, install the sqlite3 CLI.
+
+$ sudo apt-get install sqlite3
+
+Start up the CLI:
+$ sqlite3 /replay_logdb/replay.db
+
+
+Example queries:
+
+Describe the table replays:
+sqlite> .schema replays
+
+List all replay instances of Firefox, ordered by date
+sqlite> SELECT datetime(date, 'unixepoch'), * FROM replays WHERE program LIKE '%firefox' ORDER BY date;
