@@ -110,3 +110,7 @@ int get_used_addresses (int fd_spec, struct used_address* paddrs, int naddrs)
     return ioctl (fd_spec, SPECI_GET_USED_ADDR, &data);
 }
 
+int get_replay_stats (int fd_spec, struct replay_stat_data* stats)
+{
+    return ioctl (fd_spec, SPECI_GET_REPLAY_STATS, stats);
+}

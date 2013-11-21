@@ -1,7 +1,7 @@
 CFLAGS := -Wall -Werror -g 
 LDFLAGS := -Wall -Werror -g 
 
-all: libutil.a parseklog parseulog launcher resume hello pthread_test parseckpt
+all: libutil.a parseklog parseulog launcher resume hello pthread_test parseckpt getstats
 
 parseklog: parseklog.c
 	gcc parseklog.c -o parseklog -Wall -Werror -g
@@ -17,6 +17,10 @@ launcher: launcher.c libutil.a
 
 resume: resume.o libutil.a
 	gcc resume.c -o resume libutil.a -Wall -Werror --static -g
+
+getstats: getstats.c libutil.a
+	gcc getstats.c -o getstats libutil.a -Wall -Werror --static -g
+
 
 hello: hello.c
 	gcc hello.c -o hello -I../../eglibc-2.15/prefix/include -L../../eglibc-2.15/prefix/lib 

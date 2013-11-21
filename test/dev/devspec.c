@@ -137,6 +137,8 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 			return -EFAULT;
 		
 		return get_used_addresses (udata.plist, udata.nlist);
+	case SPECI_GET_REPLAY_STATS:
+		return get_replay_stats ((struct replay_stats *) data);
 	default:
 		return -EINVAL;
 	}

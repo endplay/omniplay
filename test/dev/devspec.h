@@ -30,7 +30,6 @@ struct get_used_addr_data {
 	int                          nlist;
 };
 
-
 #define SPECI_REPLAY_FORK _IOR('u', 0, struct record_data)
 #define SPECI_RESUME _IOR('u', 1, struct wakeup_data)
 #define SPECI_SET_PIN_ADDR _IOR('u',2,u_long)
@@ -38,5 +37,6 @@ struct get_used_addr_data {
 #define SPECI_CHECK_AFTER _IOR('u',4,int)
 #define SPECI_GET_LOG_ID _IO('u',5)
 #define SPECI_GET_USED_ADDR _IOR('u',6,struct get_used_addr_data)
+#define SPECI_GET_REPLAY_STATS _IOR('u',7,void *)
 
 #endif
