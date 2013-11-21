@@ -82,6 +82,10 @@
 // write out the kernel logs asynchronously
 //#define WRITE_ASYNC
 
+#ifdef REPLAY_STATS
+struct replay_stats rstats;
+#endif
+
 #ifdef REPLAY_PARANOID
 static int malloc_init = 0;
 struct ds_list_t* malloc_hash[1023];
@@ -1070,6 +1074,10 @@ new_replay_group (struct record_group* prec_group, int follow_splits)
 	// Record group should not be destroyed before replay group
 	get_record_group (prec_group);
 
+#ifdef REPLAY_STATS
+	atomic_inc(&rstats.started);
+#endif
+
 	return prg;
 
 err_replaythreads:
@@ -1170,6 +1178,9 @@ destroy_replay_group (struct replay_group *prepg)
 
 	// Free the replay group
 	KFREE (prepg);
+#ifdef REPLAY_STATS
+	atomic_inc(&rstats.finished);
+#endif
 	printk ("Goodbye, cruel lamp!  This replay is over\n");
 	MPRINT ("Pid %d destroy replay group %p: exit\n", current->pid, prepg);
 }
@@ -1469,6 +1480,9 @@ __syscall_mismatch (struct record_group* precg)
 	rg_unlock (precg);
 	dump_user_stack ();
 	printk ("SYSCALL MISMATCH\n");
+#ifdef REPLAY_STATS
+	atomic_inc(&rstats.mismatched);
+#endif
 	sys_exit_group(0);
 }
 
@@ -3408,6 +3422,18 @@ long check_clock_before_syscall (int syscall)
 	return 0;
 }
 EXPORT_SYMBOL(check_clock_before_syscall);
+
+#ifdef REPLAY_STATS
+long
+get_replay_stats (struct replay_stats __user * ustats)
+{
+	if (copy_to_user (ustats, &rstats, sizeof(struct replay_stats))) {
+		return -EFAULT;
+	} 
+	return 0;
+}
+EXPORT_SYMBOL(get_replay_stats);
+#endif
 
 long check_clock_after_syscall (int syscall)
 {

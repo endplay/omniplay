@@ -75,4 +75,17 @@ char* copy_args (const char __user* const __user* args, const char __user* const
 long replay_checkpoint_to_disk (char* filename, char* buf, int buflen);
 long replay_resume_from_disk (char* filename, char*** argsp, char*** envp);
 
+/* Optional stats interface */
+#define REPLAY_STATS
+#ifdef REPLAY_STATS
+struct replay_stats {
+	atomic_t started;
+	atomic_t finished;
+	atomic_t mismatched;
+};
+
+long get_replay_stats (struct replay_stats __user * ustats);
+
+#endif
+
 #endif
