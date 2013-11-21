@@ -2288,7 +2288,7 @@ get_linker (void)
 }
 
 long
-replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd, int follow_splits)
+replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd, int follow_splits, int save_mmap)
 {
 	struct record_group* precg; 
 	struct record_thread* prect;
@@ -2309,6 +2309,7 @@ replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd, int foll
 	// First create a record group and thread for this replay
 	precg = new_record_group (logdir);
 	if (precg == NULL) return -ENOMEM;
+	precg->rg_save_mmap_flag = save_mmap;
 
 	prect = new_record_thread(precg, 0, NULL);
 	if (prect == NULL) {
@@ -4232,14 +4233,24 @@ recplay_exit_middle(void)
 #endif
 		// write out mmaps if the last record thread to exit the record group
 		if (atomic_dec_and_test(&prt->rp_group->rg_record_threads)) {
-			rg_lock (prt->rp_group);
-			MPRINT ("Pid %d last record thread to exit, write out mmap log\n", current->pid);
-			write_mmap_log(prt->rp_group);
-			prt->rp_group->rg_save_mmap_flag = 0;
-			rg_unlock (prt->rp_group);
+			if (prt->rp_group->rg_save_mmap_flag) {
+				rg_lock (prt->rp_group);
+				MPRINT ("Pid %d last record thread to exit, write out mmap log\n", current->pid);
+				write_mmap_log(prt->rp_group);
+				prt->rp_group->rg_save_mmap_flag = 0;
+				rg_unlock (prt->rp_group);
+			}
 		}
 	} else if (current->replay_thrd) {
-		atomic_dec(&current->replay_thrd->rp_group->rg_rec_group->rg_record_threads);
+		if (atomic_dec_and_test(&current->replay_thrd->rp_group->rg_rec_group->rg_record_threads)) {
+			if (current->replay_thrd->rp_group->rg_rec_group->rg_save_mmap_flag) {
+				rg_lock (current->replay_thrd->rp_group->rg_rec_group);
+				MPRINT ("Pid %d last record thread to exit, write out mmap log\n", current->pid);
+				write_mmap_log(current->replay_thrd->rp_group->rg_rec_group);
+				current->replay_thrd->rp_group->rg_rec_group->rg_save_mmap_flag = 0;
+				rg_unlock (current->replay_thrd->rp_group->rg_rec_group);
+			}
+		}
 		MPRINT ("Replay thread %d recpid %d in middle of exit\n", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid);	
 		rg_lock (current->replay_thrd->rp_group->rg_rec_group);
 		if (current->replay_thrd->rp_status != REPLAY_STATUS_RUNNING || current->replay_thrd->rp_group->rg_rec_group->rg_mismatch_flag) {
@@ -4930,7 +4941,7 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 				
 				// Now start a new group if needed
 				get_logdir_for_replay_id (logid, logdir);
-				return replay_ckpt_wakeup (app_syscall_addr, logdir, linker, -1, follow_splits);
+				return replay_ckpt_wakeup (app_syscall_addr, logdir, linker, -1, follow_splits, prg->rg_rec_group->rg_save_mmap_flag);
 			} else {
 				DPRINT ("Don't follow splits - so just exit\n");
 				sys_exit_group (0);
@@ -6822,6 +6833,13 @@ replay_ipc (uint call, int first, u_long second, u_long third, void __user *ptr,
 		if (rc == 0) {
 			struct shmat_retvals* atretparams = (struct shmat_retvals *) retparams;
 
+			if (current->replay_thrd->rp_record_thread->rp_group->rg_save_mmap_flag) {
+				MPRINT ("Pid %d, replay shmat reserve memory %lx len %lx\n",
+						current->pid,
+						atretparams->raddr, atretparams->size);
+				reserve_memory(atretparams->raddr, atretparams->size);
+			}
+
 			// do_shmat checks to see if there are any existing mmaps in the region to be shmat'ed. So we'll have to munmap our preallocations for this region
 			// before proceding.
 			if (is_pin_attached()) {
@@ -8565,7 +8583,7 @@ replay_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, un
 	struct replay_thread* prt = current->replay_thrd;
 	struct syscall_result* psr;
 
-	if (prt->app_syscall_addr > 1) {
+	if (is_pin_attached()) {
 		rc = prt->rp_saved_rc;
 		recbuf = (struct mmap_pgoff_retvals *) prt->rp_saved_retparams;
 		psr = prt->rp_saved_psr;
@@ -8600,6 +8618,14 @@ replay_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, un
 	}
 
 	if (recbuf && given_fd > 0 && !is_cache_file) sys_close(given_fd);
+
+	// Save the regions for preallocation for replay+pin
+	if (prt->rp_record_thread->rp_group->rg_save_mmap_flag) {
+		if (rc != -1) {
+			MPRINT ("Pid %d replay mmap_pgoff reserve memory addr %lx len %lx\n", current->pid, rc, len);
+			reserve_memory(rc, len);
+		}
+	}
 
 	return rc;
 }

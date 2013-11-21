@@ -23,6 +23,7 @@ struct wakeup_data {
 	char __user * linker;
 	int           fd;
 	int           follow_splits;
+	int	      save_mmap;
 };
 	
 struct get_used_addr_data {
