@@ -41,14 +41,12 @@ ADDRINT find_static_address(ADDRINT ip)
 
 void inst_syscall_end(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD std, VOID* v)
 {
-    ADDRINT ret_value;
     struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
     if (tdata) {
 	if (tdata->app_syscall != 999) tdata->app_syscall = 0;
     } else {
 	fprintf (stderr, "inst_syscall_end: NULL tdata\n");
     }	
-    ret_value = PIN_GetSyscallReturn(ctxt, std);
     
     // reset the syscall number after returning from system call
     tdata->sysnum = 0;
@@ -72,9 +70,6 @@ void set_address_one(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscallarg0
 	tdata->app_syscall = syscall_num;
 	tdata->sysnum = syscall_num;
 
-	if (sysnum == SYS_open) {
-		fprintf(stderr, " syscall open %s\n", (char *) syscallarg0);
-	}
     } else {
 	fprintf (stderr, "set_address_one: NULL tdata\n");
     }
@@ -126,12 +121,15 @@ void track_inst(INS ins, void* data)
 	    INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(set_address_one), IARG_SYSCALL_NUMBER, 
                     IARG_REG_VALUE, LEVEL_BASE::REG_EBX, 
 		    IARG_SYSARG_VALUE, 0, IARG_END);
-
-    } else {
-	// Ugh - I guess we have to instrument every instruction to find which
-	// ones are after a system call - would be nice to do better.
-	INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)syscall_after, IARG_INST_PTR, IARG_END);
     }
+}
+
+void track_trace(TRACE trace, void* data)
+{
+	// System calls automatically end a Pin trace.
+	// So we can instrument every trace (instead of every instruction) to check to see if
+	// the beginning of the trace is the first instruction after a system call.
+	TRACE_InsertCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_after, IARG_INST_PTR, IARG_END);
 }
 
 BOOL follow_child(CHILD_PROCESS child, void* data)
@@ -216,10 +214,8 @@ void after_rtn(const char* name)
 void routine (RTN rtn, VOID *v)
 {
     const char *name;
-    ADDRINT address;
 
     name = RTN_Name(rtn).c_str();
-    address = RTN_Address(rtn);
 
     RTN_Open(rtn);
 
@@ -236,7 +232,6 @@ VOID ImageLoad (IMG img, VOID *v)
 	ADDRINT load_offset = IMG_LoadOffset(img);
 	fprintf(stderr, "[IMG] Loading image id %d, name %s with load offset %#x\n",
 			id, IMG_Name(img).c_str(), load_offset);
-
 }
 
 int main(int argc, char** argv) 
@@ -271,8 +266,10 @@ int main(int argc, char** argv)
     PIN_AddForkFunction(FPOINT_AFTER_IN_CHILD, AfterForkInChild, 0);
 
     IMG_AddInstrumentFunction (ImageLoad, 0);
+    TRACE_AddInstrumentFunction (track_trace, 0);
 
     PIN_AddSyscallExitFunction(inst_syscall_end, 0);
     PIN_StartProgram();
+
     return 0;
 }
