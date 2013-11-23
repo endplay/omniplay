@@ -2007,7 +2007,7 @@ get_libpath (const char __user* const __user* env)
 			printk ("get_libpath cannot allocate buffer\n");
 			return NULL;
 		}
-		if (copy_from_user (retbuf, pc, len-1)) {
+		if (copy_from_user (retbuf, pc, len)) {
 			printk ("get_libpath cannot copy path from user\n");
 			return NULL;
 		}
@@ -2871,7 +2871,7 @@ write_user_log (struct record_thread* prect)
 
 	written = vfs_write(file, start, to_write, &prect->rp_read_ulog_pos);
 	if (written != to_write) {
-		printk ("write_user_log1: tried to write %ld, got rc %ld\n", written, to_write);
+		printk ("write_user_log1: tried to write %ld, got rc %ld\n", to_write, written);
 		rc = -EINVAL;
 	}
 
@@ -4144,7 +4144,7 @@ flush_user_log (struct record_thread* prt)
 		put_user (0, &phead->need_fake_calls);
 		put_user (0, &phead->num_expected_records);
 	} else {
-		printk ("flush_user_log: next pointer invalid\n");
+		printk ("flush_user_log: next pointer invalid: phead is %p\n", phead);
 	}
 }
 #endif
@@ -4756,6 +4756,9 @@ record_execve(const char *filename, const char __user *const __user *__argv, con
 
 	new_syscall_done (11, rc);
 	if (rc >= 0) {
+
+		prt->rp_user_log_addr = 0; // User log address no longer valid since new address space entirely
+
 		// Our rule is that we record a split if there is an exec with more than one thread in the group.   Not sure this is best
 		// but I don't know what is better
 		if (prt->rp_next_thread != prt) {
@@ -8331,7 +8334,7 @@ record_vfork_handler (struct task_struct* tsk)
 	tsk->record_thrd->rp_next_thread = current->record_thrd->rp_next_thread;
 	current->record_thrd->rp_next_thread = tsk->record_thrd;
 	
-	tsk->record_thrd->rp_user_log_addr = current->record_thrd->rp_user_log_addr;
+	tsk->record_thrd->rp_user_log_addr = 0; // Should not write to user log before exec - otherwise violates vfork principles
 	tsk->record_thrd->rp_ignore_flag_addr = current->record_thrd->rp_ignore_flag_addr;
 	
 	// allocate a slab for retparams
