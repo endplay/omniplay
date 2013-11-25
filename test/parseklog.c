@@ -267,7 +267,7 @@ int main (int argc, char* argv[])
 	char sig[172];
 	int dfd, fd, rc, size, call, print_recv = 0, dump_recv = 0;
 	char buf[65536*16];
-	int count, i, rcv_total = 0;
+	int count, i, ndx, rcv_total = 0;
 	int stats = 0;
 	int index = 0;
 	u_long data_size, start_clock, stop_clock, clock, expected_clock = 0;
@@ -353,8 +353,8 @@ int main (int argc, char* argv[])
 			printf ("read returns %d, expected %d, errno = %d\n", rc, sizeof(data_size), errno);
 			return rc;
 		}
-		for (i = 0; i < count; i++) {
-			psr = psrs[i];
+		for (ndx = 0; ndx < count; ndx++) {
+			psr = psrs[ndx];
 			if (stats) {
 				scount[psr.sysnum]++;
 				bytes[psr.sysnum] += sizeof(struct syscall_result);
@@ -638,6 +638,10 @@ int main (int argc, char* argv[])
 						if (per->is_new_group) {
 							printf ("\tnew group id: %lld\n", per->data.new_group.log_id);
 						} else {
+							printf ("\tnumber of random values is %d\n", per->data.same_group.rvalues.cnt);
+							for (i = 0; i < per->data.same_group.rvalues.cnt; i++) {
+								printf ("\t\trandom values %d is %lx\n", i, per->data.same_group.rvalues.val[i]);
+							}
 							printf ("\tdev is %lx\n", per->data.same_group.dev);
 							printf ("\tino is %lx\n", per->data.same_group.ino);
 							printf ("\tmtime is %lx.%lx\n", per->data.same_group.mtime.tv_sec, per->data.same_group.mtime.tv_nsec);
@@ -703,7 +707,6 @@ int main (int argc, char* argv[])
 
 			if (print_recv && psr.sysnum == 102 && call == SYS_RECV) {
 				char* data = buf + sizeof(struct recvfrom_retvals) - sizeof(int)*3;
-				int i;
 				for (i = 0; i < retval; i++) {
 					printf ("%c", data[i]);
 				}
