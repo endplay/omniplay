@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/resource.h>
 
 int main (int argc, char* argv[])
 {
@@ -9,6 +10,7 @@ int main (int argc, char* argv[])
     long copyed, args_cnt, env_cnt, len;
     int fd, i;
     pid_t record_pid;
+    struct rlimit rlimits[RLIM_NLIMITS];
 
     if (argc != 2) {
 	printf ("format: parseckpt <dir>\n");
@@ -25,6 +27,13 @@ int main (int argc, char* argv[])
     copyed = read(fd, (char *) &record_pid, sizeof(record_pid));
     if (copyed != sizeof(record_pid)) {
 	printf ("parseckpt: tried to read record pid, got rc %ld\n", copyed);
+	return -1;
+    }
+    printf ("record pid: %d\n", record_pid);
+
+    copyed = read(fd, (char *) &rlimits, sizeof(rlimits));
+    if (copyed != sizeof(rlimits)) {
+	printf ("parseckpt: tried to read rlimits, got rc %ld\n", copyed);
 	return -1;
     }
     printf ("record pid: %d\n", record_pid);

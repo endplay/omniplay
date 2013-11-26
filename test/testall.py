@@ -47,17 +47,15 @@ for recdir in glob.glob ("/replay_logdb/rec_*"):
 reclist = sorted(recordings.keys())
 
 (last_started, last_finished, last_mismatched) = get_stats()
-print last_started, last_finished, last_mismatched
 
 # Replay them one by one
 for rec in reclist:
     print "Replaying", rec
+    os.system("./parseckpt " + recordings[rec] + " | egrep Argument");
     os.system("./resume " + recordings[rec] + " --pthread /home/jflinn/src/omniplay/eglibc-2.15/prefix/lib/")
-
     done = 0
     while (not done):
         (started, finished, mismatched) = get_stats()
-        print started, finished, mismatched
         if started == last_started+1:
             if mismatched == last_mismatched:
                 if finished == last_finished+1:
