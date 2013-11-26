@@ -725,7 +725,8 @@ struct mm_struct *mm_access(struct task_struct *task, unsigned int mode)
 	return mm;
 }
 
-static void complete_vfork_done(struct task_struct *tsk)
+/* REPLAY static */
+void complete_vfork_done(struct task_struct *tsk)
 {
 	struct completion *vfork;
 

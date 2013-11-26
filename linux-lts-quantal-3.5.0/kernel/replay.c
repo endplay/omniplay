@@ -1478,7 +1478,6 @@ __syscall_mismatch (struct record_group* precg)
 {
 	precg->rg_mismatch_flag = 1;
 	rg_unlock (precg);
-	dump_user_stack ();
 	printk ("SYSCALL MISMATCH\n");
 #ifdef REPLAY_STATS
 	atomic_inc(&rstats.mismatched);
@@ -3582,8 +3581,7 @@ sys_pthread_block (u_long clock)
 					tmp = tmp->rp_next_thread;
 				} while (tmp != prt);
 				print_vmas (current);
-				dump_user_stack ();
-				sys_exit_group (0);
+				syscall_mismatch ();
 			}
 		} while (tmp != prt);
 
@@ -4871,6 +4869,8 @@ record_execve(const char *filename, const char __user *const __user *__argv, con
 	return rc;
 }
 
+void complete_vfork_done(struct task_struct *tsk); // In fork.c
+
 // need to advance the record log past the execve, but we don't replay it
 // We need to record that an exec happened in the log for knowing when to clear
 // preallocated memory in a forked process
@@ -4896,6 +4896,8 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 		close_replay_cache_files (prt->rp_cache_files); // Simpler to just close whether group survives or not
 #endif
 		if (retparams->is_new_group) {
+			if (current->vfork_done) complete_vfork_done (current);
+
 			get_next_syscall_exit (prt, prg, psr);
 
 			if (prg->rg_follow_splits) {
@@ -4967,7 +4969,7 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 			set_fs(old_fs);
 			
 			if (rc != retval) {
-				printk ("[ERROR] Replay pid %d sees execve return %ld, recorded rc was %ld\n", current->pid, retval, rc);
+				printk ("[ERROR] Replay pid %d sees execve return %ld, recorded rc was %ld\n", current->pid, rc, retval);
 				syscall_mismatch();
 			}
 		}
@@ -8964,7 +8966,6 @@ record_futex (u32 __user *uaddr, int op, u32 val, struct timespec __user *utime,
 	pregs = get_pt_regs (NULL);
 	// Really should not get here because it means we are missing synchronizations at user level
 	printk ("Pid %d in replay futex uaddr=%p, op=%d, val=%d, ip=%lx, sp=%lx, bp=%lx\n", current->pid, uaddr, op, val, pregs->ip, pregs->sp, pregs->bp);
-	dump_user_stack();
 	new_syscall_exit (240, NULL);
 
 	return rc;
@@ -8978,7 +8979,6 @@ replay_futex (u32 __user *uaddr, int op, u32 val, struct timespec __user *utime,
 	pregs = get_pt_regs (NULL);
 	// Really should not get here because it means we are missing synchronizations at user level
 	printk ("Pid %d in replay futex uaddr=%p, op=%d, val=%d, ip=%lx, sp=%lx, bp=%lx\n", current->pid, uaddr, op, val, pregs->ip, pregs->sp, pregs->bp);
-	dump_user_stack();
 	return rc;
 }
 

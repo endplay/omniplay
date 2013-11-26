@@ -157,6 +157,14 @@ replay_checkpoint_to_disk (char* filename, char* buf, int buflen)
 		goto exit;
 	}
 
+	// Next, write out rlimit information
+	copyed = vfs_write (file, (char *) &current->signal->rlim, sizeof(struct rlimit)*RLIM_NLIMITS, &pos);
+	if (copyed != sizeof(struct rlimit)*RLIM_NLIMITS) {
+		printk ("replay_checkpoint_to_disk: tried to write rlimits, got rc %d\n", buflen);
+		rc = -EFAULT;
+		goto exit;
+	}
+
 	// Next, write out arguments to exec
 	copyed = vfs_write (file, buf, buflen, &pos);
 	if (copyed != buflen) {
@@ -201,6 +209,14 @@ long replay_resume_from_disk (char* filename, char*** argsp, char*** envp)
 	copyed = vfs_read(file, (char *) &record_pid, sizeof(record_pid), &pos);
 	if (copyed != sizeof(record_pid)) {
 		printk ("replay_resume_from_disk: tried to read record pid, got rc %d\n", copyed);
+		rc = copyed;
+		goto exit;
+	}
+
+	// Next, read the rlimit info
+	copyed = vfs_read(file, (char *) &current->signal->rlim, sizeof(struct rlimit)*RLIM_NLIMITS, &pos);
+	if (copyed != sizeof(struct rlimit)*RLIM_NLIMITS) {
+		printk ("replay_resume_from_disk: tried to read rlimits, got rc %d\n", copyed);
 		rc = copyed;
 		goto exit;
 	}
