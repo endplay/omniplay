@@ -2238,17 +2238,11 @@ int fork_replay (char __user* logdir, const char __user *const __user *args, con
 		if (retval < 0) printk ("fork_replay: unable to close fd %d, rc=%ld\n", fd, retval);
 	}
 
-	// Save reduced-size checkpoint with info needed for exec
 	sprintf (ckpt, "%s/ckpt", prg->rg_logdir);
 	argbuf = copy_args (args, env, &argbuflen);
 	if (argbuf == NULL) {
 		printk ("replay_checkpoint_to_disk: copy_args failed\n");
 		return -EFAULT;
-	}
-	retval = replay_checkpoint_to_disk (ckpt, argbuf, argbuflen);
-	if (retval) {
-		printk ("replay_checkpoint_to_disk returns %ld\n", retval);
-		return retval;
 	}
 
 	// Finally do exec from which we should not return
@@ -2257,6 +2251,13 @@ int fork_replay (char __user* logdir, const char __user *const __user *args, con
 	if (IS_ERR(filename)) {
 		printk ("fork_replay: unable to copy exec filname\n");
 		return -EINVAL;
+	}
+
+	// Save reduced-size checkpoint with info needed for exec
+	retval = replay_checkpoint_to_disk (ckpt, filename, argbuf, argbuflen);
+	if (retval) {
+		printk ("replay_checkpoint_to_disk returns %ld\n", retval);
+		return retval;
 	}
 
 	// Hack to support multiple glibcs - record and LD_LIBRARY_PATH info
@@ -2297,6 +2298,7 @@ replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd, int foll
 	char ckpt[MAX_LOGDIR_STRLEN+10];
 	char** args;
 	char** env;
+	char* execname;
 	mm_segment_t old_fs = get_fs();
 	
 	MPRINT ("In replay_ckpt_wakeup\n");
@@ -2336,7 +2338,7 @@ replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd, int foll
 	strcpy (ckpt, logdir);
 	strcat (ckpt, "/ckpt");
 
-	record_pid = replay_resume_from_disk(ckpt, &args, &env);
+	record_pid = replay_resume_from_disk(ckpt, &execname, &args, &env);
 	if (record_pid < 0) return record_pid;
 
 	// Read in the log records 
@@ -2376,7 +2378,7 @@ replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd, int foll
 	}
 
 	set_fs(KERNEL_DS);
-	rc = replay_execve (args[0], (const char* const *) args, (const char* const *) env, get_pt_regs (NULL));
+	rc = replay_execve (execname, (const char* const *) args, (const char* const *) env, get_pt_regs (NULL));
 	set_fs(old_fs);
 	if (rc < 0) printk ("replay_ckpt_wakeup: replay_execve of <%s> returns %ld\n", args[0], rc);
 	return rc;
@@ -4832,7 +4834,7 @@ record_execve(const char *filename, const char __user *const __user *__argv, con
 
 			// Write out checkpoint for the new group
 			sprintf (ckpt, "%s/ckpt", precg->rg_logdir);
-			retval = replay_checkpoint_to_disk (ckpt, argbuf, argbuflen);
+			retval = replay_checkpoint_to_disk (ckpt, filename, argbuf, argbuflen);
 			if (retval) {
 				printk ("record_execve: replay_checkpoint_to_disk returns %ld\n", retval);
 				VFREE (slab);

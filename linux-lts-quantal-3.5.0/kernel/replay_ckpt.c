@@ -129,10 +129,10 @@ copy_args (const char __user* const __user* args, const char __user* const __use
 
 // This function writes the process state to a disk file
 long 
-replay_checkpoint_to_disk (char* filename, char* buf, int buflen)
+replay_checkpoint_to_disk (char* filename, char* execname, char* buf, int buflen)
 {
 	mm_segment_t old_fs = get_fs();
-	int fd, rc, copyed;
+	int fd, rc, copyed, len;
 	struct file* file = NULL;
 	pid_t pid;
 	loff_t pos = 0;
@@ -153,6 +153,21 @@ replay_checkpoint_to_disk (char* filename, char* buf, int buflen)
 	copyed = vfs_write (file, (char *) &pid, sizeof(pid), &pos);
 	if (copyed != sizeof(pid)) {
 		printk ("replay_checkpoint_to_disk: tried to write pid, got rc %d\n", copyed);
+		rc = copyed;
+		goto exit;
+	}
+
+	// Next, write out exec name
+	len = strlen_user(execname);
+	copyed = vfs_write (file, (char *) &len, sizeof(len), &pos);
+	if (copyed != sizeof(len)) {
+		printk ("replay_checkpoint_to_disk: tried to write exec name len, got rc %d\n", copyed);
+		rc = copyed;
+		goto exit;
+	}
+	copyed = vfs_write (file, execname, len, &pos);
+	if (copyed != len) {
+		printk ("replay_checkpoint_to_disk: tried to write exec name, got rc %d\n", copyed);
 		rc = copyed;
 		goto exit;
 	}
@@ -184,7 +199,7 @@ exit:
 	return rc;
 }
 
-long replay_resume_from_disk (char* filename, char*** argsp, char*** envp) 
+long replay_resume_from_disk (char* filename, char** execname, char*** argsp, char*** envp) 
 {
 	mm_segment_t old_fs = get_fs();
 	int rc, fd, args_cnt, env_cnt, copyed, i, len;
@@ -213,6 +228,26 @@ long replay_resume_from_disk (char* filename, char*** argsp, char*** envp)
 		goto exit;
 	}
 
+	// Next read the exec name
+	copyed = vfs_read(file, (char *) &len, sizeof(len), &pos);
+	if (copyed != sizeof(len)) {
+		printk ("replay_resume_from_disk: tried to read execname len, got rc %d\n", copyed);
+		rc = copyed;
+		goto exit;
+	}
+	*execname = KMALLOC (len, GFP_KERNEL);
+	if (*execname == NULL) {
+		printk ("replay_resume_from_disk: unable to allocate exev name of len %d\n", len);
+		rc = -ENOMEM;
+		goto exit;
+	}
+	copyed = vfs_read(file, *execname, len, &pos);
+	if (copyed != len) {
+		printk ("replay_resume_from_disk: tried to read execname, got rc %d\n", copyed);
+		rc = copyed;
+		goto exit;
+	}
+	
 	// Next, read the rlimit info
 	copyed = vfs_read(file, (char *) &current->signal->rlim, sizeof(struct rlimit)*RLIM_NLIMITS, &pos);
 	if (copyed != sizeof(struct rlimit)*RLIM_NLIMITS) {
@@ -230,7 +265,7 @@ long replay_resume_from_disk (char* filename, char*** argsp, char*** envp)
 	}
 	MPRINT ("%d arguments in checkpoint\n", args_cnt);
 	
-	args = kmalloc((args_cnt+1) * sizeof(char *), GFP_KERNEL);
+	args = KMALLOC((args_cnt+1) * sizeof(char *), GFP_KERNEL);
 	if (args == NULL) {
 		printk ("replay_resume_from_disk: unable to allocate arguments\n");
 		rc = -ENOMEM;
@@ -245,7 +280,7 @@ long replay_resume_from_disk (char* filename, char*** argsp, char*** envp)
 			rc = copyed;
 			goto exit;
 		}
-		args[i] = kmalloc(len+1, GFP_KERNEL);
+		args[i] = KMALLOC(len+1, GFP_KERNEL);
 		if (args[i] == NULL) {
 			printk ("replay_resume_froma_disk: unable to allocate argument %d\n", i);
 			rc = -ENOMEM;
@@ -272,7 +307,7 @@ long replay_resume_from_disk (char* filename, char*** argsp, char*** envp)
 	}
 	MPRINT ("%d env. objects in checkpoint\n", env_cnt);
 	
-	env = kmalloc((env_cnt+1) * sizeof(char *), GFP_KERNEL);
+	env = KMALLOC((env_cnt+1) * sizeof(char *), GFP_KERNEL);
 	if (env == NULL) {
 		printk ("replay_resume_froma_disk: unable to allocate env struct\n");
 		rc = -ENOMEM;
@@ -287,7 +322,7 @@ long replay_resume_from_disk (char* filename, char*** argsp, char*** envp)
 			rc = copyed;
 			goto exit;
 		}
-		env[i] = kmalloc(len+1, GFP_KERNEL);
+		env[i] = KMALLOC(len+1, GFP_KERNEL);
 		if (env[i] == NULL) {
 			printk ("replay_resume_froma_disk: unable to allocate env. %d\n", i);
 			rc = -ENOMEM;
