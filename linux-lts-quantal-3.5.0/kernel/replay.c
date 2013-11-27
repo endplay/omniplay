@@ -4834,7 +4834,7 @@ record_execve(const char *filename, const char __user *const __user *__argv, con
 
 			// Write out checkpoint for the new group
 			sprintf (ckpt, "%s/ckpt", precg->rg_logdir);
-			retval = replay_checkpoint_to_disk (ckpt, filename, argbuf, argbuflen);
+			retval = replay_checkpoint_to_disk (ckpt, (char *) filename, argbuf, argbuflen);
 			if (retval) {
 				printk ("record_execve: replay_checkpoint_to_disk returns %ld\n", retval);
 				VFREE (slab);
@@ -8992,12 +8992,12 @@ static asmlinkage long
 record_sched_getaffinity (pid_t pid, unsigned int len, unsigned long __user *user_mask_ptr)
 {
 	long rc;
-	cpumask_t* pretval = NULL;
+	char* pretval = NULL;
 
 	new_syscall_enter (242);
 	rc = sys_sched_getaffinity (pid, len, user_mask_ptr);
 	new_syscall_done (242, rc);
-	if (rc == 0) {
+	if (rc >= 0) {
 		pretval = ARGSKMALLOC(sizeof(u_long) + len, GFP_KERNEL);
 		if (pretval == NULL) {
 			printk("record_sched_getaffinity: can't allocate buffer\n");
