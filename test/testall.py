@@ -9,6 +9,7 @@ import glob
 import re
 import os
 import subprocess
+import time
 
 def get_stats():
     p = subprocess.Popen (["./getstats"], stdout=subprocess.PIPE)
@@ -66,7 +67,7 @@ for rec in reclist:
                     done = 1
                 else:
                     print "still running"
-                    os.sleep(1)
+                    time.sleep(1)
             else:
                 print "mismatch!!!\n"
                 sys.exit(1)

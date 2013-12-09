@@ -1,4 +1,6 @@
 // A simple program to print out replay stats
+// Currently cannot record/replay this program because it uses /dev/spec0 - is this important?
+
 #include <stdio.h>
 #include <fcntl.h>
 #include <unistd.h>

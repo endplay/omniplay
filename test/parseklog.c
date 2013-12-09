@@ -654,6 +654,14 @@ int main (int argc, char* argv[])
 					}
 				}
 
+				if (psr.sysnum == 242) {
+					printf ("\tresult: ");
+					u_char* p = (u_char *) buf;
+					for (i = 0; i < size; i++) {
+						printf ("%02x ", p[i]);
+					}
+					printf ("\n");
+				}
 				if (psr.sysnum == 195 || psr.sysnum == 196 || psr.sysnum == 197) {
 					struct stat64* pst = (struct stat64 *) buf;
 					printf ("stat64 size %Ld blksize %lx blocks %Ld ino %Ld\n", 

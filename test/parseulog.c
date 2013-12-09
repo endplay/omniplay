@@ -8,7 +8,7 @@
 
 int main (int argc, char* argv[])
 {
-    int fd, rc;
+    int fd, rc, new_errno;
     struct stat st;
     int bytes_read = 0;
 #ifndef USE_DEBUG_LOG
@@ -73,7 +73,7 @@ int main (int argc, char* argv[])
             }
 	    count += rc;
             bytes_read += rc;
-            printf ("   entry %lx usual recs %ld non-zero retval? %d fake calls? %d skip? %d\n", entry, (entry&CLOCK_MASK), !!(entry&NONZERO_RETVAL_FLAG), !!(entry&FAKE_CALLS_FLAG), !!(entry&SKIPPED_CLOCK_FLAG));
+            printf ("   entry %lx usual recs %ld non-zero retval? %d errno change? %d fake calls? %d skip? %d\n", entry, (entry&CLOCK_MASK), !!(entry&NONZERO_RETVAL_FLAG), !!(entry&ERRNO_CHANGE_FLAG), !!(entry&FAKE_CALLS_FLAG), !!(entry&SKIPPED_CLOCK_FLAG));
 	    for (i = 0; i < (entry&CLOCK_MASK); i++) {
 		total_clock++;
 		printf ("clock %lu fake calls 0 retval 0\n", total_clock-1);
@@ -84,6 +84,7 @@ int main (int argc, char* argv[])
 		    perror ("read skip value\n");
 		    return rc;
 		}
+		printf ("     skip %d records\n", skip);
 		count += rc;
 		bytes_read += rc;
 		total_clock += skip + 1;
@@ -92,6 +93,17 @@ int main (int argc, char* argv[])
 	    }
 	    if (entry&NONZERO_RETVAL_FLAG) {
 		rc = read (fd, &retval, sizeof(int));
+		if (rc != sizeof(int)) {
+		    perror ("read retval value\n");
+		    return rc;
+		}
+		count += rc;
+		bytes_read += rc;
+	    } else {
+		retval = 0;
+	    }
+	    if (entry&ERRNO_CHANGE_FLAG) {
+		rc = read (fd, &new_errno, sizeof(int));
 		if (rc != sizeof(int)) {
 		    perror ("read retval value\n");
 		    return rc;
@@ -112,7 +124,7 @@ int main (int argc, char* argv[])
 	    } else {
 		fake_calls = 0;
 	    }
-	    if (entry&(SKIPPED_CLOCK_FLAG|NONZERO_RETVAL_FLAG|FAKE_CALLS_FLAG)) {
+	    if (entry&(SKIPPED_CLOCK_FLAG|NONZERO_RETVAL_FLAG|FAKE_CALLS_FLAG|ERRNO_CHANGE_FLAG)) {
 		    printf ("clock %lu fake calls %d retval %d \n", total_clock-1, fake_calls, retval);
 	    }
 #endif

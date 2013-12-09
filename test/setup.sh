@@ -19,3 +19,6 @@ then
     mknod /dev/spec0 c 149 0
     chmod a+rw /dev/spec0
 fi
+
+# To allow PIN to attach
+echo 0 > /proc/sys/kernel/yama/ptrace_scope

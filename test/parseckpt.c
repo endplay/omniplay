@@ -7,6 +7,7 @@
 int main (int argc, char* argv[])
 {
     char buf[4096];
+    char filename[4096];
     long copyed, args_cnt, env_cnt, len;
     int fd, i;
     pid_t record_pid;
@@ -30,6 +31,18 @@ int main (int argc, char* argv[])
 	return -1;
     }
     printf ("record pid: %d\n", record_pid);
+
+    copyed = read(fd, (char *) &len, sizeof(len));
+    if (copyed != sizeof(len)) {
+	printf ("parseckpt: tried to read filename size, got rc %ld\n", copyed);
+	return -1;
+    }
+    copyed = read(fd, filename, len);
+    if (copyed != len) {
+	printf ("parseckpt: tried to read filename size, got rc %ld\n", copyed);
+	return -1;
+    }
+    printf ("record filename: %s\n", filename);
 
     copyed = read(fd, (char *) &rlimits, sizeof(rlimits));
     if (copyed != sizeof(rlimits)) {
