@@ -665,6 +665,14 @@ void print_memory_areas (void)
 	}
 }
 
+// Cannot unlink shared path page when a replay group is deallocated, so we queue the work up for later
+struct replay_paths_to_free {
+  char path[MAX_LOGDIR_STRLEN+1]; // path to deallocate
+  struct replay_paths_to_free* next;
+};
+static struct replay_paths_to_free* paths_to_free = NULL;
+DEFINE_MUTEX(paths_to_free_mutex);
+
 /* Creates a new clock for a record group */
 static int
 create_shared_clock (struct record_group* prg)
@@ -672,9 +680,19 @@ create_shared_clock (struct record_group* prg)
 	u_long uaddr;
 	int fd, rc;
 	mm_segment_t old_fs = get_fs();
+	struct replay_paths_to_free* ptmp;
+
+	set_fs(KERNEL_DS);
+	mutex_lock(&paths_to_free_mutex);
+	while (paths_to_free) {
+		ptmp = paths_to_free;
+		paths_to_free = ptmp->next;
+		fd = sys_unlink (ptmp->path);
+		KFREE (ptmp);
+	}
+	mutex_unlock(&paths_to_free_mutex);
 
 	snprintf (prg->rg_shmpath, MAX_LOGDIR_STRLEN+1, "/dev/shm/uclock%d", current->pid);
-	set_fs(KERNEL_DS);
 	fd = sys_open (prg->rg_shmpath, O_CREAT | O_EXCL | O_RDWR | O_NOFOLLOW, 0644);
 	if (fd < 0) {
 		printk ("create_shared_clock: pid %d cannot open shared file %s, rc=%d\n", current->pid, prg->rg_shmpath, fd);
@@ -719,6 +737,23 @@ out_oldfs:
 	set_fs(old_fs);
 
 	return -1;
+}
+
+static void
+recycle_shared_clock (char* path)
+{
+	struct replay_paths_to_free* pnew;
+
+	mutex_lock(&paths_to_free_mutex);
+	pnew = KMALLOC(sizeof(struct replay_paths_to_free), GFP_KERNEL);
+	if (pnew == NULL) {
+		printk ("Cannot alloc memory to queue freed path\n");
+	} else {
+		strcpy (pnew->path, path);
+		pnew->next = paths_to_free;
+		paths_to_free = pnew;
+	}
+	mutex_unlock(&paths_to_free_mutex);
 }
 
 #ifdef CACHE_READS
@@ -1201,6 +1236,7 @@ destroy_record_group (struct record_group *prg)
 	while ((pmapping = ds_list_get_first (prg->rg_reserved_mem_list)) != NULL) {
 		KFREE (pmapping);
 	}
+	recycle_shared_clock (prg->rg_shmpath);
 	ds_list_destroy (prg->rg_reserved_mem_list);
 
 	KFREE (prg);
@@ -1247,6 +1283,7 @@ new_record_thread (struct record_group* prg, u_long recpid, struct record_cache_
 	INIT_LIST_HEAD(&prp->rp_argsalloc_list);
 
 	prp->rp_user_log_addr = 0;
+	prp->rp_ignore_flag_addr = 0;
 
 	prp->rp_precord_clock = prp->rp_group->rg_pkrecord_clock;
 	prp->rp_expected_clock = 0;
@@ -1504,7 +1541,7 @@ print_vmas (struct task_struct* tsk)
 	for (mpnt = tsk->mm->mmap; mpnt; mpnt = mpnt->vm_next) {
 		printk ("VMA start %lx end %lx", mpnt->vm_start, mpnt->vm_end);
 		if (mpnt->vm_file) {
-			printk (" file %s", dentry_path (mpnt->vm_file->f_dentry, buf, sizeof(buf)));
+			printk (" file %s ", dentry_path (mpnt->vm_file->f_dentry, buf, sizeof(buf)));
 			if (mpnt->vm_flags & VM_READ) {
 				printk ("r");
 			} else {
@@ -2425,6 +2462,7 @@ new_syscall_enter (long sysnum)
 		*p = start_clock;
 	}
 	prt->rp_expected_clock = new_clock;
+	MPRINT ("pid %d incremented clock to %d on syscall %ld enter\n", current->pid, atomic_read(prt->rp_precord_clock), sysnum);
 
 #ifdef USE_HPC
 	psr->hpc_begin = rdtsc(); // minus cc_calibration
@@ -2513,7 +2551,7 @@ get_record_pending_signal (siginfo_t* info)
 		printk ("get_record_pending_signal: no signal to return\n");
 		return 0;
 	}
-	MPRINT ("Delivering deferred signal now\n");
+	MPRINT ("Delivering deferred signal now at %d\n", atomic_read(prt->rp_precord_clock));
 	psignal = prt->rp_signals;
 	prt->rp_signals = psignal->next;
 	memcpy (info, &psignal->info, sizeof (siginfo_t));
@@ -2553,11 +2591,19 @@ record_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 		return -1;  
 	}
 
-	get_user (ignore_flag, current->record_thrd->rp_ignore_flag_addr); 
+	if (prt->rp_ignore_flag_addr) {
+		get_user (ignore_flag, prt->rp_ignore_flag_addr);
+	} else {
+		ignore_flag = 0;
+	}
+
         MPRINT ("Pid %d recording signal delivery signr %d fatal %d - clock is currently %d ignore flag %d sysnum %d psr->sysnum %d handler %p\n", 
 		current->pid, signr, sig_fatal(current, signr), atomic_read(prt->rp_precord_clock), ignore_flag, sysnum, psr->sysnum, ka->sa.sa_handler);
 
-	if (ignore_flag) {
+	// Note that a negative sysnum means we entered kernel via trap, interrupt, etc.  It is not safe to deliver a signal here, even in the ignore region because
+	// We might be in a user-level critical section where we are adding to the log.  Instead, defer and deliver later if possible.
+	if (ignore_flag && sysnum >= 0) {
+	  
 		// Signal delivered after an ignored syscall.  We need to add a "fake" syscall for sequencing.  
 		new_syscall_enter (SIGNAL_WHILE_SYSCALL_IGNORED); 
 		new_syscall_done (SIGNAL_WHILE_SYSCALL_IGNORED, 0);
@@ -2569,13 +2615,12 @@ record_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 		need_fake_calls++;
 		put_user (need_fake_calls, &phead->need_fake_calls);
 		MPRINT ("Pid %d record_signal inserts fake syscall - ignore_flag now %d, need_fake_calls now %d\n", current->pid, ignore_flag, need_fake_calls); 
-
 		// Signal should not need to be deferred since we will deliver it at the end of the ignore region
 	} else if (!sig_fatal(current,signr) && sysnum != psr->sysnum && sysnum != 0 /* restarted syscall */) {
 		// This is an unrecorded system call or a trap.  Since we cannot guarantee that the signal will not delivered
 		// at this same place on replay, delay the delivery until we reach such a safe place.  Signals that immediately
 		// terminate the program should not be delayed, however.
-		MPRINT ("Pid %d: not a safe place to record a signal - syscall is %d but last recorded syscall is %d\n", current->pid, sysnum, psr->sysnum);
+		MPRINT ("Pid %d: not a safe place to record a signal - syscall is %d but last recorded syscall is %d ignore flag %d\n", current->pid, sysnum, psr->sysnum, ignore_flag);
 		psignal = KMALLOC(sizeof(struct repsignal), GFP_ATOMIC); 
 		if (psignal == NULL) {
 			printk ("Cannot allocate replay signal\n");
@@ -2663,7 +2708,7 @@ record_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 		pcontext->next = prt->rp_repsignal_context_stack;
 		prt->rp_repsignal_context_stack = pcontext;
 		// If we were in an ignore region, that is no longer the case
-		put_user (0, prt->rp_ignore_flag_addr); 
+		if (prt->rp_ignore_flag_addr) put_user (0, prt->rp_ignore_flag_addr); 
 	}
 
 	return 0;
@@ -3098,10 +3143,14 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 	prt->rp_start_clock_save = start_clock;
 
 	if (unlikely(psr->sysnum != syscall)) {
-		printk ("[ERROR]Pid %d record pid %d expected syscall %d in log, got %d, start clock %ld\n", 
-			current->pid, prect->rp_record_pid, syscall, psr->sysnum, start_clock);
-		dump_stack();
-		__syscall_mismatch (prg->rg_rec_group);
+		if (psr->sysnum == SIGNAL_WHILE_SYSCALL_IGNORED && prect->rp_in_ptr == prt->rp_out_ptr+1) {
+			printk ("last record is apparently for a terminal signal - we'll just proceed anyway\n");
+		} else {
+			printk ("[ERROR]Pid  %d record pid %d expected syscall %d in log, got %d, start clock %ld\n", 
+				current->pid, prect->rp_record_pid, syscall, psr->sysnum, start_clock);
+			dump_stack();
+			__syscall_mismatch (prg->rg_rec_group);
+		}
 	}
 
 	if ((psr->flags & SR_HAS_NONZERO_RETVAL) == 0) {
@@ -3285,7 +3334,7 @@ get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, stru
 	}
 
 	if (unlikely((psr->flags & SR_HAS_SIGNAL) != 0)) {
-		MPRINT ("Pid %d set deliver signal flag before clock %ld incrment\n", current->pid, *(prt->rp_preplay_clock));
+		MPRINT ("Pid %d set deliver signal flag before clock %ld increment\n", current->pid, *(prt->rp_preplay_clock));
 		prt->rp_signals = 1;
 		signal_wake_up (current, 0);
 	}
@@ -3416,7 +3465,11 @@ long check_clock_before_syscall (int syscall)
 	// This should block until it is time to execute the syscall.  We must save the returned values for use in the actual system call
 	DPRINT ("Pid %d pre-wait for syscall %d\n", current->pid, syscall);
 
-	get_user (ignore_flag, current->replay_thrd->rp_record_thread->rp_ignore_flag_addr); 
+	if (prt->rp_record_thread->rp_ignore_flag_addr) {
+		get_user (ignore_flag, prt->rp_record_thread->rp_ignore_flag_addr);
+	} else {
+		ignore_flag = 0;
+	}
 	if (!ignore_flag) {						
 		prt->rp_saved_rc = get_next_syscall_enter (prt, prt->rp_group, syscall, &prt->rp_saved_retparams, &prt->rp_saved_psr);
 	}
@@ -3442,7 +3495,11 @@ long check_clock_after_syscall (int syscall)
 	struct replay_thread* prt = current->replay_thrd;
 	int ignore_flag;
 
-	get_user (ignore_flag, current->replay_thrd->rp_record_thread->rp_ignore_flag_addr);
+	if (prt->rp_record_thread->rp_ignore_flag_addr) {
+		get_user (ignore_flag, prt->rp_record_thread->rp_ignore_flag_addr);
+	} else {
+		ignore_flag = 0;
+	}
 	if (ignore_flag) return 0;
 
 	// This should block until it is time to execute the syscall.  We must save the returned values for use in the actual system call
@@ -3475,7 +3532,11 @@ sys_pthread_print (const char __user * buf, size_t count)
 		printk("Pid %d recpid %5d PTHREAD:%ld:%ld.%06ld:%s", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid, clock, tv.tv_sec, tv.tv_usec, buf);
 	} else if (current->record_thrd) {
 		clock = atomic_read(current->record_thrd->rp_precord_clock);
-		get_user (ignore_flag, current->record_thrd->rp_ignore_flag_addr); 
+		if (current->record_thrd->rp_ignore_flag_addr) {
+			get_user (ignore_flag, current->record_thrd->rp_ignore_flag_addr);
+		} else {
+			ignore_flag = 0;
+		}
 		printk("Pid %d recpid ----- PTHREAD:%ld:%ld.%06ld:%d:%s", current->pid, clock, tv.tv_sec, tv.tv_usec, ignore_flag, buf);
 	} else {
 		printk ("sys_pthread_print: pid %d is not a record/replay proces: %s\n", current->pid, buf);
@@ -3582,7 +3643,6 @@ sys_pthread_block (u_long clock)
 					printk ("\tthread %d (recpid %d) status %d clock %ld\n", tmp->rp_replay_pid, tmp->rp_record_thread->rp_record_pid, tmp->rp_status, tmp->rp_wait_clock);
 					tmp = tmp->rp_next_thread;
 				} while (tmp != prt);
-				print_vmas (current);
 				syscall_mismatch ();
 			}
 		} while (tmp != prt);
@@ -3678,16 +3738,19 @@ asmlinkage long sys_pthread_sysign (void)
 { \
 	int ignore_flag;						\
 	if (current->record_thrd) {					\
-		get_user (ignore_flag, current->record_thrd->rp_ignore_flag_addr); \
-		if (ignore_flag) {					\
-			return F_SYS;					\
+		if (current->record_thrd->rp_ignore_flag_addr) {	\
+			get_user (ignore_flag, current->record_thrd->rp_ignore_flag_addr); \
+			if (ignore_flag) return F_SYS;			\
 		}							\
 		return F_RECORD;					\
 	}								\
 	if (current->replay_thrd && test_app_syscall(number)) {		\
-		get_user (ignore_flag, current->replay_thrd->rp_record_thread->rp_ignore_flag_addr); \
-		if (ignore_flag) {					\
-			return F_SYS;					\
+		if (current->replay_thrd->rp_record_thread->rp_ignore_flag_addr) { \
+			get_user (ignore_flag, current->replay_thrd->rp_record_thread->rp_ignore_flag_addr); \
+			if (ignore_flag) { \
+				printk ("syscall %d ignored\n", number); \
+				return F_SYS;				\
+			}						\
 		}							\
 		DPRINT("Pid %d, regular replay syscall %d\n", current->pid, number); \
 		return F_REPLAY;					\
@@ -4544,7 +4607,6 @@ replay_write (unsigned int fd, const char __user * buf, size_t count)
 		if (copy_from_user (kbuf, buf, count < 80 ? count : 79)) printk ("replay_write: cannot copy kstring\n");
 		printk ("Pid %d (recpid %d) clock %ld replays: %s", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid, *(current->replay_thrd->rp_preplay_clock), kbuf);
 	}
-
 	rc = get_next_syscall (4, NULL);
 	DPRINT ("Pid %d replays write returning %d\n", current->pid,rc);
 
@@ -4846,10 +4908,12 @@ record_execve(const char *filename, const char __user *const __user *__argv, con
 
 			// Write out first log record (exec) for the new group - the code below will finish the job
 			new_syscall_enter (11);
+			new_syscall_done (11, 0);
 		} else {
 #ifdef CACHE_READS
 			close_record_cache_files(prt->rp_cache_files); // This is conservative - some files may not have been closed on exec - but it is correct
 #endif
+			prt->rp_ignore_flag_addr = NULL; // No longer valid since address space destroyed
 		}
 
 		pretval = ARGSKMALLOC(sizeof(struct execve_retvals), GFP_KERNEL);
@@ -4867,7 +4931,6 @@ record_execve(const char *filename, const char __user *const __user *__argv, con
 	}
 	if (argbuf) KFREE (argbuf);
 	new_syscall_exit (11, pretval);
-
 	return rc;
 }
 
@@ -4969,7 +5032,9 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 			prt->rp_exec_filename = filename;
 			rc = do_execve (name, __argv, __envp, regs);
 			set_fs(old_fs);
-			
+
+			prt->rp_record_thread->rp_ignore_flag_addr = NULL;
+
 			if (rc != retval) {
 				printk ("[ERROR] Replay pid %d sees execve return %ld, recorded rc was %ld\n", current->pid, rc, retval);
 				syscall_mismatch();
@@ -6552,7 +6617,8 @@ record_syslog (int type, char __user *buf, int len)
 
 	new_syscall_enter (103);
 	rc = sys_syslog (type, buf, len);
-	if (rc > 0 && (type >= 3 && type <= 5)) {
+	new_syscall_done (103, rc);
+	if (rc > 0 && (type >= 2 && type <= 4)) {
 		recbuf = ARGSKMALLOC(rc, GFP_KERNEL);
 		if (recbuf == NULL) {
 			printk ("record_syslog: can't allocate return buffer\n");
@@ -6955,7 +7021,24 @@ replay_ipc (uint call, int first, u_long second, u_long third, void __user *ptr,
 asmlinkage long shim_ipc (uint call, int first, u_long second, u_long third, void __user *ptr, long fifth) SHIM_CALL (ipc, 117, call, first, second, third, ptr, fifth);
 
 SIMPLE_SHIM1(fsync, 118, unsigned int, fd);
-/* We do not intercept sigreturn because we believe it to be deterministic */
+
+unsigned long dummy_sigreturn(struct pt_regs *regs); /* In arch/x86/kernel/signal.c */
+
+long shim_sigreturn(struct pt_regs* regs)
+{
+	if (current->record_thrd) {
+		struct repsignal_context* pcontext = current->record_thrd->rp_repsignal_context_stack;
+		if (pcontext) {
+			if (current->record_thrd->rp_ignore_flag_addr) put_user (pcontext->ignore_flag, current->record_thrd->rp_ignore_flag_addr);
+			current->record_thrd->rp_repsignal_context_stack = pcontext->next;
+			KFREE (pcontext);
+		} else {
+			printk ("Pid %d does sigreturn but no context???\n", current->pid);
+		}
+	}
+
+	return dummy_sigreturn(regs);
+}
 
 static long 
 record_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_regs *regs, unsigned long stack_size, int __user *parent_tidptr, int __user *child_tidptr)
@@ -7070,6 +7153,7 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 	pid_t pid;
 	ds_list_iter_t* iter;
 	struct record_thread* prt;
+	struct syscall_result* psr;
 
 	prg = current->replay_thrd->rp_group;
 
@@ -7078,7 +7162,7 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 		rc = current->replay_thrd->rp_saved_rc;
 		(*(int*)(current->replay_thrd->app_syscall_addr)) = 999;
 	} else {
-		rc = get_next_syscall (120, NULL);
+		rc = get_next_syscall_enter (current->replay_thrd, prg, 120, NULL, &psr);
 	}
 
 	if (rc > 0) {
@@ -7200,6 +7284,10 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 		}
 	}
 		
+	if (current->replay_thrd->app_syscall_addr == 0) {
+		get_next_syscall_exit (current->replay_thrd, prg, psr);
+	}
+
 	if (rc > 0 && (clone_flags&CLONE_VM) && is_pin_attached()) {
 		MPRINT ("Return real child pid %d to Pin instead of recorded child pid %ld\n", tsk->pid, rc);
 		return tsk->pid;
@@ -8006,12 +8094,11 @@ long shim_rt_sigreturn(struct pt_regs* regs)
 	if (current->record_thrd) {
 		struct repsignal_context* pcontext = current->record_thrd->rp_repsignal_context_stack;
 		if (pcontext) {
-			DPRINT ("Pid %d does rt_sigreturn - restoring ignore flag of %d\n ", current->pid, pcontext->ignore_flag);
-			put_user (pcontext->ignore_flag, current->record_thrd->rp_ignore_flag_addr);
+			if (current->record_thrd->rp_ignore_flag_addr) put_user (pcontext->ignore_flag, current->record_thrd->rp_ignore_flag_addr);
 			current->record_thrd->rp_repsignal_context_stack = pcontext->next;
 			KFREE (pcontext);
 		} else {
-			printk ("Pid %d does sigreturn but no context???\n", current->pid);
+			printk ("Pid %d does rt_sigreturn but no context???\n", current->pid);
 		}
 	}
 

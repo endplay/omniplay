@@ -64,6 +64,7 @@
 } while (0)
 
 /* Begin REPLAY */
+long shim_sigreturn(struct pt_regs* regs);
 long shim_rt_sigreturn(struct pt_regs* regs);
 /* End REPLAY */
 
@@ -544,7 +545,15 @@ sys_sigaltstack(const stack_t __user *uss, stack_t __user *uoss,
  * Do a signal return; undo the signal stack.
  */
 #ifdef CONFIG_X86_32
+
+/* Begin REPLAY */
 unsigned long sys_sigreturn(struct pt_regs *regs)
+{
+	return shim_sigreturn(regs);
+}
+/* End REPLAY */
+
+unsigned long dummy_sigreturn(struct pt_regs *regs) /* REPLAY */
 {
 	struct sigframe __user *frame;
 	unsigned long ax;

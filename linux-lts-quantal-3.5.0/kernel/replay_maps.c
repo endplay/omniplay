@@ -29,7 +29,7 @@ char cache_dir[] = "/replay_cache";
 // We hold the record lock when this function is called
 int add_file_to_cache (struct file* vm_file, dev_t* pdev, unsigned long* pino, struct timespec* pmtime) 
 {
-	char cname[CACHE_FILENAME_SIZE], nname[CACHE_FILENAME_SIZE];
+	char cname[CACHE_FILENAME_SIZE], nname[CACHE_FILENAME_SIZE], tname[CACHE_FILENAME_SIZE];
 	struct stat64 st;
 	int fd, rc, copyed;
 	mm_segment_t old_fs;
@@ -83,7 +83,10 @@ int add_file_to_cache (struct file* vm_file, dev_t* pdev, unsigned long* pino, s
 	if (stat.mode&S_ISUID) mode |= S_ISUID;
 	if (stat.mode&S_ISGID) mode |= S_ISGID;
 
-	fd = sys_open (cname, O_CREAT|O_TRUNC|O_WRONLY, mode);
+	// Create cache file as a temp file, then do an atomic rename - this prevents incomplete cache files if we happen
+	// to be aborted in the middle
+	sprintf (tname, "/%s/cf_%d\n", cache_dir, current->pid);
+	fd = sys_open (tname, O_CREAT|O_TRUNC|O_WRONLY, mode);
 	if (fd < 0) {
 		DPRINT ("add_file_to_cache: cannot create cache file %s, rc=%d\n", cname, fd);
 		set_fs(old_fs);
@@ -115,7 +118,9 @@ int add_file_to_cache (struct file* vm_file, dev_t* pdev, unsigned long* pino, s
 			}
 		}
 	} while (copyed > 0);
-
+	rc = sys_rename (tname, cname);
+	if (rc < 0) printk ("add_file_to_cache: atomic rename from %s to %s failed, rc = %d\n", tname, cname, rc);
+	
 	rc = sys_stat64 (cname, &st);
 	if (rc < 0) printk ("add_file_to_cache: stat on newly created cache file failed, rc = %d\n", rc);
 	pmtime->tv_sec = st.st_mtime;
