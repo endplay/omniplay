@@ -10,6 +10,7 @@
 struct pthread_log_data {
 	unsigned long clock;
 	int           retval;
+	int           errno;
 	unsigned long type;
 	unsigned long check;
 };
@@ -28,12 +29,14 @@ struct pthread_log_head {
 	int need_fake_calls;
 	unsigned long expected_clock;
 	unsigned long num_expected_records;
+	int save_errno; // Tracks whether errno changes in an ignored region
 };
 
 #define NONZERO_RETVAL_FLAG 0x80000000
 #define FAKE_CALLS_FLAG     0x40000000
 #define SKIPPED_CLOCK_FLAG  0x20000000
-#define CLOCK_MASK          0x1fffffff
+#define ERRNO_CHANGE_FLAG   0x10000000
+#define CLOCK_MASK          0x0fffffff
 
 #endif
 

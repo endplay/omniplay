@@ -207,7 +207,7 @@ allocate_log (void)
     if (size % 4096) size += 4096 - (size%4096);
     head = (struct pthread_log_head *) mmap (0, size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
     if (head == MAP_FAILED) {
-	pthread_log_debug ("Unable to allocate thread log\n");
+	pthread_log_debug ("Unable to allocate thread log, errno is %d\n", errno);
 	abort ();
     }
     head->ignore_flag = 0;
@@ -270,7 +270,7 @@ pthread_log_record (int retval, unsigned long type, unsigned long check, int is_
     data->retval = retval;
     data->type = type;
     data->check = check;
-
+    data->errno = errno; // May have changed in ignore region
     head->ignore_flag = is_entry;
     DPRINT ("Added record to log: clock %lu retval %d type %lu check %lx\n", data->clock, data->retval, data->type, data->check);
     (head->next)++; // Increment to next log record
@@ -285,7 +285,7 @@ pthread_log_replay (unsigned long type, unsigned long check)
 {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
     struct pthread_log_data* data;
-    int i;
+    int i, retval;
 
     if (head == NULL) return 0;
     data = head->next;
@@ -324,6 +324,8 @@ pthread_log_replay (unsigned long type, unsigned long check)
     }
     (*ppthread_log_clock)++;
     DPRINT ("Replay clock incremented to %d\n", *ppthread_log_clock);
+    errno = data->errno;
+    retval = data->retval;
     (head->next)++; // Increment to next log record
     if (head->next == head->end) {
 	DPRINT ("Log is full - need to reload\n");
@@ -331,7 +333,7 @@ pthread_log_replay (unsigned long type, unsigned long check)
 	head->next = (struct pthread_log_data *) ((char *) head + sizeof (struct pthread_log_head));
     }
 
-    return data->retval;
+    return retval;
 }
 
 #else
@@ -347,6 +349,8 @@ pthread_log_record (int retval, unsigned long type, unsigned long check, int is_
     delta_clock = new_clock - head->expected_clock; // Store delta-1, not absolute value
     head->expected_clock = new_clock + 1;
 
+    if (is_entry) head->save_errno = errno;
+
     if (retval == 0 && head->need_fake_calls == 0 && delta_clock == 0) {
 	head->num_expected_records++;
     } else {
@@ -354,6 +358,8 @@ pthread_log_record (int retval, unsigned long type, unsigned long check, int is_
 	if (retval) log_entry |= NONZERO_RETVAL_FLAG;
 	if (head->need_fake_calls > 0) log_entry |= FAKE_CALLS_FLAG;
 	if (delta_clock) log_entry |= SKIPPED_CLOCK_FLAG;
+	if (!is_entry && errno != head->save_errno) log_entry |= ERRNO_CHANGE_FLAG;
+
 	*((int *) head->next) = log_entry;
 	head->next += sizeof(int);
 
@@ -364,6 +370,11 @@ pthread_log_record (int retval, unsigned long type, unsigned long check, int is_
 	    
 	if (retval) {
 	    *((int *) head->next) = retval;
+	    head->next += sizeof(int);
+	}
+
+	if (!is_entry && errno != head->save_errno) {
+	    *((int *) head->next) = errno;
 	    head->next += sizeof(int);
 	}
 
@@ -383,7 +394,7 @@ pthread_log_record (int retval, unsigned long type, unsigned long check, int is_
     }
 
     head->ignore_flag = is_entry;
-    DPRINT ("Added record to log: clock %lu retval %d type %lu check %lx\n", new_clock, retval, type, check);
+    DPRINT ("Added record to log: clock %lu retval %d type %lu check %lx errno %d\n", new_clock, retval, type, check, errno);
 }
 
 int 
@@ -436,6 +447,11 @@ pthread_log_replay (unsigned long type, unsigned long check)
 	head->next += sizeof(int);
     } else {
 	retval = 0;
+    }
+
+    if (*pentry & ERRNO_CHANGE_FLAG) {
+	errno = *((int *)head->next);
+	head->next += sizeof(int);
     }
 
     if (*pentry & FAKE_CALLS_FLAG) {
