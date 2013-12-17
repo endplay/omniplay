@@ -21,6 +21,7 @@ struct used_address {
 
 int set_pin_address (u_long pin_address);
 long get_log_id (void);
+unsigned long get_clock_value (void);
 long check_clock_before_syscall (int syscall);
 long check_clock_after_syscall (int syscall);
 long get_used_addresses (struct used_address __user * plist, int listsize);

@@ -103,6 +103,11 @@ int get_log_id (int fd_spec)
     return ioctl (fd_spec, SPECI_GET_LOG_ID);
 }
 
+long get_clock_value (int fd_spec)
+{
+    return ioctl (fd_spec, SPECI_GET_CLOCK_VALUE);
+}
+
 int get_used_addresses (int fd_spec, struct used_address* paddrs, int naddrs)
 {
     struct get_used_addr_data data;

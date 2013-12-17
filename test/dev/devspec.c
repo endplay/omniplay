@@ -128,6 +128,8 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 		return check_clock_after_syscall (0);
 	case SPECI_GET_LOG_ID:
 		return get_log_id ();
+	case SPECI_GET_CLOCK_VALUE:
+		return get_clock_value ();
 	case SPECI_GET_USED_ADDR:
 		if (len != sizeof(udata)) {
 			printk ("ioctl SPECI_GET_USED_ADDR fails, len %d\n", len);

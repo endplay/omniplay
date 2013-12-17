@@ -2008,6 +2008,29 @@ long get_log_id (void)
 }
 EXPORT_SYMBOL(get_log_id);
 
+unsigned long get_clock_value (void)
+{
+	if (current->replay_thrd) {
+		struct replay_thread* prt = current->replay_thrd;
+		if (prt->rp_preplay_clock) {
+			return *(prt->rp_preplay_clock);
+		} else {
+			return -EINVAL;
+		}
+	} else if (current->record_thrd) {
+		struct record_thread* prt = current->record_thrd;
+		if (prt->rp_precord_clock) {
+			return atomic_read(prt->rp_precord_clock);
+		} else {
+			return -EINVAL;
+		}
+	} else {
+		printk ("get_clock_value called by a non-replay process\n");
+		return -EINVAL;
+	}
+}
+EXPORT_SYMBOL(get_clock_value);
+
 // For glibc hack - allocate and return the LD_LIBRARY_PATH env variable
 static char* 
 get_libpath (const char __user* const __user* env)

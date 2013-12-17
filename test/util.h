@@ -25,6 +25,7 @@ int set_pin_addr (int fd_spec, u_long app_syscall_addr);
 int check_clock_before_syscall (int fd_spec, int syscall);
 int check_clock_after_syscall (int fd_spec);
 int get_log_id (int fd_spec);
+long get_clock_value (int fd_spec);
 int get_used_addresses (int fd_spec, struct used_address* paddrs, int naddrs);
 int get_replay_stats (int fd_spec, struct replay_stat_data * stats);
 
