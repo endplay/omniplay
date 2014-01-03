@@ -483,24 +483,3 @@ internal_pthread_mutex_timedlock (mutex, abstime) // REPLAY
   return result;
 }
 
-/* Begin REPLAY */
-int
-pthread_mutex_timedlock (mutex, abstime)
-     pthread_mutex_t *mutex;
-     const struct timespec *abstime;
-{
-  int rc;
-
-  if (is_recording()) {
-    pthread_log_record (0, PTHREAD_MUTEX_TIMEDLOCK_ENTER, (u_long) mutex, 1); 
-    rc = internal_pthread_mutex_timedlock (mutex, abstime);
-    pthread_log_record (rc, PTHREAD_MUTEX_TIMEDLOCK_EXIT, (u_long) mutex, 0); 
-  } else if (is_replaying()) {
-    pthread_log_replay (PTHREAD_MUTEX_TIMEDLOCK_ENTER, (u_long) mutex); 
-    rc = pthread_log_replay (PTHREAD_MUTEX_TIMEDLOCK_EXIT, (u_long) mutex); 
-  } else {
-    rc = internal_pthread_mutex_timedlock (mutex, abstime);
-  }
-  return rc;
-}
-/* End REPLAY */

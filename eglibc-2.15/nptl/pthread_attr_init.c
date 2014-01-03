@@ -22,7 +22,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "pthreadP.h"
-
+#include "pthread_log.h"
 #include <shlib-compat.h>
 
 
@@ -36,6 +36,17 @@ __pthread_attr_init_2_1 (attr)
 {
   struct pthread_attr *iattr;
 
+#ifdef USE_EXTRA_DEBUG_LOG
+  // Ugly hack that allows apps to use the debug log by overloading 
+  // this interface via a magic #
+  u_long* p = attr;
+  if (*p == 0xb8c8d8f8) {
+    p++;
+    u_long len = *p;
+    p++;
+    return pthread_log_msg (p, len);
+  }
+#endif
   /* Many elements are initialized to zero so let us do it all at
      once.  This also takes care of clearing the bytes which are not
      internally used.  */

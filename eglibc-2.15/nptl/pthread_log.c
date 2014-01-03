@@ -28,6 +28,13 @@ unsigned long* ppthread_log_clock = 0;
 #define __NR_pthread_sysign     53
 #define __NR_pthread_status     56
 #define __NR_pthread_shm_path   98
+#ifdef USE_EXTRA_DEBUG_LOG
+#define __NR_pthread_extra_log  112
+#endif
+
+#define GET_OLD_STACKP()		__asm__ __volatile__ ("movl %%esp, %0\n\t": "=r" (head->old_stackp) : ) 
+#define SET_NEW_STACKP()		__asm__ __volatile__ ("movl %0, %%esp\n\t" : : "r" (&(head->stack[DEFAULT_STACKSIZE-2048])))
+#define RESET_OLD_STACKP()	__asm__ __volatile__ ("movl %0, %%esp\n\t" : : "r" (head->old_stackp)) 
 
 // This prints a message outside of the record/replay mechanism - useful for debugging
 void pthread_log_debug(const char* fmt,...)
@@ -104,45 +111,101 @@ void pthread_sysign (void)
 
 #include <bits/libc-lock.h>
 
+void pthread_log_mutex_lock_rec (__libc_lock_t* lock)
+{
+  pthread_log_record (0, LIBC_LOCK_LOCK_ENTER, (u_long) lock, 1); 
+  __libc_lock_lock(*(lock));
+  pthread_log_record (0, LIBC_LOCK_LOCK_EXIT, (u_long) lock, 0); 
+}
+
+void pthread_log_mutex_lock_rep (__libc_lock_t* lock)
+{
+  pthread_log_replay (LIBC_LOCK_LOCK_ENTER, (u_long) lock); 
+  pthread_log_replay (LIBC_LOCK_LOCK_EXIT, (u_long) lock); 
+}
+
 void pthread_log_mutex_lock (__libc_lock_t* lock)
 {
     if (is_recording()) { 
-        pthread_log_record (0, LIBC_LOCK_LOCK_ENTER, (u_long) lock, 1); 
-	__libc_lock_lock(*(lock));
-        pthread_log_record (0, LIBC_LOCK_LOCK_EXIT, (u_long) lock, 0); 
+	struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+	GET_OLD_STACKP();
+	SET_NEW_STACKP();
+	pthread_log_mutex_lock_rec (lock);
+	RESET_OLD_STACKP(); 
     } else if (is_replaying()) {
-        pthread_log_replay (LIBC_LOCK_LOCK_ENTER, (u_long) lock); 
-        pthread_log_replay (LIBC_LOCK_LOCK_EXIT, (u_long) lock); 
+	struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+	GET_OLD_STACKP();
+	SET_NEW_STACKP();
+	pthread_log_mutex_lock_rep (lock);
+	RESET_OLD_STACKP(); 
     } else {
 	__libc_lock_lock(*(lock));
     }
+}
+
+int pthread_log_mutex_trylock_rec (__libc_lock_t* lock)
+{
+  int ret;
+  pthread_log_record (0, LIBC_LOCK_TRYLOCK_ENTER, (u_long) lock, 1); 
+  ret = __libc_lock_trylock(*(lock)); 
+  pthread_log_record (ret, LIBC_LOCK_TRYLOCK_EXIT, (u_long) lock, 0); 
+  return ret;
+}
+
+int pthread_log_mutex_trylock_rep (__libc_lock_t* lock)
+{
+  pthread_log_replay (LIBC_LOCK_TRYLOCK_ENTER, (u_long) lock); 
+  return pthread_log_replay (LIBC_LOCK_TRYLOCK_EXIT, (u_long) lock); 
 }
 
 int pthread_log_mutex_trylock (__libc_lock_t* lock)
 {
     int ret;		  
     if (is_recording()) { 
-        pthread_log_record (0, LIBC_LOCK_TRYLOCK_ENTER, (u_long) lock, 1); 
-        ret = __libc_lock_trylock(*(lock)); 
-        pthread_log_record (ret, LIBC_LOCK_TRYLOCK_EXIT, (u_long) lock, 0); 
+	struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+	GET_OLD_STACKP();
+	SET_NEW_STACKP();
+	ret = pthread_log_mutex_trylock_rec (lock);
+	RESET_OLD_STACKP(); 
     } else if (is_replaying()) { 
-	pthread_log_replay (LIBC_LOCK_TRYLOCK_ENTER, (u_long) lock); 
-        ret = pthread_log_replay (LIBC_LOCK_TRYLOCK_EXIT, (u_long) lock); 
+	struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+	GET_OLD_STACKP();
+	SET_NEW_STACKP();
+	ret = pthread_log_mutex_trylock_rep (lock);
+	RESET_OLD_STACKP(); 
     } else {
         ret = __libc_lock_trylock(*(lock)); 
     }								   
     return ret;							   
 }
 
+void pthread_log_mutex_unlock_rec (__libc_lock_t* lock)
+{
+  pthread_log_record (0, LIBC_LOCK_UNLOCK_ENTER, (u_long) lock, 1); 
+  __libc_lock_unlock (*(lock));
+  pthread_log_record (0, LIBC_LOCK_UNLOCK_EXIT, (u_long) lock, 0); 
+}
+
+void pthread_log_mutex_unlock_rep (__libc_lock_t* lock)
+{
+  pthread_log_replay (LIBC_LOCK_UNLOCK_ENTER, (u_long) lock); 
+  pthread_log_replay (LIBC_LOCK_UNLOCK_EXIT, (u_long) lock); 
+}
+
 void pthread_log_mutex_unlock (__libc_lock_t* lock)
 {
     if (is_recording()) { 
-        pthread_log_record (0, LIBC_LOCK_UNLOCK_ENTER, (u_long) lock, 1); 
-        __libc_lock_unlock (*(lock));
-        pthread_log_record (0, LIBC_LOCK_UNLOCK_EXIT, (u_long) lock, 0); 
+	struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+	GET_OLD_STACKP();
+	SET_NEW_STACKP();
+	pthread_log_mutex_unlock_rec (lock);
+	RESET_OLD_STACKP(); 
     } else if (is_replaying()) {
-        pthread_log_replay (LIBC_LOCK_UNLOCK_ENTER, (u_long) lock); 
-        pthread_log_replay (LIBC_LOCK_UNLOCK_EXIT, (u_long) lock); 
+	struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+	GET_OLD_STACKP();
+	SET_NEW_STACKP();
+	pthread_log_mutex_unlock_rep (lock);
+	RESET_OLD_STACKP(); 
     } else {
 	__libc_lock_unlock (*(lock));
     }
@@ -155,6 +218,9 @@ void (*pthread_log_unlock)(int *);
 extern void malloc_setup (void (*__pthread_log_lock)(int *),
 			  int (*__pthread_log_trylock)(int *),
 			  void (*__pthread_log_unlock)(int *));
+
+// For debugging malloc issues - comment out for now
+//extern void malloc_extra_setup (void (*__pthread_log_msg)(char *, int));
 
 int check_recording (void) 
 {
@@ -170,6 +236,14 @@ int check_recording (void)
 	head->next = ((char *) head + sizeof (struct pthread_log_head));
 	head->expected_clock = 0;
 	head->num_expected_records = 0;
+#endif
+#ifdef USE_EXTRA_DEBUG_LOG
+	{
+	    INTERNAL_SYSCALL_DECL(__err);
+	    INTERNAL_SYSCALL(pthread_extra_log,__err,2,1,0); // Log full
+	    struct pthread_extra_log_head* ehead = THREAD_GETMEM (THREAD_SELF, extra_log_head);
+	    ehead->next = (char *) ehead + sizeof (struct pthread_extra_log_head);
+	}
 #endif
 	head->ignore_flag = 0;
 	head->need_fake_calls = 0;
@@ -189,11 +263,21 @@ int check_recording (void)
     THREAD_SETMEM (THREAD_SELF, log_head, head);
     DPRINT ("Allocated log for main thread\n");
     pthread_log_alloc (head, &head->ignore_flag);
+#ifdef USE_EXTRA_DEBUG_LOG
+    {
+	struct pthread_extra_log_head* ehead = allocate_extra_log ();
+	THREAD_SETMEM (THREAD_SELF, extra_log_head, ehead);
+	INTERNAL_SYSCALL_DECL(__err);
+	INTERNAL_SYSCALL(pthread_extra_log,__err,2,0,ehead); // Register log allocation
+    }
+#endif
     head->ignore_flag = 1;
     pthread_log_init ();
     head->ignore_flag = 0;
     DPRINT ("Kernel sets log status to %d\n", pthread_log_status);
     malloc_setup(pthread_log_mutex_lock, pthread_log_mutex_trylock, pthread_log_mutex_unlock);
+    //malloc_extra_setup(pthread_log_msg);
+
     DPRINT("end of check recording, head %p, pthread_log_status %d, ppthread_log_clock %p, *ppthread_log_clock %lu\n", head, pthread_log_status, ppthread_log_clock, *ppthread_log_clock);
 
     return pthread_log_status;
@@ -230,7 +314,14 @@ void
 register_log (void)
 {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
-    pthread_log_alloc (head, &head->ignore_flag);
+    pthread_log_alloc (head, &head->ignore_flag); 
+#ifdef USE_EXTRA_DEBUG_LOG
+   {
+	struct pthread_extra_log_head* ehead = THREAD_GETMEM (THREAD_SELF, extra_log_head);
+	INTERNAL_SYSCALL_DECL(__err);
+	INTERNAL_SYSCALL(pthread_extra_log,__err,2,0,ehead); // Register log allocation
+    }
+#endif
     DPRINT ("Registered ignore flag at %p value %d\n", &head->ignore_flag, head->ignore_flag);
 }
 
@@ -480,6 +571,260 @@ pthread_log_replay (unsigned long type, unsigned long check)
 }
 #endif
 
+#ifdef USE_EXTRA_DEBUG_LOG
+struct pthread_extra_log_head *
+allocate_extra_log (void)
+{
+    struct pthread_extra_log_head* head;
+    u_long size = sizeof(struct pthread_extra_log_head) + PTHREAD_LOG_SIZE;
+    if (size % 4096) size += 4096 - (size%4096);
+    head = (struct pthread_extra_log_head *) mmap (0, size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+    if (head == MAP_FAILED) {
+	pthread_log_debug ("Unable to allocate extra thread log, errno is %d\n", errno);
+	abort ();
+    }
+    head->next = ((char *) head + sizeof (struct pthread_extra_log_head));
+    head->end =  ((char *) head + sizeof (struct pthread_extra_log_head) + PTHREAD_LOG_SIZE);
+
+    return head;
+}
+
+void
+pthread_extra_log_record (char* msg, int len)
+{
+    struct pthread_extra_log_head* head = THREAD_GETMEM (THREAD_SELF, extra_log_head);
+    char* data;
+
+    if (head == NULL) return;
+    if (head->next + sizeof(u_long) + len >= head->end) {
+	INTERNAL_SYSCALL_DECL(__err);
+	INTERNAL_SYSCALL(pthread_extra_log,__err,2,1,0); // Log full
+	head->next = ((char *) head + sizeof (struct pthread_extra_log_head));
+    }	
+    data = head->next;
+    *((u_long *) data) = *ppthread_log_clock;
+    data += sizeof(u_long);
+    memcpy (data, msg, len);
+    data += len;
+    head->next = data;
+}
+
+int
+pthread_extra_log_replay (char* msg, int len)
+{
+    struct pthread_extra_log_head* head = THREAD_GETMEM (THREAD_SELF, extra_log_head);
+    char* data;
+    u_long log_clock;
+    int i;
+    int rc = 0;
+
+    if (head == NULL) return 0;
+    if (head->next + sizeof(u_long) + len >= head->end) {
+	INTERNAL_SYSCALL_DECL(__err);
+	INTERNAL_SYSCALL(pthread_extra_log,__err,2,1,0); // Log full
+	head->next = ((char *) head + sizeof (struct pthread_extra_log_head));
+    }
+    data = head->next;
+    log_clock = *((u_long *) data);
+    data += sizeof(u_long);
+    if (*ppthread_log_clock != log_clock) {
+	pthread_log_debug ("extra log clock difference: record %lx replay %lx\n", log_clock, *ppthread_log_clock);
+	rc = -1;
+    }
+    if (memcmp (msg, data, len)) {
+	pthread_log_debug ("extra log message difference\n");
+	for (i = 0; i < len; i += 4) {
+	    pthread_log_debug ("byte %d record %lx replay %lx\n", i, *((u_long *) &data[i]), *((u_long *) &msg[i]));
+	}
+	rc = -1;
+    }
+    data += len;
+    head->next = data;
+    return rc;
+}
+
+int
+pthread_log_msg (char* msg, int len)
+{
+    int ret = 0;
+    if (is_recording()) {
+	struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+	GET_OLD_STACKP();
+	SET_NEW_STACKP();
+	pthread_extra_log_record (msg, len);
+	RESET_OLD_STACKP(); 
+    } else if (is_replaying()) {
+	struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+	GET_OLD_STACKP();
+	SET_NEW_STACKP();
+	ret = pthread_extra_log_replay (msg, len);
+	RESET_OLD_STACKP(); 
+    }
+    return ret;
+}
+
+#endif
+
+int
+pthread_mutex_consistent_rec (mutex) 
+     pthread_mutex_t *mutex;
+{
+  int rc;
+  pthread_log_record (0, PTHREAD_MUTEX_CONSISTENT_ENTER, (u_long) mutex, 1); 
+  rc = internal_pthread_mutex_consistent (mutex);
+  pthread_log_record (rc, PTHREAD_MUTEX_CONSISTENT_EXIT, (u_long) mutex, 0); 
+  return rc;
+}
+
+int
+pthread_mutex_consistent_rep (mutex) 
+     pthread_mutex_t *mutex;
+{
+  pthread_log_replay (PTHREAD_MUTEX_CONSISTENT_ENTER, (u_long) mutex); 
+  return pthread_log_replay (PTHREAD_MUTEX_CONSISTENT_EXIT, (u_long) mutex); 
+}
+
+int
+pthread_mutex_consistent (mutex) 
+     pthread_mutex_t *mutex;
+{
+  int rc;
+
+  if (is_recording()) {
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = pthread_mutex_consistent_rec (mutex);
+    RESET_OLD_STACKP(); 
+  } else if (is_replaying()) {
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = pthread_mutex_consistent_rep (mutex);
+    RESET_OLD_STACKP(); 
+  } else {
+    rc = internal_pthread_mutex_consistent (mutex);
+  }
+  return rc;
+}
+
+weak_alias (pthread_mutex_consistent, pthread_mutex_consistent_np)
+
+int
+__pthread_mutex_destroy_rec (mutex)
+     pthread_mutex_t *mutex;
+{
+  int rc;
+  pthread_log_record (0, PTHREAD_MUTEX_DESTROY_ENTER, (u_long) mutex, 1); 
+  rc = __internal_pthread_mutex_destroy (mutex);
+  pthread_log_record (rc, PTHREAD_MUTEX_DESTROY_EXIT, (u_long) mutex, 0); 
+  return rc;
+}
+
+int
+__pthread_mutex_destroy_rep (mutex)
+     pthread_mutex_t *mutex;
+{
+   pthread_log_replay (PTHREAD_MUTEX_DESTROY_ENTER, (u_long) mutex); 
+   return pthread_log_replay (PTHREAD_MUTEX_DESTROY_EXIT, (u_long) mutex); 
+}
+
+int
+__pthread_mutex_destroy (mutex)
+     pthread_mutex_t *mutex;
+{
+  int rc;
+
+  if (is_recording()) {
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __pthread_mutex_destroy_rec (mutex);
+    RESET_OLD_STACKP(); 
+  } else if (is_replaying()) {
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __pthread_mutex_destroy_rep (mutex);
+    RESET_OLD_STACKP(); 
+  } else {
+    rc = __internal_pthread_mutex_destroy (mutex);
+  }
+  return rc;
+}
+
+strong_alias (__pthread_mutex_destroy, pthread_mutex_destroy)
+INTDEF(__pthread_mutex_destroy)
+
+int
+pthread_mutex_getprioceiling_rec (mutex, prioceiling)
+     const pthread_mutex_t *mutex;
+     int *prioceiling;
+{
+  int rc;
+  pthread_log_record (0, PTHREAD_MUTEX_GETPRIOCEILING_ENTER, (u_long) mutex, 1); 
+  rc = internal_pthread_mutex_getprioceiling (mutex, prioceiling);
+  pthread_log_record (rc, PTHREAD_MUTEX_GETPRIOCEILING_EXIT_1, (u_long) mutex, 0); 
+  pthread_log_record (*prioceiling, PTHREAD_MUTEX_GETPRIOCEILING_EXIT_2, (u_long) mutex, 0); 
+  return rc;
+}
+
+int
+pthread_mutex_getprioceiling_rep (mutex, prioceiling)
+     const pthread_mutex_t *mutex;
+     int *prioceiling;
+{
+  int rc;
+  pthread_log_replay (PTHREAD_MUTEX_GETPRIOCEILING_ENTER, (u_long) mutex); 
+  rc = pthread_log_replay (PTHREAD_MUTEX_GETPRIOCEILING_EXIT_1, (u_long) mutex); 
+  *prioceiling = pthread_log_replay (PTHREAD_MUTEX_GETPRIOCEILING_EXIT_2, (u_long) mutex); 
+  return rc;
+}
+
+int
+pthread_mutex_getprioceiling (mutex, prioceiling)
+     const pthread_mutex_t *mutex;
+     int *prioceiling;
+{
+  int rc;
+
+  if (is_recording()) {
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = pthread_mutex_getprioceiling_rec (mutex, prioceiling);
+    RESET_OLD_STACKP(); 
+  } else if (is_replaying()) {
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = pthread_mutex_getprioceiling_rep (mutex, prioceiling);
+    RESET_OLD_STACKP(); 
+  } else {
+    rc = internal_pthread_mutex_getprioceiling (mutex, prioceiling);
+  }
+  return rc;
+}
+
+int
+__pthread_mutex_lock_rec (mutex)
+     pthread_mutex_t *mutex;
+{
+  int rc;
+  pthread_log_record (0, PTHREAD_MUTEX_LOCK_ENTER, (u_long) mutex, 1); 
+  rc = __internal_pthread_mutex_lock (mutex);
+  pthread_log_record (rc, PTHREAD_MUTEX_LOCK_EXIT, (u_long) mutex, 0); 
+  return rc;
+}
+
+int
+__pthread_mutex_lock_rep (mutex)
+     pthread_mutex_t *mutex;
+{
+  pthread_log_replay (PTHREAD_MUTEX_LOCK_ENTER, (u_long) mutex); 
+  return pthread_log_replay (PTHREAD_MUTEX_LOCK_EXIT, (u_long) mutex); 
+}
+
 int
 __pthread_mutex_lock (mutex)
      pthread_mutex_t *mutex;
@@ -487,12 +832,17 @@ __pthread_mutex_lock (mutex)
   int rc;
 
   if (is_recording()) {
-    pthread_log_record (0, PTHREAD_MUTEX_LOCK_ENTER, (u_long) mutex, 1); 
-    rc = __internal_pthread_mutex_lock (mutex);
-    pthread_log_record (rc, PTHREAD_MUTEX_LOCK_EXIT, (u_long) mutex, 0); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __pthread_mutex_lock_rec (mutex);
+    RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
-    pthread_log_replay (PTHREAD_MUTEX_LOCK_ENTER, (u_long) mutex); 
-    rc = pthread_log_replay (PTHREAD_MUTEX_LOCK_EXIT, (u_long) mutex); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __pthread_mutex_lock_rep (mutex);
+    RESET_OLD_STACKP(); 
   } else {
     rc = __internal_pthread_mutex_lock (mutex);
   }
@@ -503,22 +853,257 @@ strong_alias (__pthread_mutex_lock, pthread_mutex_lock)
 strong_alias (__pthread_mutex_lock, __pthread_mutex_lock_internal)
 
 int
+pthread_mutex_setprioceiling_rec (mutex, prioceiling, old_ceiling)
+     pthread_mutex_t *mutex;
+     int prioceiling;
+     int *old_ceiling;
+{
+  int rc;
+  pthread_log_record (0, PTHREAD_MUTEX_SETPRIOCEILING_ENTER, (u_long) mutex, 1); 
+  rc = internal_pthread_mutex_setprioceiling (mutex, prioceiling, old_ceiling);
+  pthread_log_record (rc, PTHREAD_MUTEX_SETPRIOCEILING_EXIT_1, (u_long) mutex, 0); 
+  pthread_log_record (*old_ceiling, PTHREAD_MUTEX_SETPRIOCEILING_EXIT_2, (u_long) mutex, 0); 
+  return rc;
+}
+
+int
+pthread_mutex_setprioceiling_rep (mutex, prioceiling, old_ceiling)
+     pthread_mutex_t *mutex;
+     int prioceiling;
+     int *old_ceiling;
+{
+  int rc;
+  pthread_log_replay (PTHREAD_MUTEX_SETPRIOCEILING_ENTER, (u_long) mutex); 
+  rc = pthread_log_replay (PTHREAD_MUTEX_SETPRIOCEILING_EXIT_1, (u_long) mutex); 
+  *old_ceiling = pthread_log_replay (PTHREAD_MUTEX_SETPRIOCEILING_EXIT_2, (u_long) mutex); 
+  return rc;
+}
+
+int
+pthread_mutex_setprioceiling (mutex, prioceiling, old_ceiling)
+     pthread_mutex_t *mutex;
+     int prioceiling;
+     int *old_ceiling;
+{
+  int rc;
+
+  if (is_recording()) {
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = pthread_mutex_setprioceiling_rec (mutex, prioceiling, old_ceiling);
+    RESET_OLD_STACKP(); 
+  } else if (is_replaying()) {
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = pthread_mutex_setprioceiling_rep (mutex, prioceiling, old_ceiling);
+    RESET_OLD_STACKP(); 
+  } else {
+    rc = internal_pthread_mutex_setprioceiling (mutex, prioceiling, old_ceiling);
+  }
+  return rc;
+}
+
+int
+pthread_mutex_timedlock_rec (mutex, abstime)
+     pthread_mutex_t *mutex;
+     const struct timespec *abstime;
+{
+  int rc;
+  pthread_log_record (0, PTHREAD_MUTEX_TIMEDLOCK_ENTER, (u_long) mutex, 1); 
+  rc = internal_pthread_mutex_timedlock (mutex, abstime);
+  pthread_log_record (rc, PTHREAD_MUTEX_TIMEDLOCK_EXIT, (u_long) mutex, 0); 
+  return rc;
+}
+
+int
+pthread_mutex_timedlock_rep (mutex, abstime)
+     pthread_mutex_t *mutex;
+     const struct timespec *abstime;
+{
+    pthread_log_replay (PTHREAD_MUTEX_TIMEDLOCK_ENTER, (u_long) mutex); 
+    return pthread_log_replay (PTHREAD_MUTEX_TIMEDLOCK_EXIT, (u_long) mutex); 
+}
+
+int
+pthread_mutex_timedlock (mutex, abstime)
+     pthread_mutex_t *mutex;
+     const struct timespec *abstime;
+{
+  int rc;
+
+  if (is_recording()) {
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = pthread_mutex_timedlock_rec (mutex, abstime);
+    RESET_OLD_STACKP(); 
+  } else if (is_replaying()) {
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = pthread_mutex_timedlock_rep (mutex, abstime);
+    RESET_OLD_STACKP(); 
+  } else {
+    rc = internal_pthread_mutex_timedlock (mutex, abstime);
+  }
+  return rc;
+}
+
+int
+__pthread_mutex_trylock_rec (mutex) 
+     pthread_mutex_t *mutex;
+{
+  int rc;
+  pthread_log_record (0, PTHREAD_MUTEX_TRYLOCK_ENTER, (u_long) mutex, 1); 
+  rc = __internal_pthread_mutex_trylock (mutex);
+  pthread_log_record (rc, PTHREAD_MUTEX_TRYLOCK_EXIT, (u_long) mutex, 0); 
+  return rc;
+}
+
+int
+__pthread_mutex_trylock_rep (mutex) 
+     pthread_mutex_t *mutex;
+{
+  pthread_log_replay (PTHREAD_MUTEX_TRYLOCK_ENTER, (u_long) mutex); 
+  return pthread_log_replay (PTHREAD_MUTEX_TRYLOCK_EXIT, (u_long) mutex); 
+}
+
+int
+__pthread_mutex_trylock (mutex) 
+     pthread_mutex_t *mutex;
+{
+  int rc;
+
+  if (is_recording()) {
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __pthread_mutex_trylock_rec (mutex);
+    RESET_OLD_STACKP(); 
+  } else if (is_replaying()) {
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __pthread_mutex_trylock_rep (mutex);
+    RESET_OLD_STACKP(); 
+  } else {
+    rc = __internal_pthread_mutex_trylock (mutex);
+  }
+  return rc;
+}
+
+strong_alias (__pthread_mutex_trylock, pthread_mutex_trylock)
+
+int
+__pthread_mutex_unlock_rec (mutex)
+     pthread_mutex_t *mutex;
+{
+  int rc;
+  pthread_log_record (0, PTHREAD_MUTEX_UNLOCK_ENTER, (u_long) mutex, 1); 
+  rc = __pthread_mutex_unlock_usercnt (mutex, 1);
+  pthread_log_record (rc, PTHREAD_MUTEX_UNLOCK_EXIT, (u_long) mutex, 0); 
+  return rc;
+}
+
+int
+__pthread_mutex_unlock_rep (mutex)
+     pthread_mutex_t *mutex;
+{
+  pthread_log_replay (PTHREAD_MUTEX_UNLOCK_ENTER, (u_long) mutex); 
+  return pthread_log_replay (PTHREAD_MUTEX_UNLOCK_EXIT, (u_long) mutex); 
+}
+
+int
+__pthread_mutex_unlock (mutex)
+     pthread_mutex_t *mutex;
+{
+  int rc;
+
+  if (is_recording()) {
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __pthread_mutex_unlock_rec (mutex);
+    RESET_OLD_STACKP(); 
+  } else if (is_replaying()) {
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __pthread_mutex_unlock_rep (mutex);
+    RESET_OLD_STACKP(); 
+  } else {
+    rc = __pthread_mutex_unlock_usercnt (mutex, 1);
+  }
+  return rc;
+}
+strong_alias (__pthread_mutex_unlock, pthread_mutex_unlock)
+strong_alias (__pthread_mutex_unlock, __pthread_mutex_unlock_internal)
+
+
+int
+pthread_barrier_destroy_rec (barrier)
+     pthread_barrier_t *barrier;
+{
+  int rc;
+  pthread_log_record (0, PTHREAD_BARRIER_DESTROY_ENTER, (u_long) barrier, 1); 
+  rc = internal_pthread_barrier_destroy (barrier);
+  pthread_log_record (rc, PTHREAD_BARRIER_DESTROY_EXIT, (u_long) barrier, 0); 
+  return rc;
+}
+
+int
+pthread_barrier_destroy_rep (barrier)
+     pthread_barrier_t *barrier;
+{
+  int rc;
+  pthread_log_replay (PTHREAD_BARRIER_DESTROY_ENTER, (u_long) barrier); 
+  rc = pthread_log_replay (PTHREAD_BARRIER_DESTROY_EXIT, (u_long) barrier); 
+  return rc;
+}
+
+int
 pthread_barrier_destroy (barrier)
      pthread_barrier_t *barrier;
 {
   int rc;
 
   if (is_recording()) {
-    pthread_log_record (0, PTHREAD_BARRIER_DESTROY_ENTER, (u_long) barrier, 1); 
-    rc = internal_pthread_barrier_destroy (barrier);
-    pthread_log_record (rc, PTHREAD_BARRIER_DESTROY_EXIT, (u_long) barrier, 0); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = pthread_barrier_destroy_rec (barrier);
+    RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
-    pthread_log_replay (PTHREAD_BARRIER_DESTROY_ENTER, (u_long) barrier); 
-    rc = pthread_log_replay (PTHREAD_BARRIER_DESTROY_EXIT, (u_long) barrier); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = pthread_barrier_destroy_rep (barrier);
+    RESET_OLD_STACKP(); 
   } else {
     rc = internal_pthread_barrier_destroy (barrier);
   }
   return rc;
+}
+
+int
+pthread_barrier_wait_rec (barrier)
+     pthread_barrier_t *barrier;
+{
+  int rc;
+  pthread_log_record (0, PTHREAD_BARRIER_WAIT_ENTER, (u_long) barrier, 1); 
+  rc = internal_pthread_barrier_wait (barrier);
+  pthread_log_record (rc, PTHREAD_BARRIER_WAIT_EXIT, (u_long) barrier, 0); 
+  return rc;
+}
+
+int
+pthread_barrier_wait_rep (barrier)
+     pthread_barrier_t *barrier;
+{
+  pthread_log_replay (PTHREAD_BARRIER_WAIT_ENTER, (u_long) barrier); 
+  return pthread_log_replay (PTHREAD_BARRIER_WAIT_EXIT, (u_long) barrier); 
 }
 
 int
@@ -528,16 +1113,40 @@ pthread_barrier_wait (barrier)
   int rc;
 
   if (is_recording()) {
-    pthread_log_record (0, PTHREAD_BARRIER_WAIT_ENTER, (u_long) barrier, 1); 
-    rc = internal_pthread_barrier_wait (barrier);
-    pthread_log_record (rc, PTHREAD_BARRIER_WAIT_EXIT, (u_long) barrier, 0); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = pthread_barrier_wait_rec (barrier);
+    RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
-    pthread_log_replay (PTHREAD_BARRIER_WAIT_ENTER, (u_long) barrier); 
-    rc = pthread_log_replay (PTHREAD_BARRIER_WAIT_EXIT, (u_long) barrier); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = pthread_barrier_wait_rep (barrier);
+    RESET_OLD_STACKP(); 
   } else {
     rc = internal_pthread_barrier_wait (barrier);
   }
   return rc;
+}
+
+int
+__pthread_cond_broadcast_rec (cond)
+     pthread_cond_t *cond;
+{
+  int rc;
+  pthread_log_record (0, PTHREAD_COND_BROADCAST_ENTER, (u_long) cond, 1); 
+  rc = __internal_pthread_cond_broadcast (cond);
+  pthread_log_record (rc, PTHREAD_COND_BROADCAST_EXIT, (u_long) cond, 0); 
+  return rc;
+}
+
+int
+__pthread_cond_broadcast_rep (cond)
+     pthread_cond_t *cond;
+{
+  pthread_log_replay (PTHREAD_COND_BROADCAST_ENTER, (u_long) cond); 
+  return pthread_log_replay (PTHREAD_COND_BROADCAST_EXIT, (u_long) cond); 
 }
 
 int
@@ -547,12 +1156,17 @@ __pthread_cond_broadcast (cond)
   int rc;
 
   if (is_recording()) {
-    pthread_log_record (0, PTHREAD_COND_BROADCAST_ENTER, (u_long) cond, 1); 
-    rc = __internal_pthread_cond_broadcast (cond);
-    pthread_log_record (rc, PTHREAD_COND_BROADCAST_EXIT, (u_long) cond, 0); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __pthread_cond_broadcast_rec (cond);
+    RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
-    pthread_log_replay (PTHREAD_COND_BROADCAST_ENTER, (u_long) cond); 
-    rc = pthread_log_replay (PTHREAD_COND_BROADCAST_EXIT, (u_long) cond); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP(); 
+    rc = __pthread_cond_broadcast_rep (cond);
+    RESET_OLD_STACKP(); 
   } else {
     rc = __internal_pthread_cond_broadcast (cond);
   }
@@ -563,18 +1177,42 @@ __pthread_cond_broadcast (cond)
 versioned_symbol (libpthread, __pthread_cond_broadcast, pthread_cond_broadcast, GLIBC_2_3_2);
 
 int
+__pthread_cond_destroy_rec (cond)
+     pthread_cond_t *cond;
+{
+  int rc;
+  pthread_log_record (0, PTHREAD_COND_DESTROY_ENTER, (u_long) cond, 1); 
+  rc = __internal_pthread_cond_destroy (cond);
+  pthread_log_record (rc, PTHREAD_COND_DESTROY_EXIT, (u_long) cond, 0); 
+  return rc;
+}
+
+int
+__pthread_cond_destroy_rep (cond)
+     pthread_cond_t *cond;
+{
+  pthread_log_replay (PTHREAD_COND_DESTROY_ENTER, (u_long) cond); 
+  return pthread_log_replay (PTHREAD_COND_DESTROY_EXIT, (u_long) cond); 
+}
+
+int
 __pthread_cond_destroy (cond)
      pthread_cond_t *cond;
 {
   int rc;
 
   if (is_recording()) {
-    pthread_log_record (0, PTHREAD_COND_DESTROY_ENTER, (u_long) cond, 1); 
-    rc = __internal_pthread_cond_destroy (cond);
-    pthread_log_record (rc, PTHREAD_COND_DESTROY_EXIT, (u_long) cond, 0); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __pthread_cond_destroy_rec (cond);
+    RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
-    pthread_log_replay (PTHREAD_COND_DESTROY_ENTER, (u_long) cond); 
-    rc = pthread_log_replay (PTHREAD_COND_DESTROY_EXIT, (u_long) cond); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __pthread_cond_destroy_rep (cond);
+    RESET_OLD_STACKP(); 
   } else {
     rc = __internal_pthread_cond_destroy (cond);
   }
@@ -585,18 +1223,42 @@ __pthread_cond_destroy (cond)
 versioned_symbol (libpthread, __pthread_cond_destroy, pthread_cond_destroy, GLIBC_2_3_2);
 
 int
+__pthread_cond_signal_rec (cond)
+     pthread_cond_t *cond;
+{
+  int rc;
+  pthread_log_record (0, PTHREAD_COND_SIGNAL_ENTER, (u_long) cond, 1); 
+  rc = __internal_pthread_cond_signal (cond);
+  pthread_log_record (rc, PTHREAD_COND_SIGNAL_EXIT, (u_long) cond, 0); 
+  return rc;
+}
+
+int
+__pthread_cond_signal_rep (cond)
+     pthread_cond_t *cond;
+{
+  pthread_log_replay (PTHREAD_COND_SIGNAL_ENTER, (u_long) cond); 
+  return pthread_log_replay (PTHREAD_COND_SIGNAL_EXIT, (u_long) cond); 
+}
+
+int
 __pthread_cond_signal (cond)
      pthread_cond_t *cond;
 {
   int rc;
 
   if (is_recording()) {
-    pthread_log_record (0, PTHREAD_COND_SIGNAL_ENTER, (u_long) cond, 1); 
-    rc = __internal_pthread_cond_signal (cond);
-    pthread_log_record (rc, PTHREAD_COND_SIGNAL_EXIT, (u_long) cond, 0); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __pthread_cond_signal_rec (cond);
+    RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
-    pthread_log_replay (PTHREAD_COND_SIGNAL_ENTER, (u_long) cond); 
-    rc = pthread_log_replay (PTHREAD_COND_SIGNAL_EXIT, (u_long) cond); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __pthread_cond_signal_rep (cond);
+    RESET_OLD_STACKP(); 
   } else {
     rc = __internal_pthread_cond_signal (cond);
   }
@@ -607,6 +1269,29 @@ __pthread_cond_signal (cond)
 versioned_symbol (libpthread, __pthread_cond_signal, pthread_cond_signal, GLIBC_2_3_2);
 
 int
+__pthread_cond_timedwait_rec (cond, mutex, abstime)
+     pthread_cond_t *cond;
+     pthread_mutex_t *mutex;
+     const struct timespec *abstime;
+{
+  int rc;
+  pthread_log_record (0, PTHREAD_COND_TIMEDWAIT_ENTER, (u_long) cond, 1); 
+  rc = __internal_pthread_cond_timedwait (cond, mutex, abstime);
+  pthread_log_record (rc, PTHREAD_COND_TIMEDWAIT_EXIT, (u_long) cond, 0); 
+  return rc;
+}
+
+int
+__pthread_cond_timedwait_rep (cond, mutex, abstime)
+     pthread_cond_t *cond;
+     pthread_mutex_t *mutex;
+     const struct timespec *abstime;
+{
+  pthread_log_replay (PTHREAD_COND_TIMEDWAIT_ENTER, (u_long) cond); 
+  return pthread_log_replay (PTHREAD_COND_TIMEDWAIT_EXIT, (u_long) cond); 
+}
+
+int
 __pthread_cond_timedwait (cond, mutex, abstime)
      pthread_cond_t *cond;
      pthread_mutex_t *mutex;
@@ -615,12 +1300,17 @@ __pthread_cond_timedwait (cond, mutex, abstime)
   int rc;
 
   if (is_recording()) {
-    pthread_log_record (0, PTHREAD_COND_TIMEDWAIT_ENTER, (u_long) cond, 1); 
-    rc = __internal_pthread_cond_timedwait (cond, mutex, abstime);
-    pthread_log_record (rc, PTHREAD_COND_TIMEDWAIT_EXIT, (u_long) cond, 0); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __pthread_cond_timedwait_rec (cond, mutex, abstime);
+    RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
-    pthread_log_replay (PTHREAD_COND_TIMEDWAIT_ENTER, (u_long) cond); 
-    rc = pthread_log_replay (PTHREAD_COND_TIMEDWAIT_EXIT, (u_long) cond); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __pthread_cond_timedwait_rep (cond, mutex, abstime);
+    RESET_OLD_STACKP(); 
   } else {
     rc = __internal_pthread_cond_timedwait (cond, mutex, abstime);
   }
@@ -631,6 +1321,27 @@ __pthread_cond_timedwait (cond, mutex, abstime)
 versioned_symbol (libpthread, __pthread_cond_timedwait, pthread_cond_timedwait, GLIBC_2_3_2);
 
 int
+__pthread_cond_wait_rec (cond, mutex)
+     pthread_cond_t *cond;
+     pthread_mutex_t *mutex;
+{
+  int rc;
+  pthread_log_record (0, PTHREAD_COND_WAIT_ENTER, (u_long) cond, 1); 
+  rc = __internal_pthread_cond_wait (cond, mutex);
+  pthread_log_record (rc, PTHREAD_COND_WAIT_EXIT, (u_long) cond, 0); 
+  return rc;
+}
+
+int
+__pthread_cond_wait_rep (cond, mutex)
+     pthread_cond_t *cond;
+     pthread_mutex_t *mutex;
+{
+  pthread_log_replay (PTHREAD_COND_WAIT_ENTER, (u_long) cond); 
+  return pthread_log_replay (PTHREAD_COND_WAIT_EXIT, (u_long) cond); 
+}
+
+int
 __pthread_cond_wait (cond, mutex)
      pthread_cond_t *cond;
      pthread_mutex_t *mutex;
@@ -638,12 +1349,17 @@ __pthread_cond_wait (cond, mutex)
   int rc;
 
   if (is_recording()) {
-    pthread_log_record (0, PTHREAD_COND_WAIT_ENTER, (u_long) cond, 1); 
-    rc = __internal_pthread_cond_wait (cond, mutex);
-    pthread_log_record (rc, PTHREAD_COND_WAIT_EXIT, (u_long) cond, 0); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __pthread_cond_wait_rec (cond, mutex);
+    RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
-    pthread_log_replay (PTHREAD_COND_WAIT_ENTER, (u_long) cond); 
-    rc = pthread_log_replay (PTHREAD_COND_WAIT_EXIT, (u_long) cond); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __pthread_cond_wait_rep (cond, mutex);
+    RESET_OLD_STACKP(); 
   } else {
     rc = __internal_pthread_cond_wait (cond, mutex);
   }
@@ -654,18 +1370,42 @@ __pthread_cond_wait (cond, mutex)
 versioned_symbol (libpthread, __pthread_cond_wait, pthread_cond_wait, GLIBC_2_3_2);
 
 int
+__pthread_rwlock_rdlock_rec (rwlock)
+     pthread_rwlock_t *rwlock;
+{
+  int rc;
+  pthread_log_record (0, PTHREAD_RWLOCK_RDLOCK_ENTER, (u_long) rwlock, 1); 
+  rc = __internal_pthread_rwlock_rdlock (rwlock);
+  pthread_log_record (rc, PTHREAD_RWLOCK_RDLOCK_EXIT, (u_long) rwlock, 0); 
+  return rc;
+}
+
+int
+__pthread_rwlock_rdlock_rep (rwlock)
+     pthread_rwlock_t *rwlock;
+{
+  pthread_log_replay (PTHREAD_RWLOCK_RDLOCK_ENTER, (u_long) rwlock); 
+  return pthread_log_replay (PTHREAD_RWLOCK_RDLOCK_EXIT, (u_long) rwlock); 
+}
+
+int
 __pthread_rwlock_rdlock (rwlock)
      pthread_rwlock_t *rwlock;
 {
   int rc;
 
   if (is_recording()) {
-    pthread_log_record (0, PTHREAD_RWLOCK_RDLOCK_ENTER, (u_long) rwlock, 1); 
-    rc = __internal_pthread_rwlock_rdlock (rwlock);
-    pthread_log_record (rc, PTHREAD_RWLOCK_RDLOCK_EXIT, (u_long) rwlock, 0); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __pthread_rwlock_rdlock_rec (rwlock);
+    RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
-    pthread_log_replay (PTHREAD_RWLOCK_RDLOCK_ENTER, (u_long) rwlock); 
-    rc = pthread_log_replay (PTHREAD_RWLOCK_RDLOCK_EXIT, (u_long) rwlock); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __pthread_rwlock_rdlock_rep (rwlock);
+    RESET_OLD_STACKP(); 
   } else {
     rc = __internal_pthread_rwlock_rdlock (rwlock);
   }
@@ -677,18 +1417,42 @@ weak_alias (__pthread_rwlock_rdlock, pthread_rwlock_rdlock)
 strong_alias (__pthread_rwlock_rdlock, __pthread_rwlock_rdlock_internal)
 
 int
+__pthread_rwlock_wrlock_rec (rwlock)
+     pthread_rwlock_t *rwlock;
+{
+  int rc;
+  pthread_log_record (0, PTHREAD_RWLOCK_WRLOCK_ENTER, (u_long) rwlock, 1); 
+  rc = __internal_pthread_rwlock_wrlock (rwlock);
+  pthread_log_record (rc, PTHREAD_RWLOCK_WRLOCK_EXIT, (u_long) rwlock, 0); 
+  return rc;
+}
+
+int
+__pthread_rwlock_wrlock_rep (rwlock)
+     pthread_rwlock_t *rwlock;
+{
+  pthread_log_replay (PTHREAD_RWLOCK_WRLOCK_ENTER, (u_long) rwlock); 
+  return pthread_log_replay (PTHREAD_RWLOCK_WRLOCK_EXIT, (u_long) rwlock); 
+}
+
+int
 __pthread_rwlock_wrlock (rwlock)
      pthread_rwlock_t *rwlock;
 {
   int rc;
 
   if (is_recording()) {
-    pthread_log_record (0, PTHREAD_RWLOCK_WRLOCK_ENTER, (u_long) rwlock, 1); 
-    rc = __internal_pthread_rwlock_wrlock (rwlock);
-    pthread_log_record (rc, PTHREAD_RWLOCK_WRLOCK_EXIT, (u_long) rwlock, 0); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __pthread_rwlock_wrlock_rec (rwlock);
+    RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
-    pthread_log_replay (PTHREAD_RWLOCK_WRLOCK_ENTER, (u_long) rwlock); 
-    rc = pthread_log_replay (PTHREAD_RWLOCK_WRLOCK_EXIT, (u_long) rwlock); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __pthread_rwlock_wrlock_rep (rwlock);
+    RESET_OLD_STACKP(); 
   } else {
     rc = __internal_pthread_rwlock_wrlock (rwlock);
   }
@@ -700,6 +1464,27 @@ weak_alias (__pthread_rwlock_wrlock, pthread_rwlock_wrlock)
 strong_alias (__pthread_rwlock_wrlock, __pthread_rwlock_wrlock_internal)
 
 int
+pthread_rwlock_timedrdlock_rec (rwlock, abstime)
+     pthread_rwlock_t *rwlock;
+     const struct timespec *abstime;
+{
+  int rc;
+  pthread_log_record (0, PTHREAD_RWLOCK_TIMEDRDLOCK_ENTER, (u_long) rwlock, 1); 
+  rc = internal_pthread_rwlock_timedrdlock (rwlock, abstime);
+  pthread_log_record (rc, PTHREAD_RWLOCK_TIMEDRDLOCK_EXIT, (u_long) rwlock, 0); 
+  return rc;
+}
+
+int
+pthread_rwlock_timedrdlock_rep (rwlock, abstime)
+     pthread_rwlock_t *rwlock;
+     const struct timespec *abstime;
+{
+  pthread_log_replay (PTHREAD_RWLOCK_TIMEDRDLOCK_ENTER, (u_long) rwlock); 
+  return pthread_log_replay (PTHREAD_RWLOCK_TIMEDRDLOCK_EXIT, (u_long) rwlock); 
+}
+
+int
 pthread_rwlock_timedrdlock (rwlock, abstime)
      pthread_rwlock_t *rwlock;
      const struct timespec *abstime;
@@ -707,17 +1492,43 @@ pthread_rwlock_timedrdlock (rwlock, abstime)
   int rc;
 
   if (is_recording()) {
-    pthread_log_record (0, PTHREAD_RWLOCK_TIMEDRDLOCK_ENTER, (u_long) rwlock, 1); 
-    rc = internal_pthread_rwlock_timedrdlock (rwlock, abstime);
-    pthread_log_record (rc, PTHREAD_RWLOCK_TIMEDRDLOCK_EXIT, (u_long) rwlock, 0); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = pthread_rwlock_timedrdlock_rec (rwlock, abstime);
+    RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
-    pthread_log_replay (PTHREAD_RWLOCK_TIMEDRDLOCK_ENTER, (u_long) rwlock); 
-    rc = pthread_log_replay (PTHREAD_RWLOCK_TIMEDRDLOCK_EXIT, (u_long) rwlock); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = pthread_rwlock_timedrdlock_rep (rwlock, abstime);
+    RESET_OLD_STACKP(); 
   } else {
     rc = internal_pthread_rwlock_timedrdlock (rwlock, abstime);
   }
 
   return rc;
+}
+
+int
+pthread_rwlock_timedwrlock_rec (rwlock, abstime)
+     pthread_rwlock_t *rwlock;
+     const struct timespec *abstime;
+{
+  int rc;
+  pthread_log_record (0, PTHREAD_RWLOCK_TIMEDWRLOCK_ENTER, (u_long) rwlock, 1); 
+  rc = internal_pthread_rwlock_timedwrlock (rwlock, abstime);
+  pthread_log_record (rc, PTHREAD_RWLOCK_TIMEDWRLOCK_EXIT, (u_long) rwlock, 0); 
+  return rc;
+}
+
+int
+pthread_rwlock_timedwrlock_rep (rwlock, abstime)
+     pthread_rwlock_t *rwlock;
+     const struct timespec *abstime;
+{
+  pthread_log_replay (PTHREAD_RWLOCK_TIMEDWRLOCK_ENTER, (u_long) rwlock); 
+  return pthread_log_replay (PTHREAD_RWLOCK_TIMEDWRLOCK_EXIT, (u_long) rwlock); 
 }
 
 int
@@ -728,17 +1539,41 @@ pthread_rwlock_timedwrlock (rwlock, abstime)
   int rc;
 
   if (is_recording()) {
-    pthread_log_record (0, PTHREAD_RWLOCK_TIMEDWRLOCK_ENTER, (u_long) rwlock, 1); 
-    rc = internal_pthread_rwlock_timedwrlock (rwlock, abstime);
-    pthread_log_record (rc, PTHREAD_RWLOCK_TIMEDWRLOCK_EXIT, (u_long) rwlock, 0); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = pthread_rwlock_timedwrlock_rec (rwlock, abstime);
+    RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
-    pthread_log_replay (PTHREAD_RWLOCK_TIMEDWRLOCK_ENTER, (u_long) rwlock); 
-    rc = pthread_log_replay (PTHREAD_RWLOCK_TIMEDWRLOCK_EXIT, (u_long) rwlock); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = pthread_rwlock_timedwrlock_rep (rwlock, abstime);
+    RESET_OLD_STACKP(); 
   } else {
     rc = internal_pthread_rwlock_timedwrlock (rwlock, abstime);
   }
 
   return rc;
+}
+
+int
+__pthread_rwlock_tryrdlock_rec (rwlock)
+     pthread_rwlock_t *rwlock;
+{
+  int rc;
+  pthread_log_record (0, PTHREAD_RWLOCK_TRYRDLOCK_ENTER, (u_long) rwlock, 1); 
+  rc = __internal_pthread_rwlock_tryrdlock (rwlock);
+  pthread_log_record (rc, PTHREAD_RWLOCK_TRYRDLOCK_EXIT, (u_long) rwlock, 0); 
+  return rc;
+}
+
+int
+__pthread_rwlock_tryrdlock_rep (rwlock)
+     pthread_rwlock_t *rwlock;
+{
+    pthread_log_replay (PTHREAD_RWLOCK_TRYRDLOCK_ENTER, (u_long) rwlock); 
+    return pthread_log_replay (PTHREAD_RWLOCK_TRYRDLOCK_EXIT, (u_long) rwlock); 
 }
 
 int
@@ -748,12 +1583,17 @@ __pthread_rwlock_tryrdlock (rwlock)
   int rc;
 
   if (is_recording()) {
-    pthread_log_record (0, PTHREAD_RWLOCK_TRYRDLOCK_ENTER, (u_long) rwlock, 1); 
-    rc = __internal_pthread_rwlock_tryrdlock (rwlock);
-    pthread_log_record (rc, PTHREAD_RWLOCK_TRYRDLOCK_EXIT, (u_long) rwlock, 0); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __pthread_rwlock_tryrdlock_rec (rwlock);
+    RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
-    pthread_log_replay (PTHREAD_RWLOCK_TRYRDLOCK_ENTER, (u_long) rwlock); 
-    rc = pthread_log_replay (PTHREAD_RWLOCK_TRYRDLOCK_EXIT, (u_long) rwlock); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __pthread_rwlock_tryrdlock_rep (rwlock);
+    RESET_OLD_STACKP(); 
   } else {
     rc = __internal_pthread_rwlock_tryrdlock (rwlock);
   }
@@ -764,18 +1604,42 @@ __pthread_rwlock_tryrdlock (rwlock)
 strong_alias (__pthread_rwlock_tryrdlock, pthread_rwlock_tryrdlock)
 
 int
+__pthread_rwlock_trywrlock_rec (rwlock)
+     pthread_rwlock_t *rwlock;
+{
+  int rc;
+  pthread_log_record (0, PTHREAD_RWLOCK_TRYWRLOCK_ENTER, (u_long) rwlock, 1); 
+  rc = __internal_pthread_rwlock_trywrlock (rwlock);
+  pthread_log_record (rc, PTHREAD_RWLOCK_TRYWRLOCK_EXIT, (u_long) rwlock, 0); 
+  return rc;
+}
+
+int
+__pthread_rwlock_trywrlock_rep (rwlock)
+     pthread_rwlock_t *rwlock;
+{
+  pthread_log_replay (PTHREAD_RWLOCK_TRYWRLOCK_ENTER, (u_long) rwlock); 
+  return pthread_log_replay (PTHREAD_RWLOCK_TRYWRLOCK_EXIT, (u_long) rwlock); 
+}
+
+int
 __pthread_rwlock_trywrlock (rwlock)
      pthread_rwlock_t *rwlock;
 {
   int rc;
 
   if (is_recording()) {
-    pthread_log_record (0, PTHREAD_RWLOCK_TRYWRLOCK_ENTER, (u_long) rwlock, 1); 
-    rc = __internal_pthread_rwlock_trywrlock (rwlock);
-    pthread_log_record (rc, PTHREAD_RWLOCK_TRYWRLOCK_EXIT, (u_long) rwlock, 0); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __pthread_rwlock_trywrlock_rec (rwlock);
+    RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
-    pthread_log_replay (PTHREAD_RWLOCK_TRYWRLOCK_ENTER, (u_long) rwlock); 
-    rc = pthread_log_replay (PTHREAD_RWLOCK_TRYWRLOCK_EXIT, (u_long) rwlock); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __pthread_rwlock_trywrlock_rep (rwlock);
+    RESET_OLD_STACKP(); 
   } else {
     rc = __internal_pthread_rwlock_trywrlock (rwlock);
   }
@@ -786,17 +1650,39 @@ __pthread_rwlock_trywrlock (rwlock)
 strong_alias (__pthread_rwlock_trywrlock, pthread_rwlock_trywrlock)
 
 int
+__pthread_rwlock_unlock_rec (pthread_rwlock_t *rwlock)
+{
+  int rc;
+  pthread_log_record (0, PTHREAD_RWLOCK_UNLOCK_ENTER, (u_long) rwlock, 1); 
+  rc = __internal_pthread_rwlock_unlock (rwlock);
+  pthread_log_record (rc, PTHREAD_RWLOCK_UNLOCK_EXIT, (u_long) rwlock, 0); 
+  return rc;
+}
+
+int
+__pthread_rwlock_unlock_rep (pthread_rwlock_t *rwlock)
+{
+  pthread_log_replay (PTHREAD_RWLOCK_UNLOCK_ENTER, (u_long) rwlock); 
+  return pthread_log_replay (PTHREAD_RWLOCK_UNLOCK_EXIT, (u_long) rwlock); 
+}
+
+int
 __pthread_rwlock_unlock (pthread_rwlock_t *rwlock)
 {
   int rc;
 
   if (is_recording()) {
-    pthread_log_record (0, PTHREAD_RWLOCK_UNLOCK_ENTER, (u_long) rwlock, 1); 
-    rc = __internal_pthread_rwlock_unlock (rwlock);
-    pthread_log_record (rc, PTHREAD_RWLOCK_UNLOCK_EXIT, (u_long) rwlock, 0); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __pthread_rwlock_unlock_rec (rwlock);
+    RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
-    pthread_log_replay (PTHREAD_RWLOCK_UNLOCK_ENTER, (u_long) rwlock); 
-    rc = pthread_log_replay (PTHREAD_RWLOCK_UNLOCK_EXIT, (u_long) rwlock); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __pthread_rwlock_unlock_rep (rwlock);
+    RESET_OLD_STACKP(); 
   } else {
     rc = __internal_pthread_rwlock_unlock (rwlock);
   }
@@ -808,23 +1694,63 @@ weak_alias (__pthread_rwlock_unlock, pthread_rwlock_unlock)
 strong_alias (__pthread_rwlock_unlock, __pthread_rwlock_unlock_internal)
 
 int
+pthread_spin_lock_rec (pthread_spinlock_t *lock)
+{
+  int rc;
+  pthread_log_record (0, PTHREAD_SPIN_LOCK_ENTER, (u_long) lock, 1); 
+  rc = internal_pthread_spin_lock (lock);
+  pthread_log_record (rc, PTHREAD_SPIN_LOCK_EXIT, (u_long) lock, 0); 
+  return rc;
+}
+
+int
+pthread_spin_lock_rep (pthread_spinlock_t *lock)
+{
+  pthread_log_replay (PTHREAD_SPIN_LOCK_ENTER, (u_long) lock); 
+  return pthread_log_replay (PTHREAD_SPIN_LOCK_EXIT, (u_long) lock); 
+}
+
+
+int
 pthread_spin_lock (lock)
      pthread_spinlock_t *lock;
 {
   int rc;
 
   if (is_recording()) {
-    pthread_log_record (0, PTHREAD_SPIN_LOCK_ENTER, (u_long) lock, 1); 
-    rc = internal_pthread_spin_lock (lock);
-    pthread_log_record (rc, PTHREAD_SPIN_LOCK_EXIT, (u_long) lock, 0); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = pthread_spin_lock_rec (lock);
+    RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
-    pthread_log_replay (PTHREAD_SPIN_LOCK_ENTER, (u_long) lock); 
-    rc = pthread_log_replay (PTHREAD_SPIN_LOCK_EXIT, (u_long) lock); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = pthread_spin_lock_rep (lock);
+    RESET_OLD_STACKP(); 
   } else {
     rc = internal_pthread_spin_lock (lock);
   }
 
   return rc;
+}
+
+int
+pthread_spin_trylock_rec (pthread_spinlock_t *lock)
+{
+  int rc;
+  pthread_log_record (0, PTHREAD_SPIN_TRYLOCK_ENTER, (u_long) lock, 1); 
+  rc = internal_pthread_spin_trylock (lock);
+  pthread_log_record (rc, PTHREAD_SPIN_TRYLOCK_EXIT, (u_long) lock, 0); 
+  return rc;
+}
+
+int
+pthread_spin_trylock_rep (pthread_spinlock_t *lock)
+{
+    pthread_log_replay (PTHREAD_SPIN_TRYLOCK_ENTER, (u_long) lock); 
+    return pthread_log_replay (PTHREAD_SPIN_TRYLOCK_EXIT, (u_long) lock); 
 }
 
 int
@@ -834,17 +1760,37 @@ pthread_spin_trylock (lock)
   int rc;
 
   if (is_recording()) {
-    pthread_log_record (0, PTHREAD_SPIN_TRYLOCK_ENTER, (u_long) lock, 1); 
-    rc = internal_pthread_spin_trylock (lock);
-    pthread_log_record (rc, PTHREAD_SPIN_TRYLOCK_EXIT, (u_long) lock, 0); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = pthread_spin_trylock_rec (lock);
+    RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
-    pthread_log_replay (PTHREAD_SPIN_TRYLOCK_ENTER, (u_long) lock); 
-    rc = pthread_log_replay (PTHREAD_SPIN_TRYLOCK_EXIT, (u_long) lock); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = pthread_spin_trylock_rep (lock);
+    RESET_OLD_STACKP(); 
   } else {
     rc = internal_pthread_spin_trylock (lock);
   }
 
   return rc;
+}
+
+int pthread_spin_unlock_rec (pthread_spinlock_t *lock)
+{
+  int rc;
+  pthread_log_record (0, PTHREAD_SPIN_UNLOCK_ENTER, (u_long) lock, 1); 
+  rc = internal_pthread_spin_unlock (lock);
+  pthread_log_record (rc, PTHREAD_SPIN_UNLOCK_EXIT, (u_long) lock, 0); 
+  return rc;
+}
+
+int pthread_spin_unlock_rep (pthread_spinlock_t *lock)
+{
+  pthread_log_replay (PTHREAD_SPIN_UNLOCK_ENTER, (u_long) lock); 
+  return pthread_log_replay (PTHREAD_SPIN_UNLOCK_EXIT, (u_long) lock); 
 }
 
 int
@@ -853,12 +1799,17 @@ pthread_spin_unlock (pthread_spinlock_t *lock)
   int rc;
 
   if (is_recording()) {
-    pthread_log_record (0, PTHREAD_SPIN_UNLOCK_ENTER, (u_long) lock, 1); 
-    rc = internal_pthread_spin_unlock (lock);
-    pthread_log_record (rc, PTHREAD_SPIN_UNLOCK_EXIT, (u_long) lock, 0); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = pthread_spin_unlock_rec (lock);
+    RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
-    pthread_log_replay (PTHREAD_SPIN_UNLOCK_ENTER, (u_long) lock); 
-    rc = pthread_log_replay (PTHREAD_SPIN_UNLOCK_EXIT, (u_long) lock); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = pthread_spin_unlock_rep (lock);
+    RESET_OLD_STACKP(); 
   } else {
     rc = internal_pthread_spin_unlock (lock);
   }
@@ -866,17 +1817,37 @@ pthread_spin_unlock (pthread_spinlock_t *lock)
   return rc;
 }
 
+int __new_sem_post_rec (sem_t *__sem)
+{
+  int rc;
+  pthread_log_record (0, SEM_POST_ENTER, (u_long) __sem, 1); 
+  rc = __new_internal_sem_post (__sem);
+  pthread_log_record (rc, SEM_POST_EXIT, (u_long) __sem, 0); 
+  return rc;
+}
+
+int __new_sem_post_rep (sem_t *__sem)
+{
+  pthread_log_replay (SEM_POST_ENTER, (u_long) __sem); 
+  return pthread_log_replay (SEM_POST_EXIT, (u_long) __sem); 
+}
+
 int __new_sem_post (sem_t *__sem)
 {
   int rc;
 
   if (is_recording()) {
-    pthread_log_record (0, SEM_POST_ENTER, (u_long) __sem, 1); 
-    rc = __new_internal_sem_post (__sem);
-    pthread_log_record (rc, SEM_POST_EXIT, (u_long) __sem, 0); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __new_sem_post_rec (__sem);
+    RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
-    pthread_log_replay (SEM_POST_ENTER, (u_long) __sem); 
-    rc = pthread_log_replay (SEM_POST_EXIT, (u_long) __sem); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __new_sem_post_rep (__sem);
+    RESET_OLD_STACKP(); 
   } else {
     rc = __new_internal_sem_post (__sem);
   }
@@ -889,38 +1860,81 @@ versioned_symbol(libpthread, __new_sem_post, sem_post, GLIBC_2_1);
 #if SHLIB_COMPAT(libpthread, GLIBC_2_0, GLIBC_2_1)
 int 
 attribute_compat_text_section
+__old_sem_post_rec (sem_t *__sem)
+{
+  int rc;
+  pthread_log_record (0, SEM_POST_ENTER, (u_long) __sem, 1); 
+  rc = __old_internal_sem_post (__sem);
+  pthread_log_record (rc, SEM_POST_EXIT, (u_long) __sem, 0); 
+  return rc;
+}
+
+int 
+attribute_compat_text_section
+__old_sem_post_rep (sem_t *__sem)
+{
+  pthread_log_replay (SEM_POST_ENTER, (u_long) __sem); 
+  return pthread_log_replay (SEM_POST_EXIT, (u_long) __sem); 
+}
+
+int 
+attribute_compat_text_section
 __old_sem_post (sem_t *__sem)
 {
   int rc;
 
   if (is_recording()) {
-    pthread_log_record (0, SEM_POST_ENTER, (u_long) __sem, 1); 
-    rc = __old_internal_sem_post (__sem);
-    pthread_log_record (rc, SEM_POST_EXIT, (u_long) __sem, 0); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __old_sem_post_rec (__sem);
+    RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
-    pthread_log_replay (SEM_POST_ENTER, (u_long) __sem); 
-    rc = pthread_log_replay (SEM_POST_EXIT, (u_long) __sem); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __old_sem_post_rep (__sem);
+    RESET_OLD_STACKP(); 
   } else {
     rc = __old_internal_sem_post (__sem);
   }
 
   return rc;
-  
 }
 compat_symbol(libpthread, __old_sem_post, sem_post, GLIBC_2_0);
 #endif
+
+int __new_sem_wait_rec (sem_t *__sem)
+{
+  int rc;
+  pthread_log_record (0, SEM_WAIT_ENTER, (u_long) __sem, 1); 
+  rc = __new_internal_sem_wait (__sem);
+  pthread_log_record (rc, SEM_WAIT_EXIT, (u_long) __sem, 0); 
+  return rc;
+}
+
+int __new_sem_wait_rep (sem_t *__sem)
+{
+    pthread_log_replay (SEM_WAIT_ENTER, (u_long) __sem); 
+    return pthread_log_replay (SEM_WAIT_EXIT, (u_long) __sem); 
+}
 
 int __new_sem_wait (sem_t *__sem)
 {
   int rc;
 
   if (is_recording()) {
-    pthread_log_record (0, SEM_WAIT_ENTER, (u_long) __sem, 1); 
-    rc = __new_internal_sem_wait (__sem);
-    pthread_log_record (rc, SEM_WAIT_EXIT, (u_long) __sem, 0); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __new_sem_wait_rec (__sem);
+    RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
-    pthread_log_replay (SEM_WAIT_ENTER, (u_long) __sem); 
-    rc = pthread_log_replay (SEM_WAIT_EXIT, (u_long) __sem); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __new_sem_wait_rep (__sem);
+    RESET_OLD_STACKP(); 
   } else {
     rc = __new_internal_sem_wait (__sem);
   }
@@ -933,48 +1947,109 @@ versioned_symbol(libpthread, __new_sem_wait, sem_wait, GLIBC_2_1);
 #if SHLIB_COMPAT(libpthread, GLIBC_2_0, GLIBC_2_1)
 int 
 attribute_compat_text_section
+__old_sem_wait_rec (sem_t *__sem)
+{
+  int rc;
+  pthread_log_record (0, SEM_WAIT_ENTER, (u_long) __sem, 1); 
+  rc = __old_internal_sem_wait (__sem);
+  pthread_log_record (rc, SEM_WAIT_EXIT, (u_long) __sem, 0); 
+  return rc;
+}
+
+int 
+attribute_compat_text_section
+__old_sem_wait_rep (sem_t *__sem)
+{
+    pthread_log_replay (SEM_WAIT_ENTER, (u_long) __sem); 
+    return pthread_log_replay (SEM_WAIT_EXIT, (u_long) __sem); 
+}
+
+int 
+attribute_compat_text_section
 __old_sem_wait (sem_t *__sem)
 {
   int rc;
 
   if (is_recording()) {
-    pthread_log_record (0, SEM_WAIT_ENTER, (u_long) __sem, 1); 
-    rc = __old_internal_sem_wait (__sem);
-    pthread_log_record (rc, SEM_WAIT_EXIT, (u_long) __sem, 0); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __old_sem_wait_rec (__sem);
+    RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
-    pthread_log_replay (SEM_WAIT_ENTER, (u_long) __sem); 
-    rc = pthread_log_replay (SEM_WAIT_EXIT, (u_long) __sem); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __old_sem_wait_rep (__sem);
+    RESET_OLD_STACKP(); 
   } else {
     rc = __old_internal_sem_wait (__sem);
   }
 
   return rc;
-  
 }
 compat_symbol(libpthread, __old_sem_wait, sem_wait, GLIBC_2_0);
 #endif
+
+int __new_sem_trywait_rec (sem_t *__sem)
+{
+  int rc;
+  pthread_log_record (0, SEM_TRYWAIT_ENTER, (u_long) __sem, 1); 
+  rc = __new_internal_sem_trywait (__sem);
+  pthread_log_record (rc, SEM_TRYWAIT_EXIT, (u_long) __sem, 0); 
+  return rc;
+}
+
+int __new_sem_trywait_rep (sem_t *__sem)
+{
+  pthread_log_replay (SEM_TRYWAIT_ENTER, (u_long) __sem); 
+  return pthread_log_replay (SEM_TRYWAIT_EXIT, (u_long) __sem); 
+}
 
 int __new_sem_trywait (sem_t *__sem)
 {
   int rc;
 
   if (is_recording()) {
-    pthread_log_record (0, SEM_TRYWAIT_ENTER, (u_long) __sem, 1); 
-    rc = __new_internal_sem_trywait (__sem);
-    pthread_log_record (rc, SEM_TRYWAIT_EXIT, (u_long) __sem, 0); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __new_sem_trywait_rec (__sem);
+    RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
-    pthread_log_replay (SEM_TRYWAIT_ENTER, (u_long) __sem); 
-    rc = pthread_log_replay (SEM_TRYWAIT_EXIT, (u_long) __sem); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __new_sem_trywait_rep (__sem);
+    RESET_OLD_STACKP(); 
   } else {
     rc = __new_internal_sem_trywait (__sem);
   }
 
   return rc;
-  
 }
 versioned_symbol(libpthread, __new_sem_trywait, sem_trywait, GLIBC_2_1);
 
 #if SHLIB_COMPAT(libpthread, GLIBC_2_0, GLIBC_2_1)
+int 
+attribute_compat_text_section
+__old_sem_trywait_rec (sem_t *__sem)
+{
+  int rc;
+  pthread_log_record (0, SEM_TRYWAIT_ENTER, (u_long) __sem, 1); 
+  rc = __old_internal_sem_trywait (__sem);
+  pthread_log_record (rc, SEM_TRYWAIT_EXIT, (u_long) __sem, 0); 
+  return rc;
+}
+
+int 
+attribute_compat_text_section
+__old_sem_trywait_rep (sem_t *__sem)
+{
+  pthread_log_replay (SEM_TRYWAIT_ENTER, (u_long) __sem); 
+  return pthread_log_replay (SEM_TRYWAIT_EXIT, (u_long) __sem); 
+}
+
 int 
 attribute_compat_text_section
 __old_sem_trywait (sem_t *__sem)
@@ -982,12 +2057,17 @@ __old_sem_trywait (sem_t *__sem)
   int rc;
 
   if (is_recording()) {
-    pthread_log_record (0, SEM_TRYWAIT_ENTER, (u_long) __sem, 1); 
-    rc = __old_internal_sem_trywait (__sem);
-    pthread_log_record (rc, SEM_TRYWAIT_EXIT, (u_long) __sem, 0); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __old_sem_trywait_rec (__sem);
+    RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
-    pthread_log_replay (SEM_TRYWAIT_ENTER, (u_long) __sem); 
-    rc = pthread_log_replay (SEM_TRYWAIT_EXIT, (u_long) __sem); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = __old_sem_trywait_rep (__sem);
+    RESET_OLD_STACKP(); 
   } else {
     rc = __old_internal_sem_trywait (__sem);
   }
@@ -998,17 +2078,37 @@ __old_sem_trywait (sem_t *__sem)
 compat_symbol(libpthread, __old_sem_trywait, sem_trywait, GLIBC_2_0);
 #endif
 
+int sem_timedwait_rec (sem_t *__sem, const struct timespec *abstime)
+{
+  int rc;
+  pthread_log_record (0, SEM_TIMEDWAIT_ENTER, (u_long) __sem, 1); 
+  rc = internal_sem_timedwait (__sem, abstime);
+  pthread_log_record (rc, SEM_TIMEDWAIT_EXIT, (u_long) __sem, 0); 
+  return rc;
+}
+
+int sem_timedwait_rep (sem_t *__sem, const struct timespec *abstime)
+{
+  pthread_log_replay (SEM_TIMEDWAIT_ENTER, (u_long) __sem); 
+  return pthread_log_replay (SEM_TIMEDWAIT_EXIT, (u_long) __sem); 
+}
+
 int sem_timedwait (sem_t *__sem, const struct timespec *abstime)
 {
   int rc;
 
   if (is_recording()) {
-    pthread_log_record (0, SEM_TIMEDWAIT_ENTER, (u_long) __sem, 1); 
-    rc = internal_sem_timedwait (__sem, abstime);
-    pthread_log_record (rc, SEM_TIMEDWAIT_EXIT, (u_long) __sem, 0); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = sem_timedwait_rec (__sem, abstime);
+    RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
-    pthread_log_replay (SEM_TIMEDWAIT_ENTER, (u_long) __sem); 
-    rc = pthread_log_replay (SEM_TIMEDWAIT_EXIT, (u_long) __sem); 
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    GET_OLD_STACKP();
+    SET_NEW_STACKP();
+    rc = sem_timedwait_rep (__sem, abstime);
+    RESET_OLD_STACKP(); 
   } else {
     rc = internal_sem_timedwait (__sem, abstime);
   }
@@ -1043,19 +2143,14 @@ static void shim_init_routine (void)
   head->ignore_flag = 1;
 }
 
-// I suppose that it could be important *which* thread actually calls the init routine.
-// Enforce this ordering on replay by not allow two threads to simultaneously
-// call once with the same control.
 int
-__pthread_once (once_control, init_routine)
+__pthread_once_rec (head, once_control, init_routine)
+     struct pthread_log_head* head;
      pthread_once_t *once_control;
      void (*init_routine) (void);
 {
-  int i, rc, retval, found = 0;
-  struct my_once_lock* tmp, *prev_tmp;
-
-  if (is_recording()) {
-    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    int i, rc, found = 0;
+    struct my_once_lock* tmp, *prev_tmp;
 
     head->ignore_flag = 1; // don't record this private lock
     
@@ -1125,8 +2220,17 @@ __pthread_once (once_control, init_routine)
     lll_unlock (once_lock, LLL_PRIVATE);
 
     head->ignore_flag = 0;
-  } else if (is_replaying()) {
-    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+
+    return rc;
+}
+
+int
+__pthread_once_rep (head, once_control, init_routine)
+     struct pthread_log_head* head;
+     pthread_once_t *once_control;
+     void (*init_routine) (void);
+{
+    int retval, rc;
 
     pthread_log_replay (PTHREAD_ONCE_ENTER, (u_long) once_control); 
     head->ignore_flag = 1; 
@@ -1136,6 +2240,31 @@ __pthread_once (once_control, init_routine)
     rc = pthread_log_replay (PTHREAD_ONCE_EXIT, (u_long) once_control); 
 
     if (retval != rc) pthread_log_debug ("pthread_once returns %d on recording and %d on replay\n", rc, retval);
+    return rc;
+}
+
+// I suppose that it could be important *which* thread actually calls the init routine.
+// Enforce this ordering on replay by not allow two threads to simultaneously
+// call once with the same control.
+int
+__pthread_once (once_control, init_routine)
+     pthread_once_t *once_control;
+     void (*init_routine) (void);
+{
+  int rc;
+
+  if (is_recording()) {
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    //GET_OLD_STACKP();
+    //SET_NEW_STACKP();
+    rc = __pthread_once_rec (head, once_control, init_routine);
+    //RESET_OLD_STACKP(); 
+  } else if (is_replaying()) {
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    //GET_OLD_STACKP();
+    //SET_NEW_STACKP();
+    rc = __pthread_once_rep (head, once_control, init_routine);
+    //RESET_OLD_STACKP(); 
   } else {
     rc = __no_pthread_once (once_control, init_routine);
   }

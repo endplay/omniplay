@@ -380,26 +380,3 @@ __internal_pthread_mutex_trylock (mutex) // REPLAY
   return EBUSY;
 }
 
-/* Begin REPLAY */
-int
-__pthread_mutex_trylock (mutex) // REPLAY
-     pthread_mutex_t *mutex;
-{
-  int rc;
-
-  if (is_recording()) {
-    pthread_log_record (0, PTHREAD_MUTEX_TRYLOCK_ENTER, (u_long) mutex, 1); 
-    rc = __internal_pthread_mutex_trylock (mutex);
-    pthread_log_record (rc, PTHREAD_MUTEX_TRYLOCK_EXIT, (u_long) mutex, 0); 
-  } else if (is_replaying()) {
-    pthread_log_replay (PTHREAD_MUTEX_TRYLOCK_ENTER, (u_long) mutex); 
-    rc = pthread_log_replay (PTHREAD_MUTEX_TRYLOCK_EXIT, (u_long) mutex); 
-  } else {
-    rc = __internal_pthread_mutex_trylock (mutex);
-  }
-  return rc;
-}
-/* End REPLAY */
-
-strong_alias (__pthread_mutex_trylock, pthread_mutex_trylock)
-

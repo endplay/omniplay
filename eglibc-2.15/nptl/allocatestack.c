@@ -705,6 +705,9 @@ allocate_stack (const struct pthread_attr *attr, struct pthread **pdp,
   pd->robust_head.list = &pd->robust_head;
 
   pd->log_head = allocate_log (); /* REPLAY */
+#ifdef USE_EXTRA_DEBUG_LOG
+  pd->extra_log_head = allocate_extra_log (); /* REPLAY */
+#endif
 
   /* We place the thread descriptor at the end of the stack.  */
   *pdp = pd;

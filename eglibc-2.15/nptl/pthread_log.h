@@ -6,6 +6,11 @@
 // Debug log uses uncompressed format
 //#define USE_DEBUG_LOG
 
+// This creates a separate log for debugging
+//#define USE_EXTRA_DEBUG_LOG
+
+#define DEFAULT_STACKSIZE        32768 
+
 #ifdef USE_DEBUG_LOG
 struct pthread_log_data {
 	unsigned long clock;
@@ -20,6 +25,8 @@ struct pthread_log_head {
 	struct pthread_log_data* end;
 	int ignore_flag;
 	int need_fake_calls;
+	u_long old_stackp;
+	char stack[DEFAULT_STACKSIZE];
 };
 #else
 struct pthread_log_head {
@@ -30,6 +37,8 @@ struct pthread_log_head {
 	unsigned long expected_clock;
 	unsigned long num_expected_records;
 	int save_errno; // Tracks whether errno changes in an ignored region
+	u_long old_stackp;
+	char stack[DEFAULT_STACKSIZE];
 };
 
 #define NONZERO_RETVAL_FLAG 0x80000000
@@ -39,6 +48,14 @@ struct pthread_log_head {
 #define CLOCK_MASK          0x0fffffff
 
 #endif
+
+#ifdef USE_EXTRA_DEBUG_LOG
+struct pthread_extra_log_head {
+	char* next;
+	char* end;
+};
+#endif
+
 
 #define PTHREAD_LOG_SIZE (16*1024*1024)
 
@@ -166,6 +183,11 @@ struct pthread_log_head {
 #define FAKE_SYSCALLS                        127
 
 extern struct pthread_log_head * allocate_log (void);
+#ifdef USE_EXTRA_DEBUG_LOG
+extern struct pthread_extra_log_head * allocate_extra_log (void);
+int pthread_log_msg (char* msg, int len);
+#endif
+
 extern void free_log (void); 
 extern void register_log (void);
 extern int check_recording (void);

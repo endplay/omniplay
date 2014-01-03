@@ -35,26 +35,3 @@ __internal_pthread_mutex_destroy (mutex) // REPLAY
   return 0;
 }
 
-/* Begin REPLAY */
-int
-__pthread_mutex_destroy (mutex)
-     pthread_mutex_t *mutex;
-{
-  int rc;
-
-  if (is_recording()) {
-    pthread_log_record (0, PTHREAD_MUTEX_DESTROY_ENTER, (u_long) mutex, 1); 
-    rc = __internal_pthread_mutex_destroy (mutex);
-    pthread_log_record (rc, PTHREAD_MUTEX_DESTROY_EXIT, (u_long) mutex, 0); 
-  } else if (is_replaying()) {
-    pthread_log_replay (PTHREAD_MUTEX_DESTROY_ENTER, (u_long) mutex); 
-    rc = pthread_log_replay (PTHREAD_MUTEX_DESTROY_EXIT, (u_long) mutex); 
-  } else {
-    rc = __internal_pthread_mutex_destroy (mutex);
-  }
-  return rc;
-}
-/* End REPLAY */
-
-strong_alias (__pthread_mutex_destroy, pthread_mutex_destroy)
-INTDEF(__pthread_mutex_destroy)
