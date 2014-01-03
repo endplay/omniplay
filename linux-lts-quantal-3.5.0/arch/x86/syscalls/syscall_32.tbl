@@ -118,7 +118,7 @@
 109	i386	olduname		shim_uname
 110	i386	iopl			ptregs_iopl			stub32_iopl
 111	i386	vhangup			shim_vhangup
-112	i386	idle
+112	i386	idle                    sys_pthread_elog
 113	i386	vm86old			ptregs_vm86old			sys32_vm86_warning
 114	i386	wait4			shim_wait4			compat_sys_wait4
 115	i386	swapoff			shim_swapoff

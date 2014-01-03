@@ -428,6 +428,11 @@ struct record_thread {
 	struct list_head rp_argsalloc_list;	// kernel linked list head pointing to linked list of argsalloc_nodes
 
 	u_long rp_user_log_addr;        // Where the user log info is stored 
+#ifdef USE_EXTRA_DEBUG_LOG
+	u_long rp_user_extra_log_addr;  // For extra debugging log
+	char rp_elog_opened;		// Flag that says whether or not the extra log has been opened 
+	loff_t rp_read_elog_pos;	// The current position in the extra log file that is being read
+#endif
 	int __user * rp_ignore_flag_addr;     // Where the ignore flag is stored
 
 	struct rvalues random_values;   // Tracks kernel randomness during syscalls (currently execve only) 
@@ -1283,6 +1288,11 @@ new_record_thread (struct record_group* prg, u_long recpid, struct record_cache_
 	INIT_LIST_HEAD(&prp->rp_argsalloc_list);
 
 	prp->rp_user_log_addr = 0;
+#ifdef USE_EXTRA_DEBUG_LOG
+	prp->rp_user_extra_log_addr = 0;
+	prp->rp_elog_opened = 0;			
+	prp->rp_read_elog_pos = 0;	
+#endif
 	prp->rp_ignore_flag_addr = 0;
 
 	prp->rp_precord_clock = prp->rp_group->rg_pkrecord_clock;
@@ -2866,7 +2876,7 @@ long
 write_user_log (struct record_thread* prect)
 {
 	struct pthread_log_head __user * phead = (struct pthread_log_head __user *) prect->rp_user_log_addr;
-	struct pthread_log_head head;
+	u_long next;
 	char __user *start;
 	struct stat64 st;
 	char filename[MAX_LOGDIR_STRLEN+20];
@@ -2879,13 +2889,13 @@ write_user_log (struct record_thread* prect)
 	DPRINT ("Pid %d: write_user_log %p\n", current->pid, phead);
 	if (phead == 0) return 0; // Nothing to do
 
-	if (copy_from_user (&head, phead, sizeof (struct pthread_log_head))) {
-		printk ("Pid %d: unable to get log head\n", current->pid);
+	if (copy_from_user (&next, &phead->next, sizeof(u_long))) {
+		printk ("Pid %d: unable to get log head next ptr\n", current->pid);
 		return -EINVAL;
 	}
-	DPRINT ("Pid %d: log current address is at %p\n", current->pid, head.next); 
+	DPRINT ("Pid %d: log current address is at %lx\n", current->pid, next); 
 	start = (char __user *) phead + sizeof (struct pthread_log_head);
-	to_write = (char *) head.next - start;
+	to_write = (char *) next - start;
 	MPRINT ("Pid %d - need to write %ld bytes of user log\n", current->pid, to_write);
 	if (to_write == 0) {
 		MPRINT ("Pid %d - no entries to write in ulog\n", current->pid);
@@ -2951,16 +2961,16 @@ write_user_log (struct record_thread* prect)
 	// We reset the next pointer to reflect the records that were written
 	// In some circumstances such as failed execs, this will prevent dup. writes
 #ifdef USE_DEBUG_LOG
-	head.next = (struct pthread_log_data __user *) ((char __user *) phead + sizeof (struct pthread_log_head));
+	next = (u_long) ((char __user *) phead + sizeof (struct pthread_log_head));
 #else
-	head.next = (char __user *) phead + sizeof (struct pthread_log_head);
+	next = (u_long) phead + sizeof (struct pthread_log_head);
 #endif
-	if (copy_to_user (phead, &head, sizeof (struct pthread_log_head))) {
-		printk ("Unable to put log head\n");
+	if (copy_to_user (&phead->next, &next, sizeof (u_long))) {
+		printk ("Unable to put log head next\n");
 		return -EINVAL;
 	}
 
-	DPRINT ("Pid %d: log current address is at %p\n", current->pid, head.next); 
+	DPRINT ("Pid %d: log current address is at %lx\n", current->pid, next); 
 
 	return rc;
 }
@@ -3032,6 +3042,177 @@ close_out:
 
 	return rc;
 }
+
+#ifdef USE_EXTRA_DEBUG_LOG
+/* Writes out the user log - currently does not handle wraparound - so write in one big chunk */
+long
+write_user_extra_log (struct record_thread* prect)
+{
+	struct pthread_extra_log_head __user * phead = (struct pthread_extra_log_head __user *) prect->rp_user_extra_log_addr;
+	struct pthread_extra_log_head head;
+	char __user *start;
+	struct stat64 st;
+	char filename[MAX_LOGDIR_STRLEN+20];
+	struct file* file;
+	int fd;
+	mm_segment_t old_fs;
+	long to_write, written;
+	long rc = 0;
+
+	DPRINT ("Pid %d: write_user_extra_log %p\n", current->pid, phead);
+	if (phead == 0) return 0; // Nothing to do
+
+	if (copy_from_user (&head, phead, sizeof (struct pthread_extra_log_head))) {
+		printk ("Pid %d: unable to get extra log head\n", current->pid);
+		return -EINVAL;
+	}
+	DPRINT ("Pid %d: extra log current address is at %p\n", current->pid, head.next); 
+	start = (char __user *) phead + sizeof (struct pthread_extra_log_head);
+	to_write = (char *) head.next - start;
+	MPRINT ("Pid %d - need to write %ld bytes of user extra log\n", current->pid, to_write);
+	if (to_write == 0) {
+		MPRINT ("Pid %d - no entries to write in extra user log\n", current->pid);
+		return 0;
+	}
+
+	sprintf (filename, "%s/elog.id.%d", prect->rp_group->rg_logdir, prect->rp_record_pid);
+	
+	old_fs = get_fs();
+	set_fs(KERNEL_DS);
+
+	// see if we're appending to the user log data before
+	if (prect->rp_elog_opened) {
+		DPRINT ("Pid %d, extra log %s has been opened before, so we'll append\n", current->pid, filename);
+		rc = sys_stat64(filename, &st);
+		if (rc < 0) {
+			printk ("Pid %d - write_extra_log_data, can't append stat of file %s failed\n", current->pid, filename);
+			return -EINVAL;
+		}
+		fd = sys_open(filename, O_RDWR|O_APPEND, 0777);
+	} else {
+		fd = sys_open(filename, O_RDWR|O_CREAT|O_TRUNC, 0777);
+		if (fd > 0) {
+			rc = sys_fchmod(fd, 0777);
+			if (rc == -1) {
+				printk("Pid %d fchmod failed\n", current->pid);
+			}
+		}
+		prect->rp_elog_opened = 1;
+		rc = sys_stat64(filename, &st);
+	}
+
+	if (fd < 0) {
+		printk ("Cannot open exta log file %s, rc =%d\n", filename, fd);
+		return -EINVAL;
+	}
+
+	file = fget(fd);
+	if (file == NULL) {
+		printk ("write_extra_user_log: invalid file\n");
+		return -EINVAL;
+	}
+
+	// Before each user log segment, we write the number of bytes in the segment
+	written = vfs_write(file, (char *) &to_write, sizeof(int), &prect->rp_read_elog_pos);
+	set_fs(old_fs);
+
+	if (written != sizeof(int)) {
+		printk ("write_user_log: tried to write %d, got rc %ld\n", sizeof(int), written);
+		rc = -EINVAL;
+	}
+
+	written = vfs_write(file, start, to_write, &prect->rp_read_elog_pos);
+	if (written != to_write) {
+		printk ("write_extra_user_log1: tried to write %ld, got rc %ld\n", to_write, written);
+		rc = -EINVAL;
+	}
+
+	fput(file);
+	DPRINT("Pid %d closing %s\n", current->pid, filename);
+	sys_close (fd);
+
+	// We reset the next pointer to reflect the records that were written
+	// In some circumstances such as failed execs, this will prevent dup. writes
+	head.next = (char __user *) phead + sizeof (struct pthread_log_head);
+
+	if (copy_to_user (phead, &head, sizeof (struct pthread_extra_log_head))) {
+		printk ("Unable to put extra log head\n");
+		return -EINVAL;
+	}
+
+	DPRINT ("Pid %d: log extra current address is at %p\n", current->pid, head.next); 
+
+	return rc;
+}
+
+/* Reads in a user log - currently does not handle wraparound - so read in one big chunk */
+long
+read_user_extra_log (struct record_thread* prect)
+{
+	struct pthread_extra_log_head* phead = (struct pthread_extra_log_head __user *) prect->rp_user_extra_log_addr;
+	char __user *start;
+	struct stat64 st;
+	char filename[MAX_LOGDIR_STRLEN+20];
+	struct file* file;
+	int fd;
+	mm_segment_t old_fs;
+	long copyed, rc = 0;
+
+	// the number of entries in this segment
+	int num_bytes;
+
+	printk ("Pid %d: read_user_extra_log %p\n", current->pid, phead);
+	if (phead == 0) return -EINVAL; // Nothing to do
+
+	start = (char __user *) phead + sizeof (struct pthread_extra_log_head);
+	DPRINT ("Extra log start is at %p\n", start);
+	
+	sprintf (filename, "%s/elog.id.%d", prect->rp_group->rg_logdir, prect->rp_record_pid);
+	old_fs = get_fs();
+	set_fs(KERNEL_DS);
+	rc = sys_stat64(filename, &st);
+	if (rc < 0) {
+		printk ("Stat of file %s failed\n", filename);
+		set_fs(old_fs);
+		return rc;
+	}
+	fd = sys_open(filename, O_RDONLY, 0644);
+	set_fs(old_fs);
+	if (fd < 0) {
+		printk ("Cannot open extra log file %s, rc =%d\n", filename, fd);
+		return fd;
+	}
+
+	file = fget(fd);
+	if (file == NULL) {
+		printk ("read_user_extra_log: invalid file\n");
+		return -EINVAL;
+	}
+
+	// read how many entries that are in this segment
+	set_fs(KERNEL_DS);	
+	copyed = vfs_read (file, (char *) &num_bytes, sizeof(int), &prect->rp_read_elog_pos);
+	set_fs(old_fs);
+	if (copyed != sizeof(int)) {
+		printk ("read_extra_user_log: tried to read num entries %d, got rc %ld\n", sizeof(int), copyed);
+		rc = -EINVAL;
+		goto close_out;
+	}
+
+	// read the entire segment after we've read how many entries are in it
+	copyed = vfs_read (file, (char __user *) start, num_bytes, &prect->rp_read_elog_pos);
+	if (copyed != num_bytes) {
+		printk ("read_user_extra_log: tried to read %d, got rc %ld\n", num_bytes, copyed);
+		rc = -EINVAL;
+	}
+
+close_out:
+	fput(file);
+	sys_close (fd);
+
+	return rc;
+}
+#endif
 
 /* Used for Pin support. 
  * We need to consume syscall log entries in a specific order
@@ -3628,6 +3809,42 @@ sys_pthread_log (u_long log_addr, int __user * ignore_addr)
 	}
 	return 0;
 }
+
+asmlinkage long
+sys_pthread_elog (int type, u_long addr)
+{
+#ifdef USE_EXTRA_DEBUG_LOG
+	if (type == 0) { // allocate/register log
+		if (current->record_thrd) {
+			current->record_thrd->rp_user_extra_log_addr = addr;
+			MPRINT ("User extra log info address for thread %d is %lx\n", current->pid, addr);
+		} else if (current->replay_thrd) {
+			current->replay_thrd->rp_record_thread->rp_user_extra_log_addr = addr;
+			read_user_extra_log (current->replay_thrd->rp_record_thread);
+			MPRINT ("Read extra user log into address %lx for thread %d\n", addr, current->pid);
+		} else {
+			printk ("sys_pthread_elog called by pid %d which is neither recording nor replaying\n", current->pid);
+			return -EINVAL;
+		}
+	} else { // Log is full
+		if (current->record_thrd) {
+			DPRINT ("Pid %d: extra log full\n", current->pid);
+			if (write_user_extra_log (current->record_thrd) < 0) printk ("Extra debug log write failed\n");
+		} else if (current->replay_thrd) {
+			DPRINT ("Pid %d: Resetting user log\n", current->pid);
+			read_user_extra_log (current->replay_thrd->rp_record_thread);	
+		} else {
+			printk ("sys_pthread_elog called by pid %d which is neither recording nor replaying\n", current->pid);
+			return -EINVAL;
+		}
+	}
+
+	return 0;
+#else
+	return -EINVAL; // Support not compiled intot this kernel
+#endif
+}
+
 
 asmlinkage long
 sys_pthread_block (u_long clock)
@@ -4263,7 +4480,9 @@ recplay_exit_start(void)
 		flush_user_log (prt);
 #endif
 		write_user_log (prt); // Write this out before we destroy the mm
-
+#ifdef USE_EXTRA_DEBUG_LOG
+		write_user_extra_log (prt);
+#endif
 		MPRINT ("Pid %d -- Deallocate the user log", current->pid);
 		deallocate_user_log (prt); // For multi-threaded programs, we need to reuse the memory
 	} else if (current->replay_thrd) {
@@ -4660,7 +4879,7 @@ record_open (const char __user * filename, int flags, int mode)
 	// If opened read-only and a regular file, then use replay cache
 	if (rc >= 0) {
 		MPRINT ("record_open of name %s with flags %x\n", filename, flags);
-		if ((flags&O_ACCMODE) == O_RDONLY && !(flags&O_CREAT)) {
+		if ((flags&O_ACCMODE) == O_RDONLY && !(flags&(O_CREAT|O_DIRECTORY))) {
 			file = fget (rc);
 			inode = file->f_dentry->d_inode;
 			DPRINT ("i_rdev is %x\n", inode->i_rdev);
@@ -4814,7 +5033,9 @@ record_execve(const char *filename, const char __user *const __user *__argv, con
 	flush_user_log (prt);
 #endif
 	write_user_log (prt);
-
+#ifdef USE_EXTRA_DEBUG_LOG
+	write_user_extra_log (prt);
+#endif
 	// Have to copy arguments out before address space goes away - we will likely need them later
 	argbuf = copy_args (__argv, __envp, &argbuflen);
 
