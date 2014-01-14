@@ -643,22 +643,28 @@ pthread_extra_log_replay (char* msg, int len)
     return rc;
 }
 
+void pthread_log_msg_dummy (char* msg, int len)
+{
+}
+
 int
 pthread_log_msg (char* msg, int len)
 {
     int ret = 0;
     if (is_recording()) {
-	struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
-	GET_OLD_STACKP();
-	SET_NEW_STACKP();
-	pthread_extra_log_record (msg, len);
-	RESET_OLD_STACKP(); 
+      struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+      GET_OLD_STACKP();
+      SET_NEW_STACKP();
+      pthread_extra_log_record (msg, len);
+      RESET_OLD_STACKP(); 
     } else if (is_replaying()) {
-	struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
-	GET_OLD_STACKP();
-	SET_NEW_STACKP();
-	ret = pthread_extra_log_replay (msg, len);
-	RESET_OLD_STACKP(); 
+      struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+      GET_OLD_STACKP();
+      SET_NEW_STACKP();
+      ret = pthread_extra_log_replay (msg, len);
+      RESET_OLD_STACKP(); 
+    } else {
+      pthread_log_msg_dummy (msg, len);
     }
     return ret;
 }
