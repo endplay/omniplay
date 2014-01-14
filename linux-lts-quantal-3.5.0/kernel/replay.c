@@ -3034,7 +3034,11 @@ read_user_log (struct record_thread* prect)
 	if (copyed != num_bytes) {
 		printk ("read_user_log: tried to read %d, got rc %ld\n", num_bytes, copyed);
 		rc = -EINVAL;
+	} else {
+		DPRINT ("Pid %d read %ld bytes from user log\n", current->pid, copyed);
+		put_user (start+copyed, &phead->end);
 	}
+		
 
 close_out:
 	fput(file);
@@ -3133,7 +3137,7 @@ write_user_extra_log (struct record_thread* prect)
 
 	// We reset the next pointer to reflect the records that were written
 	// In some circumstances such as failed execs, this will prevent dup. writes
-	head.next = (char __user *) phead + sizeof (struct pthread_log_head);
+	head.next = (char __user *) phead + sizeof (struct pthread_extra_log_head);
 
 	if (copy_to_user (phead, &head, sizeof (struct pthread_extra_log_head))) {
 		printk ("Unable to put extra log head\n");
@@ -3204,6 +3208,9 @@ read_user_extra_log (struct record_thread* prect)
 	if (copyed != num_bytes) {
 		printk ("read_user_extra_log: tried to read %d, got rc %ld\n", num_bytes, copyed);
 		rc = -EINVAL;
+	} else {	
+		DPRINT ("Pid %d read %ld bytes from extra log\n", current->pid, copyed);
+		put_user (start+copyed, &phead->end);
 	}
 
 close_out:
@@ -5064,7 +5071,9 @@ record_execve(const char *filename, const char __user *const __user *__argv, con
 	if (rc >= 0) {
 
 		prt->rp_user_log_addr = 0; // User log address no longer valid since new address space entirely
-
+#ifdef USE_EXTRA_DEBUG_LOG
+		prt->rp_user_extra_log_addr = 0;
+#endif
 		// Our rule is that we record a split if there is an exec with more than one thread in the group.   Not sure this is best
 		// but I don't know what is better
 		if (prt->rp_next_thread != prt) {
@@ -7294,6 +7303,10 @@ record_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 	char __user * start, *old_start = NULL;
 	u_long old_expected_clock, old_num_expected_records;
 #endif
+#ifdef USE_EXTRA_DEBUG_LOG
+	struct pthread_extra_log_head __user * pehead = NULL;
+	char __user * estart, *old_estart = NULL;
+#endif
 	struct record_group* prg;
 	struct task_struct* tsk;
 	long rc;
@@ -7314,6 +7327,13 @@ record_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 #endif
 		get_user (old_start, &phead->next);
 		put_user (start, &phead->next);
+#ifdef USE_EXTRA_DEBUG_LOG
+		pehead = (struct pthread_extra_log_head __user *) current->record_thrd->rp_user_extra_log_addr;
+		estart = (char __user *) pehead + sizeof (struct pthread_extra_log_head);
+		get_user (old_estart, &pehead->next);
+		put_user (estart, &pehead->next);
+#endif
+
 #ifndef USE_DEBUG_LOG
 		get_user (old_expected_clock, &phead->expected_clock);
 		put_user (0, &phead->expected_clock);
@@ -7362,6 +7382,10 @@ record_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 			tsk->record_thrd->rp_user_log_addr = current->record_thrd->rp_user_log_addr;
 			tsk->record_thrd->rp_ignore_flag_addr = current->record_thrd->rp_ignore_flag_addr;
 			put_user (old_start, &phead->next);
+#ifdef USE_EXTRA_DEBUG_LOG
+			tsk->record_thrd->rp_user_extra_log_addr = current->record_thrd->rp_user_extra_log_addr;
+			put_user (old_estart, &pehead->next);
+#endif
 #ifndef USE_DEBUG_LOG
 			put_user (old_expected_clock, &phead->expected_clock);
 			put_user (old_num_expected_records, &phead->num_expected_records);
@@ -7506,6 +7530,9 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 		if (!(clone_flags&CLONE_VM)) {
 			DPRINT ("This is a fork-style clone - reset the user log appropriately\n");
 			tsk->replay_thrd->rp_record_thread->rp_user_log_addr = current->replay_thrd->rp_record_thread->rp_user_log_addr;
+#ifdef USE_EXTRA_DEBUG_LOG
+			tsk->replay_thrd->rp_record_thread->rp_user_extra_log_addr = current->replay_thrd->rp_record_thread->rp_user_extra_log_addr;
+#endif
 			tsk->replay_thrd->rp_record_thread->rp_ignore_flag_addr = current->replay_thrd->rp_record_thread->rp_ignore_flag_addr;
 		}
 		
@@ -8670,6 +8697,9 @@ record_vfork_handler (struct task_struct* tsk)
 	current->record_thrd->rp_next_thread = tsk->record_thrd;
 	
 	tsk->record_thrd->rp_user_log_addr = 0; // Should not write to user log before exec - otherwise violates vfork principles
+#ifdef USE_EXTRA_DEBUG_LOG
+	tsk->record_thrd->rp_user_extra_log_addr = 0;
+#endif
 	tsk->record_thrd->rp_ignore_flag_addr = current->record_thrd->rp_ignore_flag_addr;
 	
 	// allocate a slab for retparams
