@@ -327,6 +327,12 @@ create_elf_tables(struct linux_binprm *bprm, struct elfhdr *exec,
 
 	/* Populate argv and envp */
 	p = current->mm->arg_end = current->mm->arg_start;
+	/* Begin REPLAY */
+	if (current->replay_thrd) {
+		// save where the args and env. vars start.
+		save_exec_args ((unsigned long) argv, argc, (unsigned long) envp, envc);
+	}
+	/* End  REPLAY */
 	while (argc-- > 0) {
 		size_t len;
 		if (__put_user((elf_addr_t)p, argv++))

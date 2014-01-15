@@ -120,3 +120,13 @@ int get_replay_stats (int fd_spec, struct replay_stat_data* stats)
 {
     return ioctl (fd_spec, SPECI_GET_REPLAY_STATS, stats);
 }
+
+unsigned long get_replay_args (int fd_spec)
+{
+    return ioctl (fd_spec, SPECI_GET_REPLAY_ARGS);
+}
+
+unsigned long get_env_vars (int fd_spec)
+{
+    return ioctl (fd_spec, SPECI_GET_ENV_VARS);
+}

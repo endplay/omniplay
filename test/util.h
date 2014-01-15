@@ -28,6 +28,8 @@ int get_log_id (int fd_spec);
 long get_clock_value (int fd_spec);
 int get_used_addresses (int fd_spec, struct used_address* paddrs, int naddrs);
 int get_replay_stats (int fd_spec, struct replay_stat_data * stats);
+unsigned long get_replay_args (int fd_spec);
+unsigned long get_env_vars (int fd_spec);
 
 #ifdef __cplusplus
 }

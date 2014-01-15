@@ -46,5 +46,7 @@ struct replay_stats_data {
 #define SPECI_GET_USED_ADDR _IOR('u',6,struct get_used_addr_data)
 #define SPECI_GET_REPLAY_STATS _IOW('u',7,struct replay_stats_data)
 #define SPECI_GET_CLOCK_VALUE _IO('u',8)
+#define SPECI_GET_REPLAY_ARGS _IO('u',9)
+#define SPECI_GET_ENV_VARS _IO('u',10)
 
 #endif

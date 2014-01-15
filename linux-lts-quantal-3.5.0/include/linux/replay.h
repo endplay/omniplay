@@ -89,4 +89,9 @@ long get_replay_stats (struct replay_stats __user * ustats);
 
 #endif
 
+/* For tracking where the args are in Pin, only valid on replay */
+void save_exec_args(unsigned long argv, int argc, unsigned long envp, int envc);
+unsigned long get_replay_args(void);
+unsigned long get_env_vars(void);
+
 #endif

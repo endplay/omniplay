@@ -496,6 +496,10 @@ struct replay_thread {
 	int rp_pin_restart_syscall;	// Used to see if we should restart a syscall because of Pin
 	u_long rp_start_clock_save;	// Save the value of the start clock to resume after Pin returns back
 	u_long rp_stop_clock_save;	// Save the value of the stop clock to resume after Pin returns back
+	u_long argv;			// Save the location of the program args
+	int argc;			// Save the number of program args
+	u_long envp;			// Save the location of the env. vars
+	int envc;			// Save the number of environment vars
 #ifdef CACHE_READS
 	struct replay_cache_files* rp_cache_files; // Info about open cache files
 #endif
@@ -3666,6 +3670,40 @@ void replay_execval (int* uid, int* euid, int* gid, int* egid, int* secureexec)
 	*secureexec = current->replay_thrd->exec_values.secureexec;
 }
 
+unsigned long get_replay_args(void)
+{       
+	if (current->replay_thrd) {
+		return current->replay_thrd->argv;
+	} else {
+		printk("Pid %d, no args start on non-replay\n", current->pid);
+		return 0;
+	}
+}
+EXPORT_SYMBOL(get_replay_args);
+
+unsigned long get_env_vars(void)
+{
+	if (current->replay_thrd) {
+		return current->replay_thrd->envp;
+	} else {
+		printk("Pid %d, no env vars on non-replay\n", current->pid);
+		return 0;
+	}
+}
+EXPORT_SYMBOL(get_env_vars);
+
+void save_exec_args (unsigned long argv, int argc, unsigned long envp, int envc)
+{
+	if (current->replay_thrd) {
+		struct replay_thread* prt = current->replay_thrd;
+		prt->argv = argv;
+		prt->argc = argc;
+		prt->envp = envp;
+		prt->envc = envc;
+	}
+	return;
+}
+
 /* These functions check the clock condition before and after a syscall, respectively.  We have to do this for syscalls for which
    Pin holds a lock throughout to avoid a deadlock. */
 long check_clock_before_syscall (int syscall)
@@ -4914,6 +4952,7 @@ replay_open (const char __user * filename, int flags, int mode)
 	long rc, fd;
 
 	rc = get_next_syscall (5, (char **) &pretvals);	
+	DPRINT ("replay_open: trying to open %s\n", filename);
 	if (pretvals) {
 		fd = open_cache_file (pretvals->dev, pretvals->ino, pretvals->mtime, flags);
 		DPRINT ("replay_open: opened cache file %s flags %x fd is %ld rc is %ld\n", filename, flags, fd, rc);
