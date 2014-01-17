@@ -38,104 +38,84 @@
 #include "taints/taints.h"
 #include "xray_monitor.h"
 #include "reentry_lock.h"
+#include "xray_image.h"
 
-int print_insts = 0;
-
+// Linkage macros
 // TODO get rid of these and put them in the Makefile
-// #define LINKAGE_LEVEL 1
-#define LINKAGE_COPY 1
-#define LINKAGE_DATA 2
-// #define LINKAGE_SYSCALL_ABSTRACT
-// #define CTRL_FLOW
-
+// #define LINKAGE_COPY                 // just memory copies
+// #define LINKAGE_DATA                 // data copies
+// #define LINKAGE_SYSCALL              // system call & libc function abstraction
+// #define CTRL_FLOW                    // direct control flow
+// #define ALT_PATH_EXPLORATION         // indirect control flow
 // #define CONFAID
 // #define HAVE_REPLAY
-
 #define HANDLE_FUNCTIONS
 
+// #define TRACK_MEMORY_AREAS
+#ifdef TRACK_MEMORY_AREAS
 #include "xray_memory_areas.h"
 // keep track of which memory areas are used in the process
 struct memory_areas* ma_list;
+#endif
 
-#include "xray_image.h"
 // keep track of which dynamic libraries (images) are currently loaded and their offsets
 struct image_infos* img_list;
 
 #define STACK_SIZE 8388608
 
 // Logging
-#define ERROR_F error_f
+// #define LOGGING_ON
 #define LOG_F log_f
 #define MEM_F log_f
 #define TRACE_F trace_f
-FILE* error_f = NULL; // Logfile for errors, we need this because some programs like opensshd will pipe stderr to /dev/null
-FILE* log_f = NULL; // For debugging
-FILE* trace_f = NULL; // for tracing taints
-
-
-/* Command line Knobs */
-#ifdef CONFAID
-KNOB<string> KnobOutputFile(KNOB_MODE_WRITEONCE, "pintool",
-        "o", "/tmp/confaid.result", "output file");
-#else
-KNOB<string> KnobOutputFile(KNOB_MODE_WRITEONCE, "pintool",
-        "o", "/tmp/dataflow.result", "output file");
-#endif
-KNOB<string> KnobInputFile(KNOB_MODE_WRITEONCE, "pintool", "i", "/tmp/dataflow.in", "input file");
-KNOB<string> KnobInputType(KNOB_MODE_WRITEONCE, "pintool", "t", "CMDLINE", "input type");
-KNOB<string> KnobOutputType(KNOB_MODE_WRITEONCE, "pintool", "x", "ANY", "output type");
-KNOB<string> KnobStaticAnalysisPath(KNOB_MODE_WRITEONCE, "pintool", "s", "/tmp/static", "static analysis path");
-KNOB<string> KnobUserID(KNOB_MODE_WRITEONCE, "pintool", "u", "0", "user id to run tool as");
-// Because I don't always want to recompile, but I don't want to run this all of the time with replay
-KNOB<string> KnobTurnOffReplay(KNOB_MODE_WRITEONCE, "pintool", "n", "0", "standalone, no replay when compiled with replay support");
-KNOB<string> KnobErrorRegex(KNOB_MODE_WRITEONCE, "pintool", "e", "blahblabhablahbalh", "error regex to match against");
 
 #define FANCY_ALLOC
 
-// produce a trace of calls and rets
-// #define TRACE_TAINTS
+#ifndef HAVE_REPLAY
+#define GLOBAL_LOCK
+#endif
 
 // Controls amount of log printing
-/*
-#define WARN_PRINT(f, args...) \
+#ifdef LOGGING_ON
+#define WARN_PRINT(args...) \
 {			   \
-    fprintf(f, args);       \
-    fflush(f);          \
+    fprintf(LOG_F, args);       \
+    fflush(LOG_F);          \
 }
-*/
-#define WARN_PRINT(args...)
-
 #define LOG_PRINT(args...) \
 {                           \
     fprintf(LOG_F, args);   \
     fflush(LOG_F);          \
 }
-//#define LOG_PRINT(x,...);
-
-// Memory areas print
-/*
 #define MEM_PRINT(f, args...) \
 {                               \
     fprintf(f, args);       \
     fflush(f);              \
 }
-*/
-#define MEM_PRINT(x,...);
-
 #define SYSCALL_PRINT(args...) \
 {                               \
     fprintf(LOG_F, args);       \
     fflush(LOG_F);              \
 }
-//#define SYSCALL_PRINT(x,...);
 
+#else
+#define WARN_PRINT(args...)
+#define LOG_PRINT(x,...);
+#define MEM_PRINT(x,...);
+#define SYSCALL_PRINT(x,...);
+#endif // LOGGING_ON
+
+// produce a trace of calls and rets
+// #define TRACE_TAINTS
 // Used for debugging taints
+// #define DEBUG_TAINT
 #define CURRENT_INSTRUCTION 0x80a136c
 #define CURRENT_FUNCTION 0x806c481
 #define TAINT_LOCATION 0xb
 #define TAINT_TRACK
 
 #define TAINT_CONDITION (ptdata->current_function == CURRENT_FUNCTION)
+#ifdef DEBUG_TAINT
 #define TAINT_PRINT(args...) \
 {                           \
     if (TAINT_CONDITION) { \
@@ -143,13 +123,16 @@ KNOB<string> KnobErrorRegex(KNOB_MODE_WRITEONCE, "pintool", "e", "blahblabhablah
         fflush(LOG_F);          \
     }                       \
 }
-//#define TAINT_PRINT(x,...);
 #define TAINT_PRINT_DEP_VECTOR(vector) \
 { \
     if (TAINT_CONDITION) { \
         __print_dependency_tokens (LOG_F, vector); \
     } \
 }
+#else
+#define TAINT_PRINT(x,...);
+#define TAINT_PRINT_DEP_VECTOR(x,...);
+#endif
 
 #ifdef HAVE_REPLAY
 #include "util.h"
@@ -412,7 +395,9 @@ struct thread_data {
     struct taint select_taint; // Not sure why we cannot treat this as a handled fn...
     u_long brk_saved_loc;
     ADDRINT current_instruction;
+#ifdef DEBUG_TAINT
     ADDRINT current_function;
+#endif
     struct handled_function syscall_taint_info; // saved info for propagating taint across syscall
     void* save_syscall_info;			// info to be saved across syscalls
     ADDRINT buffer_info;
@@ -485,6 +470,25 @@ int count_syscall = 0; // count
 int global_syscall_cnt = 0;
 struct xray_monitor* open_fds = NULL; // List of open fds
 
+FILE* log_f = NULL; // For debugging
+FILE* trace_f = NULL; // for tracing taints
+
+/* Command line Knobs */
+#ifdef CONFAID
+KNOB<string> KnobOutputFile(KNOB_MODE_WRITEONCE, "pintool",
+        "o", "/tmp/confaid.result", "output file");
+#else
+KNOB<string> KnobOutputFile(KNOB_MODE_WRITEONCE, "pintool",
+        "o", "/tmp/dataflow.result", "output file");
+#endif
+KNOB<string> KnobInputFile(KNOB_MODE_WRITEONCE, "pintool", "i", "/tmp/dataflow.in", "input file");
+KNOB<string> KnobInputType(KNOB_MODE_WRITEONCE, "pintool", "t", "CMDLINE", "input type");
+KNOB<string> KnobOutputType(KNOB_MODE_WRITEONCE, "pintool", "x", "ANY", "output type");
+KNOB<string> KnobStaticAnalysisPath(KNOB_MODE_WRITEONCE, "pintool", "s", "/tmp/static", "static analysis path");
+// Because I don't always want to recompile, but I don't want to run this all of the time with replay
+KNOB<string> KnobTurnOffReplay(KNOB_MODE_WRITEONCE, "pintool", "n", "0", "standalone, no replay when compiled with replay support");
+KNOB<string> KnobErrorRegex(KNOB_MODE_WRITEONCE, "pintool", "e", "blahblabhablahbalh", "error regex to match against");
+
 #ifdef CONFAID
 struct confaid_data* confaid_data;
 
@@ -513,7 +517,6 @@ int print_first_inst = 1; // for debugging print the first instruction
 long unsigned inst_count = 0;
 #define INST_COUNT_INCREMENT 200000
 
-#define GLOBAL_LOCK
 #ifdef GLOBAL_LOCK
 REENTRY_LOCK relock;
 #endif
@@ -547,12 +550,10 @@ struct used_address uaddrs[MAX_USED_ADDRS]; // Address regions used by the app
 int num_uaddrs; // Number of such regions
 #endif
 
-#define INST_DEBUG
-#ifdef INST_DEBUG
-FILE* inst_f = NULL;
-#endif
+#ifdef DEBUG_TAINT
 #ifdef TAINT_PRINT
 FILE* taint_f = NULL;
+#endif
 #endif
 
 // sets the rlimit to be infinite
@@ -5669,15 +5670,17 @@ void handle_syscall_stop (int ret_value)
 void instrument_syscall(ADDRINT syscall_num, ADDRINT syscallarg1, ADDRINT syscallarg1_ref, ADDRINT syscallarg2, ADDRINT syscallarg3, ADDRINT syscallarg4, ADDRINT syscallarg5)
 {
     struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-
     GRAB_GLOBAL_LOCK (ptdata);
 
     SYSNUM = (int)syscall_num;
+#ifdef LOGGING_ON
     SYSCALL_PRINT ("%d: Pid %d calling syscall %d\n", global_syscall_cnt, PIN_GetPid(), SYSNUM);
-	fprintf (stderr, "%d: Pid %d, tid %d, (record pid %d), syscall num is %d\n", global_syscall_cnt, PIN_GetPid(), PIN_GetTid(), ptdata->record_pid, (int) syscall_num);
-
+#endif
     increment_syscall_cnt (ptdata, (int)syscall_num);
+
+#ifdef LINKAGE_SYSCALL
     handle_syscall_start((int)syscall_num, syscallarg1, syscallarg2, syscallarg3);
+#endif
 
 #ifdef ALT_PATH_EXPLORATION
     if(NUM_CKPTS > 0) {
@@ -5794,14 +5797,12 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
     if (ptdata && ptdata->app_syscall != 999) {
         ptdata->app_syscall = 0;
     }
-    
-    CALLBACK_PRINT(log_f, "CALLBACK_PRINT: instrument_syscall_ret starts\n");
 
     ADDRINT ret_value = PIN_GetSyscallReturn(ctxt, std);
-
     SYSCALL_PRINT (" syscall %d returns %d(%#x)\n", SYSNUM, (int)ret_value, ret_value);
-
+#ifdef LINKAGE_SYSCALL
     handle_syscall_stop((int) ret_value);
+#endif
 
     switch (SYSNUM) {
         case SYS_open:
@@ -5944,9 +5945,11 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
 
             addr = ret_value;
             if (ret_value > 0 && addr && len) {
+#ifdef TRACK_MEMORY_AREAS
                 if (add_memory_area(ma_list, addr, addr + len)) {
                     MEM_PRINT(MEM_F, "Could not add memory area [%#x, %#x)\n", (unsigned int) (addr), (unsigned int) (addr + len));
                 }
+#endif
 
 #ifndef CONFAID
                 // treat this as a read if we've mmap'ed a file
@@ -5975,10 +5978,12 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
             len = mmi->length;
 
             if ((int)ret_value != -1 && addr && len) {
+#ifdef TRACK_MEMORY_AREAS
                 if (remove_memory_area(ma_list, addr, addr + len)) {
                     MEM_PRINT(MEM_F, "Could not remove memory area [%#x, %#x)\n", (unsigned int)(addr), (unsigned int)(addr+len));
                     fflush(MEM_F);
                 }
+#endif
             }
             ptdata->buffer_info = 0;
             free((void *)mmi);
@@ -5986,6 +5991,7 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
         }
         case SYS_brk:
         {
+#ifdef TRACK_MEMORY_AREAS
             if (ptdata->brk_saved_loc) {
                 if (ret_value == ptdata->brk_saved_loc) break;
                 if (ret_value < ptdata->brk_saved_loc) {
@@ -5999,23 +6005,7 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
                 ptdata->brk_saved_loc = ret_value;
             }
             break;
-        }
-        case SYS_set_thread_area:
-        {
-            /*
-            if (!ret_value) {
-                u_long addr = ptdata->mmap_saved_addr;
-                int len = ptdata->mmap_saved_len;
-                if (add_memory_area(ma_list, addr, addr+len)) {
-                    MEM_PRINT(MEM_F, "Could not add memory area [%#x, %#x)\n", (unsigned int) (addr), (unsigned int) (addr + len));
-                }
-                MEM_PRINT (MEM_F, "set_thread_area: added [%#x,%#x)\n", (unsigned int) addr, (unsigned int) (addr + len));
-                ptdata->mmap_saved_addr = 0;
-                ptdata->mmap_saved_len = 0;
-            }
-            break;
-            */
-            break;
+#endif
         }
         case SYS_rmdir:
         {
@@ -6023,7 +6013,6 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
             break;
         }
     }
-    CALLBACK_PRINT(log_f, "CALLBACK_PRINT: instrument_syscall_ret ends\n");
 }
 
 #ifdef HAVE_REPLAY
@@ -6659,11 +6648,11 @@ struct bblock* read_return_bblock(struct thread_data* ptdata, ADDRINT inst_ptr)
     return tmp->bblock;
 }
 
+#ifdef CTRL_FLOW
 void instrument_inst_ctrflow(ADDRINT inst_ptr)
 {
     
     struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-
     GRAB_GLOBAL_LOCK (ptdata);
 
     if (ptdata != plasttd) {
@@ -6705,7 +6694,6 @@ void instrument_inst_ctrflow(ADDRINT inst_ptr)
         return;
     }
    
-#ifdef CTRL_FLOW
     if (!CURRENT_BBL || BBL_OVER) {
         //we are not in the middle of a bblock
         instbbl tmp_key;
@@ -6767,10 +6755,11 @@ void instrument_inst_ctrflow(ADDRINT inst_ptr)
             }
         }
     }
-#endif // CTRL_FLOW
     RELEASE_GLOBAL_LOCK (ptdata);
 }
+#endif // CTRL_FLOW
 
+#ifdef ALT_PATH_EXPLORATION
 void store_memory_locations (struct thread_data* ptdata, ADDRINT mem_loc, int size, int dir)
 {
     struct alt_mem_mod* mem_entry;
@@ -6820,6 +6809,7 @@ void store_memory_locations (struct thread_data* ptdata, ADDRINT mem_loc, int si
     }
     RELEASE_GLOBAL_LOCK (ptdata);
 }
+#endif
 
 #ifdef ALT_PATH_EXPLORATION
 //the reason that the I kept the memory_log although I added the hash table
@@ -6844,7 +6834,6 @@ void instrument_speculative_write(ADDRINT mem_loc, UINT32 reg_value, UINT32 op_s
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 #endif // end #ifdef ALT_PATH_EXPLORATION
-
 
 void add_to_calling_bblock(struct thread_data* ptdata, int status, ADDRINT address, ADDRINT call_address, ADDRINT next_address)
 {
@@ -6959,15 +6948,9 @@ void instrument_ret(ADDRINT address, ADDRINT target)
         }
 #endif // CTRL_FLOW
         RELEASE_GLOBAL_LOCK (ptdata);
-        if (print_insts) {
-            LOG_PRINT ("  no calling bblock, returning\n");
-        }
         return;
     }
     if (CALLING_BBLOCK_HEAD->next_address != target) {
-        if (print_insts) {
-            LOG_PRINT ("  next address %#x is not the target %#x\n", CALLING_BBLOCK_HEAD->next_address, target);
-        }
         RELEASE_GLOBAL_LOCK (ptdata);
         return;
     }
@@ -6989,11 +6972,6 @@ void instrument_ret(ADDRINT address, ADDRINT target)
     BBL_OVER = 0;
     CURRENT_BBL = 0;
 
-    if (print_insts) {
-        fprintf(log_f, "  instrument_ret, before current_block is set");
-        fflush(log_f);
-    }
-
     //if ctrflow_taint is 0, we don't want current_bbl
     //if (CTRFLOW_TAINT_STACK->prev) {
         instbbl tmp_key;
@@ -7010,10 +6988,6 @@ void instrument_ret(ADDRINT address, ADDRINT target)
                 }
             }
         }
-    
-    if (print_insts) {
-        LOG_PRINT ("  instrument_ret, after current_block is set");
-    }
     //}
 
 #ifdef CTRL_FLOW
@@ -7047,9 +7021,6 @@ void instrument_ret(ADDRINT address, ADDRINT target)
             (unsigned int) get_static_address(img_list, tmp_head->call_address),
             CTRFLOW_TAINT_STACK_SIZE, CALLING_BBLOCK_SIZE);
 #endif
-    if (print_insts) {
-        LOG_PRINT ("  removing bblock from the calling bblock log, status: %d, target: %#x\n", CALLING_BBLOCK_HEAD->status, target);
-    }
     CALLING_BBLOCK_HEAD = tmp_head->prev;
     free (tmp_head);
 #ifdef MEM
@@ -7058,10 +7029,6 @@ void instrument_ret(ADDRINT address, ADDRINT target)
     CALLING_BBLOCK_SIZE--;
 
 close:
-    if (print_insts) {
-        LOG_PRINT ("instrument_ret done\n");
-    }
-
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
@@ -7086,22 +7053,23 @@ void instrument_inst(ADDRINT inst_ptr, ADDRINT next_addr, ADDRINT target, ADDRIN
         LOG_PRINT ("first inst: %#x, sp %#x\n", inst_ptr, sp);
         print_first_inst = 0;
 
+#ifdef TRACK_MEMORY_AREAS
         if (add_memory_area (ma_list, sp, sp + STACK_SIZE)) {
             MEM_PRINT (MEM_F, "Could not add stack [%#x, %#x)\n", sp, sp + STACK_SIZE);
         }
         LOG_PRINT ("Added stack [%#x, %#x)\n", sp, sp+STACK_SIZE);
+#endif
     }
 
     // Count instructios
     inst_count++;
+#ifdef LOGGING_ON
     if ((inst_count % INST_COUNT_INCREMENT) == 0) {
         LOG_PRINT ("inst count is %lu, inst_ptr is %#x\n", inst_count, inst_ptr);
     }
+#endif
 
     if (opcode == XED_ICLASS_RET_NEAR || opcode == XED_ICLASS_RET_FAR) {
-        if (print_insts) {
-            LOG_PRINT ("instrument_inst: about to instrument ret at %#x\n", inst_ptr);
-        }
 #ifndef CTRL_FLOW
         if (CALLING_BBLOCK_SIZE != 0) {
 #endif
@@ -7115,10 +7083,6 @@ void instrument_inst(ADDRINT inst_ptr, ADDRINT next_addr, ADDRINT target, ADDRIN
         if (opcode == XED_ICLASS_RET_NEAR || opcode == XED_ICLASS_RET_FAR) {
             //LOG_PRINT ("Inst %#x ret (handled)\n", inst_ptr);
 //#ifdef CTRL_FLOW
-            if (print_insts) {
-                fprintf(log_f, "instrument_inst: about to instrument ret\n");
-                fflush(log_f);
-            }
             instrument_ret(inst_ptr, target);
 //#endif
         } else {
@@ -7134,10 +7098,6 @@ void instrument_inst(ADDRINT inst_ptr, ADDRINT next_addr, ADDRINT target, ADDRIN
     }
 */
     RELEASE_GLOBAL_LOCK (ptdata);
-    if (print_insts) {
-        LOG_PRINT ("instrument_inst done, next addr %#x(%#lx), branch target %#x(%#lx)\n",
-                next_addr, get_static_address(img_list, next_addr), target, get_static_address(img_list, target));
-    }
 }
 
 void track_file(INS ins, void *v) 
@@ -7145,7 +7105,7 @@ void track_file(INS ins, void *v)
     CALLBACK_PRINT(log_f, "CALLBACK_PRINT: track file starts\n");
     OPCODE opcode;
     UINT32 category;
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
     UINT32 mask;
 #endif
     category = INS_Category(ins);
@@ -7156,7 +7116,7 @@ void track_file(INS ins, void *v)
             IARG_ADDRINT, INS_NextAddress(ins),
             IARG_BRANCH_TARGET_ADDR, IARG_REG_VALUE, LEVEL_BASE::REG_ESP, IARG_UINT32, opcode, IARG_END);
 
-#if LINKAGE_LEVEL > LINKAGE_COPY
+#ifdef CTRL_FLOW
         switch(opcode) {
             case XED_ICLASS_JMP:
             case XED_ICLASS_JMP_FAR:
@@ -7284,13 +7244,13 @@ void track_file(INS ins, void *v)
                 instrumented = 1;
                 break;
         }
-#endif  // LINKAGE_LEVEL > 1 
+#endif  // CTRL_FLOW
 
-        // XXX Probably only need to add this instrumentation for certain linkage levels
 #ifdef CTRL_FLOW
         INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)instrument_inst_ctrflow, IARG_INST_PTR, IARG_END);
 #endif
 
+#ifdef CTRL_FLOW
 #ifdef ALT_PATH_EXPLORATION
         if (INS_IsMemoryWrite(ins)) {
             if((opcode == XED_ICLASS_STOSB || opcode == XED_ICLASS_STOSW || opcode == XED_ICLASS_STOSD ||
@@ -7310,7 +7270,8 @@ void track_file(INS ins, void *v)
                         addrsize, IARG_UINT32, 1, IARG_REG_VALUE, REG_EFLAGS, IARG_END);
             }
         }
-#endif
+#endif // ALT_PATH_EXPLORATION
+#endif // CTRL_FLOW
 
         if (instrumented) {
             INSTRUMENT_PRINT(log_f, "%#X: already instrumented\n", INS_Address(ins));
@@ -7318,21 +7279,21 @@ void track_file(INS ins, void *v)
         }
 
         if(INS_IsMov(ins)) {
-#if LINKAGE_LEVEL >= LINKAGE_COPY
+#ifdef LINKAGE_COPY
             INSTRUMENT_PRINT(log_f, "%#x: about to instrument %s\n", INS_Address(ins), INS_Mnemonic(ins).c_str());
             //flag affected: none
             instrument_mov(ins);
 #endif
 
         } else if(category == XED_CATEGORY_CMOV) {
-#if LINKAGE_LEVEL >= LINKAGE_COPY
+#ifdef LINKAGE_COPY
             //flag affected: none, propagated flags
             INSTRUMENT_PRINT(log_f, "%#x: about to instrument %s\n", INS_Address(ins), INS_Mnemonic(ins).c_str());
             instrument_cmov(ins, opcode);
 #endif
 
         } else if (category == XED_CATEGORY_SHIFT) {
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
             //flags affected: almost all, some are undefined in some cases
             INSTRUMENT_PRINT(log_f, "%#x: about to instrument %s\n", INS_Address(ins), INS_Mnemonic(ins).c_str());
             instrument_shift(ins);
@@ -7341,7 +7302,7 @@ void track_file(INS ins, void *v)
             switch(opcode) {
                 case XED_ICLASS_XCHG:
                     //flags affected: none
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument xchg\n", INS_Address(ins));
                     instrument_xchg(ins);
 #endif
@@ -7358,7 +7319,7 @@ void track_file(INS ins, void *v)
                 case XED_ICLASS_MOVQ:
                 case XED_ICLASS_MOVDQU:
                 case XED_ICLASS_MOVDQA:
-#if LINKAGE_LEVEL >= LINKAGE_COPY
+#ifdef LINKAGE_COPY
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument %s\n", INS_Address(ins), INS_Mnemonic(ins).c_str());
                     //flag affected: none
                     instrument_movx(ins);
@@ -7366,7 +7327,7 @@ void track_file(INS ins, void *v)
                     break;
                 
                 case XED_ICLASS_PUSH:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     //flags affected: none
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument push\n", INS_Address(ins));
                     instrument_push(ins);
@@ -7374,7 +7335,7 @@ void track_file(INS ins, void *v)
                     break;
 
                 case XED_ICLASS_POP:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     //flags affected: none
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument pop\n", INS_Address(ins));
                     instrument_pop(ins);
@@ -7382,7 +7343,7 @@ void track_file(INS ins, void *v)
                     break;
                 
                 case XED_ICLASS_ADC:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     //flags affected: all
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument adc\n", INS_Address(ins));
                     instrument_adc(ins);
@@ -7391,7 +7352,7 @@ void track_file(INS ins, void *v)
 
                 case XED_ICLASS_ADD:
                 case XED_ICLASS_SUB:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     //flags affected: all
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument addorsub\n", INS_Address(ins));
                     instrument_addorsub(ins);
@@ -7399,7 +7360,7 @@ void track_file(INS ins, void *v)
                     break;
 
                 case XED_ICLASS_SBB:                
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     //flags affected: all
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument sbb\n", INS_Address(ins));
                     instrument_adc(ins);
@@ -7409,7 +7370,7 @@ void track_file(INS ins, void *v)
                 case XED_ICLASS_OR:
                 case XED_ICLASS_AND:
                 case XED_ICLASS_XOR:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     //flags affected: all but AF (AF is undefined)
                     //TODO: this taints all the flags, should be carefull about AF
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument logical\n", INS_Address(ins));
@@ -7421,14 +7382,14 @@ void track_file(INS ins, void *v)
                 case XED_ICLASS_PAND:
                 case XED_ICLASS_PANDN:
                 case XED_ICLASS_PXOR:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument logical, no flags\n", INS_Address(ins));
                     instrument_addorsub_noflags(ins);
 #endif
                     break;
 
                 case XED_ICLASS_MUL:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     //flags affected: CF and OF, the rest are undefined
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument mul\n", INS_Address(ins));
                     instrument_mul(ins);
@@ -7436,7 +7397,7 @@ void track_file(INS ins, void *v)
                     break;
 
                 case XED_ICLASS_IMUL:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     //flags affected: CF and OF, the rest are undefined
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument mul\n", INS_Address(ins));
                     instrument_imul(ins);
@@ -7445,7 +7406,7 @@ void track_file(INS ins, void *v)
                 
                 case XED_ICLASS_DIV:
                 case XED_ICLASS_IDIV:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     //flags affected: all flags are undefined
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument div\n", INS_Address(ins));
                     instrument_div(ins);
@@ -7453,7 +7414,7 @@ void track_file(INS ins, void *v)
                     break;
                 
                 case XED_ICLASS_XADD:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     //flags affected: all 
                     INSTRUMENT_PRINT(log_f, "%#x: about to instruent xadd\n", INS_Address(ins));
                     instrument_xadd(ins);
@@ -7464,7 +7425,7 @@ void track_file(INS ins, void *v)
                 case XED_ICLASS_MOVSW:
                 case XED_ICLASS_MOVSD:
                 case XED_ICLASS_MOVSQ:
-#if LINKAGE_LEVEL >= LINKAGE_COPY
+#ifdef LINKAGE_COPY
                     //flags affected: none
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument move string\n", INS_Address(ins));
                     instrument_move_string(ins, opcode);
@@ -7476,7 +7437,7 @@ void track_file(INS ins, void *v)
                 case XED_ICLASS_STOSD:
                 case XED_ICLASS_STOSQ:
 // XXX Is this a copy or a data linkage?
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     //flags affected: none
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument store string\n", INS_Address(ins));
                     instrument_store_string(ins, opcode);
@@ -7488,7 +7449,7 @@ void track_file(INS ins, void *v)
                 case XED_ICLASS_LODSD:
                 case XED_ICLASS_LODSQ:
 // XXX Is this a copy or a data linkage?
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     //flags affected: none
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument load string\n", INS_Address(ins));
                     instrument_load_string(ins, opcode);
@@ -7496,7 +7457,7 @@ void track_file(INS ins, void *v)
                     break;
 
                 case XED_ICLASS_LEA:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     //flags affected: none
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument LEA\n", INS_Address(ins));
                     instrument_lea(ins);
@@ -7505,7 +7466,7 @@ void track_file(INS ins, void *v)
                 
                 case XED_ICLASS_CVTSD2SS:
                 case XED_ICLASS_CVTTSD2SI:
-#if LINKAGE_LEVEL >= LINKAGE_COPY
+#ifdef LINKAGE_COPY
                     //flags affected: none
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument CVTSD2SS\n", INS_Address(ins));
                     instrument_mov(ins);
@@ -7521,7 +7482,7 @@ void track_file(INS ins, void *v)
                 case XED_ICLASS_FSUBR:
                 case XED_ICLASS_FSUBRP:
                 case XED_ICLASS_FISUBR:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     //flags affected: FPU flags are affected. not considered now
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument FADD/FSUB\n", INS_Address(ins));
                     old_instrument_addorsub(ins);
@@ -7529,7 +7490,7 @@ void track_file(INS ins, void *v)
                     break;
 
                 case XED_ICLASS_FXCH:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     //flags affected: FPU flags
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument FXCH\n", INS_Address(ins));
                     instrument_xchg(ins);
@@ -7538,7 +7499,7 @@ void track_file(INS ins, void *v)
 
                 case XED_ICLASS_FYL2X:
                 case XED_ICLASS_FYL2XP1:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     //flags affected: FPU flags
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument FYL2X\n", INS_Address(ins));
                     old_instrument_addorsub(ins);
@@ -7584,7 +7545,7 @@ void track_file(INS ins, void *v)
                     break;
                 */
                 case XED_ICLASS_TEST:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     //flags affected: all for CMP, all but AF for TEST. we are being conservative for TEST
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument TEST\n", INS_Address(ins));
                     instrument_test(ins);
@@ -7592,7 +7553,7 @@ void track_file(INS ins, void *v)
                     break;
                 
                 case XED_ICLASS_CMP:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     //flags affected: all for CMP, all but AF for TEST. we are being conservative for TEST
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument CMP\n", INS_Address(ins));
                     instrument_cmp(ins);
@@ -7600,7 +7561,7 @@ void track_file(INS ins, void *v)
                     break;
                 
                 case XED_ICLASS_CMPXCHG:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument CMPXCHNG\n", INS_Address(ins));
                     instrument_cmpxchg(ins);
 #endif
@@ -7609,7 +7570,7 @@ void track_file(INS ins, void *v)
                 case XED_ICLASS_INC:
                 case XED_ICLASS_DEC:
                 case XED_ICLASS_NEG:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     //flags affected: all but CF
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument INC/DEC\n", INS_Address(ins));
                     instrument_incordec(ins);
@@ -7618,7 +7579,7 @@ void track_file(INS ins, void *v)
                 
                 case XED_ICLASS_SETB:
                 case XED_ICLASS_SETNB:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument SETcc\n", INS_Address(ins));
                     mask = CF_MASK;
                     instrument_setcc(ins, mask);
@@ -7627,7 +7588,7 @@ void track_file(INS ins, void *v)
 
                 case XED_ICLASS_SETL:
                 case XED_ICLASS_SETNL:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument SETcc\n", INS_Address(ins));
                     mask = SF_MASK | OF_MASK;
                     instrument_setcc(ins, mask);
@@ -7636,7 +7597,7 @@ void track_file(INS ins, void *v)
 
                 case XED_ICLASS_SETNBE:
                 case XED_ICLASS_SETBE:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument SETcc\n", INS_Address(ins));
                     mask = CF_MASK | ZF_MASK;
                     instrument_setcc(ins, mask);
@@ -7645,7 +7606,7 @@ void track_file(INS ins, void *v)
                 
                 case XED_ICLASS_SETLE:
                 case XED_ICLASS_SETNLE:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument SETcc\n", INS_Address(ins));
                     mask = ZF_MASK | SF_MASK | OF_MASK;
                     instrument_setcc(ins, mask);
@@ -7654,7 +7615,7 @@ void track_file(INS ins, void *v)
 
                 case XED_ICLASS_SETNO:
                 case XED_ICLASS_SETO:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument SETcc\n", INS_Address(ins));
                     mask = OF_MASK;
                     instrument_setcc(ins, mask);
@@ -7663,7 +7624,7 @@ void track_file(INS ins, void *v)
 
                 case XED_ICLASS_SETNP:
                 case XED_ICLASS_SETP:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument SETcc\n", INS_Address(ins));
                     mask = PF_MASK;
                     instrument_setcc(ins, mask);
@@ -7672,7 +7633,7 @@ void track_file(INS ins, void *v)
 
                 case XED_ICLASS_SETNS:
                 case XED_ICLASS_SETS:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument SETcc\n", INS_Address(ins));
                     mask = SF_MASK;
                     instrument_setcc(ins, mask);
@@ -7681,7 +7642,8 @@ void track_file(INS ins, void *v)
 
                 case XED_ICLASS_SETZ:
                 case XED_ICLASS_SETNZ:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
+                    INSTRUMENT_PRINT(log_f, "%#x: about to instrument SETcc\n", INS_Address(ins));
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument SETcc\n", INS_Address(ins));
                     mask = ZF_MASK;
                     instrument_setcc(ins, mask);
@@ -7701,17 +7663,13 @@ void track_file(INS ins, void *v)
 //#ifdef CTRL_FLOW
 #if 0
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument ret instruction: %s\n", INS_Address(ins), INS_Mnemonic(ins).c_str());
-                    if (print_insts || INS_Address(ins) == 0xb668ffd5) {
-                        fprintf(log_f, "%#x: about to instrument ret instruction: %s\n", INS_Address(ins), INS_Mnemonic(ins).c_str());
-                        fflush(log_f);
-                    }
                     INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(instrument_ret), IARG_INST_PTR, IARG_BRANCH_TARGET_ADDR, IARG_END);    
 #endif
 //#endif // CTRL_FLOW
                     break;
                 case XED_ICLASS_CWD:
                 case XED_ICLASS_CDQ:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     //flags affected: none
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument CWD/CDQ\n", INS_Address(ins));
                     instrument_cdq(ins);
@@ -7719,7 +7677,7 @@ void track_file(INS ins, void *v)
                     break;
                 
                 case XED_ICLASS_HLT:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument HLT\n", INS_Address(ins));
                     INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(instrument_hlt), IARG_END);   
 #endif
@@ -7735,7 +7693,7 @@ void track_file(INS ins, void *v)
                     break;
 
                 case XED_ICLASS_BT:
-#if LINKAGE_LEVEL >= LINKAGE_DATA
+#ifdef LINKAGE_DATA
                     // flags affected: CF
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument bt %s\n", INS_Address(ins), INS_Mnemonic(ins).c_str());
                     instrument_bt(ins);
@@ -7783,7 +7741,6 @@ void track_file(INS ins, void *v)
         INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)syscall_instr_after, IARG_INST_PTR, IARG_END);
 #endif
     }    
-    CALLBACK_PRINT(log_f, "CALLBACK_PRINT: track file ends\n");
 }
 
 void initialize_functions() 
@@ -7825,10 +7782,6 @@ struct handled_function* make_handled_function(struct thread_data* ptdata, const
 inline void free_handled_function(struct thread_data* ptdata)
 {
     struct handled_function* hf = HANDLED_FUNC_HEAD;
-    if (print_insts) {
-        fprintf(log_f, "free_handled_function %s\n", hf->name);
-        fflush(log_f);
-    }
     HANDLED_FUNC_HEAD = hf->prev;
     free (hf);
 #ifdef MEM
@@ -8544,9 +8497,11 @@ void dl_runtime_resolve_stop(void* name)
 
 void generic_start(void* name)
 {            
+#ifdef LOGGING_ON
     char* name_func;
     name_func = (char*) name;
     LOG_PRINT("start handled function (generic_start) %s\n", name_func);
+#endif
 
     struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
     if (CALLING_BBLOCK_HEAD && (CALLING_BBLOCK_HEAD->status == HANDLED)) return;
@@ -8557,8 +8512,10 @@ void generic_start(void* name)
 
 void generic_void_stop(void* name)
 {
+#ifdef LOGGING_ON
     char* funcname = (char*) name;
     LOG_PRINT ("stop handled function (generic_void_stop) %s\n", funcname);
+#endif
     struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
     struct handled_function* hf = HANDLED_FUNC_HEAD;
     if (!hf || strcmp(hf->name, (char*)name)) return;
@@ -8569,8 +8526,10 @@ void generic_void_stop(void* name)
 
 void generic_stop(void* name)
 {
+#ifdef LOGGING_ON
     char* funcname = (char*) name;
     LOG_PRINT ("stop handled function (generic_stop) %s\n", funcname);
+#endif
     struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
     struct handled_function* hf = HANDLED_FUNC_HEAD;
     if (!hf || strcmp(hf->name, (char*)name)) return;
@@ -8640,6 +8599,7 @@ void rmdir_stop(ADDRINT res)
 
 void main_start(ADDRINT arg1, ADDRINT arg2)
 {
+#ifdef LOGGING_ON
     int argc = (int) arg1;
     char** argv = (char **) arg2;
 
@@ -8649,6 +8609,7 @@ void main_start(ADDRINT arg1, ADDRINT arg2)
     for (int i = 0; i < argc; i++) {
         LOG_PRINT ("argv[%d]: %s\n", i, argv[i]);
     }
+#endif
 
     main_started = 1;
 
@@ -8831,24 +8792,17 @@ void create_options_from_buffer (long id, void* buf, int size, void* data)
                     fprintf(stderr, "[ERROR]Not enough options\n");
                     exit(-1);
                 }
-
                 new_taint(&vector);
                 set_taint_value(&vector, option_cnt, get_max_taint_value());
-                LOG_PRINT ("[OPTION] Created new option %d for addr %#x\n", option_cnt, mem_location);
 
                 create_new_token (option_cnt, global_syscall_cnt, i, data);
 
                 option_cnt++;    
                 mem_mod_dependency(ptdata, mem_location, &vector, SET, 1);
-
-                LOG_PRINT ("Set memory location %#x to taint:", mem_location);
-                __print_dependency_tokens(log_f, get_mem_taint(mem_location));
-                __print_dependency_tokens(log_f, &vector);
             }
         }
     } else {
         char* bufcpy;
-
         // we are dealing with messages...
         LOG_PRINT ("[OPTION] Dealing with messages\n");
 
@@ -9370,10 +9324,6 @@ void apr_palloc_start()
 
 void malloc_start(ADDRINT size)
 {
-    if (print_insts) {
-        fprintf(log_f, "malloc_start size %d\n", (int) size);
-        fflush(log_f);
-    }
     struct thread_data* ptdata;
     START_HANDLED_FUNCTION("malloc");
 
@@ -9385,35 +9335,18 @@ void malloc_start(ADDRINT size)
 
 void malloc_stop(ADDRINT res)
 {
-    if(print_insts) {
-        fprintf(log_f, "malloc_stop\n");
-        fflush(log_f);
-    }
-    
     struct thread_data* ptdata;
     STOP_HANDLED_FUNCTION("malloc");
 
     GRAB_GLOBAL_LOCK (ptdata);
     if (NUM_CKPTS == 0) {
         if (res) {
-
-            if (print_insts) {
-                fprintf(log_f, "malloc_stop in malloc_arraay\n");
-                fflush(log_f);
-            }
-
             malloc_array[malloc_index].address = res;
             malloc_array[malloc_index].active = 1;
             malloc_array[malloc_index].size = (int)hf->special_value;
             malloc_index++;
             MYASSERT(malloc_index < MAX_MALLOC_INDEX);
             assert(malloc_index < MAX_MALLOC_INDEX);
-
-
-            if (print_insts) {
-                fprintf(log_f, "malloc_stop done malloc_arraay\n");
-                fflush(log_f);
-            }
         }
     }
     reg_clear_dependency(ptdata, LEVEL_BASE::REG_EAX);
@@ -10701,6 +10634,7 @@ void nptl_deallocate_start ()
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
+#ifdef CTRL_FLOW
 void set_no_spec()
 {
     struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
@@ -10722,18 +10656,23 @@ void set_conservative()
     SPEC_PRINT(log_f, "setting a function conservative\n");
     RELEASE_GLOBAL_LOCK (ptdata);
 }
+#endif
 
+#ifdef DEBUG_TAINT
 void instrument_current_function (ADDRINT name, ADDRINT address)
 {
     struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
     if (ptdata) ptdata->current_function = address;
     // LOG_PRINT ("Calling function %s\n", (char *) name);
 }
+#endif
 
 void inspect_function_args_start(ADDRINT name, ADDRINT arg0, ADDRINT arg1, ADDRINT arg0_ref, ADDRINT arg1_ref)
 {
+#ifdef LOGGING_ON
     char* funcname = (char *) name;
     LOG_PRINT ("[INSPECT] inspect_function_args_start: %s\n", funcname);
+#endif
 
     for (int i = 0; i < (int)(sizeof(int) * 2); i++) {
         LOG_PRINT ("[INSPECT] arg1_ref %#x ", arg1_ref + i);
@@ -10743,30 +10682,20 @@ void inspect_function_args_start(ADDRINT name, ADDRINT arg0, ADDRINT arg1, ADDRI
 
 void inspect_function_args_stop(ADDRINT name, ADDRINT res)
 {
+#ifdef LOGGING_ON
     char* funcname = (char *) name;
     LOG_PRINT ("[INSPECT] inspect_function_args_stop: %s\n", funcname);
     __print_dependency_tokens(LOG_F, get_reg_taint(LEVEL_BASE::REG_EAX));
-}
-
-
-void alarm_start(ADDRINT value) {
-    int seconds = (int) value;
-    if (seconds == 0) {
-        fprintf(log_f, "Pid %d ALARM cleared\n", PIN_GetPid());
-        fflush(log_f);
-    } else {
-        fprintf(log_f, "Pid %d ALARM set to %d seconds\n", PIN_GetPid(), seconds);
-        fflush(log_f);
-    }
+#endif
 }
 
 void track_function(RTN rtn, void* v) 
 {
     RTN_Open(rtn);
+#ifdef DEBUG_TAINT
     const char* name = RTN_Name(rtn).c_str();
-    STATIC_PRINT ("[STATIC] function is %s\n", name);
-
     RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)instrument_current_function, IARG_PTR, name, IARG_PTR, RTN_Address(rtn), IARG_END);
+#endif
 
 #ifdef CONFAID
     /*
@@ -10796,18 +10725,7 @@ void track_function(RTN rtn, void* v)
     }
 #endif
 
-/*
-    RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)function_start,
-        IARG_PTR, name, IARG_END);
-*/
-
-    if (!strcmp(name, "alarm")) {
-        RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)alarm_start,
-                        IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_END);
-    }
-
-
-#ifdef LINKAGE_SYSCALL_ABSTRACT
+#ifdef LINKAGE_SYSCALL
     /* All syscall wrapper abstractions. For system calls with no glibc wrappers,
      * see handle_syscall_start and handle_syscall_stop */
     else if (!strcmp(name, "llseek") || !strcmp(name, "__llseek") || !strcmp(name, "__libc_lseek")
@@ -10895,9 +10813,6 @@ void track_function(RTN rtn, void* v)
         RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)open_stop, IARG_FUNCRET_EXITPOINT_VALUE, IARG_END);
     } 
     /* Libc functions that we abstract that aren't system calls */
-#endif
-
-    /* Calls before and after certain functions for bookkeeping */
 
     /* enable and disable dep prints*/
     if (!strcmp(name, "socket") || !strcmp(name, "__socket")) {
@@ -11337,6 +11252,7 @@ void track_function(RTN rtn, void* v)
 		    || !strcmp(name, "msg_warn")) {
 	    RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)output_cf_taint, IARG_PTR, name, IARG_END);
     } 
+#endif // LINKAGE_SYSCALL
     
 #ifdef CTRL_FLOW
 close_out:
@@ -11358,6 +11274,7 @@ gboolean instbbl_cmp(gconstpointer arg1, gconstpointer arg2)
     return TRUE;
 }
 
+#ifdef ALT_PATH_EXPLORATION
 BOOL pin_segv_signal_handler(THREADID id, INT32 sig, CONTEXT* ctx, BOOL hasHandler, 
                                 const EXCEPTION_INFO* pExceptInfo, VOID* v) {
     CALLBACK_PRINT(log_f, "CALLBACK_PRINT: pin_signal_handler starts\n");
@@ -11372,12 +11289,7 @@ BOOL pin_segv_signal_handler(THREADID id, INT32 sig, CONTEXT* ctx, BOOL hasHandl
     CALLBACK_PRINT(log_f, "CALLBACK_PRINT: pin_signal_handler ends\n");
     return TRUE;
 }
-
-BOOL pin_alrm_catcher(THREADID id, INT32 sig, CONTEXT* ctx, BOOL hasHandler,
-                                const EXCEPTION_INFO* pExceptINfo, VOID* v) {
-    fprintf(log_f, "Pid %d caught SIGALRM %d\n", PIN_GetPid(), sig);
-    return FALSE;
-}
+#endif
 
 struct cmd_line_args {
     int argc;
@@ -11387,7 +11299,7 @@ struct cmd_line_args {
 BOOL follow_child(CHILD_PROCESS child, void* data)
 {
     // FIXME
-    LOG_PRINT ("[ERROR] follow_child THIS NEEDS TO BE FIXED\n");
+    fprintf(stderr, "ERROR: following exec NEEDS to be FIXED\n");
     return TRUE;
 }
 
@@ -11462,11 +11374,10 @@ void fini(INT32 code, void* v) {
 #ifdef INTER_PROCESS_PROPAGATION
     //cleanup_pin_fds();
 #endif
-#ifdef INST_DEBUG
-    fclose(inst_f);
-#endif
+#ifdef DEBUG_TAINT
 #ifdef TAINT_PRINT
     fclose(taint_f);
+#endif
 #endif
     cleanup_bblocks_instbbls();
     
@@ -11560,34 +11471,30 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
         // Retrieve the location of the args from the kernel
         char** args;
         args = (char **) get_replay_args (dev_fd);
-        fprintf(stderr, "replay args are %#lx\n", (unsigned long) args);
+        LOG_PRINT ("replay args are %#lx\n", (unsigned long) args);
         while (1) {
             char* arg;
             arg = *args;
-            fprintf(stderr, "replay arg is %#lx\n", (unsigned long) arg);
 
             // args ends with a NULL
             if (!arg) {
                 break;
             }
-            fprintf(stderr, "arg is %s\n", arg);
-            LOG_PRINT("arg is %s\n", arg);
+            LOG_PRINT ("arg is %s\n", arg);
             create_options_from_buffer (global_syscall_cnt, arg, strlen(arg) + 1, (void *) "ARGS");
             args += 1;
         }
         // Retrieve the location of the env. var from the kernel
         args = (char **) get_env_vars (dev_fd);
-        fprintf(stderr, "env. vars are %#lx\n", (unsigned long) args);
+        LOG_PRINT ("env. vars are %#lx\n", (unsigned long) args);
         while (1) {
             char* arg;
             arg = *args;
-            fprintf(stderr, "env var is %#lx\n", (unsigned long) arg);
 
             // args ends with a NULL
             if (!arg) {
                 break;
             }
-            fprintf(stderr, "arg is %s\n", arg);
             LOG_PRINT ("arg is %s\n", arg);
             create_options_from_buffer (global_syscall_cnt, arg, strlen(arg) + 1, (void *) "ENV");
             args += 1;
@@ -11614,15 +11521,13 @@ void force_exit() {
 int setup_logs() {
     int rc;
     char log_name[64];
-    char error_name[64];
-#ifdef INST_DEBUG
-    char inst_log_name[256];
-#endif
+#ifdef DEBUG_TAINT
 #ifdef TAINT_PRINT
     char taint_log_name[256];
 #endif
 #ifdef TRACE_TAINTS
     char trace_log_name[256];
+#endif
 #endif
 
     if (log_f) fclose(log_f);
@@ -11634,24 +11539,7 @@ int setup_logs() {
     }
     fprintf(stderr, "Log file name is %s\n", log_name);
 
-    if (error_f) fclose(error_f);
-    sprintf(error_name, "/tmp/confaid.error.%d", PIN_GetPid());
-    error_f = fopen(error_name, "a");
-    if (!error_f) {
-        printf("ERROR: cannot open error log file\n");
-        return -2;
-    }
-
-#ifdef INST_DEBUG
-    // set up instruction logging
-    if (inst_f) fclose(inst_f);
-    sprintf(inst_log_name, "/tmp/confaid.inst.%d", get_record_pid());
-    inst_f = fopen(inst_log_name, "w");
-    if(!inst_f) {
-        printf("ERROR: cannot open inst_file\n");
-        return -3;
-    }
-#endif
+#ifdef DEBUG_TAINT
 #ifdef TAINT_PRINT
     if (taint_f) fclose(taint_f);
     // set up taint printing
@@ -11672,6 +11560,7 @@ int setup_logs() {
         return -5;
     }
 #endif
+#endif
 
     // now that files are created, change permissions
     rc = chmod(log_name, S_IRUSR | S_IWUSR | S_IROTH | S_IWOTH);
@@ -11679,18 +11568,7 @@ int setup_logs() {
         printf("whaaat??\n");
         return -6;
     }
-    rc = chmod(error_name, S_IRUSR | S_IWUSR | S_IROTH | S_IWOTH);
-    if (rc != 0) {
-        printf("whaaat??\n");
-        return -7;
-    }
-#ifdef INST_DEBUG
-    rc = chmod(inst_log_name, S_IRUSR | S_IWUSR | S_IROTH | S_IWOTH);
-    if (rc != 0) {
-        printf("whaaat??\n");
-        return -8;
-    }
-#endif
+#ifdef DEBUG_TAINT
 #ifdef TAINT_PRINT
     rc = chmod(taint_log_name, S_IRUSR | S_IWUSR | S_IROTH | S_IWOTH);
     if (rc != 0) {
@@ -11704,6 +11582,7 @@ int setup_logs() {
         printf("whaaaat??\n");
         return -10;
     }
+#endif
 #endif
 
     return 0;
@@ -11724,7 +11603,6 @@ void setup_message_input(const char* input_msg)
 int main(int argc, char** argv) 
 {
     int rc;
-    int new_user_id;
 
     fprintf(stderr, "Starting up\n");
 
@@ -11761,19 +11639,6 @@ int main(int argc, char** argv)
     output_f = fopen(KnobOutputFile.Value().c_str(), "w+");
     if (output_f == 0) {
         fprintf(stderr, "no output file is specified, exiting..\n");
-        exit(-1);
-    }
-
-    // If we want to run this tool as a different user:
-    new_user_id = atoi(KnobUserID.Value().c_str());
-    rc = setuid(new_user_id);
-    if (rc) {
-        fprintf(stderr, "Could not set user id, rc: %d\n", rc);
-        exit(-1);
-    }
-    rc = seteuid(new_user_id);
-    if (rc) {
-        fprintf(stderr, "could not set euid, rc: %d\n", rc);
         exit(-1);
     }
 
@@ -11814,7 +11679,9 @@ int main(int argc, char** argv)
     initialize_functions();
 
     // init the list of memory areas
+#ifdef TRACK_MEMORY_AREAS
     ma_list = new_memory_areas();
+#endif
 
     // init the list of images
     img_list = new_image_infos();
@@ -11869,8 +11736,9 @@ int main(int argc, char** argv)
 
     PIN_AddFollowChildProcessFunction(follow_child, cla);
 
+#ifdef ALT_PATH_EXPLORATION
     PIN_InterceptSignal(SIGSEGV, pin_segv_signal_handler, 0);
-    PIN_InterceptSignal(SIGALRM, pin_alrm_catcher, 0);
+#endif
 
     PIN_AddFiniFunction(fini, 0);
     PIN_AddSyscallExitFunction(instrument_syscall_ret, 0);

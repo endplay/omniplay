@@ -5,10 +5,13 @@
 #
 ##############################################################
 
+TAINTS_LIB=taints
 SDEV=$(HOME)/omniplay/test
 REPLAY_LIB += $(SDEV)/libutil.a
 TOOL_LIBS += $(SDEV)/libutil.a
 TOOL_CXXFLAGS += -I$(SDEV)
+GLIB_INCLUDES=-I/usr/include/glib-2.0 -I/usr/lib/i386-linux-gnu/glib-2.0/include -I/usr/include/glib-2.0/glib
+TOOL_CXXFLAGS += $(GLIB_INCLUDES) -I$(SDEV)
 
 ##############################################################
 #
@@ -21,7 +24,7 @@ TOOL_CXXFLAGS += -I$(SDEV)
 # This defines tests which run tools of the same name.  This is simply for convenience to avoid
 # defining the test name twice (once in TOOL_ROOTS and again in TEST_ROOTS).
 # Tests defined here should not be defined in TOOL_ROOTS and TEST_ROOTS.
-TEST_TOOL_ROOTS := print_instructions 
+TEST_TOOL_ROOTS := print_instructions linkage_copy linkage_data 
 
 # This defines the tests to be run that were not already defined in TEST_TOOL_ROOTS.
 TEST_ROOTS :=
@@ -48,7 +51,7 @@ SA_TOOL_ROOTS :=
 APP_ROOTS :=
 
 # This defines any additional object files that need to be compiled.
-OBJECT_ROOTS :=
+OBJECT_ROOTS := taints_glib_hash
 
 # This defines any additional dlls (shared objects), other than the pintools, that need to be compiled.
 DLL_ROOTS :=
@@ -76,5 +79,23 @@ LIB_ROOTS :=
 
 # This section contains the build rules for all binaries that have special build rules.
 # See makefile.default.rules for the default build rules.
-$(OBJDIR)%$(EXE_SUFFIX): %.cpp
-	$(APP_CXX) $(APP_CXXFLAGS) $(COMP_EXE)$@ $< $(APP_LDFLAGS) $(APP_LIBS) $(CXX_LPATHS) $(CXX_LIBS) $(REPLAY_LIB)
+$(OBJDIR)taints_glib_hash$(OBJ_SUFFIX): $(TAINTS_LIB)/taints_glib_hash.c $(TAINTS_LIB)/taints.h
+	$(APP_CC) -c -o $(OBJDIR)taints$(OBJ_SUFFIX) $(TAINTS_LIB)/taints_glib_hash.c $(GLIB_INCLUDES)
+# Pintools
+$(OBJDIR)print_instructions$(OBJ_SUFFIX): print_instructions.cpp
+	$(CXX) $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
+
+$(OBJDIR)print_instructions$(PINTOOL_SUFFIX): $(OBJDIR)print_instructions$(OBJ_SUFFIX)
+	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS)
+
+$(OBJDIR)linkage_copy$(OBJ_SUFFIX): linkage.cpp
+	$(CXX) -DHAVE_REPLAY -DLINKAGE_COPY $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
+
+$(OBJDIR)linkage_copy$(PINTOOL_SUFFIX): $(OBJDIR)linkage_copy$(OBJ_SUFFIX)
+	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) -lglib-2.0 $(OBJDIR)taints.o
+
+$(OBJDIR)linkage_data$(OBJ_SUFFIX): linkage.cpp
+	$(CXX) -DHAVE_REPLAY -DLINKAGE_COPY -DLINKAGE_DATA $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
+
+$(OBJDIR)linkage_data$(PINTOOL_SUFFIX): $(OBJDIR)linkage_data$(OBJ_SUFFIX)
+	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) -lglib-2.0 $(OBJDIR)taints.o
