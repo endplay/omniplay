@@ -2,8 +2,8 @@ OMNIPLAY
 
 1) Get the required software
 
-Omniplay runs on the 12.04.x long term Ubuntu Linux distribution.  You must install the 32-bit
-version.
+Omniplay runs on the 12.04.2 LTS Ubuntu Linux 32-bit distribution.  You should install
+this distro before proceeeding.
 
 2) Obtain the omniplay source code
 
