@@ -5,8 +5,8 @@
 #
 ##############################################################
 
+SDEV=../test
 TAINTS_LIB=taints
-SDEV=$(HOME)/omniplay/test
 REPLAY_LIB += $(SDEV)/libutil.a
 TOOL_LIBS += $(SDEV)/libutil.a
 TOOL_CXXFLAGS += -I$(SDEV)

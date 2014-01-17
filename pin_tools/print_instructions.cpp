@@ -11,6 +11,8 @@
 
 long print_limit = 10;
 KNOB<string> KnobPrintLimit(KNOB_MODE_WRITEONCE, "pintool", "p", "10000000", "syscall print limit");
+long print_stop = 10;
+KNOB<string> KnobPrintStop(KNOB_MODE_WRITEONCE, "pintool", "s", "10000000", "syscall print stop");
 
 long global_syscall_cnt = 0;
 int print_instructions = 0;
@@ -105,7 +107,7 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
 
 void instrument_inst_print (ADDRINT ip)
 {
-    if (global_syscall_cnt > print_limit || print_instructions) {
+    if ((global_syscall_cnt > print_limit && global_syscall_cnt < print_stop) || print_instructions) {
 	PIN_LockClient();
         fprintf(stderr, "[INST] Pid %d (tid: %d) (record %d) - %#x\n", PIN_GetPid(), PIN_GetTid(), get_record_pid(), ip);
 	if (IMG_Valid(IMG_FindByAddress(ip))) {
@@ -258,6 +260,7 @@ int main(int argc, char** argv)
     // Obtain a key for TLS storage
     tls_key = PIN_CreateThreadDataKey(0);
     print_limit = atoi(KnobPrintLimit.Value().c_str());
+    print_stop = atoi(KnobPrintStop.Value().c_str());
 
     PIN_AddThreadStartFunction(thread_start, 0);
     PIN_AddThreadFiniFunction(thread_fini, 0);
