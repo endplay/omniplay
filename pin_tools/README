@@ -1,7 +1,7 @@
 README
 
-To build a Pintool:
-$ make PIN_ROOT=/home/mcchow/pin-2.13 obj-ia32/print_instructions.so
+To build all the Pintools:
+$ make PIN_ROOT=/home/mcchow/pin-2.13
 
 where PIN_ROOT is the root directory of the Pin binary
 
@@ -12,3 +12,8 @@ Ex:
 /home/mcchow/pin-2.13/pin -pid 2345 -t /home/mcchow/omniplay/pin_tools/obj-ia32/print_instructions.so
 
 Use -follow_exec if following splits on replay
+
+In this directory:
+print_instructions.cpp - The test Pin tool that works with replay
+race_checker.cpp - Race detector
+linkage.cpp - Linkage tool
