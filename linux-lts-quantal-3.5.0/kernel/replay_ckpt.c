@@ -180,6 +180,14 @@ replay_checkpoint_to_disk (char* filename, char* execname, char* buf, int buflen
 		goto exit;
 	}
 
+	// Next, copy the signal handlers
+	copyed = vfs_write (file, (char *) &current->sighand->action, sizeof(struct k_sigaction) * _NSIG, &pos);
+	if (copyed != sizeof(struct k_sigaction)*_NSIG) {
+		printk ("replay_checkpoint_to_disk: tried to write sighands, got rc %d\n", copyed);
+		rc = -EFAULT;
+		goto exit;
+	}
+
 	// Next, write out arguments to exec
 	copyed = vfs_write (file, buf, buflen, &pos);
 	if (copyed != buflen) {
@@ -252,6 +260,13 @@ long replay_resume_from_disk (char* filename, char** execname, char*** argsp, ch
 	copyed = vfs_read(file, (char *) &current->signal->rlim, sizeof(struct rlimit)*RLIM_NLIMITS, &pos);
 	if (copyed != sizeof(struct rlimit)*RLIM_NLIMITS) {
 		printk ("replay_resume_from_disk: tried to read rlimits, got rc %d\n", copyed);
+		rc = copyed;
+		goto exit;
+	}
+
+	copyed = vfs_read(file, (char *) &current->sighand->action, sizeof(struct k_sigaction) * _NSIG, &pos);
+	if (copyed != sizeof(struct k_sigaction)*_NSIG) {
+		printk ("replay_resume_from_disk: tried to read sighands, got rc %d\n", copyed);
 		rc = copyed;
 		goto exit;
 	}

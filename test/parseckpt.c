@@ -4,6 +4,16 @@
 #include <fcntl.h>
 #include <sys/resource.h>
 
+// redefined from the kernel
+#define _NSIGS 64
+struct k_sigaction {
+	unsigned long sa_handler;
+	unsigned long sa_flags;
+	unsigned long sa_restorer;
+	unsigned long sa_mask;
+	unsigned long ka_restorer;
+};
+
 int main (int argc, char* argv[])
 {
     char buf[4096];
@@ -12,6 +22,7 @@ int main (int argc, char* argv[])
     int fd, i;
     pid_t record_pid;
     struct rlimit rlimits[RLIM_NLIMITS];
+    struct k_sigaction sighands[_NSIGS];
 
     if (argc != 2) {
 	printf ("format: parseckpt <dir>\n");
@@ -50,6 +61,13 @@ int main (int argc, char* argv[])
 	return -1;
     }
     printf ("record pid: %d\n", record_pid);
+
+    // Next, read the sighands
+    copyed = read(fd, (char *) &sighands, sizeof(struct k_sigaction) * _NSIGS);
+    if (copyed != (64 * 20)) {
+        printf ("parseckpt: tried to read sighands, got %ld", copyed);
+        return -1;
+    }
 
     // Next, read the number of arguments
     copyed = read(fd, (char *) &args_cnt, sizeof(args_cnt));
