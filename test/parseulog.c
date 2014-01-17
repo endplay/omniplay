@@ -8,11 +8,12 @@
 
 int main (int argc, char* argv[])
 {
-    int fd, rc, new_errno;
+    int fd, rc;
     struct stat st;
     int bytes_read = 0;
 #ifndef USE_DEBUG_LOG
     u_long total_clock = 0;
+    int new_errno;
 #endif
 
     if (argc < 2) {
