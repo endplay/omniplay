@@ -3,6 +3,9 @@
 
 #define MAX_LOGDIR_STRLEN 80
 
+#include <linux/signal.h>
+#include <linux/mm_types.h>
+
 /* Starts replay with a (possibly) multithreaded fork */
 int fork_replay (char __user * logdir, const char __user *const __user *args, const char __user *const __user *env, char* linker, int save_mmap, int fd);
 

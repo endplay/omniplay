@@ -33,8 +33,39 @@
 //#define USE_HPC
 #define USE_ARGSALLOC
 #define USE_DISK_CKPT
+#define TRACE_READ_WRITE
 
 //#define PRINT_STATISTICS
+
+#ifdef TRACE_READ_WRITE
+
+struct replayfs_syscache_id {
+	loff_t unique_id : 48; 
+	loff_t pid : 16; 
+	loff_t sysnum : 56; 
+	loff_t mod : 8;
+} __attribute__((aligned(16)));
+
+struct replayfs_btree_value {
+	struct replayfs_syscache_id id;
+
+	/* This sucker is killing me... */
+	size_t buff_offs;
+};
+
+struct replayfs_filemap_value {
+	struct replayfs_btree_value bval;
+
+	loff_t offset;
+	size_t size;
+	size_t read_offset;
+};
+
+struct replayfs_filemap_entry {
+	int num_elms;
+	struct replayfs_filemap_value elms[0];
+};
+#endif
 
 struct repsignal {
 	int signr;
@@ -411,7 +442,28 @@ int main (int argc, char* argv[])
 					}
 					printf ("\tis_cache_file: %d\n", is_cache_read);
 					if (is_cache_read) {
+
 						size = sizeof (loff_t);
+
+#ifdef TRACE_READ_WRITE
+						do {
+							off_t orig_pos;
+							struct replayfs_filemap_entry entry;
+							loff_t bleh;
+
+							orig_pos = lseek(fd, 0, SEEK_CUR);
+							rc = read(fd, &bleh, sizeof(loff_t));
+							rc = read(fd, &entry, sizeof(struct replayfs_filemap_entry));
+							lseek(fd, orig_pos, SEEK_SET);
+
+							if (rc != sizeof(struct replayfs_filemap_entry)) {
+								printf ("cannot read entry\n");
+								return rc;
+							}
+
+							size += sizeof(struct replayfs_filemap_entry) + entry.num_elms * sizeof(struct replayfs_filemap_value);
+						} while (0);
+#endif
 					} else {
 						size = retval; 
 					}
@@ -621,6 +673,10 @@ int main (int argc, char* argv[])
 					printf ("write_log_data: unrecognized syscall %d\n", psr.sysnum);
 				}
 
+				do {
+				off_t orig_pos = lseek(fd, 0, SEEK_CUR);
+
+				} while (0);
 				rc = read (fd, buf, size);
 				if (rc != size) {
 					printf ("read of retparams returns %d, errno = %d, size is %d\n", rc, errno, size);
@@ -693,6 +749,21 @@ int main (int argc, char* argv[])
 
 				if (psr.sysnum == 3 && is_cache_read) {
 					printf ("\toffset is %llx\n", *((long long int *) buf));
+#ifdef TRACE_READ_WRITE
+					do {
+						struct replayfs_filemap_entry *entry;
+						int i;
+						entry = (struct replayfs_filemap_entry *)(buf + sizeof(long long int));
+						printf ("\tNumber of writes sourcing this read: %d\n",
+								entry->num_elms);
+
+						for (i = 0; i < entry->num_elms; i++) {
+							printf ("\t\tSource %d is {id, pid, syscall_num} {%lld %d %lld}\n", i,
+									(loff_t)entry->elms[i].bval.id.unique_id, entry->elms[i].bval.id.pid,
+									(loff_t)entry->elms[i].bval.id.sysnum);
+						}
+					} while (0);
+#endif
 				}
 			}
 

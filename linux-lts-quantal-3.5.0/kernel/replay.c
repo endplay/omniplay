@@ -56,6 +56,9 @@
 #include "../ipc/util.h" // For shm utility functions
 #include <asm/user_32.h>
 
+/* FIXME: I shoudl move this to include... */
+#include "../kernel/replay_graph/replayfs_filemap.h"
+
 // mcc: fix this later
 //#define MULTI_COMPUTER
 
@@ -63,6 +66,12 @@
 
 // If defined, use file cache for reads of read-only files
 #define CACHE_READS
+
+#define TRACE_READ_WRITE
+
+#if defined(TRACE_READ_WRITE) && !defined(CACHE_READS)
+# error "TRACE_READ_WRITE without CACHE_READS unimplemented!"
+#endif
 
 // how long we wait on the wait_queue before timing out
 #define SCHED_TO 1000000
@@ -420,9 +429,10 @@ struct record_thread {
 	                               // (0:init,1:cloning,2:completed)
 	long rp_sysrc;                 // Return code for replay_prefork
 
-  	/* Recording log */
-  	struct syscall_result* rp_log;  // Logs system calls per thread
+	/* Recording log */
+	struct syscall_result* rp_log;  // Logs system calls per thread
 	u_long rp_in_ptr;               // Next record to insert
+	u64 rp_count;                   // Number of syscalls run by this thread
 
 	loff_t rp_read_log_pos;		// The current position in the log file that is being read
 	struct list_head rp_argsalloc_list;	// kernel linked list head pointing to linked list of argsalloc_nodes
@@ -1287,6 +1297,7 @@ new_record_thread (struct record_group* prg, u_long recpid, struct record_cache_
 	}
 
 	prp->rp_in_ptr = 0;
+	prp->rp_count = 0;
 	prp->rp_read_log_pos = 0;
 
 	INIT_LIST_HEAD(&prp->rp_argsalloc_list);
@@ -2563,6 +2574,7 @@ new_syscall_exit (long sysnum, void* retparams)
 	}
 #endif
 	prt->rp_in_ptr += 1;
+	prt->rp_count += 1;
 	return 0;
 }
 
@@ -3556,6 +3568,7 @@ get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, stru
 
 	(*prt->rp_preplay_clock)++;
 	MPRINT ("Pid %d incremented replay clock on syscall %d exit to %ld\n", current->pid, psr->sysnum, *(prt->rp_preplay_clock));
+	prect->rp_count += 1;
 
 	rg_unlock (prg->rg_rec_group);
 	return 0;
@@ -4775,7 +4788,7 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 	is_cache_file = is_record_cache_file_lock(current->record_thrd->rp_cache_files, fd);
 	rc = sys_read (fd, buf, count);
 	new_syscall_done (3, rc);			       
-	if (rc > 0 && buf) {					
+	if (rc > 0 && buf) {
 		// For now, include a flag that indicates whether this is a cached read or not - this is only
 		// needed for parseklog and so we may take it out later
 		if (is_cache_file) {
@@ -4803,6 +4816,38 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 			*((loff_t *) (pretval+sizeof(u_int))) = filp->f_pos - rc;
 			spin_unlock(&files->file_lock);
 			record_cache_file_unlock (current->record_thrd->rp_cache_files, fd);
+
+#ifdef TRACE_READ_WRITE
+			do {
+				struct replayfs_filemap_entry *entry;
+				struct replayfs_filemap map;
+
+				size_t cpy_size;
+
+				struct replayfs_filemap_entry *args;
+				replayfs_filemap_init(&map, &replayfs_alloc, filp);
+				
+				//printk("%s %d: Doing filemap read on map at %lld\n", __func__, __LINE__, map.entries.meta_loc);
+				entry = replayfs_filemap_read(&map, filp->f_pos - rc, rc);
+
+				if (IS_ERR(entry) || entry == NULL) {
+					entry = kmalloc(sizeof(struct replayfs_filemap_entry), GFP_KERNEL);
+					entry->num_elms = 0;
+				}
+
+				cpy_size = sizeof(struct replayfs_filemap_entry) +
+						(entry->num_elms * sizeof(struct replayfs_filemap_value));
+
+				//printk("%s %d: allocating cpy_size (%d) args with num_elms of %d\n", __func__, __LINE__, cpy_size, entry->num_elms);
+				args = ARGSKMALLOC(cpy_size, GFP_KERNEL);
+
+				memcpy(args, entry, cpy_size);
+
+				kfree(entry);
+
+				replayfs_filemap_destroy(&map);
+			} while (0);
+#endif
 		} else {
 			pretval = ARGSKMALLOC (rc+sizeof(u_int), GFP_KERNEL); 
 			if (pretval == NULL) {				
@@ -4815,8 +4860,7 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 				ARGSKFREE(pretval, rc+sizeof(u_int));	
 				return -EFAULT;
 			}							
-		}								
-									
+		}
 	} else if (is_cache_file) {
 		record_cache_file_unlock (current->record_thrd->rp_cache_files, fd);
 	}
@@ -4833,6 +4877,7 @@ replay_read (unsigned int fd, char __user * buf, size_t count)
 	int cache_fd;
 
 	if (retparams) {						
+		int consume_size;
 		if (is_replay_cache_file(current->replay_thrd->rp_cache_files, fd, &cache_fd)) {
 			// read from the open cache file
 			loff_t off = *((loff_t *) (retparams+sizeof(u_int)));
@@ -4842,13 +4887,26 @@ replay_read (unsigned int fd, char __user * buf, size_t count)
 				printk ("pid %d read from cache file %d files %p orig fd %u off %ld returns %ld not expected %ld\n", current->pid, cache_fd, current->replay_thrd->rp_cache_files, fd, (long) off, retval, rc);
 				return syscall_mismatch();
 			}
-			argsconsume (current->replay_thrd->rp_record_thread, sizeof(u_int)+sizeof(loff_t)); 
+			consume_size = sizeof(u_int) + sizeof(loff_t);
+			argsconsume (current->replay_thrd->rp_record_thread, consume_size); 
 		} else {
 			// uncached read 
 			DPRINT ("uncached read of fd %u\n", fd);
 			if (copy_to_user (buf, retparams+sizeof(u_int), rc)) printk ("replay_read: pid %d cannot copy to user\n", current->pid); 
-			argsconsume (current->replay_thrd->rp_record_thread, rc+sizeof(u_int)); 
+			consume_size = sizeof(u_int)+rc;
+			argsconsume (current->replay_thrd->rp_record_thread, consume_size); 
 		}
+
+#ifdef TRACE_READ_WRITE
+		do {
+			struct replayfs_filemap_entry *entry = (void *)(retparams + consume_size);
+
+			consume_size = sizeof(struct replayfs_filemap_entry) +
+					(entry->num_elms * sizeof(struct replayfs_filemap_value));
+
+			argsconsume (current->replay_thrd->rp_record_thread, consume_size); 
+		} while (0);
+#endif
 	}
 									
 	return rc;							
@@ -4877,6 +4935,33 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 
 	new_syscall_enter (4);
 	size = sys_write (fd, buf, count);
+#ifdef TRACE_READ_WRITE
+	if (size > 0) {
+		struct file *filp;
+		struct inode *inode;
+
+		filp = fget (fd);
+		inode = filp->f_dentry->d_inode;
+
+		//printk("%s %d: fd: %d ino: %lu irdev is %x, sdev is %x?\n", __func__, __LINE__, fd, inode->i_ino, inode->i_rdev, MAJOR(inode->i_sb->s_dev));
+		if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0) {
+			loff_t fpos;
+			struct replayfs_filemap map;
+			replayfs_filemap_init(&map, &replayfs_alloc, filp);
+
+			fpos = filp->f_pos - size;
+			if (fpos >= 0) {
+				//printk("%s %d: Doing filemap write on map at %lld\n", __func__, __LINE__, map.entries.meta_loc);
+				replayfs_filemap_write(&map, current->record_thrd->rp_group->rg_id, current->record_thrd->rp_record_pid, 
+						current->record_thrd->rp_count, 0, fpos, size);
+			}
+			replayfs_filemap_destroy(&map);
+		}
+
+		fput(filp);
+
+	}
+#endif
 	new_syscall_done (4, size);			       
 	new_syscall_exit (4,  NULL);
 
@@ -4933,6 +5018,7 @@ record_open (const char __user * filename, int flags, int mode)
 				MPRINT ("This is an open that we can cache\n");
 				recbuf = ARGSKMALLOC(sizeof(struct open_retvals), GFP_KERNEL);
 				rg_lock (current->record_thrd->rp_group);
+				/* Add entry to filemap cache */
 				add_file_to_cache (file, &recbuf->dev, &recbuf->ino, &recbuf->mtime);
 				if (set_record_cache_file (current->record_thrd->rp_cache_files, rc) < 0) fput(file);
 				rg_unlock (current->record_thrd->rp_group);

@@ -1,0 +1,27 @@
+#!/bin/bash
+
+ret=0
+pushd ..
+rsync -avz --exclude "*.cmd" --exclude "*.mod.c" --exclude "*.ko" --exclude ".git" --exclude '*.o' --exclude '.tmp*' --exclude '..tmp*' --exclude '*.order' ddevec@volta.eecs.umich.edu:/home/ddevec/share/omniplay/linux-lts-quantal-3.5.0 ~/deps/
+popd
+
+pushd ~/deps/linux-lts-quantal-3.5.0
+rm -f scripts/basic/fixdep
+make -j5
+
+rc=$?
+
+if [ $rc -eq 0 ]; then
+	sudo make install
+else
+	echo "Make Failure!"
+	ret=1
+fi
+
+pushd ..
+rsync -avz --exclude "*.cmd" --exclude ".git" --exclude "*.mod.c" --exclude "*.mod.ko" --exclude '*.o' --exclude '.tmp*' --exclude '..tmp*' --exclude '*.order' linux-lts-quantal-3.5.0 ddevec@volta.eecs.umich.edu:/home/ddevec/share/omniplay/
+popd
+popd
+
+exit $ret
+
