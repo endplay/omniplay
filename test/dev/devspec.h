@@ -48,5 +48,6 @@ struct replay_stats_data {
 #define SPECI_GET_CLOCK_VALUE _IO('u',8)
 #define SPECI_GET_REPLAY_ARGS _IO('u',9)
 #define SPECI_GET_ENV_VARS _IO('u',10)
+#define SPECI_GET_RECORD_GROUP_ID _IO('u',11)
 
 #endif

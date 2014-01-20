@@ -2056,6 +2056,34 @@ unsigned long get_clock_value (void)
 }
 EXPORT_SYMBOL(get_clock_value);
 
+unsigned long get_record_group_id (void)
+{
+	if (current->record_thrd) {
+		return current->record_thrd->rp_group->rg_id;
+	} else if (current->replay_thrd) {
+		return current->replay_thrd->rp_record_thread->rp_group->rg_id;
+	} else {
+		printk ("get_record_group_id called by a non-replay process\n");
+		return -EINVAL;
+	}
+}
+EXPORT_SYMBOL(get_record_group_id);
+
+void set_record_group_id(__u64 rg_id)
+{
+	if (current->record_thrd) {
+		printk ("set_record_group_id: should not be setting record group id on record\n");
+		return;
+	} else if (current->replay_thrd) {
+		if (current->replay_thrd->rp_record_thread && current->replay_thrd->rp_record_thread->rp_group) {
+			current->replay_thrd->rp_record_thread->rp_group->rg_id = rg_id;
+		} else {
+			printk("Pid %d set_record_group_id: record group not set\n", current->pid);
+			return;
+		}
+	}
+}
+
 // For glibc hack - allocate and return the LD_LIBRARY_PATH env variable
 static char* 
 get_libpath (const char __user* const __user* env)

@@ -130,3 +130,8 @@ unsigned long get_env_vars (int fd_spec)
 {
     return ioctl (fd_spec, SPECI_GET_ENV_VARS);
 }
+
+unsigned long get_record_group_id (int fd_spec)
+{
+    return ioctl (fd_spec, SPECI_GET_RECORD_GROUP_ID);
+}

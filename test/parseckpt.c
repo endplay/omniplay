@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <stdint.h>
 #include <sys/resource.h>
 
 // redefined from the kernel
@@ -21,6 +22,7 @@ int main (int argc, char* argv[])
     long copyed, args_cnt, env_cnt, len;
     int fd, i;
     pid_t record_pid;
+    uint64_t rg_id;
     struct rlimit rlimits[RLIM_NLIMITS];
     struct k_sigaction sighands[_NSIGS];
 
@@ -42,6 +44,13 @@ int main (int argc, char* argv[])
 	return -1;
     }
     printf ("record pid: %d\n", record_pid);
+
+    copyed = read(fd, (char *) &rg_id, sizeof(rg_id));
+    if (copyed != sizeof(rg_id)) {
+        printf ("parseckpt: tried to read rg_id, got %ld\n", copyed);
+        return -1;
+    }
+    printf ("record group id: %llu\n", rg_id);
 
     copyed = read(fd, (char *) &len, sizeof(len));
     if (copyed != sizeof(len)) {

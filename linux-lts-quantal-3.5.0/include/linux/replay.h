@@ -97,4 +97,6 @@ void save_exec_args(unsigned long argv, int argc, unsigned long envp, int envc);
 unsigned long get_replay_args(void);
 unsigned long get_env_vars(void);
 
+unsigned long get_record_group_id(void);
+void set_record_group_id(__u64 rg_id);
 #endif

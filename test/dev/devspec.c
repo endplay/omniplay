@@ -145,6 +145,8 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 		return get_replay_args();
 	case SPECI_GET_ENV_VARS:
 		return get_env_vars();
+	case SPECI_GET_RECORD_GROUP_ID:
+		return get_record_group_id();
 	default:
 		return -EINVAL;
 	}
