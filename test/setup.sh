@@ -17,7 +17,7 @@ fi
 if [ ! -e /dev/spec0 ]
 then
     mknod /dev/spec0 c 149 0
-    chmod a+rw /dev/spec0
+		chmod 777 /dev/spec0
 fi
 
 # To allow PIN to attach

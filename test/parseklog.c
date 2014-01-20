@@ -301,6 +301,7 @@ int main (int argc, char* argv[])
 	int count, i, ndx, rcv_total = 0;
 	int stats = 0;
 	int index = 0;
+	int graph_only = 0;
 	u_long data_size, start_clock, stop_clock, clock, expected_clock = 0;
 	long retval;
 	u_int is_cache_read;
@@ -312,6 +313,10 @@ int main (int argc, char* argv[])
 	struct timeval tv2;
 #endif
 
+	/* FIXME: Hacky... really hacky... I'll fix this later */
+#define printf(...) if (!graph_only) printf(__VA_ARGS__);
+#define always_print(...) do { int graph_only_tmp = graph_only; graph_only = 0; printf(__VA_ARGS__); graph_only = graph_only_tmp; } while (0);
+
 	// hack to look at ipc retvals
 	int ipc_call = 0;
 
@@ -322,6 +327,7 @@ int main (int argc, char* argv[])
 	if (argc == 3 && !strcmp(argv[2], "-r")) print_recv = 1;
 	if (argc == 3 && !strcmp(argv[2], "-f")) dump_recv = 1;
 	if (argc == 3 && !strcmp(argv[2], "-s")) stats = 1;
+	if (argc == 3 && !strcmp(argv[2], "-g")) graph_only = 1;
 
 	if (stats) {
 		memset (scount, 0, sizeof(scount));
@@ -750,13 +756,21 @@ int main (int argc, char* argv[])
 						struct replayfs_filemap_entry *entry;
 						int i;
 						entry = (struct replayfs_filemap_entry *)(buf + sizeof(long long int));
-						printf ("\tNumber of writes sourcing this read: %d\n",
-								entry->num_elms);
+						if (!graph_only) {
+							printf ("\tNumber of writes sourcing this read: %d\n",
+									entry->num_elms);
 
-						for (i = 0; i < entry->num_elms; i++) {
-							printf ("\t\tSource %d is {id, pid, syscall_num} {%lld %d %lld}\n", i,
-									(loff_t)entry->elms[i].bval.id.unique_id, entry->elms[i].bval.id.pid,
-									(loff_t)entry->elms[i].bval.id.sysnum);
+							for (i = 0; i < entry->num_elms; i++) {
+								printf ("\t\tSource %d is {id, pid, syscall_num} {%lld %d %lld}\n", i,
+										(loff_t)entry->elms[i].bval.id.unique_id, entry->elms[i].bval.id.pid,
+										(loff_t)entry->elms[i].bval.id.sysnum);
+							}
+						} else {
+							for (i = 0; i < entry->num_elms; i++) {
+								always_print ("%d {%lld, %d, %lld}\n", ndx,
+										(loff_t)entry->elms[i].bval.id.unique_id, entry->elms[i].bval.id.pid,
+										(loff_t)entry->elms[i].bval.id.sysnum);
+							}
 						}
 					} while (0);
 #endif
@@ -830,7 +844,10 @@ int main (int argc, char* argv[])
 		}
 	}
 
+#undef printf
+
 	close (fd);
 	if (dump_recv) close (dfd);
 	return 0;
 }
+
