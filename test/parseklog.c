@@ -673,10 +673,6 @@ int main (int argc, char* argv[])
 					printf ("write_log_data: unrecognized syscall %d\n", psr.sysnum);
 				}
 
-				do {
-				off_t orig_pos = lseek(fd, 0, SEEK_CUR);
-
-				} while (0);
 				rc = read (fd, buf, size);
 				if (rc != size) {
 					printf ("read of retparams returns %d, errno = %d, size is %d\n", rc, errno, size);
@@ -795,6 +791,12 @@ int main (int argc, char* argv[])
 				char* data = buf + sizeof(struct recvfrom_retvals) - sizeof(int)*3;
 				if (write (dfd, data, retval) != retval) {
 					perror ("write dumpfile");
+				}
+			}
+			if (psr.sysnum == 174) {
+				if ((psr.flags & SR_HAS_RETPARAMS) != 0) {
+					struct sigaction* sa = (struct sigaction *)buf;
+					printf ("sa handler is %lx\n", (unsigned long) sa->sa_handler);
 				}
 			}
 			if (psr.sysnum == 102 && call == SYS_RECV && retval > 0) {
