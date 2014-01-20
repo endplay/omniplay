@@ -2056,33 +2056,23 @@ unsigned long get_clock_value (void)
 }
 EXPORT_SYMBOL(get_clock_value);
 
-unsigned long get_record_group_id (void)
+long get_record_group_id (__u64* prg_id)
 {
 	if (current->record_thrd) {
-		return current->record_thrd->rp_group->rg_id;
+		if (copy_to_user (prg_id, &current->record_thrd->rp_group->rg_id, sizeof(__u64))) {
+			return -EINVAL;
+		}
+		return 0;
 	} else if (current->replay_thrd) {
-		return current->replay_thrd->rp_record_thread->rp_group->rg_id;
-	} else {
-		printk ("get_record_group_id called by a non-replay process\n");
-		return -EINVAL;
+		if (copy_to_user (prg_id, &current->replay_thrd->rp_record_thread->rp_group->rg_id, sizeof(__u64))) {
+			return -EINVAL;
+		}
+		return 0;
 	}
+	printk ("get_record_group_id called by a non-replay process\n");
+	return -EINVAL;
 }
 EXPORT_SYMBOL(get_record_group_id);
-
-void set_record_group_id(__u64 rg_id)
-{
-	if (current->record_thrd) {
-		printk ("set_record_group_id: should not be setting record group id on record\n");
-		return;
-	} else if (current->replay_thrd) {
-		if (current->replay_thrd->rp_record_thread && current->replay_thrd->rp_record_thread->rp_group) {
-			current->replay_thrd->rp_record_thread->rp_group->rg_id = rg_id;
-		} else {
-			printk("Pid %d set_record_group_id: record group not set\n", current->pid);
-			return;
-		}
-	}
-}
 
 // For glibc hack - allocate and return the LD_LIBRARY_PATH env variable
 static char* 
@@ -2412,6 +2402,7 @@ replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd, int foll
 	char** args;
 	char** env;
 	char* execname;
+	__u64 rg_id;
 	mm_segment_t old_fs = get_fs();
 	
 	MPRINT ("In replay_ckpt_wakeup\n");
@@ -2451,7 +2442,7 @@ replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd, int foll
 	strcpy (ckpt, logdir);
 	strcat (ckpt, "/ckpt");
 
-	record_pid = replay_resume_from_disk(ckpt, &execname, &args, &env);
+	record_pid = replay_resume_from_disk(ckpt, &execname, &args, &env, &rg_id);
 	if (record_pid < 0) return record_pid;
 
 	// Read in the log records 
@@ -2462,6 +2453,9 @@ replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd, int foll
 	// Create a replay group and thread for this process
 	current->replay_thrd = prept;
 	current->record_thrd = NULL;
+
+	MPRINT ("Pid %d set_record_group_id to %llu\n", current->pid, rg_id);
+	current->replay_thrd->rp_record_thread->rp_group->rg_id = rg_id;
 
 	if (linker) {
 		strncpy (current->replay_thrd->rp_group->rg_rec_group->rg_linker, linker, MAX_LOGDIR_STRLEN);

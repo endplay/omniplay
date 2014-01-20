@@ -77,7 +77,7 @@ int make_logdir_for_replay_id (__u64 id, char* buf);
 /* In replay_ckpt.h */
 char* copy_args (const char __user* const __user* args, const char __user* const __user* env, int* buflen);
 long replay_checkpoint_to_disk (char* filename, char* execname, char* buf, int buflen);
-long replay_resume_from_disk (char* filename, char** execname, char*** argsp, char*** envp);
+long replay_resume_from_disk (char* filename, char** execname, char*** argsp, char*** envp, __u64* prg_id);
 
 /* Optional stats interface */
 #define REPLAY_STATS
@@ -97,6 +97,5 @@ void save_exec_args(unsigned long argv, int argc, unsigned long envp, int envc);
 unsigned long get_replay_args(void);
 unsigned long get_env_vars(void);
 
-unsigned long get_record_group_id(void);
-void set_record_group_id(__u64 rg_id);
+long get_record_group_id(__u64 __user * prg_id);
 #endif

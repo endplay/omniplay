@@ -50,6 +50,7 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 	char logdir[MAX_LOGDIR_STRLEN+1];
 	char* tmp = NULL;
 	long rc;
+	__u64 rg_id;
 
 	pckpt_proc = new_ckpt_proc = NULL;
 	DPRINT ("pid %d cmd number 0x%08x\n", current->pid, cmd);
@@ -146,7 +147,7 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 	case SPECI_GET_ENV_VARS:
 		return get_env_vars();
 	case SPECI_GET_RECORD_GROUP_ID:
-		return get_record_group_id();
+		return get_record_group_id((__u64 *) data);
 	default:
 		return -EINVAL;
 	}

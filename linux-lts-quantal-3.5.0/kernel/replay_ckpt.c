@@ -159,7 +159,8 @@ replay_checkpoint_to_disk (char* filename, char* execname, char* buf, int buflen
 	}
 
 	// Next, write out the record group identifier
-	rg_id = get_record_group_id();
+	get_record_group_id(&rg_id);
+	MPRINT ("Pid %d get record group id %llu\n", current->pid, rg_id);
 	copyed = vfs_write (file, (char *) &rg_id, sizeof(rg_id), &pos);
 	if (copyed != sizeof(rg_id)) {
 		printk ("replay_checkpoint_to_disk: tried to write rg_id, got rc %d\n", copyed);
@@ -217,7 +218,7 @@ exit:
 	return rc;
 }
 
-long replay_resume_from_disk (char* filename, char** execname, char*** argsp, char*** envp) 
+long replay_resume_from_disk (char* filename, char** execname, char*** argsp, char*** envp, __u64* prg_id) 
 {
 	mm_segment_t old_fs = get_fs();
 	int rc, fd, args_cnt, env_cnt, copyed, i, len;
@@ -249,12 +250,13 @@ long replay_resume_from_disk (char* filename, char** execname, char*** argsp, ch
 
 	// Next read the record group id
 	copyed = vfs_read(file, (char *) &rg_id, sizeof(rg_id), &pos);
+	MPRINT ("Pid %d replay_resume_from_disk: rg_id %llu\n", current->pid, rg_id);
 	if (copyed != sizeof(rg_id)) {
 		printk ("replay_resume_from_disk: tried to read rg_id, got rc %d\n", copyed);
 		rc = copyed;
 		goto exit;
 	}
-	set_record_group_id(rg_id);
+	*prg_id = rg_id;
 
 	// Next read the exec name
 	copyed = vfs_read(file, (char *) &len, sizeof(len), &pos);
