@@ -50,7 +50,7 @@ struct replayfs_btree_in_value {
 struct replayfs_btree_value {
 	struct replayfs_syscache_id id;
 
-	/* This sucker is killing me... */
+	/* ... I hate this field */
 	size_t buff_offs;
 };
 

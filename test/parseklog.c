@@ -49,7 +49,6 @@ struct replayfs_syscache_id {
 struct replayfs_btree_value {
 	struct replayfs_syscache_id id;
 
-	/* This sucker is killing me... */
 	size_t buff_offs;
 };
 
@@ -767,9 +766,11 @@ int main (int argc, char* argv[])
 							}
 						} else {
 							for (i = 0; i < entry->num_elms; i++) {
-								always_print ("%d {%lld, %d, %lld}\n", ndx,
+								always_print ("%d %d %d {%lld, %d, %lld, %d, %ld}\n",
+										ndx, entry->elms[i].bval.buff_offs, entry->elms[i].size,
 										(loff_t)entry->elms[i].bval.id.unique_id, entry->elms[i].bval.id.pid,
-										(loff_t)entry->elms[i].bval.id.sysnum);
+										(loff_t)entry->elms[i].bval.id.sysnum,
+										entry->elms[i].read_offset, retval);
 							}
 						}
 					} while (0);

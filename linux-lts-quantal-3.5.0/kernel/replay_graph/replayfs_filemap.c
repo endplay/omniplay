@@ -117,6 +117,7 @@ int replayfs_filemap_write(struct replayfs_filemap *map, loff_t unique_id,
 	value.id.pid = pid;
 	value.id.sysnum = syscall_num;
 	value.id.mod = mod;
+	value.buff_offs = 0;
 
 	key.offset = offset;
 	key.size = size;

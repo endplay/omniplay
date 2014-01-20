@@ -59,7 +59,7 @@ class ReplayLogDB(object):
         c.execute(sql)
 
         sql = '''CREATE TABLE IF NOT EXISTS {table_name} 
-        (write_id INT, write_pid INT, write_sysnum INT, read_id INT, read_pid INT, read_sysnum INT)'''.format(table_name=self.graph_table_name)
+        (write_id INT, write_pid INT, write_sysnum INT, write_offset INT, write_size INT, read_id INT, read_pid INT, read_sysnum INT, read_offset INT, read_size INT)'''.format(table_name=self.graph_table_name)
         c.execute(sql)
 
         conn.commit()
@@ -101,9 +101,9 @@ class ReplayLogDB(object):
         conn = sqlite3.connect(self.get_logdb_path())
         c = conn.cursor()
         for edge in graph_edges:
-            (read_sysnum, write_id, write_pid, write_sysnum) = edge
-            values = (write_id, write_pid, write_sysnum, log_id, recorded_pid, read_sysnum)
-            c.execute('''INSERT INTO {table_name} VALUES (?,?,?,?,?,?)'''.format(table_name=self.graph_table_name),
+            (read_sysnum, read_offset, read_size, write_id, write_pid, write_sysnum, write_offset, write_size) = edge
+            values = (write_id, write_pid, write_sysnum, write_offset, write_size, log_id, recorded_pid, read_sysnum, read_offset, read_size)
+            c.execute('''INSERT INTO {table_name} VALUES (?,?,?,?,?,?,?,?,?,?)'''.format(table_name=self.graph_table_name),
                     values)
         conn.commit()
         conn.close()
@@ -200,10 +200,9 @@ class ReplayLogDB(object):
             lines = graphoutput.split('\n')
             for line in lines:
                 line = line.strip()
-                match = re.match("([0-9]+) {([0-9]+), ([0-9]+), ([0-9]+)}", line)
+                match = re.match("([0-9]+) ([0-9]+) ([0-9]+) {([0-9]+), ([0-9]+), ([0-9]+), ([0-9]+), ([0-9]+)}", line)
                 if match is not None:
-                    graph_edges.append((int(match.group(1)), int(match.group(2)), int(match.group(3)), int(match.group(4))));
-
+                    graph_edges.append((int(match.group(1)), int(match.group(2)), int(match.group(3)), int(match.group(4)), int(match.group(5)), int(match.group(6)), int(match.group(7)), int(match.group(8))));
 
         # split by newline, parse for information
         lines = output.split('\n')
