@@ -122,41 +122,64 @@ will stop if any replay was unsuccessful.
 Use parseklog to examine a kernel log.
 $ omniplay/test/parseklog /tmp/logs/klog.id.* > parsed_klog
 
+Use the user-level debug log.
+Turn on the USE_DEBUG_LOG macro in eglibc-2.15/nptl/pthread_log.h AND linux-lts-quantal-3.5.0/include/linux/replay.h
 
-Building Firefox:
-Dependencies (apt-get install these first)
-autoconf2.13
-autotools-dev
-cdbs
-dbus-x11
-debhelper (>= 7)
-hardening-wrapper
-libasound2-dev
-libcurl4-openssl-dev
-libdbus-glib-1-dev (>= 0.60)
-libfontconfig1-dev
-libfreetype6-dev (>= 2.0.1)
-libgconf2-dev (>= 1.2.1)
-libglib2.0-dev (>= 2.18)
-libgnomeui-dev (>= 2.2.0)
-libgtk2.0-dev (>= 2.14)
-libiw-dev
-libnotify-dev (>= 0.4)
-libpango1.0-dev (>= 1.14.0)
-libstartup-notification0-dev
-libx11-dev
-libxext-dev
-libxrender-dev
-libxt-dev
-locales
-lsb-release
-mesa-common-dev
-python (>= 2.7)
-quilt
-unzip
-xvfb
-yasm (>= 1.1)
-zip
 
-Use the .mzconfig file.
-$ make -f client.mk build
+6) How to build packages:
+Find the package for the executable you want to debug
+> dpkg -S <fully-qualified pathname>
+
+Get the source for that package
+> sudo apt-get source <package>
+
+Get build dependencies:
+$ sudo apt-get build-dep <package>
+
+If you need to build with debug symbols, add the following to environment
+> export DEB_BUILD_OPTIONS="debug nostrip noopt"
+
+Build the package as is
+> dpkg-buildpackage -us -uc -nc
+
+Build the package with the changes you made
+> debuild -us -uc -b
+
+Install the packages you build
+> sudo dpkg -i ../*foo*.deb
+
+
+7) Replaying with Pin
+
+Download Pin version 2.13 from:
+http://software.intel.com/en-us/articles/pintool-downloads
+
+The Pin tools are in the folder, pin_tools.
+To build:
+$ cd omniplay/pin_tools
+$ make PIN_ROOT=<pin_root>
+
+where pin_root is the location where you untar'ed the Pin folder from the download above.
+
+In order to replay with Pin, we need extra information about the
+memory maps that the program will use. We can either save this
+information on when a process is being recorded or replayed.
+
+To record a process and save the mmaps:
+$ launcher -m <prog>
+
+If you didn't record the mmaps are record time, replay a process and
+save the mmaps:
+$ resume <dir> -m
+
+It will save a file called "mlog" containing the list of mmaps
+(test/parsemlog.c should parse the mlog).
+
+Then, replay with pin:
+$ resume <dir> -p
+
+The replay will pause and will resume when Pin is attached.
+
+Attach Pin (the full path for the tool is needed):
+$ /home/mcchow/pin-2.13/pin -pid <pid> -t
+/home/mcchow/omniplay/pin_tools/obj-ia32/print_instructions.so
