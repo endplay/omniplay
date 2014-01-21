@@ -15,8 +15,6 @@ struct thread_data {
     u_long app_syscall; // Per thread address for specifying pin vs. non-pin system calls
 };
 
-int first_call = 2; // Used to find first system call
-int child = 0; // ditto.
 int fd; // File descriptor for the replay device
 TLS_KEY tls_key; // Key for accessing TLS. 
 
@@ -39,30 +37,13 @@ void set_address_one(ADDRINT syscall_num, ADDRINT eax_ref)
 	int sysnum = (int) syscall_num;
 	
 	fprintf (stderr, "In set_address_one, num is %d, cnt is %d\n", (int) syscall_num, ++syscall_cnt);
-	if (sysnum == 242) {
-	    // PIN virtualizes this syscall, which is incompatible with replay.  So change to a different syscall to bypass PIN.
-	    fprintf (stderr, "eax was %d\n", *(int *)eax_ref);
-	    *(int *) eax_ref = 56;
-	    fprintf (stderr, "eax set to %d\n", *(int *)eax_ref);
-	}
-	if (sysnum == 91 || sysnum == 120 || sysnum == 125 || sysnum == 174 || sysnum == 175 || sysnum == 192) {
+	if (sysnum == 91 || sysnum == 120 || sysnum == 125 || sysnum == 174 || sysnum == 175 || sysnum == 190 || sysnum == 192) {
 	    check_clock_before_syscall (fd, (int) syscall_num);
 	}
 	tdata->app_syscall = syscall_num;
     } else {
 	fprintf (stderr, "set_address_one: NULL tdata\n");
     }
-}
-
-// The next two functions essentially NULL out a system call
-void change_result(ADDRINT reg_ref)
-{
-    *(int*)reg_ref = 0; // throw away the result
-}
-
-void change_context(ADDRINT reg_ref)
-{
-    *(int*)reg_ref = 20; // change to a stateless syscall (i.e. getpid)
 }
 
 void syscall_after (ADDRINT ip)
@@ -210,22 +191,10 @@ void track_inst(INS ins, void* data)
 
     // The first system call is the ioctl associated with fork_replay.
     // We do not want to issue it again, so we NULL the call and return.
-    if (first_call == 1) {
-        first_call = 0;
-        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(change_result), 
-                                IARG_REG_REFERENCE, LEVEL_BASE::REG_EAX, IARG_END);
-
-    }
     if(INS_IsSyscall(ins)) {
-        if (first_call == 2 && !child) {
-            first_call = 1;
-            INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(change_context), 
-                                    IARG_REG_REFERENCE, LEVEL_BASE::REG_EAX, IARG_END);
-        } else {
             INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(set_address_one), IARG_SYSCALL_NUMBER, 
 			   IARG_REG_REFERENCE, LEVEL_BASE::REG_EAX, IARG_END);
 
-        }
     } else {
 	// Ugh - I guess we have to instrument every instruction to find which
 	// ones are after a system call - would be nice to do better.
@@ -310,12 +279,6 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 int main(int argc, char** argv) 
 {    
     int rc;
-
-    if (!strcmp(argv[4], "--")) { // pin injected into forked process
-	child = 1;
-    } else { // pin attached to replay process
-	child = 0;
-    }
 
     PIN_InitSymbols();
     PIN_Init(argc, argv);
