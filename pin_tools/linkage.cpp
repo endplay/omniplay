@@ -1,4 +1,5 @@
 #include <sys/types.h>
+#include <stdint.h>
 #include <sys/time.h>
 #include <sys/utsname.h>
 #include <sys/un.h>
@@ -35,10 +36,20 @@
 #include "common.h"
 #include "functions.h"
 #include "list.h"
-#include "taints/taints.h"
 #include "xray_monitor.h"
 #include "reentry_lock.h"
 #include "xray_image.h"
+
+#ifdef LINKAGE_COPY
+ #ifndef LINKAGE_DATA
+  #include "taints/taints_copy.h"
+ #else
+  #include "taints/taints.h"
+ #endif
+#else
+#include "taints/taints.h"
+#endif
+// #include "taints/taints.h"
 
 // Linkage macros
 // TODO get rid of these and put them in the Makefile
@@ -97,12 +108,14 @@ struct image_infos* img_list;
     fprintf(LOG_F, args);       \
     fflush(LOG_F);              \
 }
-
+// #define INSTRUMENT_PRINT fflush(log_f); fprintf
+#define INSTRUMENT_PRINT(x,...);
 #else
 #define WARN_PRINT(args...)
 #define LOG_PRINT(x,...);
 #define MEM_PRINT(x,...);
 #define SYSCALL_PRINT(x,...);
+#define INSTRUMENT_PRINT(x,...);
 #endif // LOGGING_ON
 
 // produce a trace of calls and rets
@@ -296,7 +309,12 @@ struct check_point{
     struct check_point*          prev;
 };
 
-struct token{
+// token types
+#define TOK_READ 1
+#define TOK_WRITE 2
+#define TOK_EXEC 3
+struct token {
+    int type;
     int token_num;
     int syscall_cnt;
     int byte_offset;
@@ -394,7 +412,6 @@ struct thread_data {
     struct taint saved_flag_taints[NUM_FLAGS];  // Save taints here when switching threads
     struct taint select_taint; // Not sure why we cannot treat this as a handled fn...
     u_long brk_saved_loc;
-    ADDRINT current_instruction;
 #ifdef DEBUG_TAINT
     ADDRINT current_function;
 #endif
@@ -402,6 +419,9 @@ struct thread_data {
     void* save_syscall_info;			// info to be saved across syscalls
     ADDRINT buffer_info;
     int syscall_handled;			// flag to indicate if a syscall is handled at the glibc wrapper instead
+#ifdef HAVE_REPLAY
+    uint64_t rg_id;                 // record group id
+#endif
     struct thread_data*      next;
     struct thread_data*      prev;
 };
@@ -440,8 +460,8 @@ struct taint reg_table[NUM_REGS];  // reg taints
 struct taint flag_table[NUM_FLAGS + 1]; // flag taints
 GHashTable* hashtable; // keeps the instbbls, the first and last instructions for each bblock 
 char static_analysis_path [PATH_MAX];
-int dev_fd; // File descriptor for the replay device
 #ifdef HAVE_REPLAY
+int dev_fd; // File descriptor for the replay device
 int no_replay = 0;
 #endif
 int first_thread = 1; // Needed to create exec args
@@ -566,11 +586,11 @@ int set_max_file_rlimit() {
 
 //prototypes
 int setup_logs(void);
-int create_new_token (int token_num, int syscall_cnt, int byte_offset, void* data);
+int create_new_token (int type, int token_num, int syscall_cnt, int byte_offset, void* data);
 #ifdef CONFAID
 int create_new_named_token (int token_num, char* name);
 #endif
-void create_options_from_buffer (long id, void* buf, int size, void* data);
+void create_options_from_buffer (int type, long id, void* buf, int size, void* data);
 struct bblock* read_return_bblock(struct thread_data*, ADDRINT);
 void rollback(struct thread_data*, int);
 void __print_dependency_tokens(FILE* file, struct taint* vector);
@@ -865,7 +885,7 @@ void increment_syscall_cnt (struct thread_data* ptdata, int syscall_num)
 	
 int has_nonzero_token(struct taint* vector, OPTION_TYPE token_num)
 {
-    return get_taint_value(vector, token_num) != 0;
+    return (get_taint_value(vector, token_num)) != 0;
 }
 
 inline void add_modified_mem(struct thread_data* ptdata, ADDRINT mem_location) 
@@ -1028,7 +1048,9 @@ static int mem_clear_dependency(struct thread_data* ptdata, ADDRINT mem_location
     if (CTRFLOW_TAINT_STACK->prev != 0) add_modified_mem(ptdata, mem_location);
 #endif
     
-    clear_taint(value);
+    if (value) {
+        clear_taint(value);
+    }
 
     DEP1_PRINT(log_f, "mem_clear_dependency: location %#x is cleared:", mem_location);
     RELEASE_GLOBAL_LOCK (ptdata);
@@ -1610,7 +1632,6 @@ void taint_reg2mem (ADDRINT mem_loc, UINT32 size, REG reg)
     TAINT_START ("reg2mem");
 
     GRAB_GLOBAL_LOCK (ptdata);
-
 
     struct taint* vector = 0;
     vector = get_reg_taint(reg);
@@ -5311,10 +5332,10 @@ void instrument_move_string(INS ins, OPCODE opcode)
         } else if (opw == 64) {
             printf("Doing 64 bit repeat string operation in instrument_move_string\n");
         }
+        INSTRUMENT_PRINT(log_f, "REP-Prefix in move_string, operand width is %d\n", opw);
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(rep_taint_whole_mem2mem),
                 IARG_FIRST_REP_ITERATION, IARG_MEMORYREAD_EA, IARG_MEMORYWRITE_EA, IARG_REG_VALUE, REG_EFLAGS,
                 IARG_REG_VALUE, reg, IARG_UINT32, size, IARG_END);	
-        INSTRUMENT_PRINT(log_f, "REP-Prefix in move_string, operand width is %d\n", opw);
         return;
     }
 
@@ -5422,17 +5443,17 @@ void analyze_buffer_stop (long id, void* buf, int size)
         RELEASE_GLOBAL_LOCK (ptdata);
         return;
     }
-    fprintf(output_f, "write syscall number: %ld\n", id);
+    // fprintf(output_f, "write syscall number: %ld\n", id);
     // write out the results to the output file
     for (int i = 0; i < size; i++) {
         struct taint* t;
         GList* options;
         GList* tmp;
         ADDRINT loc = ((ADDRINT) buf) + i;
-        fprintf(output_f, "%#x (value: \"%c\"): ", loc, *((char *)loc));
+        // fprintf(output_f, "%#x (value: \"%c\"): ", loc, *((char *)loc));
         t = get_mem_taint(loc);
         if (!t) {
-            fprintf(output_f, "\n");
+            // fprintf(output_f, "\n");
             continue;
         }
         options = get_non_zero_taints(t);
@@ -5441,14 +5462,25 @@ void analyze_buffer_stop (long id, void* buf, int size)
         while (tmp) {
             struct token* tok;
             // only for non-zero taint options
-            if (get_taint_value(t, GPOINTER_TO_INT(options->data))) {
+            if ((get_taint_value(t, GPOINTER_TO_INT(options->data)))) {
                 tok = (struct token* ) g_hash_table_lookup(option_info_table, options->data);
                 if (!tok) {
                     LOG_PRINT ("  could not find input token for %d\n", GPOINTER_TO_INT(options->data));
-                    fprintf(output_f, "\n");
+                    // fprintf(output_f, "\n");
                 } else {
 #ifndef CONFAID
-                    fprintf(output_f, "input byte num: %d, record_pid %d, syscall_cnt %d, byte_offset %d -- file %s\n", tok->token_num, get_record_pid(), tok->syscall_cnt, tok->byte_offset, tok->name); 
+                    const char* token_type;
+                    if (tok->type == TOK_READ) {
+                        token_type = "READ";
+                    } else if (tok->type == TOK_WRITE) {
+                        token_type = "WRITE";
+                    } else if (tok->type == TOK_EXEC) {
+                        token_type = "EXEC";
+                    }
+                    fprintf(output_f, "%s %s %llu %d %ld %d %s %s %s %llu %d %d %d %s\n",
+                            "WRITE", "--", ptdata->rg_id, ptdata->record_pid, id, i, "FILE",
+                            token_type, "--", ptdata->rg_id, ptdata->record_pid, tok->syscall_cnt, tok->byte_offset, tok->name);
+                    // fprintf(output_f, "input byte num: %d, record_pid %d, syscall_cnt %d, byte_offset %d -- file %s\n", tok->token_num, get_record_pid(), tok->syscall_cnt, tok->byte_offset, tok->name); 
 #else
                     fprintf(output_f, "input byte num: %d, record_pid %d, syscall_cnt %d, byte_offset %d\n", tok->token_num, get_record_pid(), tok->syscall_cnt, tok->byte_offset); 
 #endif
@@ -5860,7 +5892,7 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
             if (monitor_has_fd(open_fds, ri->fd)) {
                 data = monitor_get_fd_data(open_fds, ri->fd);
             }
-            create_options_from_buffer (global_syscall_cnt, (void *) ptdata->buffer_info, (int) ret_value, data);
+            create_options_from_buffer (TOK_READ, global_syscall_cnt, (void *) ptdata->buffer_info, (int) ret_value, data);
 #else
             if (confaid_data->read_from_config_fd && (((int) ret_value) > 0)) {
                 assert (ptdata->buffer_info);
@@ -5958,7 +5990,7 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
                     if (monitor_has_fd(open_fds, mmi->fd)) {
                         data = monitor_get_fd_data(open_fds, mmi->fd);
                     }
-                    create_options_from_buffer (global_syscall_cnt, (void *) mmi->addr, mmi->length, data);
+                    create_options_from_buffer (TOK_READ, global_syscall_cnt, (void *) mmi->addr, mmi->length, data);
                 }
 #endif // CONFAID
             }
@@ -6882,6 +6914,7 @@ void nowhere_land_check(ADDRINT target)
 }
 #endif
 
+#ifdef LINKAGE_SYSCALL
 void instrument_call(ADDRINT address, ADDRINT target, ADDRINT next_address)
 {
     struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
@@ -6921,6 +6954,7 @@ void instrument_call(ADDRINT address, ADDRINT target, ADDRINT next_address)
     BBL_OVER = 1;
     RELEASE_GLOBAL_LOCK (ptdata);
 }
+#endif // LINKAGE_SYSCALL
 
 void instrument_hlt ()
 {
@@ -7042,12 +7076,11 @@ ADDRINT find_static_address(ADDRINT ip)
     return ip - offset;
 }
 
+#ifdef LOGGING_ON
 void instrument_inst(ADDRINT inst_ptr, ADDRINT next_addr, ADDRINT target, ADDRINT sp, ADDRINT opcode)
 {
     struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
     GRAB_GLOBAL_LOCK (ptdata);
-
-    ptdata->current_instruction = inst_ptr;
 
     if (print_first_inst) {
         LOG_PRINT ("first inst: %#x, sp %#x\n", inst_ptr, sp);
@@ -7069,6 +7102,7 @@ void instrument_inst(ADDRINT inst_ptr, ADDRINT next_addr, ADDRINT target, ADDRIN
     }
 #endif
 
+#if 0
     if (opcode == XED_ICLASS_RET_NEAR || opcode == XED_ICLASS_RET_FAR) {
 #ifndef CTRL_FLOW
         if (CALLING_BBLOCK_SIZE != 0) {
@@ -7078,6 +7112,7 @@ void instrument_inst(ADDRINT inst_ptr, ADDRINT next_addr, ADDRINT target, ADDRIN
         }
 #endif
     }
+#endif
 /*
     if (CALLING_BBLOCK_HEAD && (CALLING_BBLOCK_HEAD->status == HANDLED || ((CALLING_BBLOCK_HEAD->status & CONSERVATIVE) != 0))) {
         if (opcode == XED_ICLASS_RET_NEAR || opcode == XED_ICLASS_RET_FAR) {
@@ -7099,6 +7134,7 @@ void instrument_inst(ADDRINT inst_ptr, ADDRINT next_addr, ADDRINT target, ADDRIN
 */
     RELEASE_GLOBAL_LOCK (ptdata);
 }
+#endif // LOGGING_ON
 
 void track_file(INS ins, void *v) 
 {
@@ -7112,9 +7148,11 @@ void track_file(INS ins, void *v)
     opcode = INS_Opcode(ins);
     int instrumented = 0;
 
+#ifdef LOGGING_ON
     INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)instrument_inst, IARG_INST_PTR, 
             IARG_ADDRINT, INS_NextAddress(ins),
             IARG_BRANCH_TARGET_ADDR, IARG_REG_VALUE, LEVEL_BASE::REG_ESP, IARG_UINT32, opcode, IARG_END);
+#endif
 
 #ifdef CTRL_FLOW
         switch(opcode) {
@@ -7652,20 +7690,20 @@ void track_file(INS ins, void *v)
                 
                 case XED_ICLASS_CALL_NEAR:
                 case XED_ICLASS_CALL_FAR:
+#ifdef LINKAGE_SYSCALL
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument a call instruction: %s\n", INS_Address(ins), INS_Mnemonic(ins).c_str());
                     INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(instrument_call), IARG_INST_PTR, IARG_BRANCH_TARGET_ADDR, 
 				   IARG_ADDRINT, INS_NextAddress(ins), IARG_END);
+#endif
 
                    break;
                 
                 case XED_ICLASS_RET_NEAR:
                 case XED_ICLASS_RET_FAR:
-//#ifdef CTRL_FLOW
-#if 0
+#ifdef LINKAGE_SYSCALL
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument ret instruction: %s\n", INS_Address(ins), INS_Mnemonic(ins).c_str());
                     INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(instrument_ret), IARG_INST_PTR, IARG_BRANCH_TARGET_ADDR, IARG_END);    
 #endif
-//#endif // CTRL_FLOW
                     break;
                 case XED_ICLASS_CWD:
                 case XED_ICLASS_CDQ:
@@ -7736,9 +7774,11 @@ void track_file(INS ins, void *v)
                 IARG_END);    
     } else {
 #ifdef HAVE_REPLAY
+#if 0
         // Ugh - I guess we have to instrument every instruction to find which
         // ones are after a system call - would be nice to do better.
         INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)syscall_instr_after, IARG_INST_PTR, IARG_END);
+#endif
 #endif
     }    
 }
@@ -8702,12 +8742,13 @@ struct option_info {
     int offset;         // offset into a buffer from the syscall that this option was created from
 };
 
-int create_new_token (int token_num, int syscall_cnt, int byte_offset, void* data)
+int create_new_token (int type, int token_num, int syscall_cnt, int byte_offset, void* data)
 {
     struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
 
     struct token* tok; 
     tok = (struct token *) malloc(sizeof(struct token));
+    tok->type = type;
     tok->token_num = token_num;
     tok->syscall_cnt = syscall_cnt;
     tok->byte_offset = byte_offset;
@@ -8765,7 +8806,7 @@ int create_new_named_token (int token_num, char* token_name)
  * @param buf
  * @param size
  * */
-void create_options_from_buffer (long id, void* buf, int size, void* data)
+void create_options_from_buffer (int type, long id, void* buf, int size, void* data)
 {
     int rc;
     char c;
@@ -8795,7 +8836,7 @@ void create_options_from_buffer (long id, void* buf, int size, void* data)
                 new_taint(&vector);
                 set_taint_value(&vector, option_cnt, get_max_taint_value());
 
-                create_new_token (option_cnt, global_syscall_cnt, i, data);
+                create_new_token (type, option_cnt, global_syscall_cnt, i, data);
 
                 option_cnt++;    
                 mem_mod_dependency(ptdata, mem_location, &vector, SET, 1);
@@ -11296,6 +11337,16 @@ struct cmd_line_args {
     char ** argv;
 };
 
+#ifdef HAVE_REPLAY
+void track_trace(TRACE trace, void* data)
+{
+	// System calls automatically end a Pin trace.
+	// So we can instrument every trace (instead of every instruction) to check to see if
+	// the beginning of the trace is the first instruction after a system call.
+	TRACE_InsertCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_instr_after, IARG_INST_PTR, IARG_END);
+}
+#endif
+
 BOOL follow_child(CHILD_PROCESS child, void* data)
 {
     // FIXME
@@ -11411,6 +11462,10 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 	
     ptdata->threadid = threadid;
     ptdata->record_pid = get_record_pid();
+#ifdef HAVE_REPLAY
+    get_record_group_id(dev_fd, &ptdata->rg_id);
+    fprintf(stderr, "record group is is %llu\n", ptdata->rg_id);
+#endif
     ptdata->app_syscall = 0;
     ptdata->brk_saved_loc = 0;
     SYSNUM = 0;
@@ -11481,7 +11536,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
                 break;
             }
             LOG_PRINT ("arg is %s\n", arg);
-            create_options_from_buffer (global_syscall_cnt, arg, strlen(arg) + 1, (void *) "ARGS");
+            create_options_from_buffer (TOK_EXEC, global_syscall_cnt, arg, strlen(arg) + 1, (void *) "ARGS");
             args += 1;
         }
         // Retrieve the location of the env. var from the kernel
@@ -11496,7 +11551,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
                 break;
             }
             LOG_PRINT ("arg is %s\n", arg);
-            create_options_from_buffer (global_syscall_cnt, arg, strlen(arg) + 1, (void *) "ENV");
+            create_options_from_buffer (TOK_EXEC, global_syscall_cnt, arg, strlen(arg) + 1, (void *) "ENV");
             args += 1;
         }
     }
@@ -11725,6 +11780,9 @@ int main(int argc, char** argv)
     PIN_AddThreadStartFunction(thread_start, 0);
     IMG_AddInstrumentFunction(load_image, 0);
     IMG_AddUnloadFunction(unload_image, 0);
+#ifdef HAVE_REPLAY
+    TRACE_AddInstrumentFunction (track_trace, 0);
+#endif
     //instrument each instruction
     INS_AddInstrumentFunction(track_file, 0);
     RTN_AddInstrumentFunction(track_function, 0);

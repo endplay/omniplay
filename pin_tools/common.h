@@ -33,10 +33,6 @@
 //#define PRINT_INST_VECTOR print_dependency_vector
 #define PRINT_INST_VECTOR(x,...);
 
-// #define INSTRUMENT_PRINT fflush(log_f); fprintf
-//#define INSTRUMENT_PRINT fflush(log_f); fprintf
-#define INSTRUMENT_PRINT(x,...); 
-
 //#define PRINT_ANALYSIS_VECTOR print_dependency_vector
 #define PRINT_ANALYSIS_VECTOR(x,...);
 //#define ANALYSIS_PRINT fprintf

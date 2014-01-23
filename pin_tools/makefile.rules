@@ -92,7 +92,7 @@ $(OBJDIR)linkage_copy$(OBJ_SUFFIX): linkage.cpp
 	$(CXX) -DHAVE_REPLAY -DLINKAGE_COPY $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
 
 $(OBJDIR)linkage_copy$(PINTOOL_SUFFIX): $(OBJDIR)linkage_copy$(OBJ_SUFFIX)
-	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) -lglib-2.0 $(OBJDIR)taints.o
+	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) -lglib-2.0
 
 $(OBJDIR)linkage_data$(OBJ_SUFFIX): linkage.cpp
 	$(CXX) -DHAVE_REPLAY -DLINKAGE_COPY -DLINKAGE_DATA $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
