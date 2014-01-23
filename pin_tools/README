@@ -17,3 +17,14 @@ In this directory:
 print_instructions.cpp - The test Pin tool that works with replay
 race_checker.cpp - Race detector
 linkage.cpp - Linkage tool
+
+
+The makefile.rules file turns on different linkages and creates different tools
+for different linkages.
+
+Tools created
+- obj-ia32/linkage_copy.so (copy linkage)
+- obj-ia32/linkage_data.so (copy and data linkage)
+
+To create a new tool rule, create a new makefile rule at the bottom of makefile.rules.
+To turn on different linkages, use the linkage definitions, e.g. -DLINKAGE_COPY, -DLINKAGE_DATA, -DCTRL_FLOW
