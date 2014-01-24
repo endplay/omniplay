@@ -24,7 +24,7 @@ TOOL_CXXFLAGS += $(GLIB_INCLUDES) -I$(SDEV)
 # This defines tests which run tools of the same name.  This is simply for convenience to avoid
 # defining the test name twice (once in TOOL_ROOTS and again in TEST_ROOTS).
 # Tests defined here should not be defined in TOOL_ROOTS and TEST_ROOTS.
-TEST_TOOL_ROOTS := print_instructions race_checker linkage_copy linkage_data 
+TEST_TOOL_ROOTS := print_instructions race_checker linkage_copy linkage_data linkage_copy_nr
 
 # This defines the tests to be run that were not already defined in TEST_TOOL_ROOTS.
 TEST_ROOTS :=
@@ -94,8 +94,14 @@ $(OBJDIR)linkage_copy$(OBJ_SUFFIX): linkage.cpp
 $(OBJDIR)linkage_copy$(PINTOOL_SUFFIX): $(OBJDIR)linkage_copy$(OBJ_SUFFIX)
 	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) -lglib-2.0
 
+$(OBJDIR)linkage_copy_nr$(OBJ_SUFFIX): linkage.cpp
+	$(CXX) -DLINKAGE_COPY $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
+
+$(OBJDIR)linkage_copy_nr$(PINTOOL_SUFFIX): $(OBJDIR)linkage_copy_nr$(OBJ_SUFFIX)
+	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) -lglib-2.0
+
 $(OBJDIR)linkage_data$(OBJ_SUFFIX): linkage.cpp
 	$(CXX) -DHAVE_REPLAY -DLINKAGE_COPY -DLINKAGE_DATA $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
 
 $(OBJDIR)linkage_data$(PINTOOL_SUFFIX): $(OBJDIR)linkage_data$(OBJ_SUFFIX)
-	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) -lglib-2.0 $(OBJDIR)taints.o
+	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) -lglib-2.0

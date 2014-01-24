@@ -44,6 +44,7 @@
  #ifndef LINKAGE_DATA
   #include "taints/taints_copy.h"
  #else
+  //#include "taints/taints_data.h"
   #include "taints/taints.h"
  #endif
 #else
@@ -61,6 +62,8 @@
 // #define CONFAID
 // #define HAVE_REPLAY
 #define HANDLE_FUNCTIONS
+// #define FILTER_INPUTS
+// #define DUMP_TAINTS
 
 // #define TRACK_MEMORY_AREAS
 #ifdef TRACK_MEMORY_AREAS
@@ -489,6 +492,9 @@ regex_t* output_message_regex = NULL; // Regex to match the start of input messa
 int count_syscall = 0; // count
 int global_syscall_cnt = 0;
 struct xray_monitor* open_fds = NULL; // List of open fds
+#ifdef FILTER_INPUTS
+char input_file_name[256];
+#endif
 
 FILE* log_f = NULL; // For debugging
 FILE* trace_f = NULL; // for tracing taints
@@ -508,6 +514,9 @@ KNOB<string> KnobStaticAnalysisPath(KNOB_MODE_WRITEONCE, "pintool", "s", "/tmp/s
 // Because I don't always want to recompile, but I don't want to run this all of the time with replay
 KNOB<string> KnobTurnOffReplay(KNOB_MODE_WRITEONCE, "pintool", "n", "0", "standalone, no replay when compiled with replay support");
 KNOB<string> KnobErrorRegex(KNOB_MODE_WRITEONCE, "pintool", "e", "blahblabhablahbalh", "error regex to match against");
+#ifdef FILTER_INPUTS
+KNOB<string> KnobInputFileFilter(KNOB_MODE_WRITEONCE, "pintool", "f", "blahbalbhablah", "input file to only create taints from");
+#endif
 
 #ifdef CONFAID
 struct confaid_data* confaid_data;
@@ -5469,6 +5478,7 @@ void analyze_buffer_stop (long id, void* buf, int size)
                     // fprintf(output_f, "\n");
                 } else {
 #ifndef CONFAID
+#ifdef HAVE_REPLAY
                     const char* token_type;
                     if (tok->type == TOK_READ) {
                         token_type = "READ";
@@ -5481,6 +5491,9 @@ void analyze_buffer_stop (long id, void* buf, int size)
                             "WRITE", "--", ptdata->rg_id, ptdata->record_pid, id, i, "FILE",
                             token_type, "--", ptdata->rg_id, ptdata->record_pid, tok->syscall_cnt, tok->byte_offset, tok->name);
                     // fprintf(output_f, "input byte num: %d, record_pid %d, syscall_cnt %d, byte_offset %d -- file %s\n", tok->token_num, get_record_pid(), tok->syscall_cnt, tok->byte_offset, tok->name); 
+#else
+                    fprintf(output_f, "input byte num: %d, record_pid %d, syscall_cnt %d, byte_offset %d -- file %s\n", tok->token_num, get_record_pid(), tok->syscall_cnt, tok->byte_offset, tok->name); 
+#endif // HAVE_REPLAY
 #else
                     fprintf(output_f, "input byte num: %d, record_pid %d, syscall_cnt %d, byte_offset %d\n", tok->token_num, get_record_pid(), tok->syscall_cnt, tok->byte_offset); 
 #endif
@@ -11411,6 +11424,40 @@ gboolean functions_cmp(gconstpointer arg1, gconstpointer arg2)
     return FALSE;
 }
 
+#ifdef DUMP_TAINTS
+/* Dump the state of the taints at the end of the analysis
+ * Warning, this could be big
+ * */
+void dump_taints(FILE* out_file)
+{
+    struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+    GRAB_GLOBAL_LOCK (ptdata);
+
+    struct taint** first_t;
+    struct taint* second_t;
+    u_long address;
+
+    for (int i = 0; i < FIRST_TABLE_SIZE; i++) {
+        first_t = (struct taint**) mem_loc_high[i];
+        if (first_t) {
+            for (int j = 0; j < SECOND_TABLE_SIZE; j++) {
+                second_t = first_t[j];
+                if (second_t) {
+                    for (int k = 0; k < THIRD_TABLE_SIZE; k++) {
+                        if (!is_taint_zero(&second_t[k])) {
+                            address = (i << (SECOND_TABLE_BITS + THIRD_TABLE_BITS)) | (j << THIRD_TABLE_BITS) | k;
+                            fprintf (out_file, "0x%08lx: ", address);
+                            print_taint(out_file, &second_t[k]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    RELEASE_GLOBAL_LOCK (ptdata);
+}
+#endif
+
 void fini(INT32 code, void* v) {
     
     CALLBACK_PRINT(log_f, "CALLBACK_PRINT:fini starts\n");
@@ -11418,6 +11465,13 @@ void fini(INT32 code, void* v) {
     struct tm* tm = localtime(&t);
     fprintf(stderr, "process %d in fini\n", PIN_GetPid());
     fprintf(stderr, "time is: %d:%d:%d\n", tm->tm_hour, tm->tm_min, tm->tm_sec);
+
+#ifdef DUMP_TAINTS
+    FILE* dtaint;
+    dtaint = fopen("/tmp/taint_dump", "w");
+    dump_taints(dtaint);
+    fclose(dtaint);
+#endif
 
 #ifdef TF_STATS
     fprintf (stderr, "Number of real mod mems allocated %ld\n", num_real_mod_mems);
@@ -11770,6 +11824,9 @@ int main(int argc, char** argv)
 #ifdef CONFAID
     make_confaid_data(KnobInputFile.Value().c_str(), KnobErrorRegex.Value().c_str());
     LOG_PRINT ("Starting in Confaid mode\n");
+#endif
+#ifdef FILTER_INPUTS
+    strncpy(input_file_name, KnobInputFileFilter.Value().c_str(), 256);
 #endif
 
     init_shift_cache();
