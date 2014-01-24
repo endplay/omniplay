@@ -944,9 +944,15 @@ struct pipe_inode_info * alloc_pipe_info(struct inode *inode)
 	return NULL;
 }
 
+
 void __free_pipe_info(struct pipe_inode_info *pipe)
 {
 	int i;
+
+	/* Begin REPLAY */
+	extern void replay_free_pipe(pipe);
+	replay_free_pipe(pipe);
+	/* End REPLAY */
 
 	for (i = 0; i < pipe->buffers; i++) {
 		struct pipe_buffer *buf = pipe->bufs + i;

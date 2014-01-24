@@ -463,6 +463,9 @@ retry:
 	pos = getpos(geo, node, key);
 	fill = getfill(geo, node, pos);
 	/* two identical keys are not allowed */
+	if (pos < fill && keycmp(geo, node, pos, key) == 0) {
+		printk("%s %d: Trying to insert illegal key %lu\n", __func__, __LINE__, *key);
+	}
 	BUG_ON(pos < fill && keycmp(geo, node, pos, key) == 0);
 
 	if (fill == geo->no_pairs) {

@@ -34,11 +34,15 @@
 #define USE_ARGSALLOC
 #define USE_DISK_CKPT
 #define TRACE_READ_WRITE
+//#define TRACE_PIPE_READ_WRITE
 
 //#define PRINT_STATISTICS
 
-#ifdef TRACE_READ_WRITE
+#if defined(TRACE_PIPE_READ_WRITE) && !defined(TRACE_READ_WRITE)
+#  error "TRACE_PIPE_READ_WRITE without TRACE_READ_WRITE not supporetd"
+#endif
 
+#ifdef TRACE_READ_WRITE
 struct replayfs_syscache_id {
 	loff_t unique_id : 48; 
 	loff_t pid : 16; 
@@ -64,6 +68,13 @@ struct replayfs_filemap_entry {
 	int num_elms;
 	struct replayfs_filemap_value elms[0];
 };
+#endif
+
+#define CACHE_MASK 1
+
+#ifdef TRACE_PIPE_READ_WRITE
+#  define IS_PIPE 2
+#  define IS_PIPE_WITH_DATA 4
 #endif
 
 struct repsignal {
@@ -301,6 +312,7 @@ int main (int argc, char* argv[])
 	int stats = 0;
 	int index = 0;
 	int graph_only = 0;
+	int pipe_write_only = 0;
 	u_long data_size, start_clock, stop_clock, clock, expected_clock = 0;
 	long retval;
 	u_int is_cache_read;
@@ -313,8 +325,18 @@ int main (int argc, char* argv[])
 #endif
 
 	/* FIXME: Hacky... really hacky... I'll fix this later */
-#define printf(...) if (!graph_only) printf(__VA_ARGS__);
-#define always_print(...) do { int graph_only_tmp = graph_only; graph_only = 0; printf(__VA_ARGS__); graph_only = graph_only_tmp; } while (0);
+#define printf(...) if (!graph_only && !pipe_write_only) printf(__VA_ARGS__);
+#define always_print(...) \
+	do { \
+		int graph_only_tmp = graph_only; \
+		int pipe_write_only_tmp = pipe_write_only; \
+		pipe_write_only = 0; graph_only = 0; \
+		\
+		printf(__VA_ARGS__); \
+		\
+		graph_only = graph_only_tmp; \
+		pipe_write_only = pipe_write_only_tmp;\
+	} while (0);
 
 	// hack to look at ipc retvals
 	int ipc_call = 0;
@@ -327,6 +349,7 @@ int main (int argc, char* argv[])
 	if (argc == 3 && !strcmp(argv[2], "-f")) dump_recv = 1;
 	if (argc == 3 && !strcmp(argv[2], "-s")) stats = 1;
 	if (argc == 3 && !strcmp(argv[2], "-g")) graph_only = 1;
+	if (argc == 3 && !strcmp(argv[2], "-p")) pipe_write_only = 1;
 
 	if (stats) {
 		memset (scount, 0, sizeof(scount));
@@ -446,7 +469,7 @@ int main (int argc, char* argv[])
 						return rc;
 					}
 					printf ("\tis_cache_file: %d\n", is_cache_read);
-					if (is_cache_read) {
+					if (is_cache_read & CACHE_MASK) {
 
 						size = sizeof (loff_t);
 
@@ -469,11 +492,36 @@ int main (int argc, char* argv[])
 							size += sizeof(struct replayfs_filemap_entry) + entry.num_elms * sizeof(struct replayfs_filemap_value);
 						} while (0);
 #endif
+#ifdef TRACE_PIPE_READ_WRITE
+					} else if (is_cache_read & IS_PIPE) {
+						if (is_cache_read & IS_PIPE_WITH_DATA) {
+							off_t orig_pos;
+							struct replayfs_filemap_entry entry;
+
+							orig_pos = lseek(fd, 0, SEEK_CUR);
+							rc = read(fd, &entry, sizeof(struct replayfs_filemap_entry));
+							lseek(fd, orig_pos, SEEK_SET);
+
+							if (rc != sizeof(struct replayfs_filemap_entry)) {
+								printf ("cannot read entry\n");
+								return rc;
+							}
+
+							size = sizeof(struct replayfs_filemap_entry) + entry.num_elms * sizeof(struct replayfs_filemap_value);
+						} else {
+							size = sizeof(uint64_t) + sizeof(int);
+						}
+
+						size += retval;
+#endif
 					} else {
 						size = retval; 
 					}
 					break;
 				}
+#ifdef TRACE_PIPE_READ_WRITE
+				case 4: size = sizeof(int); break;
+#endif
 				case 5: size = sizeof(struct open_retvals); break;
 				case 7: size = sizeof(int); break;
 				case 11: size = sizeof(struct execve_retvals); break;
@@ -748,35 +796,87 @@ int main (int argc, char* argv[])
 					printf ("status is %d\n", *(buf));
 				}
 
-				if (psr.sysnum == 3 && is_cache_read) {
-					printf ("\toffset is %llx\n", *((long long int *) buf));
+				if (psr.sysnum == 3) {
+					if (is_cache_read & CACHE_MASK) {
+						printf ("\toffset is %llx\n", *((long long int *) buf));
 #ifdef TRACE_READ_WRITE
-					do {
-						struct replayfs_filemap_entry *entry;
-						int i;
-						entry = (struct replayfs_filemap_entry *)(buf + sizeof(long long int));
-						if (!graph_only) {
-							printf ("\tNumber of writes sourcing this read: %d\n",
-									entry->num_elms);
+							do {
+								struct replayfs_filemap_entry *entry;
+								int i;
+								entry = (struct replayfs_filemap_entry *)(buf + sizeof(long long int));
+								if (!graph_only) {
+									printf ("\tNumber of writes sourcing this read: %d\n",
+											entry->num_elms);
 
-							for (i = 0; i < entry->num_elms; i++) {
-								printf ("\t\tSource %d is {id, pid, syscall_num} {%lld %d %lld}\n", i,
-										(loff_t)entry->elms[i].bval.id.unique_id, entry->elms[i].bval.id.pid,
-										(loff_t)entry->elms[i].bval.id.sysnum);
+									for (i = 0; i < entry->num_elms; i++) {
+										printf ("\t\tSource %d is {id, pid, syscall_num} {%lld %d %lld}\n", i,
+												(loff_t)entry->elms[i].bval.id.unique_id, entry->elms[i].bval.id.pid,
+												(loff_t)entry->elms[i].bval.id.sysnum);
+									}
+								} else {
+									for (i = 0; i < entry->num_elms; i++) {
+										always_print ("%d %d %d {%lld, %d, %lld, %d, %ld}\n",
+												ndx, entry->elms[i].bval.buff_offs, entry->elms[i].size,
+												(loff_t)entry->elms[i].bval.id.unique_id, entry->elms[i].bval.id.pid,
+												(loff_t)entry->elms[i].bval.id.sysnum,
+												entry->elms[i].read_offset, retval);
+									}
+								}
+							} while (0);
+#endif
+#ifdef TRACE_PIPE_READ_WRITE
+					} else if (is_cache_read & IS_PIPE) {
+						if (is_cache_read & IS_PIPE_WITH_DATA) {
+							struct replayfs_filemap_entry *entry;
+							int i;
+							/* Get data... */
+							entry = (struct replayfs_filemap_entry *)(buf);
+							if (!graph_only) {
+								printf ("\tPiped writes sourcing this read: %d\n",
+										entry->num_elms);
+
+								for (i = 0; i < entry->num_elms; i++) {
+									printf ("\t\tSource %d is {id, pid, syscall_num} {%lld %d %lld}\n", i,
+											(loff_t)entry->elms[i].bval.id.unique_id, entry->elms[i].bval.id.pid,
+											(loff_t)entry->elms[i].bval.id.sysnum);
+								}
+							} else {
+								for (i = 0; i < entry->num_elms; i++) {
+									always_print ("pipe: %d %d %d {%lld, %d, %lld, %d, %ld}\n",
+											ndx, entry->elms[i].bval.buff_offs, entry->elms[i].size,
+											(loff_t)entry->elms[i].bval.id.unique_id, entry->elms[i].bval.id.pid,
+											(loff_t)entry->elms[i].bval.id.sysnum,
+											entry->elms[i].read_offset, retval);
+								}
 							}
 						} else {
-							for (i = 0; i < entry->num_elms; i++) {
-								always_print ("%d %d %d {%lld, %d, %lld, %d, %ld}\n",
-										ndx, entry->elms[i].bval.buff_offs, entry->elms[i].size,
-										(loff_t)entry->elms[i].bval.id.unique_id, entry->elms[i].bval.id.pid,
-										(loff_t)entry->elms[i].bval.id.sysnum,
-										entry->elms[i].read_offset, retval);
+							if (!graph_only) {
+								printf("\tFile is a pipe sourced by id %llu, %d\n",
+										*((uint64_t *)buf), 
+										/* Yeah, I went there */
+										*((int *)((uint64_t *)buf + 1)));
+							} else {
+								uint64_t id = *((uint64_t *)buf);
+								int pipe_id = *(int *)(((uint64_t *)buf) + 1);
+								always_print("pipe: %lld, %d, %d {%ld} {%lu}\n", id, pipe_id,
+										ndx, retval, start_clock);
 							}
 						}
-					} while (0);
 #endif
+					}
 				}
 			}
+
+#ifdef TRACE_PIPE_READ_WRITE
+			if (psr.sysnum == 4 && (psr.flags & SR_HAS_RETPARAMS)) {
+				if (!pipe_write_only) {
+					printf("\tWrite is part of pipe: %d\n", *((int *)buf));
+				} else {
+					always_print("%d, %ld, %lu, %d\n", *((int *)buf), retval,
+							start_clock, ndx);
+				}
+			}
+#endif
 
 			if ((psr.flags & SR_HAS_SIGNAL) != 0) {
 				do {

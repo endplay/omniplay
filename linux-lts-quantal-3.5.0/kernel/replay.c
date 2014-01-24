@@ -57,6 +57,7 @@
 #include <asm/user_32.h>
 
 /* FIXME: I shoudl move this to include... */
+#include "../kernel/replay_graph/replayfs_btree128.h"
 #include "../kernel/replay_graph/replayfs_filemap.h"
 
 // mcc: fix this later
@@ -68,9 +69,14 @@
 #define CACHE_READS
 
 #define TRACE_READ_WRITE
+//#define TRACE_PIPE_READ_WRITE
 
 #if defined(TRACE_READ_WRITE) && !defined(CACHE_READS)
 # error "TRACE_READ_WRITE without CACHE_READS unimplemented!"
+#endif
+
+#if defined(TRACE_PIPE_READ_WRITE) && !defined(TRACE_READ_WRITE)
+# error "TRACE_PIPE_READ_WRITE without TRACE_READ_WRITE unimplemented!"
 #endif
 
 // how long we wait on the wait_queue before timing out
@@ -88,6 +94,64 @@
 #define ARGSKMALLOC(size, flags) argsalloc(size)
 #define ARGSKFREE(ptr, size) argsfree(ptr, size)
 
+#ifdef TRACE_PIPE_READ_WRITE
+extern const struct file_operations read_pipefifo_fops;
+extern const struct file_operations write_pipefifo_fops;
+extern const struct file_operations rdwr_pipefifo_fops;
+#define is_pipe(X) ((X)->f_op == &read_pipefifo_fops || (X)->f_op == &write_pipefifo_fops || (X)->f_op == &rdwr_pipefifo_fops)
+
+static atomic_t glbl_pipe_id = {0};
+
+struct pipe_track {
+	struct mutex lock;
+	int id;
+	u64 owner_read_id;
+	u64 owner_write_id;
+
+	loff_t owner_read_pos;
+	loff_t owner_write_pos;
+
+	int shared;
+
+	struct replayfs_btree128_key key;
+};
+
+#define READ_PIPE_WITH_DATA 1<<2
+#define READ_IS_PIPE 1<<1
+
+DEFINE_MUTEX(pipe_tree_mutex);
+static struct btree_head32 pipe_tree;
+
+void replay_free_pipe(void *pipe) {
+	struct pipe_track *info;
+
+	mutex_lock(&pipe_tree_mutex);
+	info = btree_lookup32(&pipe_tree, (u32)pipe);
+	mutex_unlock(&pipe_tree_mutex);
+
+	if (info != NULL) {
+		struct replayfs_btree128_key key;
+		struct replayfs_filemap map;
+		int ret;
+
+
+		memcpy(&key, &info->key, sizeof(key));
+
+		kfree(info);
+		btree_remove32(&pipe_tree, (u32)pipe);
+
+		/* Get the map that needs to be freed */
+		ret = replayfs_filemap_init_key(&map, &replayfs_alloc, &key);
+		if (!ret) {
+			/* Free it */
+			replayfs_filemap_delete(&map, &key);
+		}
+	}
+}
+#endif
+
+#define IS_CACHED_MASK 1
+
 // write out the kernel logs asynchronously
 //#define WRITE_ASYNC
 
@@ -100,12 +164,12 @@ static int malloc_init = 0;
 struct ds_list_t* malloc_hash[1023];
 DEFINE_MUTEX(repmalloc_mutex);
 // Intended to check for double frees
-void* KMALLOC(size_t size, gfp_t flags) 
+void* KMALLOC(size_t size, gfp_t flags)
 {
 	void* ptr;
 	int i;
 
-	mutex_lock (&repmalloc_mutex);	
+	mutex_lock (&repmalloc_mutex);
 	if (!malloc_init) {
 		malloc_init = 1;
 		for (i = 0; i < 1023; i++) {
@@ -118,12 +182,11 @@ void* KMALLOC(size_t size, gfp_t flags)
 		u_long addr = (u_long) ptr;
 		ds_list_insert (malloc_hash[addr%1023], ptr);
 	}
-	mutex_unlock (&repmalloc_mutex);	
+	mutex_unlock (&repmalloc_mutex);
 	return ptr;
 }
 
-
-void KFREE (const void* ptr) 
+void KFREE (const void* ptr)
 {
 	int i;
 
@@ -4796,48 +4859,48 @@ shim_exit(int error_code)
 /* fork system call is handled by shim_clone */
 
 #ifdef CACHE_READS
-static asmlinkage long 
+static asmlinkage long
 record_read (unsigned int fd, char __user * buf, size_t count)
-{									
-	long rc;							
-	char *pretval = NULL;						
+{
+	long rc;
+	char *pretval = NULL;
 	struct files_struct* files;
 	struct fdtable *fdt;
 	struct file* filp;
 	int is_cache_file;
 
-	new_syscall_enter (3);					
+	new_syscall_enter (3);
 	is_cache_file = is_record_cache_file_lock(current->record_thrd->rp_cache_files, fd);
 	rc = sys_read (fd, buf, count);
-	new_syscall_done (3, rc);			       
+	new_syscall_done (3, rc);
 	if (rc > 0 && buf) {
 		// For now, include a flag that indicates whether this is a cached read or not - this is only
 		// needed for parseklog and so we may take it out later
+
+		files = current->files;
+		spin_lock(&files->file_lock);
+		fdt = files_fdtable(files);
+		if (fd >= fdt->max_fds) {
+			printk ("record_read: invalid fd but read succeeded?\n");
+			record_cache_file_unlock (current->record_thrd->rp_cache_files, fd);
+			return -EINVAL;
+		}
+
+		filp = fdt->fd[fd];
+		spin_unlock(&files->file_lock);
+
 		if (is_cache_file) {
 			// Since not all syscalls handled for cached reads, record the position
 			DPRINT ("Cached read of fd %u - record by reference\n", fd);
 			pretval = ARGSKMALLOC (sizeof(u_int) + sizeof(loff_t), GFP_KERNEL);
-			if (pretval == NULL) {				
+			if (pretval == NULL) {
 				printk ("record_read: can't allocate pos buffer\n"); 
 				record_cache_file_unlock (current->record_thrd->rp_cache_files, fd);
-				return -ENOMEM;				
-			}			
-			*((u_int *) pretval) = 1;
-
-			files = current->files;
-			spin_lock(&files->file_lock);
-			fdt = files_fdtable(files);
-			if (fd >= fdt->max_fds) {
-				printk ("record_read: invalid fd but read succeeded?\n");
-				ARGSKFREE (pretval, sizeof(u_int)+sizeof(loff_t));
-				record_cache_file_unlock (current->record_thrd->rp_cache_files, fd);
-				return -EINVAL;
+				return -ENOMEM;
 			}
-
-			filp = fdt->fd[fd];
-			*((loff_t *) (pretval+sizeof(u_int))) = filp->f_pos - rc;
-			spin_unlock(&files->file_lock);
+			*((u_int *) pretval) = 1;
 			record_cache_file_unlock (current->record_thrd->rp_cache_files, fd);
+			*((loff_t *) (pretval+sizeof(u_int))) = filp->f_pos - rc;
 
 #ifdef TRACE_READ_WRITE
 			do {
@@ -4849,18 +4912,18 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 				struct replayfs_filemap_entry *args;
 				replayfs_filemap_init(&map, &replayfs_alloc, filp);
 				
-				//printk("%s %d: Doing filemap read on map at %lld\n", __func__, __LINE__, map.entries.meta_loc);
 				entry = replayfs_filemap_read(&map, filp->f_pos - rc, rc);
 
 				if (IS_ERR(entry) || entry == NULL) {
 					entry = kmalloc(sizeof(struct replayfs_filemap_entry), GFP_KERNEL);
+					/* FIXME: Handle this properly */
+					BUG_ON(entry == NULL);
 					entry->num_elms = 0;
 				}
 
 				cpy_size = sizeof(struct replayfs_filemap_entry) +
 						(entry->num_elms * sizeof(struct replayfs_filemap_value));
 
-				//printk("%s %d: allocating cpy_size (%d) args with num_elms of %d\n", __func__, __LINE__, cpy_size, entry->num_elms);
 				args = ARGSKMALLOC(cpy_size, GFP_KERNEL);
 
 				memcpy(args, entry, cpy_size);
@@ -4870,18 +4933,157 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 				replayfs_filemap_destroy(&map);
 			} while (0);
 #endif
+#ifdef TRACE_PIPE_READ_WRITE
+		/* If this is is a pipe */
+		} else if (is_pipe(filp)) {
+			u_int *is_cached;
+			u64 rg_id = current->record_thrd->rp_group->rg_id;
+			struct pipe_track *info;
+			/* Wohoo, we have a pipe.  Lets track its writer */
+
+			is_cached = ARGSKMALLOC(sizeof(u_int), GFP_KERNEL);
+
+			pretval = (char *)is_cached;
+
+			*is_cached = READ_IS_PIPE;
+
+			/* We have to lock our pipe tree externally */
+			mutex_lock(&pipe_tree_mutex);
+
+			info = btree_lookup32(&pipe_tree, (u32)filp->f_dentry->d_inode->i_pipe);
+
+			/* The pipe is not in the tree, this is its first write (by a recorded process) */
+			if (info == NULL) {
+				printk("WARNING: pipe read returns before write?!?!?!?\n");
+				/* Create a new pipe_track */
+				info = kmalloc(sizeof(struct pipe_track), GFP_KERNEL);
+				/* Crap... no memory */
+				if (info == NULL) {
+					/* FIXME: fail cleanly */
+					BUG();
+				}
+
+				mutex_init(&info->lock);
+
+				/* Now initialize the structure */
+				info->owner_read_id = rg_id;
+				info->owner_write_id = 0;
+				info->id = atomic_inc_return(&glbl_pipe_id);
+
+				info->owner_write_pos = 0;
+				info->owner_read_pos = rc;
+
+				info->key.id1 = filp->f_dentry->d_inode->i_ino;
+				info->key.id2 = filp->f_dentry->d_inode->i_sb->s_dev;
+
+				info->shared = 0;
+				if (btree_insert32(&pipe_tree, (u32)filp->f_dentry->d_inode->i_pipe, info, GFP_KERNEL)) {
+					/* FIXME: fail cleanly */
+					BUG();
+				}
+
+				mutex_unlock(&pipe_tree_mutex);
+			/* The pipe is in the tree, update it */
+			} else {
+				struct replayfs_filemap map;
+				/* We lock the pipe before we unlock the tree, to ensure that the pipe updates are orded with respect to lookup in the tree */
+				mutex_lock(&info->lock);
+				mutex_unlock(&pipe_tree_mutex);
+
+				/* If the pipe is exclusive, don't keep any data about it */
+				if (info->shared == 0) {
+					/* It hasn't been read yet */
+					if (unlikely(info->owner_read_id == 0)) {
+						info->owner_read_id = rg_id;
+						BUG_ON(info->owner_read_pos != 0);
+						info->owner_read_pos = rc;
+					/* If it continues to be exclusive */
+					} else if (likely(info->owner_read_id == rg_id)) {
+						info->owner_read_pos += rc;
+					/* This is the un-sharing read */
+					} else {
+						info->shared = 1;
+
+						/* Okay, we need to allocate a filemap for this file */
+						replayfs_filemap_init(&map, &replayfs_alloc, filp);
+
+						/* Write a record of the old data, special case of 0 means held linearly in pipe */
+						replayfs_filemap_write(&map, info->owner_write_id, 0, info->id, 0, 0, info->owner_write_pos);
+
+						/* Now append a read record indicating the data we have */
+						*is_cached |= READ_PIPE_WITH_DATA;
+
+						info->owner_read_pos += rc;
+					}
+				} else {
+
+					/* Okay, we need to allocate a filemap for this file */
+					replayfs_filemap_init(&map, &replayfs_alloc, filp);
+
+					*is_cached |= READ_PIPE_WITH_DATA;
+
+					info->owner_read_pos += rc;
+				}
+
+				mutex_unlock(&info->lock);
+
+				/* If this is a shared pipe, we will mark multiple writers, and save all the writer data */
+				if (*is_cached & READ_PIPE_WITH_DATA) {
+					struct replayfs_filemap_entry *args;
+					struct replayfs_filemap_entry *entry;
+					int cpy_size;
+
+					/* Append the data */
+					entry = replayfs_filemap_read(&map, info->owner_read_pos - rc, rc);
+				
+					if (IS_ERR(entry) || entry == NULL) {
+						entry = kmalloc(sizeof(struct replayfs_filemap_entry), GFP_KERNEL);
+						entry->num_elms = 0;
+					}
+
+					cpy_size = sizeof(struct replayfs_filemap_entry) +
+							(entry->num_elms * sizeof(struct replayfs_filemap_value));
+
+					args = ARGSKMALLOC(cpy_size + rc, GFP_KERNEL);
+
+					memcpy(args, entry, cpy_size);
+
+					kfree(entry);
+
+					replayfs_filemap_destroy(&map);
+
+					memcpy(((char *)args) + cpy_size, buf, rc);
+				/* Otherwise, we just need to know the source id of this pipe */
+				} else {
+					struct pipe_track *info;
+					char *buf = ARGSKMALLOC(sizeof(u64) + sizeof(int) + rc, GFP_KERNEL);
+					u64 *writer = (void *)buf;
+					int *id = (int *)(writer +1);
+					mutex_lock(&pipe_tree_mutex);
+					info = btree_lookup32(&pipe_tree, (u32)filp->f_dentry->d_inode->i_pipe);
+					mutex_lock(&info->lock);
+					mutex_unlock(&pipe_tree_mutex);
+					BUG_ON(info == NULL);
+					*writer = info->owner_write_id;
+					*id = info->id;
+					mutex_unlock(&info->lock);
+
+					memcpy(buf+sizeof(u64)+sizeof(int), buf, rc);
+				}
+			}
+#endif
 		} else {
-			pretval = ARGSKMALLOC (rc+sizeof(u_int), GFP_KERNEL); 
-			if (pretval == NULL) {				
+			pretval = ARGSKMALLOC (rc+sizeof(u_int), GFP_KERNEL);
+			if (pretval == NULL) {
 				printk ("record_read: can't allocate buffer\n"); 
-				return -ENOMEM;				
-			}			
+				return -ENOMEM;
+			}
 			*((u_int *) pretval) = 0;
 			if (copy_from_user (pretval+sizeof(u_int), buf, rc)) { 
 				printk ("record_read: can't copy to buffer\n"); 
 				ARGSKFREE(pretval, rc+sizeof(u_int));	
 				return -EFAULT;
-			}							
+			}
 		}
 	} else if (is_cache_file) {
 		record_cache_file_unlock (current->record_thrd->rp_cache_files, fd);
@@ -4893,12 +5095,12 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 
 static asmlinkage long 
 replay_read (unsigned int fd, char __user * buf, size_t count)
-{									
-	char *retparams = NULL;						
-	long retval, rc = get_next_syscall (3, &retparams);		
+{
+	char *retparams = NULL;
+	long retval, rc = get_next_syscall (3, &retparams);
 	int cache_fd;
 
-	if (retparams) {						
+	if (retparams) {
 		int consume_size;
 		if (is_replay_cache_file(current->replay_thrd->rp_cache_files, fd, &cache_fd)) {
 			// read from the open cache file
@@ -4910,27 +5112,48 @@ replay_read (unsigned int fd, char __user * buf, size_t count)
 				return syscall_mismatch();
 			}
 			consume_size = sizeof(u_int) + sizeof(loff_t);
-			argsconsume (current->replay_thrd->rp_record_thread, consume_size); 
+			argsconsume (current->replay_thrd->rp_record_thread, consume_size);
+
+#ifdef TRACE_READ_WRITE
+			do {
+				struct replayfs_filemap_entry *entry = (void *)(retparams + consume_size);
+
+				consume_size = sizeof(struct replayfs_filemap_entry) +
+						(entry->num_elms * sizeof(struct replayfs_filemap_value));
+
+				argsconsume (current->replay_thrd->rp_record_thread, consume_size); 
+			} while (0);
+#endif
+#ifdef TRACE_PIPE_READ_WRITE
+		} else if (is_cache_file & READ_PIPE_WITH_DATA) {
+			u_int is_cache_file = *((u_int *)retparams);
+			struct replayfs_filemap_entry *entry;
+
+			consume_size = sizeof(u_int);
+			entry = (void *)(retparams + consume_size);
+
+			consume_size += sizeof(struct replayfs_filemap_entry) +
+					(entry->num_elms * sizeof(struct replayfs_filemap_value));
+
+			if (copy_to_user (buf, retparams+consume_size, rc)) printk ("replay_read: pid %d cannot copy to user\n", current->pid); 
+
+			argsconsume (current->replay_thrd->rp_record_thread, consume_size + rc);
+		} else if (is_cache_file & READ_IS_PIPE) {
+			consume_size = sizeof(u_int) + sizeof(u64) + sizeof(int);
+
+			if (copy_to_user (buf, retparams+consume_size, rc)) printk ("replay_read: pid %d cannot copy to user\n", current->pid); 
+
+			argsconsume (current->replay_thrd->rp_record_thread, consume_size + rc);
+#endif
 		} else {
-			// uncached read 
+			// uncached read
 			DPRINT ("uncached read of fd %u\n", fd);
-			if (copy_to_user (buf, retparams+sizeof(u_int), rc)) printk ("replay_read: pid %d cannot copy to user\n", current->pid); 
+			if (copy_to_user (buf, retparams+sizeof(u_int), rc)) printk ("replay_read: pid %d cannot copy to user\n", current->pid);
 			consume_size = sizeof(u_int)+rc;
 			argsconsume (current->replay_thrd->rp_record_thread, consume_size); 
 		}
-
-#ifdef TRACE_READ_WRITE
-		do {
-			struct replayfs_filemap_entry *entry = (void *)(retparams + consume_size);
-
-			consume_size = sizeof(struct replayfs_filemap_entry) +
-					(entry->num_elms * sizeof(struct replayfs_filemap_value));
-
-			argsconsume (current->replay_thrd->rp_record_thread, consume_size); 
-		} while (0);
-#endif
 	}
-									
+
 	return rc;							
 }									
 
@@ -4942,6 +5165,7 @@ RET1_COUNT_SHIM3(read, 3, buf, unsigned int, fd, char __user *, buf, size_t, cou
 static asmlinkage ssize_t 
 record_write (unsigned int fd, const char __user * buf, size_t count)
 {
+	char *pretparams = NULL;
 	ssize_t size;
 	char kbuf[80];
 
@@ -4957,6 +5181,7 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 
 	new_syscall_enter (4);
 	size = sys_write (fd, buf, count);
+	new_syscall_done (4, size);			       
 #ifdef TRACE_READ_WRITE
 	if (size > 0) {
 		struct file *filp;
@@ -4965,7 +5190,6 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 		filp = fget (fd);
 		inode = filp->f_dentry->d_inode;
 
-		//printk("%s %d: fd: %d ino: %lu irdev is %x, sdev is %x?\n", __func__, __LINE__, fd, inode->i_ino, inode->i_rdev, MAJOR(inode->i_sb->s_dev));
 		if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0) {
 			loff_t fpos;
 			struct replayfs_filemap map;
@@ -4973,19 +5197,115 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 
 			fpos = filp->f_pos - size;
 			if (fpos >= 0) {
-				//printk("%s %d: Doing filemap write on map at %lld\n", __func__, __LINE__, map.entries.meta_loc);
 				replayfs_filemap_write(&map, current->record_thrd->rp_group->rg_id, current->record_thrd->rp_record_pid, 
 						current->record_thrd->rp_count, 0, fpos, size);
 			}
 			replayfs_filemap_destroy(&map);
+#  ifdef TRACE_PIPE_READ_WRITE
+		/* If this is is a pipe */
+		} else if (is_pipe(filp)) {
+			u64 rg_id = current->record_thrd->rp_group->rg_id;
+			struct pipe_track *info;
+			/* Wohoo, we have a pipe.  Lets track its writer */
+
+			/* We have to lock our pipe tree externally */
+			mutex_lock(&pipe_tree_mutex);
+
+			info = btree_lookup32(&pipe_tree, (u32)filp->f_dentry->d_inode->i_pipe);
+
+			/* The pipe is not in the tree, this is its first write (by a recorded process) */
+			if (info == NULL) {
+				/* Create a new pipe_track */
+				info = kmalloc(sizeof(struct pipe_track), GFP_KERNEL);
+				/* Crap... */
+				if (info == NULL) {
+					/* FIXME: fail cleanly */
+					BUG();
+				}
+
+				mutex_init(&info->lock);
+
+				/* Now initialize the structure */
+				info->owner_read_id = 0;
+				info->owner_write_id = rg_id;
+				info->id = atomic_inc_return(&glbl_pipe_id);
+
+				info->owner_write_pos = size;
+				info->owner_read_pos = 0;
+
+				info->key.id1 = filp->f_dentry->d_inode->i_ino;
+				info->key.id2 = filp->f_dentry->d_inode->i_sb->s_dev;
+
+				info->shared = 0;
+				if (btree_insert32(&pipe_tree, (u32)filp->f_dentry->d_inode->i_pipe, info, GFP_KERNEL)) {
+					/* FIXME: fail cleanly */
+					BUG();
+				}
+
+				pretparams = ARGSKMALLOC(sizeof(int), GFP_KERNEL);
+				BUG_ON(pretparams == NULL);
+				*((int *)pretparams) = info->id;
+
+				mutex_unlock(&pipe_tree_mutex);
+			} else {
+				mutex_lock(&info->lock);
+				mutex_unlock(&pipe_tree_mutex);
+
+				if (info->shared == 0) {
+					if (info->owner_write_id == 0) {
+						info->owner_write_id = rg_id;
+						BUG_ON(info->owner_write_pos != 0);
+						info->owner_write_pos = size;
+						pretparams = ARGSKMALLOC(sizeof(int), GFP_KERNEL);
+						BUG_ON(pretparams == NULL);
+						*((int *)pretparams) = info->id;
+					} else if (likely(info->owner_write_id == rg_id)) {
+						info->owner_write_pos += size;
+						pretparams = ARGSKMALLOC(sizeof(int), GFP_KERNEL);
+						BUG_ON(pretparams == NULL);
+						*((int *)pretparams) = info->id;
+					/* This is the un-sharing write */
+					} else {
+						struct replayfs_filemap map;
+						info->shared = 1;
+
+						/* Okay, we need to allocate a filemap for this file */
+						replayfs_filemap_init(&map, &replayfs_alloc, filp);
+
+						/* Write a record of the old data, special case of 0 means held linearly in pipe */
+						replayfs_filemap_write(&map, info->owner_write_id, 0, info->id, 0, 0, info->owner_write_pos);
+
+						/* Write a record of our data */
+						replayfs_filemap_write(&map, rg_id, current->record_thrd->rp_record_pid, current->record_thrd->rp_count, 0, info->owner_write_pos, size);
+
+						replayfs_filemap_destroy(&map);
+
+						info->owner_write_pos += size;
+					}
+				} else {
+					struct replayfs_filemap map;
+
+					/* Okay, we need to allocate a filemap for this file */
+					replayfs_filemap_init(&map, &replayfs_alloc, filp);
+
+					/* Write a record of our data */
+					replayfs_filemap_write(&map, rg_id, current->record_thrd->rp_record_pid, current->record_thrd->rp_count, 0, info->owner_write_pos, size);
+
+					replayfs_filemap_destroy(&map);
+
+					info->owner_write_pos += size;
+				}
+
+				mutex_unlock(&info->lock);
+			}
+#  endif
 		}
 
 		fput(filp);
 
 	}
 #endif
-	new_syscall_done (4, size);			       
-	new_syscall_exit (4,  NULL);
+	new_syscall_exit (4, pretparams);
 
 	return size;
 }
@@ -4994,6 +5314,7 @@ static asmlinkage ssize_t
 replay_write (unsigned int fd, const char __user * buf, size_t count)
 {
 	ssize_t rc;
+	char *pretparams = NULL;
 	char kbuf[80];
 
 	if (fd == 99999) { // Hack that assists in debugging user-level code
@@ -5001,8 +5322,13 @@ replay_write (unsigned int fd, const char __user * buf, size_t count)
 		if (copy_from_user (kbuf, buf, count < 80 ? count : 79)) printk ("replay_write: cannot copy kstring\n");
 		printk ("Pid %d (recpid %d) clock %ld replays: %s", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid, *(current->replay_thrd->rp_preplay_clock), kbuf);
 	}
-	rc = get_next_syscall (4, NULL);
+	rc = get_next_syscall (4, &pretparams);
 	DPRINT ("Pid %d replays write returning %d\n", current->pid,rc);
+#ifdef TRACE_PIPE_READ_WRITE
+	if (pretparams != NULL) {
+		argsconsume (current->replay_thrd->rp_record_thread, sizeof(int));
+	}
+#endif
 
 	return rc;
 }
@@ -11101,6 +11427,11 @@ static int __init replay_init(void)
 #ifdef CONFIG_SYSCTL
 	register_sysctl_table(replay_ctl_root);
 #endif
+
+#ifdef TRACE_PIPE_READ_WRITE
+	btree_init32(&pipe_tree);
+#endif
+
 	return 0;
 }
 

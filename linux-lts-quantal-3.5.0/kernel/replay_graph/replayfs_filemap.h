@@ -5,6 +5,7 @@
 #include <linux/fs.h>
 
 #include "replayfs_btree.h"
+#include "replayfs_btree128.h"
 
 //#define REPLAYFS_FILEMAP_DEDUP_FILE "/home/replayfs_data_dir/replayfs.dedup"
 
@@ -36,6 +37,7 @@ struct replayfs_filemap_entry {
 };
 
 struct replayfs_filemap {
+	struct mutex lock;
 
 	/* Holds the mapping of addresses to the source of that data */
 	struct replayfs_btree_head entries;
@@ -43,6 +45,8 @@ struct replayfs_filemap {
 
 extern struct replayfs_diskalloc replayfs_alloc;
 
+int replayfs_filemap_init_key (struct replayfs_filemap *map,
+		struct replayfs_diskalloc *alloc, struct replayfs_btree128_key *key);
 /* Reinitialize with the location of the root node */
 int replayfs_filemap_init(struct replayfs_filemap *map,
 		struct replayfs_diskalloc *alloc, struct file *filp);
@@ -51,6 +55,9 @@ int replayfs_filemap_create(struct replayfs_filemap *map,
 		struct replayfs_diskalloc *alloc, struct file *filp);
 /* Get rid of the filemap */
 void replayfs_filemap_destroy(struct replayfs_filemap *map);
+
+void replayfs_filemap_delete(struct replayfs_filemap *map,
+		struct replayfs_btree128_key *key);
 
 /* Add a write to the filemap... */
 int replayfs_filemap_write(struct replayfs_filemap *map, loff_t unique_id,

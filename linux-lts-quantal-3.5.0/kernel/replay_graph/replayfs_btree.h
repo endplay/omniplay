@@ -120,6 +120,7 @@ int __must_check replayfs_btree_create(struct replayfs_btree_head *head,
  * This function destroys the internal memory pool, use only
  * when using btree_init(), not with btree_init_mempool().
  */
+void replayfs_btree_delete(struct replayfs_btree_head *head);
 void replayfs_btree_destroy(struct replayfs_btree_head *head);
 
 void replayfs_btree_put_page(struct replayfs_btree_head *head,

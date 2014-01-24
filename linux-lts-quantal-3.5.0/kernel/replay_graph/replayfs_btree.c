@@ -451,6 +451,39 @@ void replayfs_btree_destroy(struct replayfs_btree_head *head)
 	head->allocator = NULL;
 }
 
+void replayfs_btree_delete(struct replayfs_btree_head *head)
+{
+	struct replayfs_btree_value *value;
+	struct replayfs_btree_key key;
+	struct page *page;
+	/* 
+	 * Remove all of the elements from the tree 
+	 * This is not optimied in my implementation... it will be slow
+	 */
+	value = replayfs_btree_last(head, &key, &page);
+	while (key.size != 0) {
+		struct replayfs_btree_value _value;
+		struct replayfs_btree_key _key;
+		memcpy(&_value, value, sizeof(_value));
+		memcpy(&_key, &key, sizeof(_key));
+
+		replayfs_btree_put_page(head, page);
+
+		value = replayfs_btree_remove(head, &_key, &page);
+		replayfs_btree_put_page(head, page);
+
+		value = replayfs_btree_last(head, &key, &page);
+	}
+
+	if (head->height > 0) {
+		printk("%s %d: height is %d????\n", __func__, __LINE__, head->height);
+	}
+	//BUG_ON(head->height != 0);
+
+	replayfs_btree_destroy(head);
+	/* Done */
+}
+
 void replayfs_btree_put_page(struct replayfs_btree_head *head, struct page *page) {
 	bval_put(head, page);
 }
