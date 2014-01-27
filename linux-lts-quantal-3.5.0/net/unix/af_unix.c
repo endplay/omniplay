@@ -535,7 +535,10 @@ static void unix_set_peek_off(struct sock *sk, int val)
 }
 
 
-static const struct proto_ops unix_stream_ops = {
+/* BEGIN: replay */
+/*static*/
+/* END: replay */
+const struct proto_ops unix_stream_ops = {
 	.family =	PF_UNIX,
 	.owner =	THIS_MODULE,
 	.release =	unix_release,
@@ -557,7 +560,10 @@ static const struct proto_ops unix_stream_ops = {
 	.set_peek_off =	unix_set_peek_off,
 };
 
-static const struct proto_ops unix_dgram_ops = {
+/* BEGIN: replay */
+/*static*/
+/* END: replay */
+const struct proto_ops unix_dgram_ops = {
 	.family =	PF_UNIX,
 	.owner =	THIS_MODULE,
 	.release =	unix_release,
@@ -579,7 +585,10 @@ static const struct proto_ops unix_dgram_ops = {
 	.set_peek_off =	unix_set_peek_off,
 };
 
-static const struct proto_ops unix_seqpacket_ops = {
+/* BEGIN: replay */
+/*static*/
+/* END: replay */
+const struct proto_ops unix_seqpacket_ops = {
 	.family =	PF_UNIX,
 	.owner =	THIS_MODULE,
 	.release =	unix_release,

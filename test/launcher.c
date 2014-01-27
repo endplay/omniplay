@@ -1,9 +1,11 @@
 // A simple program to launch a recorded execution
+#include <getopt.h>
 #include <stdio.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <string.h>
 #include <stdlib.h>
+#include <assert.h>
 #include "util.h"
 
 extern char** environ;
@@ -25,6 +27,62 @@ int main (int argc, char* argv[])
     char* linkpath = NULL;
     int save_mmap = 0;
 
+    struct option long_options[] = {
+	{"logdir", required_argument, 0, 0},
+	{"pthread", required_argument, 0, 0},
+	{0, 0, 0, 0}
+    };
+
+    /*
+    for (i = 0; i < argc; i++) {
+	printf("Got input arg of %s\n", argv[i]);
+    }
+    */
+
+    while (1) {
+	char opt;
+	int option_index = 0;
+
+	opt = getopt_long(argc, argv, "mh", long_options, &option_index);
+	//printf("getopt_long returns %c (%d)\n", opt, opt);
+
+	if (opt == -1) {
+	    break;
+	}
+
+	switch(opt) {
+	    case 0:
+		switch(option_index) {
+		    case 0:
+			//printf("logdir is %s\n", optarg);
+			logdir = optarg;
+			assert(optarg != NULL);
+			break;
+		    case 1:
+			//printf("pthread libdir is %s\n", optarg);
+			libdir = optarg;
+			break;
+		    default:
+			assert(0);
+		}
+		break;
+	    case 'm':
+		//printf("save_mmap is on");
+		save_mmap = 1;
+		break;
+	    case 'h':
+		format();
+		break;
+	    default:
+		fprintf(stderr, "Unrecognized option\n");
+		format();
+		break;
+	}
+    }
+    base = optind;
+
+    /* David D. Replaced with proper getopts */
+    /*
     for (base = 1; base < argc; base++) {
 	if (argc > base+1 && !strncmp(argv[base], "--pthread", 8)) {
 	    libdir = argv[base+1];
@@ -40,8 +98,19 @@ int main (int argc, char* argv[])
 	    break; // unrecognized arg - should be logdir
 	}
     }
-	
-    if (argc-base < 1) format();
+    */
+
+
+    if (argc-base < 1) {
+	fprintf(stderr, "Program name not specified");
+	format();
+    }
+
+    /*
+    for (i = base; i < argc; i++) {
+	printf("Got non-opt arg: %s\n", argv[i]);
+    }
+    */
 
     fd = open ("/dev/spec0", O_RDWR);
     if (fd < 0) {
@@ -66,6 +135,7 @@ int main (int argc, char* argv[])
     }
     if (link_debug) setenv("LD_DEBUG", "libs", 1);
 
+    //printf("linkpath: %s, ldpath: %s\n", linkpath, ldpath);
     rc = replay_fork (fd, (const char**) &argv[base], (const char **) environ, linkpath, logdir, save_mmap);
 
     // replay_fork should never return if it succeeds

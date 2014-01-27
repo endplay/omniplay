@@ -184,6 +184,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
     struct thread_data* ptdata;
 
     fprintf (stderr, "Start of threadid %d\n", (int) threadid);
+		sleep(10000);
 
     ptdata = (struct thread_data *) malloc (sizeof(struct thread_data));
     assert (ptdata);

@@ -2665,6 +2665,7 @@ new_syscall_exit (long sysnum, void* retparams)
 
 const char* replay_get_exec_filename (void) 
 {
+	MPRINT ("Got exec filename: %s\n", current->replay_thrd->rp_exec_filename);
 	return current->replay_thrd->rp_exec_filename;
 }
 
@@ -3766,6 +3767,7 @@ void replay_execval (int* uid, int* euid, int* gid, int* egid, int* secureexec)
 	*gid = current->replay_thrd->exec_values.gid;
 	*egid = current->replay_thrd->exec_values.egid;
 	*secureexec = current->replay_thrd->exec_values.secureexec;
+	MPRINT ("In %s\n", __func__);
 }
 
 unsigned long get_replay_args(void)
@@ -3798,6 +3800,7 @@ void save_exec_args (unsigned long argv, int argc, unsigned long envp, int envc)
 		prt->argc = argc;
 		prt->envp = envp;
 		prt->envc = envc;
+		MPRINT ("In %s\n", __func__);
 	}
 	return;
 }
@@ -5101,6 +5104,9 @@ replay_read (unsigned int fd, char __user * buf, size_t count)
 	int cache_fd;
 
 	if (retparams) {
+#ifdef TRACE_PIPE_READ_WRITE
+		u_int is_cache_file = *((u_int *)retparams);
+#endif
 		int consume_size;
 		if (is_replay_cache_file(current->replay_thrd->rp_cache_files, fd, &cache_fd)) {
 			// read from the open cache file
@@ -5126,7 +5132,6 @@ replay_read (unsigned int fd, char __user * buf, size_t count)
 #endif
 #ifdef TRACE_PIPE_READ_WRITE
 		} else if (is_cache_file & READ_PIPE_WITH_DATA) {
-			u_int is_cache_file = *((u_int *)retparams);
 			struct replayfs_filemap_entry *entry;
 
 			consume_size = sizeof(u_int);
@@ -5748,14 +5753,15 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 			memcpy (&current->replay_thrd->exec_values, &retparams->data.same_group.evalues, sizeof(struct exec_values));
 			argsconsume(prt->rp_record_thread, sizeof(struct execve_retvals));      
 			current->replay_thrd->random_values.cnt = 0;
-			
+
 			rg_lock(prt->rp_record_thread->rp_group);
 			get_cache_file_name (name, retparams->data.same_group.dev, retparams->data.same_group.ino, retparams->data.same_group.mtime);
 			rg_unlock(prt->rp_record_thread->rp_group);
-			
+
 			old_fs = get_fs();
 			set_fs(KERNEL_DS);
 			prt->rp_exec_filename = filename;
+			MPRINT ("%s %d: do_execve(%s, %p, %p, %p)\n", __func__, __LINE__, name, __argv, __envp, regs);
 			rc = do_execve (name, __argv, __envp, regs);
 			set_fs(old_fs);
 
