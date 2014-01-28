@@ -873,7 +873,10 @@ int      __posix_memalign(void **, size_t, size_t);
 #endif
 
 #ifndef DEFAULT_MXFAST
-#define DEFAULT_MXFAST     (64 * SIZE_SZ / 4)
+/* JNF: Fastbins use atomics so I've disabled them.  We
+   could wrap them with a lock if we wanted to re-enable them */
+  //#define DEFAULT_MXFAST     (64 * SIZE_SZ / 4)
+#define DEFAULT_MXFAST     0 
 #endif
 
 
@@ -2913,6 +2916,14 @@ public_mALLOc(size_t bytes)
 
   __malloc_ptr_t (*hook) (size_t, __const __malloc_ptr_t)
     = force_reg (__malloc_hook);
+#ifdef MALLOC_EXTRA_LOG
+  {
+    u_long msg[2];
+    msg[0] = 0x00;
+    msg[1] = (u_long) bytes;
+    mutex_msg (msg, 8);
+  }
+#endif
   if (__builtin_expect (hook != NULL, 0))
     return (*hook)(bytes, RETURN_ADDRESS (0));
 
@@ -2943,6 +2954,14 @@ public_mALLOc(size_t bytes)
     (void)mutex_unlock(&ar_ptr->mutex);
   assert(!victim || chunk_is_mmapped(mem2chunk(victim)) ||
 	 ar_ptr == arena_for_chunk(mem2chunk(victim)));
+#ifdef MALLOC_EXTRA_LOG
+  {
+    u_long msg[2];
+    msg[0] = 0x01;
+    msg[1] = (u_long) victim;
+    mutex_msg (msg, 8);
+  }
+#endif
   return victim;
 }
 libc_hidden_def(public_mALLOc)
@@ -2953,6 +2972,14 @@ public_fREe(void* mem)
   mstate ar_ptr;
   mchunkptr p;                          /* chunk corresponding to mem */
 
+#ifdef MALLOC_EXTRA_LOG
+  {
+    u_long msg[2];
+    msg[0] = 0x03;
+    msg[1] = (u_long) mem;
+    mutex_msg (msg, 8);
+  }
+#endif
   void (*hook) (__malloc_ptr_t, __const __malloc_ptr_t)
     = force_reg (__free_hook);
   if (__builtin_expect (hook != NULL, 0)) {
@@ -2994,6 +3021,15 @@ public_rEALLOc(void* oldmem, size_t bytes)
 
   __malloc_ptr_t (*hook) (__malloc_ptr_t, size_t, __const __malloc_ptr_t) =
     force_reg (__realloc_hook);
+#ifdef MALLOC_EXTRA_LOG
+  {
+    u_long msg[3];
+    msg[0] = 0x04;
+    msg[1] = (u_long) oldmem;
+    msg[2] = (u_long) bytes;
+    mutex_msg (msg, 12);
+  }
+#endif
   if (__builtin_expect (hook != NULL, 0))
     return (*hook)(oldmem, bytes, RETURN_ADDRESS (0));
 
@@ -3074,6 +3110,14 @@ public_rEALLOc(void* oldmem, size_t bytes)
 	}
     }
 
+#ifdef MALLOC_EXTRA_LOG
+  {
+    u_long msg[2];
+    msg[0] = 0x05;
+    msg[1] = (u_long) newp;
+    mutex_msg (msg, 8);
+  }
+#endif
   return newp;
 }
 libc_hidden_def (public_rEALLOc)
@@ -3226,6 +3270,15 @@ public_cALLOc(size_t n, size_t elem_size)
   unsigned long nclears;
   INTERNAL_SIZE_T* d;
 
+#ifdef MALLOC_EXTRA_LOG
+  {
+    u_long msg[3];
+    msg[0] = 0x06;
+    msg[1] = (u_long) n;
+    msg[2] = (u_long) elem_size;
+    mutex_msg (msg, 12);
+  }
+#endif
   /* size_t is unsigned so the behavior on overflow is defined.  */
   bytes = n * elem_size;
 #define HALF_INTERNAL_SIZE_T \
@@ -3344,6 +3397,15 @@ public_cALLOc(size_t n, size_t elem_size)
       }
     }
   }
+
+#ifdef MALLOC_EXTRA_LOG
+  {
+    u_long msg[2];
+    msg[0] = 0x07;
+    msg[1] = (u_long) mem;
+    mutex_msg (msg, 8);
+  }
+#endif
 
   return mem;
 }
@@ -4019,6 +4081,7 @@ _int_free(mstate av, mchunkptr p, int have_lock)
   */
 
   else if (!chunk_is_mmapped(p)) {
+
     if (! have_lock) {
 #if THREAD_STATS
       if(!mutex_trylock(&av->mutex))
@@ -5256,9 +5319,12 @@ weak_alias (__malloc_get_state, malloc_get_state)
 weak_alias (__malloc_set_state, malloc_set_state)
 
 /* Begin REPLAY */
-void (*pthread_log_lock)(__libc_lock_t *);
+void (*pthread_log_lock)(__libc_lock_t *) = NULL;
 int (*pthread_log_trylock)(__libc_lock_t *) = NULL;
 void (*pthread_log_unlock)(__libc_lock_t *) = NULL;
+#ifdef MALLOC_EXTRA_LOG
+void (*pthread_log_msg)(char*, int) = NULL;
+#endif
 
 void __libc_malloc_setup (void (*__pthread_log_lock)(__libc_lock_t *),
 			  int (*__pthread_log_trylock)(__libc_lock_t *),
@@ -5294,6 +5360,19 @@ void mutex_unlock(__libc_lock_t *m)
 }
 strong_alias (__libc_malloc_setup, __malloc_setup) strong_alias (__libc_malloc_setup, malloc_setup)
 
+#ifdef MALLOC_EXTRA_LOG
+// For debugging
+void __libc_malloc_extra_setup (void (*__pthread_log_msg)(char *, int))
+{
+  pthread_log_msg = __pthread_log_msg;
+}
+strong_alias (__libc_malloc_extra_setup, __malloc_extra_setup) strong_alias (__libc_malloc_extra_setup, malloc_extra_setup)
+
+void mutex_msg (char* msg, int len)
+{
+  if (pthread_log_msg) pthread_log_msg(msg, len);
+}
+#endif
 /* End REPLAY */
 
 /* ------------------------------------------------------------
