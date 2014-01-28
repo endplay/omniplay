@@ -148,6 +148,9 @@ void replay_free_pipe(void *pipe) {
 		}
 	}
 }
+#else 
+void replay_free_pipe(void *pipe) {
+}
 #endif
 
 #define IS_CACHED_MASK 1
