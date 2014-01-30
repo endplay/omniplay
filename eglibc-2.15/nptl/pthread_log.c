@@ -32,9 +32,12 @@ unsigned long* ppthread_log_clock = 0;
 #define __NR_pthread_extra_log  112
 #endif
 
-#define GET_OLD_STACKP()		__asm__ __volatile__ ("movl %%esp, %0\n\t": "=r" (head->old_stackp) : ) 
-#define SET_NEW_STACKP()		__asm__ __volatile__ ("movl %0, %%esp\n\t" : : "r" (&(head->stack[DEFAULT_STACKSIZE-2048])))
-#define RESET_OLD_STACKP()	__asm__ __volatile__ ("movl %0, %%esp\n\t" : : "r" (head->old_stackp)) 
+//#define GET_OLD_STACKP()		__asm__ __volatile__ ("movl %%esp, %0\n\t": "=r" (head->old_stackp) : ) 
+//#define SET_NEW_STACKP()		__asm__ __volatile__ ("movl %0, %%esp\n\t" : : "r" (&(head->stack[DEFAULT_STACKSIZE-2048])))
+//#define RESET_OLD_STACKP()	__asm__ __volatile__ ("movl %0, %%esp\n\t" : : "r" (head->old_stackp)) 
+#define GET_OLD_STACKP()
+#define SET_NEW_STACKP()	
+#define RESET_OLD_STACKP()
 
 // This prints a message outside of the record/replay mechanism - useful for debugging
 void pthread_log_debug(const char* fmt,...)
@@ -219,8 +222,9 @@ extern void malloc_setup (void (*__pthread_log_lock)(int *),
 			  int (*__pthread_log_trylock)(int *),
 			  void (*__pthread_log_unlock)(int *));
 
-// For debugging malloc issues - comment out for now
-//extern void malloc_extra_setup (void (*__pthread_log_msg)(char *, int));
+#ifdef MALLOC_EXTRA_LOG
+extern void malloc_extra_setup (void (*__pthread_log_msg)(char *, int));
+#endif
 
 int check_recording (void) 
 {
@@ -276,7 +280,9 @@ int check_recording (void)
     head->ignore_flag = 0;
     DPRINT ("Kernel sets log status to %d\n", pthread_log_status);
     malloc_setup(pthread_log_mutex_lock, pthread_log_mutex_trylock, pthread_log_mutex_unlock);
-    //malloc_extra_setup(pthread_log_msg);
+#ifdef MALLOC_EXTRA_LOG
+    malloc_extra_setup(pthread_log_msg);
+#endif
 
     DPRINT("end of check recording, head %p, pthread_log_status %d, ppthread_log_clock %p, *ppthread_log_clock %lu\n", head, pthread_log_status, ppthread_log_clock, *ppthread_log_clock);
 
@@ -403,10 +409,6 @@ pthread_log_replay (unsigned long type, unsigned long check)
 
     if (data->check != check || data->type != type) {
 	pthread_log_debug ("Replay mismatch: log record %lu has type %lu check %x - but called with type %lu check %lx\n", data->clock, data->type, data->check, type, check);
-	pthread_log_debug ("Callee 0 is 0x%p\n", __builtin_return_address(0));
-	pthread_log_debug ("Callee 1 is 0x%p\n", __builtin_return_address(1));
-	pthread_log_debug ("Callee 2 is 0x%p\n", __builtin_return_address(2));
-	pthread_log_debug ("Callee 3 is 0x%p\n", __builtin_return_address(3));
 	exit (0);
     }
 
