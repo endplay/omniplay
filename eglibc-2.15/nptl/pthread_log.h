@@ -8,7 +8,6 @@
 
 // This creates a separate log for debugging
 //#define USE_EXTRA_DEBUG_LOG
-//#define MALLOC_EXTRA_LOG
 
 #define DEFAULT_STACKSIZE        32768 
 

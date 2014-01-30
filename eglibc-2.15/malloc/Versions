@@ -6,7 +6,7 @@ libc {
     # interface of malloc functions
     __libc_calloc; __libc_free; __libc_mallinfo; __libc_malloc; 
     __libc_mallopt; __libc_memalign; __libc_pvalloc; __libc_realloc;
-    __libc_valloc; __libc_malloc_setup; __libc_malloc_extra_setup;
+    __libc_valloc; __libc_malloc_setup;
     __malloc_initialize_hook; __free_hook; __malloc_hook; __realloc_hook;
     __memalign_hook; __after_morecore_hook;
     __malloc_initialized; __default_morecore; __morecore;
@@ -27,7 +27,7 @@ libc {
     # m*
     mallinfo; malloc; malloc_get_state; malloc_set_state; malloc_stats;
     malloc_trim; malloc_usable_size; mallopt; memalign; mprobe; mtrace;
-    muntrace; malloc_setup; malloc_extra_setup;
+    muntrace; malloc_setup;
 
     # o*
     obstack_free;
