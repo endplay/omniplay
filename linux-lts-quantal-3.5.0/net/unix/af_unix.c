@@ -427,6 +427,13 @@ static void unix_release_sock(struct sock *sk, int embrion)
 	if (path.dentry)
 		path_put(&path);
 
+	/* Begin: REPLAY */
+	do {
+		extern void replay_sock_put(struct sock *sock);
+		replay_sock_put(sk);
+	} while (0);
+	/* End: REPLAY */
+
 	sock_put(sk);
 
 	/* ---- Socket is dead now and most probably destroyed ---- */
