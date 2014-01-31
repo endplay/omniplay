@@ -7886,26 +7886,26 @@ void track_file(INS ins, void *v)
                 case XED_ICLASS_PUNPCKLBW:
                 case XED_ICLASS_PUNPCKLWD:
                 case XED_ICLASS_PUNPCKLDQ:
-#ifdef DATA_FLOW
+#ifdef LINKAGE_DATA
                     // no flags affected
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument PUNPCK\n", INS_Address(ins));
                     old_instrument_addorsub(ins);
 #endif
                     break;
                 case XED_ICLASS_PCMPEQB:
-#ifdef DATA_FLOW
+#ifdef LINKAGE_DATA
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument PCMPEQB\n", INS_address(ins));
                     instrument_pcmpeqb(ins);
 #endif
                     break;
                 case XED_ICLASS_PSHUFD:
-#ifdef DATA_FLOW
+#ifdef LINKAGE_DATA
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument PSHUFD\n", INS_address(ins));
                     instrument_set_src2dst(ins);
 #endif
                     break;
                 case XED_ICLASS_PMOVMSKB:
-#ifdef DATA_FLOW
+#ifdef LINKAGE_DATA
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument PMOVMSKB\n", INS_address(ins));
                     instrument_set_src2dst(ins);
 #endif
