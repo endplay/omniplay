@@ -11,7 +11,7 @@ REPLAY_LIB += $(SDEV)/libutil.a
 TOOL_LIBS += $(SDEV)/libutil.a
 TOOL_CXXFLAGS += -I$(SDEV)
 GLIB_INCLUDES=-I/usr/include/glib-2.0 -I/usr/lib/i386-linux-gnu/glib-2.0/include -I/usr/include/glib-2.0/glib
-TOOL_CXXFLAGS += $(GLIB_INCLUDES) -I$(SDEV)
+TOOL_CXXFLAGS += $(GLIB_INCLUDES) -I$(SDEV) -g
 
 ##############################################################
 #
@@ -88,20 +88,30 @@ $(OBJDIR)print_instructions$(OBJ_SUFFIX): print_instructions.cpp
 $(OBJDIR)print_instructions$(PINTOOL_SUFFIX): $(OBJDIR)print_instructions$(OBJ_SUFFIX)
 	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS)
 
+# Copy linkage tool with replay support
 $(OBJDIR)linkage_copy$(OBJ_SUFFIX): linkage.cpp
 	$(CXX) -DHAVE_REPLAY -DLINKAGE_COPY $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
 
 $(OBJDIR)linkage_copy$(PINTOOL_SUFFIX): $(OBJDIR)linkage_copy$(OBJ_SUFFIX)
 	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) -lglib-2.0
 
+# Copy linkage tool without replay support
 $(OBJDIR)linkage_copy_nr$(OBJ_SUFFIX): linkage.cpp
 	$(CXX) -DLINKAGE_COPY $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
 
 $(OBJDIR)linkage_copy_nr$(PINTOOL_SUFFIX): $(OBJDIR)linkage_copy_nr$(OBJ_SUFFIX)
 	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) -lglib-2.0
 
+# Data linkage tool with replay support
 $(OBJDIR)linkage_data$(OBJ_SUFFIX): linkage.cpp
 	$(CXX) -DHAVE_REPLAY -DLINKAGE_COPY -DLINKAGE_DATA $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
 
 $(OBJDIR)linkage_data$(PINTOOL_SUFFIX): $(OBJDIR)linkage_data$(OBJ_SUFFIX)
+	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) -lglib-2.0
+
+# ConfAid (no replay support), linkages: copy, data, control flow, syscall abstraction
+$(OBJDIR)confaid$(OBJ_SUFFIX): linkage.cpp
+	$(CXX) -DCONFAID -DLINKAGE_COPY -DLINKAGE_DATA -DCTRL_FLOW -DLINKAGE_SYSCALL $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
+
+#$(OBJDIR)confaid$(PINTOOL_SUFFIX): $(OBJDIR)confaid$(OBJ_SUFFIX)
 	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) -lglib-2.0

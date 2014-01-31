@@ -109,8 +109,9 @@
 #define ZF_FLAG 3
 #define SF_FLAG 4
 #define OF_FLAG 5
+#define DF_FLAG 6
 
-#define NUM_FLAGS 6
+#define NUM_FLAGS 7
 
 #define CMOV_GENERIC 1
 #define CMOVBE       2

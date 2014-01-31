@@ -44,16 +44,18 @@
  #ifndef LINKAGE_DATA
   #include "taints/taints_copy.h"
  #else
-  //#include "taints/taints_data.h"
-  #include "taints/taints.h"
+  // #include "taints/taints_data.h"
+  #define TAINT_IMPL_INDEX
+  #include "taints/taints_index.h"
  #endif
 #else
 #include "taints/taints.h"
 #endif
 // #include "taints/taints.h"
+// #define TAINT_STATS
 
-// Linkage macros
-// TODO get rid of these and put them in the Makefile
+// List of available Linkage macros
+// // DO NOT TURN THESE ON HERE. Turn these on in makefile.rules.
 // #define LINKAGE_COPY                 // just memory copies
 // #define LINKAGE_DATA                 // data copies
 // #define LINKAGE_SYSCALL              // system call & libc function abstraction
@@ -61,7 +63,6 @@
 // #define ALT_PATH_EXPLORATION         // indirect control flow
 // #define CONFAID
 // #define HAVE_REPLAY
-#define HANDLE_FUNCTIONS
 // #define FILTER_INPUTS
 // #define DUMP_TAINTS
 
@@ -495,6 +496,9 @@ struct xray_monitor* open_fds = NULL; // List of open fds
 #ifdef FILTER_INPUTS
 char input_file_name[256];
 #endif
+#ifdef TAINT_STATS
+long instrumented_insts = 0;
+#endif
 
 FILE* log_f = NULL; // For debugging
 FILE* trace_f = NULL; // for tracing taints
@@ -620,6 +624,12 @@ struct mmap_info {
 };
 
 //########################################################################
+#ifdef TAINT_STATS
+void instrument_inst_count(void)
+{
+    instrumented_insts++;
+}
+#endif
 
 void init_shift_cache(void)
 {
@@ -1287,6 +1297,20 @@ void flags_clear_dependency(struct thread_data* ptdata)
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
+void flag_clear_dependency(struct thread_data* ptdata, int flag)
+{
+#ifdef CTRL_FLOW
+    if (flag < 0 || flag >= NUM_FLAGS) return;
+    GRAB_GLOBAL_LOCK (ptdata);
+    if (CTRFLOW_TAINT_STACK->prev != 0) {
+        add_modified_flag(ptdata, flag);
+    }
+    
+    clear_taint(&flag_table[flag]);
+    RELEASE_GLOBAL_LOCK (ptdata);
+#endif
+}
+
 inline struct taint* get_mem_taint(ADDRINT mem_loc) 
 {
     struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
@@ -1376,6 +1400,7 @@ void taint_mem2reg (ADDRINT mem_loc, UINT32 size, REG reg)
     TAINT_PRINT ("taint_mem2reg: memory location %#x has mark, vector is ", mem_loc);
     TAINT_PRINT_DEP_VECTOR (vector);
     if(vector) {
+        reg_mod_dependency(ptdata, reg, vector, SET, 1);    
     } else {
         reg_clear_dependency(ptdata, reg);
     }
@@ -1662,6 +1687,15 @@ void taint_reg2mem (ADDRINT mem_loc, UINT32 size, REG reg)
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
+void taint_flag_clear(UINT32 flag)
+{
+    TAINT_START ("taint_flag_clear");
+
+    GRAB_GLOBAL_LOCK (ptdata);
+    flag_clear_dependency (ptdata, flag);
+    RELEASE_GLOBAL_LOCK (ptdata);
+}
+
 void taint_reg2flag(REG reg)
 {
     TAINT_START ("taint_reg2flag");
@@ -1917,7 +1951,7 @@ void taint_add_mem2reg (ADDRINT mem_loc, UINT32 size, REG reg)
     GRAB_GLOBAL_LOCK (ptdata);
 
     struct taint* vector;
-    TAINT_PRINT ("taint_add_mem2reg: reg is %d, mem is %#x\n", reg, mem_loc);
+    TAINT_PRINT ("taint_add_mem2reg: reg is %d, mem is %#x, size %u\n", reg, mem_loc, size);
 #ifdef CTRL_FLOW
     if (CTRFLOW_TAINT_STACK->prev != 0)
         add_modified_reg(ptdata, reg);
@@ -1938,7 +1972,7 @@ void taint_add_mem2reg (ADDRINT mem_loc, UINT32 size, REG reg)
             }
 #endif
 #endif
-            reg_mod_dependency(ptdata, reg, vector, MERGE, 0);    
+            reg_mod_dependency(ptdata, reg, vector, MERGE, 0);
 #ifdef TAINT_TRACK
             taint_track_locations("taint_add_mem2reg", mem_loc, (int)size);
 #endif
@@ -3491,6 +3525,9 @@ void cmov_regmov(INS ins, INT32 cmov_type, USIZE addrsize, UINT32 mask, UINT32 c
 
 void instrument_cmov(INS ins, OPCODE opcode) 
 {
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     int ismemread = 0;
     int ismemwrite = 0;
     USIZE addrsize = 0;
@@ -3539,7 +3576,9 @@ void instrument_cmov(INS ins, OPCODE opcode)
 
 void instrument_movx (INS ins) 
 {
-    
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     //first operand is always reg
     MYASSERT(INS_OperandIsReg(ins, 0) == 1);
     REG dst_reg = INS_OperandReg(ins, 0);
@@ -3695,6 +3734,9 @@ void instrument_mov (INS ins)
 
 void instrument_cdq(INS ins)
 {
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
    REG dstreg, srcreg;
 
    dstreg = INS_OperandReg(ins, 0);
@@ -3709,6 +3751,9 @@ void instrument_cdq(INS ins)
 // TODO, unimplemented
 void instrument_bt(INS ins)
 {
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     // Different forms of bt:
     //   bt reg, reg
     //   bt mem, reg
@@ -3742,6 +3787,9 @@ void instrument_bt(INS ins)
 
 void instrument_push(INS ins)
 {
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     REG reg = REG_INVALID();
     USIZE addrsize = INS_MemoryWriteSize(ins);
     int src_reg = INS_OperandIsReg(ins, 0);
@@ -3768,6 +3816,9 @@ void instrument_push(INS ins)
 
 void instrument_pop(INS ins)
 {
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     REG reg = REG_INVALID();
     USIZE addrsize = INS_MemoryReadSize(ins);
 
@@ -3898,14 +3949,18 @@ void muldiv_mem_taint_dest_regs(ADDRINT mem_loc, UINT32 addrsize, REG reg1, UINT
         r1 = (reg1stat & REG_READ);
         if(r1 == REG_READ) {
             src_v = get_reg_taint(reg1);
-            if (src_v) merge_taints(&dst_v, src_v);
+            if (src_v) {
+                merge_taints(&dst_v, src_v);
+            }
         }
     }
     if (REG_valid(reg2)) {
         r2 = (reg2stat & REG_READ);
         if(r2 == REG_READ) {
             src_v = get_reg_taint(reg2);
-            if (src_v) merge_taints(&dst_v, src_v);
+            if (src_v) {
+                merge_taints(&dst_v, src_v);
+            }
         }
     }
     
@@ -3913,13 +3968,17 @@ void muldiv_mem_taint_dest_regs(ADDRINT mem_loc, UINT32 addrsize, REG reg1, UINT
         r3 = (reg3stat & REG_READ);
         if(r3 == REG_READ) {
             src_v = get_reg_taint(reg3);
-            if (src_v) merge_taints(&dst_v, src_v);
+            if (src_v) {
+                merge_taints(&dst_v, src_v);
+            }
         }
     }
     
     for(int i = 0; i < (int)addrsize; i++) {
-	src_v = get_mem_taint(mem_loc + i);
-	if(src_v) merge_taints(&dst_v, src_v);
+        src_v = get_mem_taint(mem_loc + i);
+        if(src_v) {
+            merge_taints(&dst_v, src_v);
+        }
     }
     DEP_PRINT(log_f, "muldiv_mem_taint: reg2 is %d and reg3 is %d\n", reg2, reg3);
 
@@ -3954,20 +4013,26 @@ void muldiv_taint_dest_regs(REG reg1, UINT32 reg1stat,
     r1 = (reg1stat & REG_READ);
     if(r1 == REG_READ) {
         src_v = get_reg_taint(reg1);
-        if(src_v) merge_taints(&dst_v, src_v);
+        if(src_v) {
+            merge_taints(&dst_v, src_v);
+        }
     }
 
     r2 = (reg2stat & REG_READ);
     if(r2 == REG_READ) {
         src_v = get_reg_taint(reg2);
-        if(src_v) merge_taints(&dst_v, src_v);
+        if(src_v) {
+            merge_taints(&dst_v, src_v);
+        }
     }
 
     if (REG_valid(reg3)) {
         r3 = (reg3stat & REG_READ);
         if(r3 == REG_READ) {
             src_v = get_reg_taint(reg3);
-            if(src_v) merge_taints(&dst_v, src_v);
+            if(src_v) {
+                merge_taints(&dst_v, src_v);
+            }
         }
     }
     DEP_PRINT(log_f, "muldiv_reg_taint: reg1 is %d, reg2 is %d and reg3 is %d\n", reg1, reg2, reg3);
@@ -3989,6 +4054,9 @@ void muldiv_taint_dest_regs(REG reg1, UINT32 reg1stat,
 
 void instrument_xchg(INS ins)
 {
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     int op1mem, op2mem, op1reg, op2reg;
     USIZE addrsize;
 
@@ -4199,6 +4267,9 @@ void adc_flag2mem (ADDRINT mem_loc, UINT32 addrsize)
 
 void instrument_adc(INS ins)
 {
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     int op1mem, op2mem, op1reg, op2reg, op2imm;
     string instruction;
     USIZE addrsize;
@@ -4343,6 +4414,9 @@ void cmp_reg_reg(REG dstreg, REG reg)
 
 void instrument_test(INS ins)
 {
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     int op1mem, op1reg, op2reg, op2imm;
     string instruction;
     USIZE addrsize;
@@ -4393,8 +4467,36 @@ void instrument_test(INS ins)
     }
 }
 
+void instrument_pcmpeqb(INS ins)
+{
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
+    REG reg;
+    int op2reg, op2mem;
+    op2reg = INS_OperandIsReg(ins, 1);
+    op2mem = INS_OperandIsMemory(ins, 1);
+    reg = INS_OperandReg(ins, 0);
+    if (op2reg) {
+        REG reg2 = INS_OperandReg(ins ,1);
+        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_reg2reg),
+                IARG_UINT32, reg, IARG_UINT32, reg2, IARG_END);
+    } else if (op2mem) {
+        USIZE addrsize = INS_MemoryReadSize(ins);
+        assert (addrsize == 16);
+        assert (INS_IsMemoryRead(ins));
+        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_mem2reg),
+                IARG_MEMORYREAD_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, IARG_END);
+    } else {
+        fprintf(stderr, "[ERROR] unknown comibnation of PCMPEQB\n");
+    }
+}
+
 void instrument_cmp(INS ins)
 {
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     int op1mem, op2mem, op1reg, op2reg, op2imm;
     string instruction;
     USIZE addrsize;
@@ -4487,11 +4589,13 @@ void reg_cmpxchg(REG dst_reg, REG reg, int eflag_value)
             add_modified_reg(ptdata, dst_reg);
 #endif
         vector = get_reg_taint(dst_reg);
+#ifdef CTRL_FLOW
         if (vector) {
             flags_mod_dependency(ptdata, vector, MERGE, 0);
             //the value of al is dependent on al == dst_reg condition
             //reg_mod_dependency(a_reg, MERGE);
         }
+#endif
         vector = get_reg_taint(reg);
         if(vector) {
             reg_mod_dependency(ptdata, dst_reg, vector, MERGE, 0);    
@@ -4499,7 +4603,9 @@ void reg_cmpxchg(REG dst_reg, REG reg, int eflag_value)
         vector = get_reg_taint(a_reg);
         if (vector) {
             reg_mod_dependency(ptdata, dst_reg, vector, MERGE, 0);   
+#ifdef CTRL_FLOW
             flags_mod_dependency(ptdata, vector, MERGE, 0);
+#endif
         }
         //already has the ctrflow
     } else {      
@@ -4516,7 +4622,9 @@ void reg_cmpxchg(REG dst_reg, REG reg, int eflag_value)
         }
         vector = get_reg_taint(a_reg);
         if (vector) {
+#ifdef CTRL_FLOW
             flags_mod_dependency(ptdata, vector, MERGE, 0);
+#endif
         }
     }
     RELEASE_GLOBAL_LOCK (ptdata);
@@ -4540,23 +4648,29 @@ void mem_cmpxchg(ADDRINT mem_location, int addrsize, REG reg, int eflag_value)
                 break;
         default: printf("ERROR: in mem_cmpxchg, mem size is %d\n", addrsize);
     }
+#ifdef CTRL_FLOW
     flags_clear_dependency(ptdata);
+#endif
     if (eflag_value & ZF_MASK) {
         //ZF is set, therefore AL/AX/EAX was equal to memory operand
         vector_reg = get_reg_taint(reg);
         vector_a_reg = get_reg_taint(a_reg);
+#ifdef CTRL_FLOW
         if (vector_a_reg) {    
             flags_mod_dependency(ptdata, vector_a_reg, MERGE, 0);
         }
+#endif
         for (int i = 0; i < addrsize; i++) {
             vector = get_mem_taint(mem_location + i);
 #ifdef CTRL_FLOW
             if (CTRFLOW_TAINT_STACK->prev != 0)
                 add_modified_mem(ptdata, mem_location + i);
 #endif
+#ifdef CTRL_FLOW
             if (vector) {
                 flags_mod_dependency(ptdata, vector, MERGE, 0);
             }
+#endif
             if(vector_reg) {
                 mem_mod_dependency(ptdata, mem_location + i, vector_reg, MERGE, 0);    
             } 
@@ -4576,15 +4690,20 @@ void mem_cmpxchg(ADDRINT mem_location, int addrsize, REG reg, int eflag_value)
             }
         }
         vector = get_reg_taint(a_reg);
+#ifdef CTRL_FLOW
         if (vector) {
             flags_mod_dependency(ptdata, vector, MERGE, 0);
         }
+#endif
     }
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
 void instrument_cmpxchg(INS ins)
 {
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     int op1mem;
     REG reg;
     
@@ -4603,6 +4722,9 @@ void instrument_cmpxchg(INS ins)
 
 void instrument_incordec(INS ins)
 {
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     int opmem, opreg;
     string instruction;
     USIZE addrsize;
@@ -4616,9 +4738,10 @@ void instrument_incordec(INS ins)
         addrsize = INS_MemoryWriteSize(ins);
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_immval2mem),
                 IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_UINT32, MERGE, IARG_END);
+#ifdef CTRL_FLOW
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_mem2flags_but_cf),
                 IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_END);
-
+#endif
     } else if(opreg) {
         reg = INS_OperandReg(ins, 0);
         if(!REG_valid(reg)) {
@@ -4628,7 +4751,9 @@ void instrument_incordec(INS ins)
         INSTRUMENT_PRINT(log_f, "instrument_incordec: op is register %d\n", reg);
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_immval2reg), 
                 IARG_UINT32, reg, IARG_UINT32, MERGE, IARG_END);
+#ifdef CTRL_FLOW
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_reg2flags_but_cf), IARG_UINT32, reg, IARG_END);
+#endif
     } else{
         //if the arithmatic involves an immediate instruction the taint does
         //not propagate...
@@ -4640,6 +4765,9 @@ void instrument_incordec(INS ins)
 
 void instrument_shift(INS ins) 
 {
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     int op1reg, op1mem, count, op2reg, op2imm, op2imp;
     REG reg, reg2;
     UINT32 addrsize;
@@ -4650,6 +4778,7 @@ void instrument_shift(INS ins)
     op1reg = INS_OperandIsReg(ins, 0);
     op1mem = INS_OperandIsMemory(ins, 0);
     if(count == 2) {
+#ifdef CTRL_FLOW  // Only flags are affected
         if(op1reg) {
             reg = INS_OperandReg(ins, 0);
             if(!REG_valid(reg)) return;
@@ -4663,6 +4792,7 @@ void instrument_shift(INS ins)
             instruction = INS_Disassemble(ins);
             printf("unknown combination of shift ins (count=1): %s\n", instruction.c_str());
         }
+#endif
     } else if (count == 3) {
         op2reg = INS_OperandIsReg(ins, 1);
         op2imm = INS_OperandIsImmediate(ins, 1);
@@ -4674,7 +4804,9 @@ void instrument_shift(INS ins)
             if(!REG_valid(reg) || !REG_valid(reg2)) return;
             INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_reg2reg),
                     IARG_UINT32, reg, IARG_UINT32, reg2, IARG_END);
+#ifdef CTRL_FLOW
             INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_reg2flag), IARG_UINT32, reg, IARG_END);
+#endif
 
         } else if(op1mem && op2reg) {
             INSTRUMENT_PRINT(log_f, "instrument_shift: op1 is memory and op2 is reg\n");
@@ -4682,20 +4814,26 @@ void instrument_shift(INS ins)
             addrsize = INS_MemoryWriteSize(ins);
             INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_reg2mem),
                     IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_UINT32, reg2, IARG_END);
+#ifdef CTRL_FLOW
             INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_mem2flag),
                     IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_END);
+#endif
         } else if(op1reg && (op2imm || op2imp)) {
             INSTRUMENT_PRINT(log_f, "instrument_shift: op1 is reg and op2 is immediate\n");
             reg = INS_OperandReg(ins, 0);
             INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_immval2reg), IARG_UINT32, reg, IARG_UINT32, MERGE, IARG_END);
+#ifdef CTRL_FLOW
             INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_reg2flag), IARG_UINT32, reg, IARG_END);
+#endif
         } else if(op1mem && (op2imm || op2imp)){
             INSTRUMENT_PRINT(log_f, "instrument_shift: op1 is mem and op2 is immediate\n");
             addrsize = INS_MemoryWriteSize(ins);
             INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_immval2mem),
                     IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_UINT32, MERGE, IARG_END);
+#ifdef CTRL_FLOW
             INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_mem2flag),
                     IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_END);
+#endif
         } else {
             string instruction;
             instruction = INS_Disassemble(ins);
@@ -4724,8 +4862,10 @@ void instrument_shift(INS ins)
             addrsize = INS_MemoryWriteSize(ins);
             INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_reg2mem),
                     IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_UINT32, reg2, IARG_END);
+#ifdef CTRL_FLOW
             INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_mem2flag),
                     IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_END);
+#endif
         }
     } else {
         string instruction;
@@ -4736,6 +4876,9 @@ void instrument_shift(INS ins)
 
 void instrument_addorsub(INS ins)
 {
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     int op1mem, op2mem, op1reg, op2reg, op2imm;
     string instruction;
     OPCODE opcode;
@@ -4760,9 +4903,10 @@ void instrument_addorsub(INS ins)
         addrsize = INS_MemoryWriteSize(ins);
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_reg2mem),
                 IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, IARG_END);
+#ifdef CTRL_FLOW
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_mem2flag),
                 IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_END);
-
+#endif
     } else if(op1reg && op2mem) {
         reg = INS_OperandReg(ins, 0);
         if(!INS_IsMemoryRead(ins) || !REG_valid(reg)) {
@@ -4774,8 +4918,9 @@ void instrument_addorsub(INS ins)
         addrsize = INS_MemoryReadSize(ins);
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_mem2reg), 
                 IARG_MEMORYREAD_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, IARG_END);
+#ifdef CTRL_FLOW
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_reg2flag), IARG_UINT32, reg, IARG_END);
-
+#endif
     } else if(op1reg && op2reg) {
         REG dstreg;
         dstreg = INS_OperandReg(ins, 0);
@@ -4799,12 +4944,16 @@ void instrument_addorsub(INS ins)
                 && (dstreg == reg)) {
 	    INSTRUMENT_PRINT(log_f, "handling reg reset\n");
 	    INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_immval2reg), IARG_UINT32, dstreg, IARG_UINT32, SET, IARG_END);
+#ifdef CTRL_FLOW
 	    INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_immval2flag), IARG_END);
+#endif
 
 	} else {
             INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_reg2reg),
                              IARG_UINT32, dstreg, IARG_UINT32, reg, IARG_END);
+#ifdef CTRL_FLOW
             INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_reg2flag), IARG_UINT32, dstreg, IARG_END);
+#endif
         }
     } else if(op1mem && op2imm) {
         /*imm does not change taint value of the destination*/
@@ -4812,15 +4961,19 @@ void instrument_addorsub(INS ins)
         addrsize = INS_MemoryWriteSize(ins);
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_immval2mem),
                 IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_UINT32, MERGE, IARG_END);
+#ifdef CTRL_FLOW
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_mem2flag),
                 IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_END);
+#endif
     } else if(op1reg && op2imm){
         reg = INS_OperandReg(ins, 0);
         INSTRUMENT_PRINT(log_f, "instrument_addorsub: op1 is reg (%d) and op2 is immediate\n", reg);
         if (!SPECIAL_REG(reg)) {
             INSTRUMENT_PRINT(log_f, "instrument_addorsub: op1 is reg and op2 is immediate\n");
             INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_immval2reg), IARG_UINT32, reg, IARG_UINT32, MERGE, IARG_END);
+#ifdef CTRL_FLOW
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_reg2flag), IARG_UINT32, reg, IARG_END);
+#endif
         }
     } else{
         //if the arithmatic involves an immediate instruction the taint does
@@ -4833,6 +4986,9 @@ void instrument_addorsub(INS ins)
 
 void instrument_addorsub_noflags(INS ins)
 {
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     int op1mem, op2mem, op1reg, op2reg, op2imm;
     string instruction;
     USIZE addrsize;
@@ -4902,6 +5058,9 @@ void instrument_addorsub_noflags(INS ins)
 
 void old_instrument_addorsub(INS ins)
 {
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     int op1mem, op2mem, op1reg, op2reg, op2imm;
     string instruction;
     USIZE addrsize;
@@ -4916,32 +5075,32 @@ void old_instrument_addorsub(INS ins)
     op2imm = INS_OperandIsImmediate(ins, 1);
     
     if((op1mem && op2reg)) {
-	reg = INS_OperandReg(ins, 1);
-	if(!REG_valid(reg)) {
-	    return;
-	}
-	INSTRUMENT_PRINT(log_f, "old_instrument_addorsub: op1 is mem and op2 is register\n");
-	addrsize = INS_MemoryWriteSize(ins);
-	INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_reg2mem),
-		IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, IARG_END);
+        reg = INS_OperandReg(ins, 1);
+        if(!REG_valid(reg)) {
+            return;
+        }
+        INSTRUMENT_PRINT(log_f, "old_instrument_addorsub: op1 is mem and op2 is register\n");
+        addrsize = INS_MemoryWriteSize(ins);
+        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_reg2mem),
+                IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, IARG_END);
     } else if(op1reg && op2mem) {
-	reg = INS_OperandReg(ins, 0);
-	if(!INS_IsMemoryRead(ins) || !REG_valid(reg)) {
-	    //we ignore reads from video memory e.g. the gs segment register
-	    return;
-	}
-	INSTRUMENT_PRINT(log_f, "old_instrument_addorsub: op1 is register and op2 is mem\n");
-	addrsize = INS_MemoryReadSize(ins);
-	INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_mem2reg), 
-		IARG_MEMORYREAD_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, IARG_END);
+        reg = INS_OperandReg(ins, 0);
+        if(!INS_IsMemoryRead(ins) || !REG_valid(reg)) {
+            //we ignore reads from video memory e.g. the gs segment register
+            return;
+        }
+        INSTRUMENT_PRINT(log_f, "old_instrument_addorsub: op1 is register and op2 is mem\n");
+        addrsize = INS_MemoryReadSize(ins);
+        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_mem2reg), 
+                IARG_MEMORYREAD_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, IARG_END);
     } else if(op1reg && op2reg) {
-	REG dstreg;
-	INSTRUMENT_PRINT(log_f, "old_instrument_addorsub: op1 and op2 of Artith are registers\n");
-	dstreg = INS_OperandReg(ins, 0);
-	reg = INS_OperandReg(ins, 1);
-	if(!REG_valid(dstreg) || !REG_valid(reg)) {
-	    return;
-	} 
+        REG dstreg;
+        INSTRUMENT_PRINT(log_f, "old_instrument_addorsub: op1 and op2 of Artith are registers\n");
+        dstreg = INS_OperandReg(ins, 0);
+        reg = INS_OperandReg(ins, 1);
+        if(!REG_valid(dstreg) || !REG_valid(reg)) {
+            return;
+        } 
 	/*if((opcode == XED_ICLASS_PXOR ||
 	    opcode == XED_ICLASS_FSUB || opcode == XED_ICLASS_FSUBP ||
 	    opcode == XED_ICLASS_FSUBP || opcode == XED_ICLASS_FISUB ||
@@ -4954,29 +5113,81 @@ void old_instrument_addorsub(INS ins)
 	    INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_immval2reg),
 			   IARG_UINT32, dstreg, IARG_END);
 	} else {*/
-	INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_reg2reg),
-			 IARG_UINT32, dstreg, IARG_UINT32, reg, IARG_END);
+        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_reg2reg),
+                IARG_UINT32, dstreg, IARG_UINT32, reg, IARG_END);
     } else if(op1mem && op2imm) {
-	INSTRUMENT_PRINT(log_f, "old_instrument_addorsub: op1 is mem and op2 is immediate\n");
-	addrsize = INS_MemoryWriteSize(ins);
-	INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_immval2mem),
-		IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_UINT32, MERGE, IARG_END);
+        INSTRUMENT_PRINT(log_f, "old_instrument_addorsub: op1 is mem and op2 is immediate\n");
+        addrsize = INS_MemoryWriteSize(ins);
+        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_immval2mem),
+                IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_UINT32, MERGE, IARG_END);
     }else if(op1reg && op2imm){
-	reg = INS_OperandReg(ins, 0);
-	INSTRUMENT_PRINT(log_f, "old_instrument_addorsub: op1 is reg (%d) and op2 is immediate\n", reg);
-	//printf("instrument_addorsub: op1 is reg and op2 is immediate\n");
-	if (!SPECIAL_REG(reg))
-	    INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_immval2reg), IARG_UINT32, reg, IARG_UINT32, MERGE, IARG_END);
-	return;
-    }else{
-	string instruction;
-	instruction = INS_Disassemble(ins);
-	printf("unknown combination of old_addorsub ins: %s\n", instruction.c_str());
+        reg = INS_OperandReg(ins, 0);
+        INSTRUMENT_PRINT(log_f, "old_instrument_addorsub: op1 is reg (%d) and op2 is immediate\n", reg);
+        //printf("instrument_addorsub: op1 is reg and op2 is immediate\n");
+        if (!SPECIAL_REG(reg))
+            INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_immval2reg), IARG_UINT32, reg, IARG_UINT32, MERGE, IARG_END);
+        return;
+    } else{
+        string instruction;
+        instruction = INS_Disassemble(ins);
+        fprintf(stderr, "[ERROR] unknown combination of old_addorsub ins: %s\n", instruction.c_str());
+    }
+}
+
+/* Set the taint of the dst to the taint of the src. 
+ *  2 operands
+ * */
+void instrument_set_src2dst(INS ins) 
+{
+    int op1reg, op2reg;
+    int op1mem, op2mem;
+
+    op1mem = INS_OperandIsMemory(ins, 0);
+    op2mem = INS_OperandIsMemory(ins, 1);
+    op1reg = INS_OperandIsReg(ins, 0);
+    op2reg = INS_OperandIsReg(ins, 1);
+
+    if (op1reg && op2reg) {
+        REG dstreg = INS_OperandReg(ins, 0);
+        REG reg = INS_OperandReg(ins, 1);
+        if(!REG_valid(dstreg) || !REG_valid(reg)) {
+            return;
+        } 
+        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_reg2reg),
+                IARG_UINT32, dstreg, IARG_UINT32, reg, IARG_END);
+    } else if (op1reg && op2mem) {
+        REG dstreg = INS_OperandReg(ins, 0);
+        if(!INS_IsMemoryRead(ins) || !REG_valid(dstreg)) {
+            return;
+        }
+        USIZE addrsize = INS_MemoryReadSize(ins);
+        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_mem2reg),
+                IARG_MEMORYREAD_EA, IARG_UINT32, addrsize, IARG_UINT32, dstreg, IARG_END);
+    } else if (op1mem && op2reg) {
+        REG reg = INS_OperandReg(ins, 1);
+        if(!REG_valid(reg)) {
+            return;
+        }
+        USIZE addrsize = INS_MemoryWriteSize(ins);
+        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_reg2mem),
+                IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, IARG_END);
+    } else if (op1mem && op2mem) {
+        USIZE addrsize = INS_MemoryReadSize(ins);
+        assert (INS_IsMemoryWrite(ins));
+        assert (INS_IsMemoryRead(ins));
+        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_mem2mem), IARG_MEMORYREAD_EA, IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_END);
+    } else {
+        string instruction;
+        instruction = INS_Disassemble(ins);
+        fprintf(stderr, "[ERROR] unknown combination of src2dst: %s\n", instruction.c_str());
     }
 }
 
 void instrument_imul(INS ins)
 {
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     int op1reg;
     string instruction;
     int memread;
@@ -5031,7 +5242,9 @@ void instrument_imul(INS ins)
                              IARG_UINT32, reg3, IARG_UINT32, reg3stat,
                              IARG_END);
         }
+#ifdef CTRL_FLOW
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_reg2cf_of), IARG_UINT32, reg1, IARG_END);
+#endif
     } else if (count == 4) {       
         if (!memread) {
             reg1 = INS_OperandReg(ins, 0);
@@ -5073,7 +5286,9 @@ void instrument_imul(INS ins)
                              IARG_UINT32, reg3, IARG_UINT32, reg3stat,
                              IARG_END);
         }       
+#ifdef CTRL_FLOW
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_reg2cf_of), IARG_UINT32, reg2, IARG_END);
+#endif
     } else {
         printf("The operand count of imul (%#x) is %d\n", INS_Address(ins), INS_OperandCount(ins));
     }
@@ -5082,6 +5297,9 @@ void instrument_imul(INS ins)
 /*mul can have 1, 2, or 3 operands results are always stored in a register.*/
 void instrument_mul(INS ins)
 {
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     string instruction;
     int memread;                                                 
     UINT32 reg1stat, reg2stat, reg3stat;
@@ -5140,7 +5358,9 @@ void instrument_mul(INS ins)
 			 IARG_UINT32, reg3, IARG_UINT32, reg3stat,
 			 IARG_END);
     }       
+#ifdef CTRL_FLOW
     INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_reg2cf_of), IARG_UINT32, reg2, IARG_END);
+#endif
 }
 
 inline void check_speculative_div_reg(ADDRINT reg_value)
@@ -5165,6 +5385,9 @@ inline void check_speculative_div_mem(ADDRINT mem_addr, int size)
 /*div has 3 operands and the results are always stored in a register*/
 void instrument_div(INS ins)
 {
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     int op1reg, op2reg, op3reg;
     string instruction;
     int memread;
@@ -5245,6 +5468,9 @@ void instrument_div(INS ins)
 
 void instrument_xadd(INS ins)
 {
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     int op1mem, op1reg, op2reg;
     USIZE addrsize;
 
@@ -5262,7 +5488,9 @@ void instrument_xadd(INS ins)
 	}
 	INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_xadd_regs),
 		       IARG_UINT32, reg1, IARG_UINT32, reg2, IARG_END);
+#ifdef CTRL_FLOW
 	INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_reg2flag), IARG_UINT32, reg1, IARG_END);
+#endif
     } else if(op1mem && op2reg) {
 	REG reg;
 	INSTRUMENT_PRINT(log_f, "instrument_xadd: op1 is memory && op2 is register\n");
@@ -5274,7 +5502,9 @@ void instrument_xadd(INS ins)
 	}
 	INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_xadd_mem_reg),
 			 IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, IARG_END);
+#ifdef CTRL_FLOW
 	INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_mem2flag), IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_END);
+#endif
     } else {
 	string instruction;
 	instruction = INS_Disassemble(ins);
@@ -5284,6 +5514,9 @@ void instrument_xadd(INS ins)
 
 void instrument_setcc(INS ins, UINT32 mask)
 {
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     int opmem, opreg;
     
     opmem = INS_OperandIsMemory(ins, 0);
@@ -5312,6 +5545,9 @@ void instrument_setcc(INS ins, UINT32 mask)
 
 void instrument_lea(INS ins)
 {
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     REG dstreg = INS_OperandReg(ins, 0);
     REG base_reg = INS_OperandMemoryBaseReg(ins, 1);
     REG index_reg = INS_OperandMemoryIndexReg(ins, 1);
@@ -5331,7 +5567,9 @@ void instrument_lea(INS ins)
 
 void instrument_move_string(INS ins, OPCODE opcode)
 {
-    
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     UINT32 opw = INS_OperandWidth(ins, 0);
     UINT32 size = opw/8;
     if(INS_RepPrefix(ins)) {
@@ -5360,6 +5598,9 @@ void instrument_move_string(INS ins, OPCODE opcode)
 
 void instrument_load_string(INS ins, OPCODE opcode)
 {
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     REG dst_reg = INS_OperandReg(ins, 0);
     UINT32 opw = INS_OperandWidth(ins, 0);
     UINT32 size = opw/8;
@@ -5394,6 +5635,9 @@ void store_string_debug(ADDRINT inst, ADDRINT reg_cx, ADDRINT reg_ecx)
 
 void instrument_store_string(INS ins, OPCODE opcode)
 {
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     UINT32 opw = INS_OperandWidth(ins, 0);
     UINT32 size = opw/8;
     if(INS_RepPrefix(ins)) {
@@ -5505,6 +5749,22 @@ void analyze_buffer_stop (long id, void* buf, int size)
     }
 
     RELEASE_GLOBAL_LOCK (ptdata);
+}
+
+void print_input_data (FILE* fp)
+{
+    int i = 0;
+    struct token* tok;
+    fprintf(fp, "Inputs:\n");
+    for (i = 0; i < option_cnt; i++) {
+        tok = (struct token *) g_hash_table_lookup(option_info_table, GINT_TO_POINTER(i));
+        if (!tok) {
+            fprintf(fp, "%d: NO TOKEN?!\n", i);
+        } else {
+            fprintf(fp, "%d: syscall cnt %d byte %d %s\n", i, tok->syscall_cnt, tok->byte_offset, tok->name);
+        }
+    }
+    fflush(fp);
 }
 
 #ifdef CONFAID
@@ -5905,7 +6165,14 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
             if (monitor_has_fd(open_fds, ri->fd)) {
                 data = monitor_get_fd_data(open_fds, ri->fd);
             }
+#ifdef FILTER_INPUTS
+            fprintf(stderr, "read %s, %s, %d\n", input_file_name, (char *) data, strncmp(input_file_name, (char *) data, 256));
+	    if (data && !strncmp(input_file_name, (char *) data, 256)) {
+		    create_options_from_buffer (TOK_READ, global_syscall_cnt, (void *) ptdata->buffer_info, (int) ret_value, data);
+	    }
+#else
             create_options_from_buffer (TOK_READ, global_syscall_cnt, (void *) ptdata->buffer_info, (int) ret_value, data);
+#endif // FILTER_INPUTS
 #else
             if (confaid_data->read_from_config_fd && (((int) ret_value) > 0)) {
                 assert (ptdata->buffer_info);
@@ -6003,7 +6270,13 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
                     if (monitor_has_fd(open_fds, mmi->fd)) {
                         data = monitor_get_fd_data(open_fds, mmi->fd);
                     }
+#ifdef FILTER_INPUTS
+                    if (data && !strncmp(input_file_name, (char *) data, 256)) {
+                        create_options_from_buffer (TOK_READ, global_syscall_cnt, (void *) mmi->addr, mmi->length, data);
+                    }
+#else
                     create_options_from_buffer (TOK_READ, global_syscall_cnt, (void *) mmi->addr, mmi->length, data);
+#endif // FILTER_INPUTS
                 }
 #endif // CONFAID
             }
@@ -6913,6 +7186,9 @@ void add_to_calling_bblock(struct thread_data* ptdata, int status, ADDRINT addre
 #ifdef ALT_PATH_EXPLORATION
 void nowhere_land_check(ADDRINT target)
 {
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
 
     GRAB_GLOBAL_LOCK (ptdata);
@@ -6930,6 +7206,9 @@ void nowhere_land_check(ADDRINT target)
 #ifdef LINKAGE_SYSCALL
 void instrument_call(ADDRINT address, ADDRINT target, ADDRINT next_address)
 {
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
 
     if (!main_started) { 
@@ -6971,6 +7250,9 @@ void instrument_call(ADDRINT address, ADDRINT target, ADDRINT next_address)
 
 void instrument_hlt ()
 {
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
     GRAB_GLOBAL_LOCK (ptdata);
     if (NUM_CKPTS > 0) {
@@ -6982,6 +7264,9 @@ void instrument_hlt ()
 
 void instrument_ret(ADDRINT address, ADDRINT target)
 {
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
     struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
     if (ptdata == NULL) return;
 
@@ -7107,6 +7392,17 @@ void instrument_inst(ADDRINT inst_ptr, ADDRINT next_addr, ADDRINT target, ADDRIN
 #endif
     }
 
+#if 0
+    PIN_LockClient();
+    fprintf(LOG_F, "[INST] Pid %d (tid: %d) (record %d) - %#x\n", PIN_GetPid(), PIN_GetTid(), get_record_pid(), inst_ptr);
+    if (IMG_Valid(IMG_FindByAddress(inst_ptr))) {
+        fprintf(LOG_F, "%s -- img %s static %#x\n", RTN_FindNameByAddress(inst_ptr).c_str(), IMG_Name(IMG_FindByAddress(inst_ptr)).c_str(), find_static_address(inst_ptr));
+        PIN_UnlockClient();
+    } else {
+        PIN_UnlockClient();
+    }
+#endif
+
     // Count instructios
     inst_count++;
 #ifdef LOGGING_ON
@@ -7154,7 +7450,7 @@ void track_file(INS ins, void *v)
     CALLBACK_PRINT(log_f, "CALLBACK_PRINT: track file starts\n");
     OPCODE opcode;
     UINT32 category;
-#ifdef LINKAGE_DATA
+#ifdef CTRL_FLOW
     UINT32 mask;
 #endif
     category = INS_Category(ins);
@@ -7376,7 +7672,6 @@ void track_file(INS ins, void *v)
                     instrument_movx(ins);
 #endif
                     break;
-                
                 case XED_ICLASS_PUSH:
 #ifdef LINKAGE_DATA
                     //flags affected: none
@@ -7583,6 +7878,7 @@ void track_file(INS ins, void *v)
                     old_instrument_addorsub(ins);
                     break;
                 
+                */
                 case XED_ICLASS_PUNPCKHBW:
                 case XED_ICLASS_PUNPCKHWD:
                 case XED_ICLASS_PUNPCKHDQ:
@@ -7590,13 +7886,32 @@ void track_file(INS ins, void *v)
                 case XED_ICLASS_PUNPCKLBW:
                 case XED_ICLASS_PUNPCKLWD:
                 case XED_ICLASS_PUNPCKLDQ:
-                    //definitely control flow
+#ifdef DATA_FLOW
+                    // no flags affected
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument PUNPCK\n", INS_Address(ins));
                     old_instrument_addorsub(ins);
+#endif
                     break;
-                */
+                case XED_ICLASS_PCMPEQB:
+#ifdef DATA_FLOW
+                    INSTRUMENT_PRINT(log_f, "%#x: about to instrument PCMPEQB\n", INS_address(ins));
+                    instrument_pcmpeqb(ins);
+#endif
+                    break;
+                case XED_ICLASS_PSHUFD:
+#ifdef DATA_FLOW
+                    INSTRUMENT_PRINT(log_f, "%#x: about to instrument PSHUFD\n", INS_address(ins));
+                    instrument_set_src2dst(ins);
+#endif
+                    break;
+                case XED_ICLASS_PMOVMSKB:
+#ifdef DATA_FLOW
+                    INSTRUMENT_PRINT(log_f, "%#x: about to instrument PMOVMSKB\n", INS_address(ins));
+                    instrument_set_src2dst(ins);
+#endif
+                    break;
                 case XED_ICLASS_TEST:
-#ifdef LINKAGE_DATA
+#ifdef CTRL_FLOW
                     //flags affected: all for CMP, all but AF for TEST. we are being conservative for TEST
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument TEST\n", INS_Address(ins));
                     instrument_test(ins);
@@ -7604,7 +7919,7 @@ void track_file(INS ins, void *v)
                     break;
                 
                 case XED_ICLASS_CMP:
-#ifdef LINKAGE_DATA
+#ifdef CTRL_FLOW
                     //flags affected: all for CMP, all but AF for TEST. we are being conservative for TEST
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument CMP\n", INS_Address(ins));
                     instrument_cmp(ins);
@@ -7630,7 +7945,7 @@ void track_file(INS ins, void *v)
                 
                 case XED_ICLASS_SETB:
                 case XED_ICLASS_SETNB:
-#ifdef LINKAGE_DATA
+#ifdef CTRL_FLOW
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument SETcc\n", INS_Address(ins));
                     mask = CF_MASK;
                     instrument_setcc(ins, mask);
@@ -7639,7 +7954,7 @@ void track_file(INS ins, void *v)
 
                 case XED_ICLASS_SETL:
                 case XED_ICLASS_SETNL:
-#ifdef LINKAGE_DATA
+#ifdef CTRL_FLOW
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument SETcc\n", INS_Address(ins));
                     mask = SF_MASK | OF_MASK;
                     instrument_setcc(ins, mask);
@@ -7648,7 +7963,7 @@ void track_file(INS ins, void *v)
 
                 case XED_ICLASS_SETNBE:
                 case XED_ICLASS_SETBE:
-#ifdef LINKAGE_DATA
+#ifdef CTRL_FLOW
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument SETcc\n", INS_Address(ins));
                     mask = CF_MASK | ZF_MASK;
                     instrument_setcc(ins, mask);
@@ -7657,7 +7972,7 @@ void track_file(INS ins, void *v)
                 
                 case XED_ICLASS_SETLE:
                 case XED_ICLASS_SETNLE:
-#ifdef LINKAGE_DATA
+#ifdef CTRL_FLOW
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument SETcc\n", INS_Address(ins));
                     mask = ZF_MASK | SF_MASK | OF_MASK;
                     instrument_setcc(ins, mask);
@@ -7666,7 +7981,7 @@ void track_file(INS ins, void *v)
 
                 case XED_ICLASS_SETNO:
                 case XED_ICLASS_SETO:
-#ifdef LINKAGE_DATA
+#ifdef CTRL_FLOW
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument SETcc\n", INS_Address(ins));
                     mask = OF_MASK;
                     instrument_setcc(ins, mask);
@@ -7675,7 +7990,7 @@ void track_file(INS ins, void *v)
 
                 case XED_ICLASS_SETNP:
                 case XED_ICLASS_SETP:
-#ifdef LINKAGE_DATA
+#ifdef CTRL_FLOW
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument SETcc\n", INS_Address(ins));
                     mask = PF_MASK;
                     instrument_setcc(ins, mask);
@@ -7684,7 +7999,7 @@ void track_file(INS ins, void *v)
 
                 case XED_ICLASS_SETNS:
                 case XED_ICLASS_SETS:
-#ifdef LINKAGE_DATA
+#ifdef CTRL_FLOW
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument SETcc\n", INS_Address(ins));
                     mask = SF_MASK;
                     instrument_setcc(ins, mask);
@@ -7693,7 +8008,7 @@ void track_file(INS ins, void *v)
 
                 case XED_ICLASS_SETZ:
                 case XED_ICLASS_SETNZ:
-#ifdef LINKAGE_DATA
+#ifdef CTRL_FLOW
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument SETcc\n", INS_Address(ins));
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument SETcc\n", INS_Address(ins));
                     mask = ZF_MASK;
@@ -7744,10 +8059,16 @@ void track_file(INS ins, void *v)
                     break;
 
                 case XED_ICLASS_BT:
-#ifdef LINKAGE_DATA
+#ifdef CTRL_FLOW
                     // flags affected: CF
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument bt %s\n", INS_Address(ins), INS_Mnemonic(ins).c_str());
                     instrument_bt(ins);
+#endif
+                    break;
+                case XED_ICLASS_CLD:
+#ifdef CTRL_FLOW
+                    INSTRUMENT_PRINT(log_,f "%#x: about to instrument cld %s\n", INS_Address(ins), INS_Mneomic(ins).c_str());
+                    INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_clear_flag), UINT32, DF_FLAG, IARG_END);
 #endif
                     break;
 
@@ -11459,12 +11780,18 @@ void dump_taints(FILE* out_file)
 #endif
 
 void fini(INT32 code, void* v) {
-    
-    CALLBACK_PRINT(log_f, "CALLBACK_PRINT:fini starts\n");
     time_t t = time(0);
     struct tm* tm = localtime(&t);
     fprintf(stderr, "process %d in fini\n", PIN_GetPid());
     fprintf(stderr, "time is: %d:%d:%d\n", tm->tm_hour, tm->tm_min, tm->tm_sec);
+#ifdef TAINT_STATS
+    fprintf(stderr, "option cnt is %d\n", option_cnt);
+#ifdef TAINT_IMPL_INDEX
+    fprintf(stderr, "index cnt is %ld\n", idx_cnt);
+#endif
+    fprintf(stderr, "Instrument insts: %ld\n", instrumented_insts);
+    print_input_data (stderr);
+#endif // TAINT_STATS
 
 #ifdef DUMP_TAINTS
     FILE* dtaint;
@@ -11486,7 +11813,6 @@ void fini(INT32 code, void* v) {
 #endif
     cleanup_bblocks_instbbls();
     
-    CALLBACK_PRINT(log_f, "CALLBACK_PRINT: fini ends\n");
     fclose(log_f);
 }
 
@@ -11590,7 +11916,9 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
                 break;
             }
             LOG_PRINT ("arg is %s\n", arg);
+#ifndef FILTER_INPUTS
             create_options_from_buffer (TOK_EXEC, global_syscall_cnt, arg, strlen(arg) + 1, (void *) "ARGS");
+#endif
             args += 1;
         }
         // Retrieve the location of the env. var from the kernel
@@ -11605,7 +11933,9 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
                 break;
             }
             LOG_PRINT ("arg is %s\n", arg);
+#ifndef FILTER_INPUTS
             create_options_from_buffer (TOK_EXEC, global_syscall_cnt, arg, strlen(arg) + 1, (void *) "ENV");
+#endif
             args += 1;
         }
     }
@@ -11830,6 +12160,10 @@ int main(int argc, char** argv)
 #endif
 
     init_shift_cache();
+
+#ifdef TAINT_IMPL_INDEX
+    INIT_TAINT_INDEX();
+#endif
 
     // Obtain a key for TLS storage
     tls_key = PIN_CreateThreadDataKey(0);
