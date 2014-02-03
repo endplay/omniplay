@@ -213,6 +213,7 @@ static inline int is_replaying (void)
 }
 
 extern int get_pthread_log_status (void);
+extern void lcok_ignore_address (void);
 
 void pthread_log_lll_lock (int* plock, int type);
 void pthread_log_lll_unlock (int* plock, int type);

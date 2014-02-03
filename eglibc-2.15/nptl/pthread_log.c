@@ -325,6 +325,16 @@ register_log (void)
     DPRINT ("Registered ignore flag at %p value %d\n", &head->ignore_flag, head->ignore_flag);
 }
 
+void lock_ignore_address (void)
+{
+    struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    head->ignore_flag = 1;
+    if (mlock (&head->ignore_flag, sizeof(int)) < 0) {
+	    pthread_log_debug ("mlock of ignore_flag failed\n");
+    }
+    head->ignore_flag = 0;
+}
+
 void
 free_log (void)
 {

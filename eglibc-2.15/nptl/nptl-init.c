@@ -165,8 +165,12 @@ static
 void
 __nptl_set_robust (struct pthread *self)
 {
-  // This is the first call after a fork - so we force a reload of the log here
+  if (is_recording()) {
+    // Need to make sure ignore flag page is locked for this process
+    lock_ignore_address ();
+  }
   if (is_replaying()) {
+    // This is the first call after a fork - so we force a reload of the log here
     pthread_log_status = PTHREAD_LOG_REP_AFTER_FORK; 
   }
 
