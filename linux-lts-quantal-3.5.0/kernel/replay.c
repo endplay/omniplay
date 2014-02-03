@@ -71,7 +71,7 @@
 // If defined, use file cache for reads of read-only files
 #define CACHE_READS
 
-#define TRACE_READ_WRITE
+//#define TRACE_READ_WRITE
 //#define TRACE_PIPE_READ_WRITE
 //#define TRACE_SOCKET_READ_WRITE
 
@@ -198,8 +198,7 @@ void replay_sock_put(struct sock *sk) {
 	}
 }
 #else
-void replay_sock_put(struct sock *sk) {
-}
+void replay_sock_put(struct sock *sk) {} // Noop
 #endif
 
 #define IS_CACHED_MASK 1
@@ -2748,7 +2747,67 @@ get_record_pending_signal (siginfo_t* info)
 	return signr;
 }
 
+// Don't use standard debugging by default here because a printk could deadlock kernel
+#define SIGPRINT(x,...)
+//#define SIGPRINT printk
+
+static int defer_signal (struct record_thread* prt, int signr, siginfo_t* info)
+{
+	struct repsignal* psignal = KMALLOC(sizeof(struct repsignal), GFP_ATOMIC); 
+	if (psignal == NULL) {
+		SIGPRINT ("Cannot allocate replay signal\n");
+		return 0;  // Replay broken - but might as well let recording proceed
+	}
+	psignal->signr = signr;
+	memcpy (&psignal->info, info, sizeof(siginfo_t));
+	psignal->next = prt->rp_signals;
+	prt->rp_signals = psignal;
+	return -1;
+}
+
+// This is called with interrupts disabled so there is little we can do
+// If signal is to be deferred, we do that since we can use atomic allocation.
 // mcc: Called with current->sighand->siglock held and local interrupts disabled
+long
+check_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
+{
+	struct record_thread* prt = current->record_thrd;
+	int ignore_flag;
+	int sysnum = syscall_get_nr(current, get_pt_regs(NULL));
+	struct syscall_result* psr;
+
+	if (prt->rp_in_ptr == 0) {
+		SIGPRINT ("Pid %d - no syscall records yet - signal %d\n", current->pid, signr);
+		if (sig_fatal(current, signr)) {
+			SIGPRINT ("Fatal signal sent w/o recording - replay broken?\n");
+			return 0; 
+		}
+		return defer_signal (prt, signr, info);
+	}
+	psr = &prt->rp_log[(prt->rp_in_ptr-1)]; 
+
+	if (prt->rp_ignore_flag_addr) {
+		get_user (ignore_flag, prt->rp_ignore_flag_addr);
+	} else {
+		ignore_flag = 0;
+	}
+
+        SIGPRINT ("Pid %d check signal delivery signr %d fatal %d - clock is currently %d ignore flag %d sysnum %d psr->sysnum %d handler %p\n", 
+		  current->pid, signr, sig_fatal(current, signr), atomic_read(prt->rp_precord_clock), ignore_flag, sysnum, psr->sysnum, ka->sa.sa_handler);
+
+	if (ignore_flag && sysnum >= 0) {
+		return 0;
+	} else if (!sig_fatal(current,signr) && sysnum != psr->sysnum && sysnum != 0 /* restarted syscall */) {
+		// This is an unrecorded system call or a trap.  Since we cannot guarantee that the signal will not delivered
+		// at this same place on replay, delay the delivery until we reach such a safe place.  Signals that immediately
+		// terminate the program should not be delayed, however.
+		SIGPRINT ("Pid %d: not a safe place to record a signal - syscall is %d but last recorded syscall is %d ignore flag %d\n", current->pid, sysnum, psr->sysnum, ignore_flag);
+		return defer_signal (prt, signr, info);
+	}
+	return 0; // Will handle this signal later
+}
+
+// This is a signal that will actually be handled, we need to record it
 long
 record_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 {
@@ -2759,24 +2818,6 @@ record_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 	struct pthread_log_head* phead = (struct pthread_log_head __user *) prt->rp_user_log_addr;
 	int ignore_flag, need_fake_calls = 1;
 	int sysnum = syscall_get_nr(current, get_pt_regs(NULL));
-
-	if (prt->rp_in_ptr == 0) {
-		MPRINT ("Pid %d - no syscall records yet - signal %d\n", current->pid, signr);
-		if (sig_fatal(current, signr)) {
-			printk ("Fatal signal sent w/o recording - replay broken?\n");
-			return 0; 
-		}
-		psignal = KMALLOC(sizeof(struct repsignal), GFP_ATOMIC); 
-		if (psignal == NULL) {
-			printk ("Cannot allocate replay signal\n");
-			return 0;  // Replay broken - but might as well let recording proceed
-		}
-		psignal->signr = signr;
-		memcpy (&psignal->info, info, sizeof(siginfo_t));
-		psignal->next = prt->rp_signals;
-		prt->rp_signals = psignal;
-		return -1;  
-	}
 
 	if (prt->rp_ignore_flag_addr) {
 		get_user (ignore_flag, prt->rp_ignore_flag_addr);
@@ -2802,21 +2843,8 @@ record_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 		need_fake_calls++;
 		put_user (need_fake_calls, &phead->need_fake_calls);
 		MPRINT ("Pid %d record_signal inserts fake syscall - ignore_flag now %d, need_fake_calls now %d\n", current->pid, ignore_flag, need_fake_calls); 
-		// Signal should not need to be deferred since we will deliver it at the end of the ignore region
 	} else if (!sig_fatal(current,signr) && sysnum != psr->sysnum && sysnum != 0 /* restarted syscall */) {
-		// This is an unrecorded system call or a trap.  Since we cannot guarantee that the signal will not delivered
-		// at this same place on replay, delay the delivery until we reach such a safe place.  Signals that immediately
-		// terminate the program should not be delayed, however.
-		MPRINT ("Pid %d: not a safe place to record a signal - syscall is %d but last recorded syscall is %d ignore flag %d\n", current->pid, sysnum, psr->sysnum, ignore_flag);
-		psignal = KMALLOC(sizeof(struct repsignal), GFP_ATOMIC); 
-		if (psignal == NULL) {
-			printk ("Cannot allocate replay signal\n");
-			return 0;  // Replay broken - but might as well let recording proceed
-		}
-		psignal->signr = signr;
-		memcpy (&psignal->info, info, sizeof(siginfo_t));
-		psignal->next = prt->rp_signals;
-		prt->rp_signals = psignal;
+		printk ("record_signal_delivery: this should have been handled!!!\n");
 		return -1;
 	}
 	if (sig_fatal(current,signr) && sysnum != psr->sysnum && sysnum != 0 /* restarted syscall */) {
@@ -2867,8 +2895,7 @@ record_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 
 	MPRINT ("Pid %d: recording and delivering signal\n", current->pid);
 
-	// mcc: KMALLOC with REPLAY_PARANOID on grabs a mutex...
-	psignal = ARGSKMALLOC(sizeof(struct repsignal), GFP_KERNEL); // XXX: this can block
+	psignal = ARGSKMALLOC(sizeof(struct repsignal), GFP_KERNEL); 
 	if (psignal == NULL) {
 		printk ("Cannot allocate replay signal\n");
 		return 0;  // Replay broken - but might as well let recording proceed
@@ -3190,7 +3217,7 @@ read_user_log (struct record_thread* prect)
 		rc = -EINVAL;
 	} else {
 		DPRINT ("Pid %d read %ld bytes from user log\n", current->pid, copyed);
-		put_user (start+copyed, &phead->end);
+		put_user (start+copyed, (char **) &phead->end);
 	}
 		
 
@@ -3955,10 +3982,12 @@ sys_pthread_init (int __user * status, u_long record_hook, u_long replay_hook)
 		struct record_thread* prt = current->record_thrd;
 		put_user (1, status);
 		prt->rp_record_hook = record_hook;
+		DPRINT ("pid %d sets record hook %lx\n", current->pid, record_hook);
 	} else if (current->replay_thrd) {
 		struct replay_thread* prt = current->replay_thrd;
 		put_user (2, status);
 		prt->rp_replay_hook = replay_hook;
+		DPRINT ("pid %d sets replay hook %lx\n", current->pid, replay_hook);
 	} else {
 		printk ("Pid %d calls sys_pthread_init, but not a record/replay process\n", current->pid);
 		return -EINVAL;
@@ -3974,14 +4003,14 @@ sys_pthread_dumbass_link (int __user * status, u_long __user * record_hook, u_lo
 		if (prt->rp_record_hook) {
 			put_user (1, status);
 			put_user (prt->rp_record_hook, record_hook);
-			MPRINT ("pid %d record hook %lx returned\n", current->pid, prt->rp_record_hook);
+			DPRINT ("pid %d record hook %lx returned\n", current->pid, prt->rp_record_hook);
 		}
 	} else if (current->replay_thrd) {
 		struct replay_thread* prt = current->replay_thrd;
 		if (prt->rp_replay_hook) {
 			put_user (2, status);
 			put_user (prt->rp_replay_hook, replay_hook);
-			MPRINT ("pid %d replay hook %lx returned\n", current->pid, prt->rp_replay_hook);
+			DPRINT ("pid %d replay hook %lx returned\n", current->pid, prt->rp_replay_hook);
 		}
 	} else {
 			put_user (3, status);		
@@ -3992,10 +4021,27 @@ sys_pthread_dumbass_link (int __user * status, u_long __user * record_hook, u_lo
 asmlinkage long
 sys_pthread_log (u_long log_addr, int __user * ignore_addr)
 {
+	struct rlimit* rlim;
+	long rc;
+
 	if (current->record_thrd) {
 		current->record_thrd->rp_user_log_addr = log_addr;
 		current->record_thrd->rp_ignore_flag_addr = ignore_addr;
-		MPRINT ("User log info address for thread %d is %lx, ignore addr is %p\n", current->pid, log_addr, ignore_addr);
+
+		// Up the resource limit by one if it is set so as not to interfere with user-level mlocks
+		read_lock(&tasklist_lock);
+		rlim = current->signal->rlim + RLIMIT_MEMLOCK;
+		task_lock(current->group_leader);
+		DPRINT ("rlimit before %ld %ld\n", rlim->rlim_cur, rlim->rlim_max);
+		if (rlim->rlim_max) rlim->rlim_max += PAGE_SIZE;
+		if (rlim->rlim_cur) rlim->rlim_cur += PAGE_SIZE;
+		DPRINT ("rlimit after %ld %ld\n", rlim->rlim_cur, rlim->rlim_max);
+		task_unlock(current->group_leader);
+		read_unlock(&tasklist_lock);
+		
+		rc = sys_mlock ((u_long) ignore_addr, sizeof(int)); // lock this in memory because we need to check when recording signals with interrupts disabled 
+		if (rc < 0) DPRINT ("pid %d: mlock of ignore address %p failed, rc=%ld\n", current->pid, ignore_addr, rc); 
+		DPRINT ("User log info address for thread %d is %lx, ignore addr is %p\n", current->pid, log_addr, ignore_addr);
 	} else if (current->replay_thrd) {
 		current->replay_thrd->rp_record_thread->rp_user_log_addr = log_addr;
 		current->replay_thrd->rp_record_thread->rp_ignore_flag_addr = ignore_addr;
@@ -4095,7 +4141,7 @@ sys_pthread_block (u_long clock)
 			if (ret == 0) printk ("Replay pid %d timed out waiting for user clock value %ld\n", current->pid, clock);
 			if (prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && (prt->rp_record_thread->rp_in_ptr == prt->rp_out_ptr))) break; // exit condition below
 			if (ret == -ERESTARTSYS) {
-				printk ("Pid %d: blocking syscall cannot wait due to signal - try again\n", current->pid);
+				printk ("Pid %d: blocking syscall cannot wait due to signal - try again (%d)\n", current->pid, prg->rg_rec_group->rg_mismatch_flag);
 				rg_unlock (prg->rg_rec_group);
 				msleep (1000);
 				rg_lock (prg->rg_rec_group);
@@ -4672,6 +4718,9 @@ void
 recplay_exit_start(void)
 {
 	struct record_thread* prt = current->record_thrd;
+	struct rlimit* rlim;
+	long rc;
+
 	if (prt) {
 		MPRINT ("Record thread %d starting to exit\n", current->pid);
 #ifndef USE_DEBUG_LOG
@@ -4683,6 +4732,26 @@ recplay_exit_start(void)
 #endif
 		MPRINT ("Pid %d -- Deallocate the user log", current->pid);
 		deallocate_user_log (prt); // For multi-threaded programs, we need to reuse the memory
+
+		if (prt->rp_ignore_flag_addr) {
+			rc = sys_munlock ((u_long) prt->rp_ignore_flag_addr, sizeof(int)); // lock this in memory because we need to check when recording signals with interrupts disabled 
+			if (rc >= 0) {
+				read_lock(&tasklist_lock);
+				rlim = current->signal->rlim + RLIMIT_MEMLOCK;
+				task_lock(current->group_leader);
+				DPRINT ("rlimit before %ld %ld\n", rlim->rlim_cur, rlim->rlim_max);
+				if (rlim->rlim_max) rlim->rlim_max += PAGE_SIZE;
+				if (rlim->rlim_cur) rlim->rlim_cur += PAGE_SIZE;
+				DPRINT ("rlimit after %ld %ld\n", rlim->rlim_cur, rlim->rlim_max);
+				task_unlock(current->group_leader);
+				read_unlock(&tasklist_lock);
+			} else {
+				DPRINT("pid %d: munlock of ignore address %p failed, rc=%ld\n", current->pid, prt->rp_ignore_flag_addr, rc); 
+			}
+		} else {
+			printk ("No ignore address for pid %d\n", current->pid);
+		}
+
 	} else if (current->replay_thrd) {
 		MPRINT ("Replay thread %d starting to exit, recpid %d\n", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid);
 		
@@ -4743,7 +4812,7 @@ recplay_exit_middle(void)
 				prt->rp_group->rg_save_mmap_flag = 0;
 				rg_unlock (prt->rp_group);
 			}
-		}
+		} 
 	} else if (current->replay_thrd) {
 		if (atomic_dec_and_test(&current->replay_thrd->rp_group->rg_rec_group->rg_record_threads)) {
 			if (current->replay_thrd->rp_group->rg_rec_group->rg_save_mmap_flag) {
@@ -5591,7 +5660,7 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 		new_syscall_done (4, count);			       
 		memset (kbuf, 0, sizeof(kbuf));
 		if (copy_from_user (kbuf, buf, count < 79 ? count : 80)) printk ("record_write: cannot copy kstring\n");
-		printk ("Pid %d clock %d records: %s", current->pid, atomic_read(current->record_thrd->rp_precord_clock)-1, kbuf);
+		printk ("Pid %d clock %d logged clock %ld records: %s", current->pid, atomic_read(current->record_thrd->rp_precord_clock)-1, current->record_thrd->rp_expected_clock-1, kbuf);
 		new_syscall_exit (4, NULL);
 		return count;
 	}
@@ -5771,12 +5840,12 @@ replay_write (unsigned int fd, const char __user * buf, size_t count)
 	char *pretparams = NULL;
 	char kbuf[80];
 
+	rc = get_next_syscall (4, &pretparams);
 	if (fd == 99999) { // Hack that assists in debugging user-level code
 		memset (kbuf, 0, sizeof(kbuf));
 		if (copy_from_user (kbuf, buf, count < 80 ? count : 79)) printk ("replay_write: cannot copy kstring\n");
-		printk ("Pid %d (recpid %d) clock %ld replays: %s", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid, *(current->replay_thrd->rp_preplay_clock), kbuf);
+		printk ("Pid %d (recpid %d) clock %ld log_clock %ld replays: %s", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid, *(current->replay_thrd->rp_preplay_clock), current->replay_thrd->rp_expected_clock - 1, kbuf);
 	}
-	rc = get_next_syscall (4, &pretparams);
 	DPRINT ("Pid %d replays write returning %d\n", current->pid,rc);
 #ifdef TRACE_PIPE_READ_WRITE
 	if (pretparams != NULL) {
@@ -12014,6 +12083,7 @@ static int __init replay_init(void)
 #ifdef TRACE_PIPE_READ_WRITE
 	btree_init32(&pipe_tree);
 #endif
+
 
 	return 0;
 }
