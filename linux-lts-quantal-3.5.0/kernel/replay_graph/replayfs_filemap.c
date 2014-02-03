@@ -61,14 +61,11 @@ out:
 	return ret;
 }
 
-extern void glbl_diskalloc_init(void);
 int replayfs_filemap_init_key (struct replayfs_filemap *map,
 		struct replayfs_diskalloc *alloc, struct replayfs_btree128_key *key) {
 	int ret;
 	struct replayfs_btree128_value *disk_pos;
 	struct page *page;
-
-	glbl_diskalloc_init();
 
 	mutex_lock(&meta_lock);
 	/* Check for this file in the meta btree */

@@ -12015,7 +12015,6 @@ static int __init replay_init(void)
 	btree_init32(&pipe_tree);
 #endif
 
-
 	return 0;
 }
 

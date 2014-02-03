@@ -32,6 +32,7 @@
 #define PAGE_MASK_SIZE_IN_PAGES (PAGE_ALLOC_PAGES / MAPPINGS_PER_PAGE)
 
 atomic_t initd = {0};
+atomic_t init_done = {0};
 struct replayfs_diskalloc replayfs_alloc;
 struct replayfs_btree128_head filemap_meta_tree;
 
@@ -43,10 +44,20 @@ void replayfs_diskalloc_write_page_location(struct replayfs_diskalloc *alloc,
 int glbl_diskalloc_init(void) {
 	int ret = 0;
 	int val;
+
 	/* Run the initialization once */
+	debugk("%s %d: Initing!!!! (akslekdj)\n", __func__, __LINE__);
+
 	val = atomic_add_unless(&initd, 1, 1);
+
 	if (val) {
 		ret = replayfs_diskalloc_init(&replayfs_alloc);
+		mb();
+		atomic_set(&init_done, 1);
+	} else {
+		while (!atomic_read(&init_done)) {
+			mb();
+		}
 	}
 
 	return ret;
@@ -225,7 +236,7 @@ static int create_diskalloc(struct replayfs_diskalloc *alloc) {
 
 	page = replayfs_diskalloc_alloc_page(alloc);
 
-	debugk("%s %d: page->index is %lu, PAGE_ALLOC_PAGES is %d\n", __func__,
+	debugk("%s %d: page->index is %lu, PAGE_ALLOC_PAGES is %lu\n", __func__,
 			__LINE__, page->index, PAGE_ALLOC_PAGES/(PAGE_SIZE*8));
 	BUG_ON(page->index != PAGE_ALLOC_PAGES/(PAGE_SIZE*8));
 
@@ -397,9 +408,9 @@ unsigned long max_page = 0;
 struct page *replayfs_diskalloc_alloc_page(struct replayfs_diskalloc *alloc) {
 	struct page *page;
 	loff_t page_idx;
+
 	/* Magic here */
 	/* Okay, allocation policy, get the next page from the first extent */
-	glbl_diskalloc_init();
 
 	page = ERR_PTR(-ENOMEM);
 	
@@ -429,7 +440,6 @@ struct page *replayfs_diskalloc_alloc_page(struct replayfs_diskalloc *alloc) {
 
 void replayfs_diskalloc_free_page(struct replayfs_diskalloc *alloc,
 		struct page *page) {
-	glbl_diskalloc_init();
 
 	mutex_lock(&alloc->lock);
 
@@ -446,8 +456,6 @@ struct page *replayfs_diskalloc_get_page(struct replayfs_diskalloc *alloc,
 	struct page *ret;
 	/* Just return the page at the spot */
 
-	glbl_diskalloc_init();
-
 	ret = alloc_get_page(page);
 
 	return ret;
@@ -462,7 +470,6 @@ void replayfs_diskalloc_read_page_location(struct replayfs_diskalloc *alloc,
 
 	pos = page;
 
-	glbl_diskalloc_init();
 	filp = alloc->filp;
 
 	old_fs = get_fs();
@@ -492,8 +499,6 @@ void replayfs_diskalloc_write_page_location(struct replayfs_diskalloc *alloc,
 	mm_segment_t old_fs;
 	loff_t pos;
 
-	glbl_diskalloc_init();
-
 	filp = alloc->filp;
 
 	/* Which page should we read from */
@@ -509,6 +514,7 @@ void replayfs_diskalloc_write_page_location(struct replayfs_diskalloc *alloc,
 
 void replayfs_diskalloc_put_page(struct replayfs_diskalloc *alloc,
 		struct page *page) {
+
 	alloc_put_page(page);
 }
 
