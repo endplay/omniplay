@@ -19,7 +19,7 @@ else
 fi
 
 pushd ..
-rsync -avz --exclude "*.cmd" --exclude ".git" --exclude "*.mod.c" --exclude "*.mod.ko" --exclude '*.o' --exclude '.tmp*' --exclude '..tmp*' --exclude '*.order' linux-lts-quantal-3.5.0 ddevec@volta.eecs.umich.edu:/home/ddevec/share/omniplay/
+rsync -avz --exclude "*.cmd" --exclude ".git" --exclude "*.mod.c" --exclude "*.ko" --exclude '*.o' --exclude '.tmp*' --exclude '..tmp*' --exclude '*.order' linux-lts-quantal-3.5.0 ddevec@volta.eecs.umich.edu:/home/ddevec/share/omniplay/
 popd
 popd
 

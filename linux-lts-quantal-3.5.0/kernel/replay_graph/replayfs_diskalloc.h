@@ -28,6 +28,7 @@ struct replayfs_diskalloc {
 	//struct list_head merge_extents;
 };
 
+int glbl_diskalloc_init(void);
 int replayfs_diskalloc_init(struct replayfs_diskalloc *alloc);
 void replayfs_diskalloc_destroy(struct replayfs_diskalloc *alloc);
 

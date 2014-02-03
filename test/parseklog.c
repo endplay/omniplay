@@ -35,11 +35,16 @@
 #define USE_DISK_CKPT
 #define TRACE_READ_WRITE
 //#define TRACE_PIPE_READ_WRITE
+//#define TRACE_SOCKET_READ_WRITE
 
 //#define PRINT_STATISTICS
 
 #if defined(TRACE_PIPE_READ_WRITE) && !defined(TRACE_READ_WRITE)
 #  error "TRACE_PIPE_READ_WRITE without TRACE_READ_WRITE not supporetd"
+#endif
+
+#if defined(TRACE_SOCKET_READ_WRITE) && !defined(TRACE_PIPE_READ_WRITE)
+#  error "TRACE_SOCKET_READ_WRITE without TRACE_PIPE_READ_WRITE not supporetd"
 #endif
 
 #ifdef TRACE_READ_WRITE
@@ -398,7 +403,7 @@ int main (int argc, char* argv[])
 		
 		psrs = malloc (sizeof(struct syscall_result)*count);
 		if (!psrs) {
-			printf ("Cound not malloc %d bytes\n", sizeof(struct syscall_result)*count);
+			printf ("%d: Could not malloc %d bytes\n", __LINE__, sizeof(struct syscall_result)*count);
 			return -ENOMEM;
 		}
 		rc = read (fd, psrs, sizeof(struct syscall_result)*count);
@@ -539,7 +544,7 @@ int main (int argc, char* argv[])
 				case 76: size = sizeof(struct rlimit); break;
 				case 77: size = sizeof(struct rusage); break;
 				case 78: size = sizeof(struct gettimeofday_retvals); break;
-			        case 80: size = sizeof(u_short)*retval; break;
+				case 80: size = sizeof(u_short)*retval; break;
 				case 84: size = sizeof(struct __old_kernel_stat); break;
 				case 85: size = retval; break;
 				case 86: size = sizeof(struct mmap_pgoff_retvals); break;
@@ -558,6 +563,44 @@ int main (int argc, char* argv[])
 					printf ("\tsocketcall %d\n", call);
 					// socketcall retvals specific
 					switch (call) {
+#ifdef TRACE_SOCKET_READ_WRITE
+					case SYS_SEND:
+					case SYS_SENDTO:
+						{
+							if (retval >= 0) {
+								u_int shared;
+
+								shared = 0;
+								rc = read(fd, &shared, sizeof(u_int));
+								if (rc != sizeof(shared)) {
+									printf("%d: read %d\n", __LINE__, rc);
+									return EXIT_FAILURE;
+								}
+
+								printf("\tRead shared variable of %d\n", shared);
+
+								if (shared & IS_PIPE_WITH_DATA) {
+								} else if (shared & IS_PIPE) {
+									int pipe_id;
+
+									rc = read(fd, &pipe_id, sizeof(int));
+									if (rc != sizeof(pipe_id)) {
+										printf("%d: read: %d\n", __LINE__, rc);
+										return EXIT_FAILURE;
+									}
+
+									if (!pipe_write_only) {
+										printf("\tWrite is part of pipe: %d\n", pipe_id);
+									} else {
+										always_print("%d, %ld, %lu, %d\n", pipe_id, retval,
+												start_clock, ndx);
+									}
+								}
+							}
+							size = 0;
+							break;
+						}
+#endif
 					case SYS_ACCEPT: 
 					case SYS_GETSOCKNAME:
 					case SYS_GETPEERNAME: {
@@ -576,9 +619,189 @@ int main (int argc, char* argv[])
 					}	
 					case SYS_RECV:
 						size = sizeof(struct recvfrom_retvals) - sizeof(int) + retval; 
+#ifdef TRACE_SOCKET_READ_WRITE
+						if (retval >= 0) {
+							u_int is_cached;
+							off_t orig_pos;
+							orig_pos = lseek(fd, 0, SEEK_CUR);
+							rc = lseek(fd, size, SEEK_CUR);
+							if (rc == (off_t)-1) {
+								printf("%d: lseek: %d\n", __LINE__, rc);
+								return rc;
+							}
+							rc = read(fd, &is_cached, sizeof(u_int));
+							if (rc != sizeof(is_cached)) {
+								printf("%d: Couldn't read is_cached\n", __LINE__);
+								return rc;
+							}
+
+							printf("\tSocket is_cached is %d\n", is_cached);
+
+							if (is_cached & IS_PIPE_WITH_DATA) {
+								off_t orig_pos2;
+								int entry_size;
+								struct replayfs_filemap_entry entry;
+								struct replayfs_filemap_entry *real_entry;
+
+								orig_pos2 = lseek(fd, 0, SEEK_CUR);
+								rc = read(fd, &entry, sizeof(struct replayfs_filemap_entry));
+
+								if (rc != sizeof(struct replayfs_filemap_entry)) {
+									printf ("cannot read entry\n");
+									return rc;
+								}
+								lseek(fd, orig_pos2, SEEK_SET);
+
+								entry_size = sizeof(struct replayfs_filemap_entry) + entry.num_elms * sizeof(struct replayfs_filemap_value);
+								size += entry_size;
+								real_entry = malloc(entry_size);
+								if (real_entry == NULL) {
+									printf("Cannot alloc real_entry\n");
+									return EXIT_FAILURE;
+								}
+
+								rc = read(fd, real_entry, entry_size);
+								if (!graph_only) {
+									printf ("\tPiped writes sourcing this read: %d\n",
+											real_entry->num_elms);
+
+									for (i = 0; i < real_entry->num_elms; i++) {
+										printf ("\t\tSource %d is {id, pid, syscall_num} {%lld %d %lld}\n", i,
+												(loff_t)real_entry->elms[i].bval.id.unique_id, real_entry->elms[i].bval.id.pid,
+												(loff_t)real_entry->elms[i].bval.id.sysnum);
+									}
+								} else {
+									for (i = 0; i < real_entry->num_elms; i++) {
+										always_print ("pipe: %d %d %d {%lld, %d, %lld, %d, %ld}\n",
+												ndx, real_entry->elms[i].bval.buff_offs, real_entry->elms[i].size,
+												(loff_t)real_entry->elms[i].bval.id.unique_id, real_entry->elms[i].bval.id.pid,
+												(loff_t)real_entry->elms[i].bval.id.sysnum,
+												real_entry->elms[i].read_offset, retval);
+									}
+								}
+							} else if (is_cached & IS_PIPE) {
+								/* Just a simple one-to-one data entry */
+								uint64_t writer;
+								int pipe_id;
+								rc = read(fd, &writer, sizeof(uint64_t));
+								if (rc != sizeof(writer)) {
+									printf("%d: read: %d\n", __LINE__, rc);
+									return rc;
+								}
+								rc = read(fd, &pipe_id, sizeof(int));
+								if (rc != sizeof(pipe_id)) {
+									printf("%d: read: %d\n", __LINE__, rc);
+									return rc;
+								}
+
+								if (!graph_only) {
+									printf("\tUnix socket is a pipe sourced by id %llu, %d\n",
+											writer, pipe_id);
+								} else {
+									uint64_t id = writer;
+									always_print("pipe: %lld, %d, %d {%ld} {%lu}\n", id, pipe_id,
+											ndx, retval, start_clock);
+								}
+
+								size += sizeof(is_cached) + sizeof(writer) + sizeof(pipe_id);
+							}
+
+							lseek(fd, orig_pos, SEEK_SET);
+						}
+#endif
 						break;
 					case SYS_RECVFROM:
 						size = sizeof(struct recvfrom_retvals) - sizeof(int) + retval-1; 
+#ifdef TRACE_SOCKET_READ_WRITE
+						if (retval >= 0) {
+							u_int is_cached;
+							off_t orig_pos;
+							orig_pos = lseek(fd, 0, SEEK_CUR);
+							rc = lseek(fd, size, SEEK_CUR);
+							if (rc == (off_t)-1) {
+								printf("%d: lseek: %d\n", __LINE__, rc);
+								return rc;
+							}
+							rc = read(fd, &is_cached, sizeof(u_int));
+							if (rc != sizeof(is_cached)) {
+								printf("%d: Couldn't read is_cached\n", __LINE__);
+								return rc;
+							}
+
+							printf("\tSocket is_cached is %d\n", is_cached);
+
+							if (is_cached & IS_PIPE_WITH_DATA) {
+								off_t orig_pos2;
+								int entry_size;
+								struct replayfs_filemap_entry entry;
+								struct replayfs_filemap_entry *real_entry;
+
+								orig_pos2 = lseek(fd, 0, SEEK_CUR);
+								rc = read(fd, &entry, sizeof(struct replayfs_filemap_entry));
+
+								if (rc != sizeof(struct replayfs_filemap_entry)) {
+									printf ("cannot read entry\n");
+									return rc;
+								}
+								lseek(fd, orig_pos2, SEEK_SET);
+
+								entry_size = sizeof(struct replayfs_filemap_entry) + entry.num_elms * sizeof(struct replayfs_filemap_value);
+								size += entry_size;
+								real_entry = malloc(entry_size);
+								if (real_entry == NULL) {
+									printf("Cannot alloc real_entry\n");
+									return EXIT_FAILURE;
+								}
+
+								rc = read(fd, real_entry, entry_size);
+								if (!graph_only) {
+									printf ("\tPiped writes sourcing this read: %d\n",
+											real_entry->num_elms);
+
+									for (i = 0; i < real_entry->num_elms; i++) {
+										printf ("\t\tSource %d is {id, pid, syscall_num} {%lld %d %lld}\n", i,
+												(loff_t)real_entry->elms[i].bval.id.unique_id, real_entry->elms[i].bval.id.pid,
+												(loff_t)real_entry->elms[i].bval.id.sysnum);
+									}
+								} else {
+									for (i = 0; i < real_entry->num_elms; i++) {
+										always_print ("pipe: %d %d %d {%lld, %d, %lld, %d, %ld}\n",
+												ndx, real_entry->elms[i].bval.buff_offs, real_entry->elms[i].size,
+												(loff_t)real_entry->elms[i].bval.id.unique_id, real_entry->elms[i].bval.id.pid,
+												(loff_t)real_entry->elms[i].bval.id.sysnum,
+												real_entry->elms[i].read_offset, retval);
+									}
+								}
+							} else if (is_cached & IS_PIPE) {
+								/* Just a simple one-to-one data entry */
+								uint64_t writer;
+								int pipe_id;
+								rc = read(fd, &writer, sizeof(uint64_t));
+								if (rc != sizeof(writer)) {
+									printf("%d: read: %d\n", __LINE__, rc);
+									return rc;
+								}
+								rc = read(fd, &pipe_id, sizeof(int));
+								if (rc != sizeof(pipe_id)) {
+									printf("%d: read: %d\n", __LINE__, rc);
+									return rc;
+								}
+
+								if (!graph_only) {
+									printf("\tUnix socket is a pipe sourced by id %llu, %d\n",
+											writer, pipe_id);
+								} else {
+									uint64_t id = writer;
+									always_print("pipe: %lld, %d, %d {%ld} {%lu}\n", id, pipe_id,
+											ndx, retval, start_clock);
+								}
+
+								size += sizeof(is_cached) + sizeof(writer) + sizeof(pipe_id);
+							}
+
+							lseek(fd, orig_pos, SEEK_SET);
+						}
+#endif
 						break;
 					case SYS_RECVMSG: {
 						struct recvmsg_retvals msg;
@@ -672,7 +895,7 @@ int main (int argc, char* argv[])
 				case 195: size = sizeof(struct stat64); break;
 				case 196: size = sizeof(struct stat64); break;
 				case 197: size = sizeof(struct stat64); break;
-			        case 205: size = sizeof(gid_t)*retval; break;
+				case 205: size = sizeof(gid_t)*retval; break;
 				case 209: size = sizeof(uid_t)*3; break;
 				case 211: size = sizeof(gid_t)*3; break;
 				case 218: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
