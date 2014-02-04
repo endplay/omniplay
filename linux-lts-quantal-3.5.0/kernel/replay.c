@@ -4812,7 +4812,7 @@ recplay_exit_middle(void)
 				prt->rp_group->rg_save_mmap_flag = 0;
 				rg_unlock (prt->rp_group);
 			}
-		} 
+		}
 	} else if (current->replay_thrd) {
 		if (atomic_dec_and_test(&current->replay_thrd->rp_group->rg_rec_group->rg_record_threads)) {
 			if (current->replay_thrd->rp_group->rg_rec_group->rg_save_mmap_flag) {
