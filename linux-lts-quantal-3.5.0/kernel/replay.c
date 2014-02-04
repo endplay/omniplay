@@ -72,8 +72,8 @@
 #define CACHE_READS
 
 #define TRACE_READ_WRITE
-//#define TRACE_PIPE_READ_WRITE
-//#define TRACE_SOCKET_READ_WRITE
+#define TRACE_PIPE_READ_WRITE
+#define TRACE_SOCKET_READ_WRITE
 
 #if defined(TRACE_READ_WRITE) && !defined(CACHE_READS)
 # error "TRACE_READ_WRITE without CACHE_READS unimplemented!"
@@ -5279,6 +5279,7 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 			// Since not all syscalls handled for cached reads, record the position
 			DPRINT ("Cached read of fd %u - record by reference\n", fd);
 			pretval = ARGSKMALLOC (sizeof(u_int) + sizeof(loff_t), GFP_KERNEL);
+			printk("%s %d: Allocating %d at %d\n", __func__, __LINE__, sizeof(u_int), atomic_read(current->record_thrd->rp_precord_clock));
 			if (pretval == NULL) {
 				printk ("record_read: can't allocate pos buffer\n"); 
 				record_cache_file_unlock (current->record_thrd->rp_cache_files, fd);
@@ -5322,12 +5323,16 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 #ifdef TRACE_PIPE_READ_WRITE
 		/* If this is is a pipe */
 		} else if (is_pipe(filp)) {
+			struct replayfs_filemap map;
 			u_int *is_cached;
 			u64 rg_id = current->record_thrd->rp_group->rg_id;
 			struct pipe_track *info;
 			/* Wohoo, we have a pipe.  Lets track its writer */
 
+			printk("%s %d: Got pipe at %d\n", __func__, __LINE__, atomic_read(current->record_thrd->rp_precord_clock));
+
 			is_cached = ARGSKMALLOC(sizeof(u_int), GFP_KERNEL);
+			printk("%s %d: Allocating %d at %d\n", __func__, __LINE__, sizeof(u_int), atomic_read(current->record_thrd->rp_precord_clock));
 
 			pretval = (char *)is_cached;
 
@@ -5371,7 +5376,6 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 				mutex_unlock(&pipe_tree_mutex);
 			/* The pipe is in the tree, update it */
 			} else {
-				struct replayfs_filemap map;
 				/* We lock the pipe before we unlock the tree, to ensure that the pipe updates are orded with respect to lookup in the tree */
 				mutex_lock(&info->lock);
 				mutex_unlock(&pipe_tree_mutex);
@@ -5412,55 +5416,59 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 				}
 
 				mutex_unlock(&info->lock);
+			}
 
-				/* If this is a shared pipe, we will mark multiple writers, and save all the writer data */
-				if (*is_cached & READ_PIPE_WITH_DATA) {
-					struct replayfs_filemap_entry *args;
-					struct replayfs_filemap_entry *entry;
-					int cpy_size;
+			/* If this is a shared pipe, we will mark multiple writers, and save all the writer data */
+			if (*is_cached & READ_PIPE_WITH_DATA) {
+				struct replayfs_filemap_entry *args;
+				struct replayfs_filemap_entry *entry;
+				int cpy_size;
 
-					/* Append the data */
-					entry = replayfs_filemap_read(&map, info->owner_read_pos - rc, rc);
-				
-					if (IS_ERR(entry) || entry == NULL) {
-						entry = kmalloc(sizeof(struct replayfs_filemap_entry), GFP_KERNEL);
-						entry->num_elms = 0;
-					}
-
-					cpy_size = sizeof(struct replayfs_filemap_entry) +
-							(entry->num_elms * sizeof(struct replayfs_filemap_value));
-
-					args = ARGSKMALLOC(cpy_size + rc, GFP_KERNEL);
-
-					memcpy(args, entry, cpy_size);
-
-					kfree(entry);
-
-					replayfs_filemap_destroy(&map);
-
-					memcpy(((char *)args) + cpy_size, buf, rc);
-				/* Otherwise, we just need to know the source id of this pipe */
-				} else {
-					struct pipe_track *info;
-					char *buf = ARGSKMALLOC(sizeof(u64) + sizeof(int) + rc, GFP_KERNEL);
-					u64 *writer = (void *)buf;
-					int *id = (int *)(writer +1);
-					mutex_lock(&pipe_tree_mutex);
-					info = btree_lookup32(&pipe_tree, (u32)filp->f_dentry->d_inode->i_pipe);
-					mutex_lock(&info->lock);
-					mutex_unlock(&pipe_tree_mutex);
-					BUG_ON(info == NULL);
-					*writer = info->owner_write_id;
-					*id = info->id;
-					mutex_unlock(&info->lock);
-
-					memcpy(buf+sizeof(u64)+sizeof(int), buf, rc);
+				/* Append the data */
+				entry = replayfs_filemap_read(&map, info->owner_read_pos - rc, rc);
+			
+				if (IS_ERR(entry) || entry == NULL) {
+					entry = kmalloc(sizeof(struct replayfs_filemap_entry), GFP_KERNEL);
+					entry->num_elms = 0;
 				}
+
+				cpy_size = sizeof(struct replayfs_filemap_entry) +
+						(entry->num_elms * sizeof(struct replayfs_filemap_value));
+
+				args = ARGSKMALLOC(cpy_size + rc, GFP_KERNEL);
+				printk("%s %d: Allocating %ld at %d\n", __func__, __LINE__, cpy_size + rc, atomic_read(current->record_thrd->rp_precord_clock));
+
+				memcpy(args, entry, cpy_size);
+
+				kfree(entry);
+
+				replayfs_filemap_destroy(&map);
+
+				memcpy(((char *)args) + cpy_size, buf, rc);
+			/* Otherwise, we just need to know the source id of this pipe */
+			} else {
+				struct pipe_track *info;
+				char *buf = ARGSKMALLOC(sizeof(u64) + sizeof(int) + rc, GFP_KERNEL);
+				u64 *writer = (void *)buf;
+				int *id = (int *)(writer +1);
+				printk("%s %d: Allocating %ld at %d\n", __func__, __LINE__, sizeof(u64) + sizeof(int) + rc, atomic_read(current->record_thrd->rp_precord_clock));
+				mutex_lock(&pipe_tree_mutex);
+				info = btree_lookup32(&pipe_tree, (u32)filp->f_dentry->d_inode->i_pipe);
+				mutex_lock(&info->lock);
+				mutex_unlock(&pipe_tree_mutex);
+				BUG_ON(info == NULL);
+				*writer = info->owner_write_id;
+				*id = info->id;
+				mutex_unlock(&info->lock);
+
+				memcpy(buf+sizeof(u64)+sizeof(int), buf, rc);
 			}
 #endif
 #ifdef TRACE_SOCKET_READ_WRITE
 		} else if (sock_from_file(filp, &err)) {
 			struct socket *socket = sock_from_file(filp, &err);
+
+			printk("%s %d: Got socket at %d\n", __func__, __LINE__, atomic_read(current->record_thrd->rp_precord_clock));
 
 			if (socket->ops == &unix_stream_ops || socket->ops == &unix_seqpacket_ops) {
 				int ret;
@@ -5551,12 +5559,17 @@ replay_read (unsigned int fd, char __user * buf, size_t count)
 
 			if (copy_to_user (buf, retparams+consume_size, rc)) printk ("replay_read: pid %d cannot copy to user\n", current->pid); 
 
+			printk("%s %d: Consuming %ld m:m pipe with %d entries at %lu\n", __func__, __LINE__, consume_size+rc, entry->num_elms, *current->replay_thrd->rp_preplay_clock);
 			argsconsume (current->replay_thrd->rp_record_thread, consume_size + rc);
 		} else if (is_cache_file & READ_IS_PIPE) {
 			consume_size = sizeof(u_int) + sizeof(u64) + sizeof(int);
 
 			if (copy_to_user (buf, retparams+consume_size, rc)) printk ("replay_read: pid %d cannot copy to user\n", current->pid); 
 
+			printk("%s %d: Consuming %ld 1:1 pipe with {%llu, %d} at %lu\n", __func__, __LINE__, consume_size+rc,
+					*((u64 *)(retparams+sizeof(u_int))),
+					*((int *)(retparams+sizeof(u_int)+sizeof(u64))),
+					*current->replay_thrd->rp_preplay_clock);
 			argsconsume (current->replay_thrd->rp_record_thread, consume_size + rc);
 #endif
 		} else {
@@ -5596,6 +5609,20 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 		return count;
 	}
 
+
+#ifdef TRACE_PIPE_READ_WRITE
+	do {
+		struct file *filp;
+		filp = fget(fd);
+
+		if (filp && is_pipe(filp)) {
+			int ret;
+			ret = track_usually_pt2pt_write_begin(filp->f_dentry->d_inode, filp);
+
+			fput(filp);
+		}
+	} while (0);
+#endif
 #ifdef TRACE_SOCKET_READ_WRITE
 	do {
 		int err = 0;
