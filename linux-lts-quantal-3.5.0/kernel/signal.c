@@ -2311,7 +2311,7 @@ relock:
 			}
 			if (current->record_thrd && signr > 0) {
 				if (!(signr == 9 && SI_FROMKERNEL(info))) {
-					if (record_signal_delivery(signr, info, &sighand->action[signr-1]) == -1) {
+					if (check_signal_delivery(signr, info, &sighand->action[signr-1]) == -1) {
 						signr = 0; // Delay signal to safe point
 						break; 
 					}
@@ -2403,6 +2403,18 @@ relock:
 
 		spin_unlock_irq(&sighand->siglock);
 
+		// BEGIN REPLAY
+		// Now that we have released siglock, we can do more complicated signal handling
+		// Note that some signals may be ignored - we should not need to record them
+		if (current->record_thrd && signr > 0) {
+			if (!(signr == 9 && SI_FROMKERNEL(info))) {
+				if (record_signal_delivery(signr, info, &sighand->action[signr-1]) == -1) {
+					signr = 0;
+				}
+			}
+		}
+		// END REPLAY
+
 		/*
 		 * Anything else is fatal, maybe with a core dump.
 		 */
@@ -2429,6 +2441,19 @@ relock:
 		/* NOTREACHED */
 	}
 	spin_unlock_irq(&sighand->siglock);
+
+	// BEGIN REPLAY
+	// Now that we have released siglock, we can do more complicated signal handling
+	// Note that some signals may be ignored - we should not need to record them
+	if (current->record_thrd && signr > 0) {
+		if (!(signr == 9 && SI_FROMKERNEL(info))) {
+			if (record_signal_delivery(signr, info, &sighand->action[signr-1]) == -1) {
+				signr = 0;
+			}
+		}
+	}
+	// END REPLAY
+
 	return signr;
 }
 

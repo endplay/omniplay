@@ -28,6 +28,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+
 // for set_thread_area
 #include <linux/unistd.h>
 #include <asm/ldt.h>
@@ -44,9 +45,8 @@
  #ifndef LINKAGE_DATA
   #include "taints/taints_copy.h"
  #else
-  // #include "taints/taints_data.h"
-  #define TAINT_IMPL_INDEX
-  #include "taints/taints_index.h"
+  #include "taints/taints_data.h"
+  //#include "taints/taints.h"
  #endif
 #else
 #include "taints/taints.h"
@@ -425,6 +425,7 @@ struct thread_data {
     int syscall_handled;			// flag to indicate if a syscall is handled at the glibc wrapper instead
 #ifdef HAVE_REPLAY
     uint64_t rg_id;                 // record group id
+    u_long ignore_flag;             // location of the ignore flag
 #endif
     struct thread_data*      next;
     struct thread_data*      prev;
@@ -887,7 +888,13 @@ void increment_syscall_cnt (struct thread_data* ptdata, int syscall_num)
     } else {
         // ignore pthread syscalls, or deterministic system calls that we don't log (e.g. 243, 244)
         if (!(syscall_num == 17 || syscall_num == 31 || syscall_num == 32 || syscall_num == 35 || syscall_num == 44 || syscall_num == 53 || syscall_num == 56 || syscall_num == 98 || syscall_num == 243 || syscall_num == 244)) {
-            global_syscall_cnt++;
+            if (ptdata->ignore_flag) {
+                if (!(*(int *)(ptdata->ignore_flag))) {
+                    global_syscall_cnt++;
+                }
+            } else {
+                global_syscall_cnt++;
+            }
         }
     }
 #else
@@ -3785,6 +3792,58 @@ void instrument_bt(INS ins)
     }
 }
 
+/*
+void instrument_pmovx(INS ins)
+{
+    // first and second operand always reg
+    // but make sure anyways
+    MYASSERT(INS_OperandIsReg(ins, 0) == 1);
+    MYASSERT(INS_OperandIsReg(ins, 1) == 1);
+    REG src_reg = INS_OperandReg(ins, 1);
+    REG dst_reg = INS_OperandReg(ins, 0);
+    if (INS_OperandIsReg(ins, 0) && INS_OperandIsReg(ins, 1)) {
+        INSTRUMENT_PRINT(log_f, "instrument pmovmskb is src reg: %d into dst reg: %d\n", src_reg, dst_reg);
+       INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_reg2reg), IARG_UINT32, dst_reg, IARG_UINT32, src_reg, IARG_END);
+        
+    }   
+    else {
+        INSTRUMENT_PRINT(log_f, "[NOOP] instrument pmovmskb unknown operands\n");
+    }
+}
+*/
+
+void instrument_movaps(INS ins)
+{
+
+    if (INS_OperandIsReg(ins, 0) && INS_OperandIsReg(ins, 1)) {
+	    MYASSERT(INS_OperandIsReg(ins, 0) == 1);
+        MYASSERT(INS_OperandIsReg(ins, 1) == 1);
+        REG src_reg = INS_OperandReg(ins, 1);
+        REG dst_reg = INS_OperandReg(ins, 0);
+        INSTRUMENT_PRINT(log_f, "instrument movaps is src reg: %d into dst reg: %d\n", src_reg, dst_reg);
+        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_reg2reg), IARG_UINT32, dst_reg, IARG_UINT32, src_reg, IARG_END);
+   }   
+    else {
+        INSTRUMENT_PRINT(log_f, "[NOOP] instrument movaps unknown operands\n");
+    }
+}
+ 
+void instrument_xgetbv(INS ins)
+{
+    MYASSERT(INS_OperandIsReg(ins, 0) == 1);
+    MYASSERT(INS_OperandIsReg(ins, 1) == 1);
+    if (INS_OperandIsReg(ins, 0) && INS_OperandIsReg(ins, 1)) {
+        REG src_reg = INS_OperandReg(ins, 1);
+        REG dst_reg = INS_OperandReg(ins, 0);
+        INSTRUMENT_PRINT(log_f, "instrument xgetbv is src reg: %d into dst reg: %d\n", src_reg, dst_reg);
+        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_reg2reg), IARG_UINT32, dst_reg, IARG_UINT32, src_reg, IARG_END);
+    }   
+    else {
+        INSTRUMENT_PRINT(log_f, "[NOOP] instrument xgetbv unknown operands\n");
+    }
+}
+
+
 void instrument_push(INS ins)
 {
 #ifdef TAINT_STATS
@@ -4467,7 +4526,7 @@ void instrument_test(INS ins)
     }
 }
 
-void instrument_pcmpeqb(INS ins)
+void instrument_pcmpeqx(INS ins)
 {
 #ifdef TAINT_STATS
     instrument_inst_count();
@@ -4479,8 +4538,10 @@ void instrument_pcmpeqb(INS ins)
     reg = INS_OperandReg(ins, 0);
     if (op2reg) {
         REG reg2 = INS_OperandReg(ins ,1);
+
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_reg2reg),
                 IARG_UINT32, reg, IARG_UINT32, reg2, IARG_END);
+
     } else if (op2mem) {
         USIZE addrsize = INS_MemoryReadSize(ins);
         assert (addrsize == 16);
@@ -4491,6 +4552,73 @@ void instrument_pcmpeqb(INS ins)
         fprintf(stderr, "[ERROR] unknown comibnation of PCMPEQB\n");
     }
 }
+
+void instrument_palign(INS ins)
+{
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
+    // op3imm - shouldn't effect taint
+    int op1reg, op2reg, op2mem; 
+
+    op1reg = INS_OperandIsReg(ins, 0);
+    op2reg = INS_OperandIsReg(ins, 1);
+    op2mem = INS_OperandIsMemory(ins, 1);
+
+    if(op1reg && op2reg) {
+        REG srcreg, dstreg;
+        srcreg = INS_OperandReg(ins, 1);
+        dstreg = INS_OperandReg(ins, 0);
+
+        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_reg2reg), IARG_UINT32, dstreg, IARG_UINT32, srcreg, IARG_END);
+    }
+    else if(op1reg && op2mem) {
+        REG dstreg = INS_OperandReg(ins, 0);
+        USIZE addrsize = INS_MemoryReadSize(ins);
+        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_mem2reg), IARG_MEMORYREAD_EA, IARG_UINT32, addrsize, IARG_UINT32, dstreg, IARG_END);
+    }
+    else {
+        fprintf(log_f, "instrument_palign: operand arguments don't match.\n");
+    }
+}
+
+void instrument_psllx(INS ins)
+{
+#ifdef TAINT_STATS
+    instrument_inst_count();
+#endif
+    int op1reg, op2reg, op2mem, op2imm;
+
+    op1reg = INS_OperandIsReg(ins, 0);
+    op2reg = INS_OperandIsReg(ins, 1);
+    op2mem = INS_OperandIsMemory(ins, 1);
+    op2imm = INS_OperandIsImmediate(ins, 1);
+    
+    if (op1reg && op2reg) {
+        REG srcreg, dstreg;
+        srcreg = INS_OperandReg(ins, 1);
+        dstreg = INS_OperandReg(ins, 0);
+
+        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_reg2reg), IARG_UINT32, dstreg, IARG_UINT32, srcreg, IARG_END);
+
+    }
+    else if (op1reg && op2mem) {
+        REG dstreg = INS_OperandReg(ins, 0);
+        USIZE addrsize = INS_MemoryReadSize(ins);
+        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_mem2reg), IARG_MEMORYREAD_EA, IARG_UINT32, addrsize, IARG_UINT32, dstreg, IARG_END);
+    }
+
+    // TODO: AJYL
+    else if (op1reg && op2imm) {
+        REG dstreg = INS_OperandReg(ins, 0);
+        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_reg2reg), IARG_UINT32, dstreg, IARG_UINT32, dstreg, IARG_END);
+    }
+
+    else {
+        fprintf(log_f, "instrument_psllx: operant arguments don't match.\n");
+    }
+}
+
 
 void instrument_cmp(INS ins)
 {
@@ -5073,7 +5201,7 @@ void old_instrument_addorsub(INS ins)
     op1reg = INS_OperandIsReg(ins, 0);
     op2reg = INS_OperandIsReg(ins, 1);
     op2imm = INS_OperandIsImmediate(ins, 1);
-    
+
     if((op1mem && op2reg)) {
         reg = INS_OperandReg(ins, 1);
         if(!REG_valid(reg)) {
@@ -5083,7 +5211,9 @@ void old_instrument_addorsub(INS ins)
         addrsize = INS_MemoryWriteSize(ins);
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_reg2mem),
                 IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, IARG_END);
-    } else if(op1reg && op2mem) {
+    }
+
+    else if(op1reg && op2mem) {
         reg = INS_OperandReg(ins, 0);
         if(!INS_IsMemoryRead(ins) || !REG_valid(reg)) {
             //we ignore reads from video memory e.g. the gs segment register
@@ -5093,6 +5223,7 @@ void old_instrument_addorsub(INS ins)
         addrsize = INS_MemoryReadSize(ins);
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_mem2reg), 
                 IARG_MEMORYREAD_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, IARG_END);
+
     } else if(op1reg && op2reg) {
         REG dstreg;
         INSTRUMENT_PRINT(log_f, "old_instrument_addorsub: op1 and op2 of Artith are registers\n");
@@ -5101,21 +5232,22 @@ void old_instrument_addorsub(INS ins)
         if(!REG_valid(dstreg) || !REG_valid(reg)) {
             return;
         } 
-	/*if((opcode == XED_ICLASS_PXOR ||
-	    opcode == XED_ICLASS_FSUB || opcode == XED_ICLASS_FSUBP ||
-	    opcode == XED_ICLASS_FSUBP || opcode == XED_ICLASS_FISUB ||
-	    opcode == XED_ICLASS_FSUBR || opcode == XED_ICLASS_FISUBR ||
-	    opcode == XED_ICLASS_FSUBRP || opcode == XED_ICLASS_XORPS ||
-	    opcode == XED_ICLASS_PSUBB || opcode == XED_ICLASS_PSUBW ||
-	    opcode == XED_ICLASS_PSUBD || opcode == XED_ICLASS_PSUBQ) 
-	   && (dstreg == reg)) {
-	    INSTRUMENT_PRINT(log_f, "handling reg reset\n");
-	    INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_immval2reg),
-			   IARG_UINT32, dstreg, IARG_END);
-	} else {*/
+        /*if((opcode == XED_ICLASS_PXOR ||
+          opcode == XED_ICLASS_FSUB || opcode == XED_ICLASS_FSUBP ||
+          opcode == XED_ICLASS_FSUBP || opcode == XED_ICLASS_FISUB ||
+          opcode == XED_ICLASS_FSUBR || opcode == XED_ICLASS_FISUBR ||
+          opcode == XED_ICLASS_FSUBRP || opcode == XED_ICLASS_XORPS ||
+          opcode == XED_ICLASS_PSUBB || opcode == XED_ICLASS_PSUBW ||
+          opcode == XED_ICLASS_PSUBD || opcode == XED_ICLASS_PSUBQ) 
+          && (dstreg == reg)) {
+          INSTRUMENT_PRINT(log_f, "handling reg reset\n");
+          INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_immval2reg),
+          IARG_UINT32, dstreg, IARG_END);
+          } else {*/
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_reg2reg),
                 IARG_UINT32, dstreg, IARG_UINT32, reg, IARG_END);
-    } else if(op1mem && op2imm) {
+
+   } else if(op1mem && op2imm) {
         INSTRUMENT_PRINT(log_f, "old_instrument_addorsub: op1 is mem and op2 is immediate\n");
         addrsize = INS_MemoryWriteSize(ins);
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_immval2mem),
@@ -5182,6 +5314,59 @@ void instrument_set_src2dst(INS ins)
         fprintf(stderr, "[ERROR] unknown combination of src2dst: %s\n", instruction.c_str());
     }
 }
+
+void instrument_paddx_or_psubx(INS ins)
+{
+    int op1reg, op2reg, op2mem;
+
+    op1reg = INS_OperandIsReg(ins, 0); 	
+    op2reg = INS_OperandIsReg(ins, 1); 	
+    op2mem = INS_OperandIsMemory(ins, 1); 	
+
+    if(op1reg && op2reg) {
+        REG srcreg, dstreg;
+        srcreg = INS_OperandReg(ins, 1); 
+        dstreg = INS_OperandReg(ins, 0); 
+
+        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_reg2reg), 
+                       IARG_UINT32, dstreg, IARG_UINT32, srcreg, IARG_END);
+    }
+    else if(op1reg && op2mem) {
+        REG dstreg = INS_OperandReg(ins, 0);
+	USIZE addrsize = INS_MemoryReadSize(ins);	
+        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_mem2reg), IARG_MEMORYREAD_EA, IARG_UINT32, addrsize, IARG_UINT32, dstreg, IARG_END);
+    }
+    else {
+        fprintf(log_f, "instrument_paddx: operand arguments don't match.\n");
+    }
+}
+
+void instrument_punpckx(INS ins)
+{
+    int op1reg, op2reg, op2mem;
+    fprintf(log_f, "instrument_punpckx (%s) starting.\n", INS_Mnemonic(ins).c_str());
+
+    op1reg = INS_OperandIsReg(ins, 0); 	
+    op2reg = INS_OperandIsReg(ins, 1); 	
+    op2mem = INS_OperandIsMemory(ins, 1); 	
+
+    if(op1reg && op2reg) {
+        REG srcreg, dstreg;
+        srcreg = INS_OperandReg(ins, 1);
+        dstreg = INS_OperandReg(ins, 0);
+
+        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_reg2reg), IARG_UINT32, dstreg, IARG_UINT32, srcreg, IARG_END);
+    }
+    else if(op1reg && op2mem) {
+        REG dstreg = INS_OperandReg(ins, 0);
+        USIZE addrsize = INS_MemoryReadSize(ins);
+        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_mem2reg), IARG_MEMORYREAD_EA, IARG_UINT32, addrsize, IARG_UINT32, dstreg, IARG_END);
+    }
+    else {
+        fprintf(log_f, "instrument_punpckx: operant arguments don't match.\n");
+    }
+}
+
 
 void instrument_imul(INS ins)
 {
@@ -5730,10 +5915,13 @@ void analyze_buffer_stop (long id, void* buf, int size)
                         token_type = "WRITE";
                     } else if (tok->type == TOK_EXEC) {
                         token_type = "EXEC";
+                    } else {
+                        token_type = "UNK";
                     }
                     fprintf(output_f, "%s %s %llu %d %ld %d %s %s %s %llu %d %d %d %s\n",
                             "WRITE", "--", ptdata->rg_id, ptdata->record_pid, id, i, "FILE",
                             token_type, "--", ptdata->rg_id, ptdata->record_pid, tok->syscall_cnt, tok->byte_offset, tok->name);
+                    fflush(output_f);
                     // fprintf(output_f, "input byte num: %d, record_pid %d, syscall_cnt %d, byte_offset %d -- file %s\n", tok->token_num, get_record_pid(), tok->syscall_cnt, tok->byte_offset, tok->name); 
 #else
                     fprintf(output_f, "input byte num: %d, record_pid %d, syscall_cnt %d, byte_offset %d -- file %s\n", tok->token_num, get_record_pid(), tok->syscall_cnt, tok->byte_offset, tok->name); 
@@ -5743,6 +5931,7 @@ void analyze_buffer_stop (long id, void* buf, int size)
 #endif
                 }
             }
+
             tmp = g_list_next(tmp);
         }
         // __print_dependency_tokens(output_f, t);
@@ -5981,7 +6170,7 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT syscallarg1, ADDRINT syscal
 #ifdef LOGGING_ON
     SYSCALL_PRINT ("%d: Pid %d calling syscall %d\n", global_syscall_cnt, PIN_GetPid(), SYSNUM);
 #endif
-    increment_syscall_cnt (ptdata, (int)syscall_num);
+    fprintf (stderr, "%d: Pid %d calling syscall %d\n", global_syscall_cnt, PIN_GetPid(), SYSNUM);
 
 #ifdef LINKAGE_SYSCALL
     handle_syscall_start((int)syscall_num, syscallarg1, syscallarg2, syscallarg3);
@@ -5996,6 +6185,13 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT syscallarg1, ADDRINT syscal
 #endif
 
     switch (SYSNUM) {
+#ifdef HAVE_REPLAY
+        case 31:
+            // get the ignore flag location
+            ptdata->ignore_flag = (u_long) syscallarg2;
+            fprintf(stderr, "ignore flag set to %lu\n", ptdata->ignore_flag);
+            break;
+#endif
         case SYS_open:
         {
             char* filename = (char *) syscallarg1;
@@ -6229,6 +6425,7 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
         case SYS_write:
 #ifdef CONFAID
             analyze_buffer((void *) ptdata->buffer_info, (int) ret_value);
+
 #else
             analyze_buffer_stop(global_syscall_cnt, (void *) ptdata->buffer_info, (int) ret_value);
 #endif
@@ -6331,6 +6528,8 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
             break;
         }
     }
+    // Increment on syscall return for consistency with the log
+    increment_syscall_cnt (ptdata, (int)SYSNUM);
 }
 
 #ifdef HAVE_REPLAY
@@ -7857,10 +8056,20 @@ void track_file(INS ins, void *v)
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument PACK\n", INS_Address(ins));
                     old_instrument_addorsub(ins);
                     break;
+		*/
+
                 
                 case XED_ICLASS_PADDB:
                 case XED_ICLASS_PADDW:
                 case XED_ICLASS_PADDD:
+                case XED_ICLASS_PSUBB:
+                case XED_ICLASS_PSUBW:
+                case XED_ICLASS_PSUBD:
+                case XED_ICLASS_PSUBQ:
+
+	            case XED_ICLASS_PMADDWD:
+                case XED_ICLASS_PMULHUW:
+		/*
                 case XED_ICLASS_PAND:
                 case XED_ICLASS_PAVGB:
                 case XED_ICLASS_PAVGW:
@@ -7869,16 +8078,14 @@ void track_file(INS ins, void *v)
                 case XED_ICLASS_POR:
                 case XED_ICLASS_PXOR:
                 case XED_ICLASS_XORPS:
-                case XED_ICLASS_PSUBB:
-                case XED_ICLASS_PSUBW:
-                case XED_ICLASS_PSUBD:
-                case XED_ICLASS_PSUBQ:
+		*/
                     //flags affected: none
-                    INSTRUMENT_PRINT(log_f, "%#x: about to instrument PADD/MIN/XOR/SUB\n", INS_Address(ins));
-                    old_instrument_addorsub(ins);
+#ifdef LINKAGE_DATA
+                    INSTRUMENT_PRINT(log_f, "%#x: about to instrument PADDX/PSUBX/PMADDWD/PMULHUW\n", INS_Address(ins));
+                    instrument_paddx_or_psubx(ins);
+#endif
                     break;
                 
-                */
                 case XED_ICLASS_PUNPCKHBW:
                 case XED_ICLASS_PUNPCKHWD:
                 case XED_ICLASS_PUNPCKHDQ:
@@ -7886,6 +8093,7 @@ void track_file(INS ins, void *v)
                 case XED_ICLASS_PUNPCKLBW:
                 case XED_ICLASS_PUNPCKLWD:
                 case XED_ICLASS_PUNPCKLDQ:
+                case XED_ICLASS_PUNPCKLQDQ:
 #ifdef LINKAGE_DATA
                     // no flags affected
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument PUNPCK\n", INS_Address(ins));
@@ -7893,9 +8101,12 @@ void track_file(INS ins, void *v)
 #endif
                     break;
                 case XED_ICLASS_PCMPEQB:
+                case XED_ICLASS_PCMPEQW:
+                case XED_ICLASS_PCMPEQD:
+                case XED_ICLASS_PCMPGTB:
 #ifdef LINKAGE_DATA
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument PCMPEQB\n", INS_address(ins));
-                    instrument_pcmpeqb(ins);
+                    instrument_pcmpeqx(ins);
 #endif
                     break;
                 case XED_ICLASS_PSHUFD:
@@ -7910,6 +8121,40 @@ void track_file(INS ins, void *v)
                     instrument_set_src2dst(ins);
 #endif
                     break;
+
+                case XED_ICLASS_PALIGNR:
+#ifdef LINKAGE_DATA
+                    INSTRUMENT_PRINT(log_f, "%#x: about to instrument PALIGNR\n", INS_address(ins));
+                    instrument_palign(ins);
+#endif
+                    break;
+
+                case XED_ICLASS_PSLLW:
+                case XED_ICLASS_PSLLD:
+                case XED_ICLASS_PSLLQ:
+                case XED_ICLASS_PSLLDQ:
+#ifdef LINKAGE_DATA
+                    INSTRUMENT_PRINT(log_f, "%#x: about to instrument PSLLX\n", INS_address(ins));
+                    instrument_psllx(ins);
+#endif
+                    break;
+
+                case XED_ICLASS_PSRAD:
+                case XED_ICLASS_PSRAW:
+#ifdef LINKAGE_DATA
+                    INSTRUMENT_PRINT(log_f, "%#x: about to instrument PSRAD:\n", INS_address(ins));
+                    instrument_psllx(ins);
+#endif
+                    break;
+
+                case XED_ICLASS_PACKSSDW:
+#ifdef LINKAGE_DATA
+
+                    INSTRUMENT_PRINT(log_f, "%#x: about to instrument PACKSSDW:\n", INS_address(ins));
+                    instrument_paddx_or_psubx(ins);
+#endif
+                    break;
+
                 case XED_ICLASS_TEST:
 #ifdef CTRL_FLOW
                     //flags affected: all for CMP, all but AF for TEST. we are being conservative for TEST
@@ -8069,6 +8314,24 @@ void track_file(INS ins, void *v)
 #ifdef CTRL_FLOW
                     INSTRUMENT_PRINT(log_,f "%#x: about to instrument cld %s\n", INS_Address(ins), INS_Mneomic(ins).c_str());
                     INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_clear_flag), UINT32, DF_FLAG, IARG_END);
+#endif
+                    break;
+
+                case XED_ICLASS_MOVAPS:
+                case XED_ICLASS_MOVLPD:
+                case XED_ICLASS_MOVHPD:
+#ifdef LINKAGE_COPY
+                    instrument_movaps(ins);
+#endif
+                    break;
+
+                case XED_ICLASS_BSWAP:
+                    // No taint propogation here
+                    break;
+
+                case XED_ICLASS_XGETBV:
+#ifdef LINKAGE_COPY
+                    instrument_xgetbv(ins);
 #endif
                     break;
 
@@ -11845,6 +12108,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 #ifdef HAVE_REPLAY
     get_record_group_id(dev_fd, &ptdata->rg_id);
     fprintf(stderr, "record group is is %llu\n", ptdata->rg_id);
+    ptdata->ignore_flag = 0; // set when syscall 31 is called
 #endif
     ptdata->app_syscall = 0;
     ptdata->brk_saved_loc = 0;
