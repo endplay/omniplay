@@ -12,10 +12,6 @@
 #include <errno.h>
 #include <shadow.h>
 #include <fcntl.h>
-	
-//#include <jpeglib.h>
-//#undef INT32
-
 #include "pin.H"
 #include <glib-2.0/glib.h>
 #include <openssl/bn.h>
@@ -83,7 +79,7 @@ struct image_infos* img_list;
 #define STACK_SIZE 8388608
 
 // Logging
-#define LOGGING_ON
+// #define LOGGING_ON
 #define LOG_F log_f
 #define MEM_F log_f
 #define TRACE_F trace_f
@@ -130,13 +126,6 @@ struct image_infos* img_list;
 // #define TRACE_TAINTS
 // Used for debugging taints
 // #define DEBUG_TAINT
-#define FOLLOW_TAINT 
-#ifdef FOLLOW_TAINT
-int print_functions_read = 0;
-int print_functions_write = 1;
-int print_function_comp = 0;
-
-#endif
 #define CURRENT_INSTRUCTION 0x80a136c
 #define CURRENT_FUNCTION 0x806c481
 #define TAINT_LOCATION 0xb
@@ -3541,44 +3530,6 @@ void cmov_regmov(INS ins, INT32 cmov_type, USIZE addrsize, UINT32 mask, UINT32 c
 
 }
 
-// Is it possible to pass in INS in INS_InsertCall?
-void print_reg_taint(REG dst, REG src, int mode)
-{
-    //fprintf(log_f, "In print_reg_taint for instruction %s.\n", (char *)name);
-    if(!REG_valid(dst) || !REG_valid(src)){
-        fprintf(log_f, "Arguments are not regs, does not match. Returning.\n");
-        return;
-    }
-    if(mode){
-        fprintf(log_f, "Printing Reg taints before instrumenting pcmpgtb.\n");
-    }
-    else{
-        fprintf(log_f, "Printing Reg taints after instrumenting pcmpgtb.\n");
-    }
-
-    struct taint* src_vector;
-    struct taint* dst_vector;
-    src_vector = get_reg_taint(src);
-    dst_vector= get_reg_taint(dst);
-    
-    if(src_vector) {
-        fprintf(log_f, "Taint for src reg (%s): \n", REG_StringShort(src).c_str());
-        __print_dependency_tokens(log_f, src_vector);
-    }
-    else{
-        fprintf(log_f, "Taint for src reg (%s) empty.\n", REG_StringShort(src).c_str());
-    }
-
-    if(dst_vector) {
-        fprintf(log_f, "Taint for dst reg (%s): \n", REG_StringShort(dst).c_str());
-        __print_dependency_tokens(log_f, dst_vector);
-    }
-    else{
-        fprintf(log_f, "Taint for dst reg (%s) empty.\n", REG_StringShort(dst).c_str());;
-    }
-}
-
-
 void instrument_cmov(INS ins, OPCODE opcode) 
 {
 #ifdef TAINT_STATS
@@ -4588,18 +4539,8 @@ void instrument_pcmpeqx(INS ins)
     if (op2reg) {
         REG reg2 = INS_OperandReg(ins ,1);
 
-#ifdef FOLLOW_TAINT
-        ERROR_PRINT(log_f, "instruction %s called with address: %#x\n", INS_Disassemble(ins).c_str(), (unsigned)INS_Address(ins));
-        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(print_reg_taint), 
-                IARG_UINT32, reg, IARG_UINT32, reg2, IARG_UINT32, 1, IARG_END); 
-#endif
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_reg2reg),
                 IARG_UINT32, reg, IARG_UINT32, reg2, IARG_END);
-
-#ifdef FOLLOW_TAINT
-	    INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(print_reg_taint), 
-                    IARG_UINT32, reg, IARG_UINT32, reg2, IARG_UINT32, 0, IARG_END); 
-#endif
 
     } else if (op2mem) {
         USIZE addrsize = INS_MemoryReadSize(ins);
@@ -5387,18 +5328,8 @@ void instrument_paddx_or_psubx(INS ins)
         srcreg = INS_OperandReg(ins, 1); 
         dstreg = INS_OperandReg(ins, 0); 
 
-#ifdef FOLLOW_TAINT
-     //   ERROR_PRINT(log_f, "instruction %s called with address: %#x\n", INS_Disassemble(ins).c_str(), (unsigned)INS_Address(ins));
-	 //   INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(print_reg_taint), 
-     //               IARG_UINT32, dstreg, IARG_UINT32, srcreg, IARG_UINT32, 1, IARG_END); 
-#endif
-	    INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_reg2reg), 
+        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_reg2reg), 
                        IARG_UINT32, dstreg, IARG_UINT32, srcreg, IARG_END);
-
-#ifdef FOLLOW_TAINT
-	 //   INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(print_reg_taint), 
-     //               IARG_UINT32, dstreg, IARG_UINT32, srcreg, IARG_UINT32, 0, IARG_END); 
-#endif
     }
     else if(op1reg && op2mem) {
         REG dstreg = INS_OperandReg(ins, 0);
@@ -6429,12 +6360,6 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
             void* data = NULL;
             if (monitor_has_fd(open_fds, ri->fd)) {
                 data = monitor_get_fd_data(open_fds, ri->fd);
-#ifdef FOLLOW_TAINT
-                if(!strcmp("/home/andrew/car_input.png", (char *) data)) {
-		            fprintf(log_f, "Setting print_functions_read flag to 1\n");	
-                    print_functions_read = 1;
-                }
-#endif
             }
 #ifdef FILTER_INPUTS
             fprintf(stderr, "read %s, %s, %d\n", input_file_name, (char *) data, strncmp(input_file_name, (char *) data, 256));
@@ -6504,14 +6429,6 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
 #else
             analyze_buffer_stop(global_syscall_cnt, (void *) ptdata->buffer_info, (int) ret_value);
 #endif
-
-#ifdef FOLLOW_TAINT
-            //if(!strcmp("/home/andrew/car_input.png", (char *) data)) {
-                fprintf(log_f, "Setting print_functions_write flag to 0\n");	
-                print_functions_write = 0;
-            //}
-#endif
-
             ptdata->buffer_info = 0;
             break;
         case SYS_writev:
@@ -11410,61 +11327,12 @@ void inspect_function_args_stop(ADDRINT name, ADDRINT res)
 #endif
 }
 
-void print_function(ADDRINT name)
-{
-    if(print_functions_read == 1 && print_functions_write == 1) {
-        fprintf(log_f, "function inbetween read & write %s\n", (char *) name);
-    }   
-    /*else if(print_functions_read == 1){	
-        fprintf(log_f, "function after read syscall %s\n", (char *) name);
-    }
-    else if(print_functions_write == 1){
-        fprintf(log_f, "function after read syscall %s\n", (char *) name);
-    }
-*/
-}
-
-void instrument_jpg_comp_start(ADDRINT j_comp_ptr)
-{
-    fprintf(log_f, "In instrument_jpg_comp_start\n");
-    //struct j_compress_ptr* j_compress_pointer = (struct j_compress_ptr*) j_comp_ptr;
-    struct taint* vector;
-    vector = get_mem_taint(j_comp_ptr);
-    if(vector){
-        fprintf(log_f, "vector not null.\n");
-        __print_dependency_tokens(log_f, vector);
-    }
-    else {
-        fprintf(log_f, "vector null. Something wrong.\n");
-    }
-}
-
-/*
-void instrument_jpg_comp_aft(ADDRINT addr, ADDRINT name)
-{
-    struct taint* vector;
-    vector = get_mem_taint(addr);
-    fprintf(log_f, "PIE: %s ends\n", (char *) name);
-    __print_dependency_tokens(log_f, vector);
-}
-*/
-
 void track_function(RTN rtn, void* v) 
 {
     RTN_Open(rtn);
 #ifdef DEBUG_TAINT
     const char* name = RTN_Name(rtn).c_str();
     RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)instrument_current_function, IARG_PTR, name, IARG_PTR, RTN_Address(rtn), IARG_END);
-#endif
-
-#ifdef FOLLOW_TAINT
-    const char* name = RTN_Name(rtn).c_str();
-    RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)print_function, IARG_PTR, name, IARG_END);
-    if(!strcmp(name, "jpeg_start_compress")) {
-        fprintf(log_f, "In if statement for jpg_start_compress\n");
-        RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)instrument_jpg_comp_start, IARG_FUNCARG_ENTRYPOINT_REFERENCE, 0, IARG_END);
-        fprintf(log_f, "Instruction should have been added\n");
-    }
 #endif
 
 #ifdef CONFAID
