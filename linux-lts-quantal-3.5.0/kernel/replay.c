@@ -71,9 +71,9 @@
 // If defined, use file cache for reads of read-only files
 #define CACHE_READS
 
-#define TRACE_READ_WRITE
-#define TRACE_PIPE_READ_WRITE
-#define TRACE_SOCKET_READ_WRITE
+//#define TRACE_READ_WRITE
+//#define TRACE_PIPE_READ_WRITE
+//#define TRACE_SOCKET_READ_WRITE
 
 #if defined(TRACE_READ_WRITE) && !defined(CACHE_READS)
 # error "TRACE_READ_WRITE without CACHE_READS unimplemented!"
@@ -4812,7 +4812,7 @@ recplay_exit_middle(void)
 				prt->rp_group->rg_save_mmap_flag = 0;
 				rg_unlock (prt->rp_group);
 			}
-		} 
+		}
 	} else if (current->replay_thrd) {
 		if (atomic_dec_and_test(&current->replay_thrd->rp_group->rg_rec_group->rg_record_threads)) {
 			if (current->replay_thrd->rp_group->rg_rec_group->rg_save_mmap_flag) {
@@ -5625,14 +5625,6 @@ replay_read (unsigned int fd, char __user * buf, size_t count)
 
 			if (copy_to_user (buf, retparams+consume_size, rc)) printk ("replay_read: pid %d cannot copy to user\n", current->pid); 
 
-			/*
-			printk("%s %d: Consuming %ld 1:1 pipe with {%llu, %d} at %lu\n", __func__, __LINE__, consume_size+rc,
-					*((u64 *)(retparams+sizeof(u_int))),
-					*((int *)(retparams+sizeof(u_int)+sizeof(u64))),
-					*current->replay_thrd->rp_preplay_clock);
-			printk("%s %d: Data returned starts with {%llx %llx}\n", __func__, __LINE__,
-					*((unsigned long long *)(retparams+consume_size)), *((unsigned long long *)(retparams+consume_size+sizeof(unsigned long long))));
-					*/
 			argsconsume (current->replay_thrd->rp_record_thread, consume_size + rc);
 #endif
 		} else {

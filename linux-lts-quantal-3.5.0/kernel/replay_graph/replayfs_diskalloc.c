@@ -408,7 +408,6 @@ unsigned long max_page = 0;
 struct page *replayfs_diskalloc_alloc_page(struct replayfs_diskalloc *alloc) {
 	struct page *page;
 	loff_t page_idx;
-
 	/* Magic here */
 	/* Okay, allocation policy, get the next page from the first extent */
 
@@ -514,7 +513,6 @@ void replayfs_diskalloc_write_page_location(struct replayfs_diskalloc *alloc,
 
 void replayfs_diskalloc_put_page(struct replayfs_diskalloc *alloc,
 		struct page *page) {
-
 	alloc_put_page(page);
 }
 
