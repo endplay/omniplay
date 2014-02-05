@@ -1,9 +1,11 @@
 #!/bin/bash
 
+#First things first, do an import
+./cvsimport.sh
+
 CVSCHECKOUT=~/.gitcvsimport/
 MODULE=omniplay
 BRANCH=$(git branch | sed -n -e 's/^\* \(.*\)/\1/p')
-
 
 git checkout cvs
 git merge --no-ff master || {
