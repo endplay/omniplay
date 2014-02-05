@@ -859,7 +859,7 @@ static void btree_shrink(struct replayfs_btree_head *head, struct btree_geo *geo
 	struct page *node;
 	int fill;
 
-	if (head->height <= 1)
+	if (head->height < 1)
 		return;
 
 	node = get_head_page(head, &node_data);
@@ -1387,7 +1387,7 @@ static void *btree_remove_level(struct replayfs_btree_head *head, struct btree_g
 	debugk("%s %d: fill is %d, pos is %d no_pars is %d!\n", __func__, __LINE__,
 			fill, pos, geo->no_pairs);
 	if ((level == 1) && (keycmp(geo, node_data, pos, key) != 0)) {
-		debugk("%s %d: returning NULL?\n", __func__, __LINE__);
+		debugk("%s %d: !!!!!!! returning NULL?\n", __func__, __LINE__);
 		return NULL;
 	}
 	*page = node;
