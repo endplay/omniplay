@@ -19,6 +19,20 @@ struct replay_stat_data {
 	int mismatched;
 };
 
+struct filemap_num_entry {
+	int fd;
+	loff_t offset;
+	size_t size;
+};
+
+struct filemap_entry {
+	int fd;
+	loff_t offset;
+	int size;
+	struct replay_filemap_entry* entries;
+	int num_entries;
+};
+
 int devspec_init (int* fd_spec);
 int replay_fork (int fd_spec, const char** args, const char** env, char* linkpath, char* logdir, int save_mmap);
 int resume (int fd_spec, int attach_pin, int follow_splits, int save_mmap, char* logdir, char* linker);
@@ -32,6 +46,9 @@ int get_replay_stats (int fd_spec, struct replay_stat_data * stats);
 unsigned long get_replay_args (int fd_spec);
 unsigned long get_env_vars (int fd_spec);
 int get_record_group_id (int fd_spec, uint64_t* rg_id);
+
+int get_num_filemap_entries (int fd_spec, int fd, loff_t offset, int size);
+int get_filemap(int fd_spec, int fd, loff_t offset, int size, void* entries, int num_entries);
 
 #ifdef __cplusplus
 }

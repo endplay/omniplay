@@ -37,6 +37,20 @@ struct replay_stats_data {
 	int mismatched;
 };
 
+struct filemap_num_data {
+	int fd;
+	loff_t offset;
+	int size;
+};
+
+struct filemap_entry_data {
+	int fd;
+	loff_t offset;
+	int size;
+	void __user* entries;
+	int num_entries;
+};
+
 #define SPECI_REPLAY_FORK _IOR('u', 0, struct record_data)
 #define SPECI_RESUME _IOR('u', 1, struct wakeup_data)
 #define SPECI_SET_PIN_ADDR _IOR('u',2,u_long)
@@ -49,5 +63,7 @@ struct replay_stats_data {
 #define SPECI_GET_REPLAY_ARGS _IO('u',9)
 #define SPECI_GET_ENV_VARS _IO('u',10)
 #define SPECI_GET_RECORD_GROUP_ID _IOW('u',11, u_long)
+#define SPECI_GET_NUM_FILEMAP_ENTRIES _IOR('u',12,struct filemap_num_data)
+#define SPECI_GET_FILEMAP _IOR('u', 13,struct filemap_entry_data)
 
 #endif

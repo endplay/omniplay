@@ -45,12 +45,13 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
         struct record_data rdata;
         struct wakeup_data wdata;
 	struct get_used_addr_data udata;
+	struct filemap_num_data fndata;
+	struct filemap_entry_data fedata;
 	int syscall;
 	u_long app_syscall_addr;
 	char logdir[MAX_LOGDIR_STRLEN+1];
 	char* tmp = NULL;
 	long rc;
-	__u64 rg_id;
 
 	pckpt_proc = new_ckpt_proc = NULL;
 	DPRINT ("pid %d cmd number 0x%08x\n", current->pid, cmd);
@@ -148,6 +149,24 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 		return get_env_vars();
 	case SPECI_GET_RECORD_GROUP_ID:
 		return get_record_group_id((__u64 *) data);
+	case SPECI_GET_NUM_FILEMAP_ENTRIES:
+		if (len != sizeof(fndata)) {
+			printk ("ioctl SPECI_GET_NUM_FILEMAP_ENTRIES fails, len %d\n", len);
+			return -EINVAL;
+		}
+		if (copy_from_user (&fndata, (void *) data, sizeof(fndata))) {
+			return -EFAULT;
+		}
+		return get_num_filemap_entries(fndata.fd, fndata.offset, fndata.size);
+	case SPECI_GET_FILEMAP:
+		if (len != sizeof(fedata)) {
+			printk ("ioctl SPECI_GET_FILEMAP fails, len %d\n", len);
+			return -EINVAL;
+		}
+		if (copy_from_user (&fedata, (void *) data, sizeof(fedata))) {
+			return -EFAULT;
+		}
+		return get_filemap(fedata.fd, fedata.offset, fedata.size, fedata.entries, fedata.num_entries);
 	default:
 		return -EINVAL;
 	}

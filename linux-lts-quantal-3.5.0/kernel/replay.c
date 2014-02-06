@@ -2188,6 +2188,82 @@ long get_record_group_id (__u64* prg_id)
 }
 EXPORT_SYMBOL(get_record_group_id);
 
+long get_num_filemap_entries(int fd, loff_t offset, int size) {
+	int num_entries = 0;
+	struct file *filp;
+	struct replayfs_filemap map;
+	struct replayfs_filemap_entry* entry;
+
+	filp = fget(fd);
+	if (!filp) {
+		return -EBADF;
+	}
+	replayfs_filemap_init(&map, &replayfs_alloc, filp);
+
+	printk("get filemap entries for fd %d offset %lld, size %d\n", fd, offset, size);
+	entry = replayfs_filemap_read(&map, offset, size);
+	if (IS_ERR(entry) || entry == NULL) {
+		printk("get filemap can't find entry %p\n", entry);
+		replayfs_filemap_destroy(&map);
+		fput(filp);
+		if (entry != NULL) {
+			return PTR_ERR(entry);
+		} 
+		return -ENOMEM;
+	}
+
+	replayfs_filemap_destroy(&map);
+	fput(filp);
+	num_entries = entry->num_elms;
+	printk("get_num_filemap_entries is %d\n", num_entries);
+	kfree(entry);
+
+	return num_entries;
+}
+EXPORT_SYMBOL(get_num_filemap_entries);
+
+long get_filemap(int fd, loff_t offset, int size, void __user* entries, int num_entries)
+{
+	int rc = 0;
+	int i = 0;
+	struct file *filp;
+	struct replayfs_filemap map;
+	struct replayfs_filemap_entry* entry;
+
+	filp = fget(fd);
+	if (!filp) {
+		return -EBADF;
+	}
+	replayfs_filemap_init(&map, &replayfs_alloc, filp);
+
+	entry = replayfs_filemap_read(&map, offset, size);
+	if (IS_ERR(entry) || entry == NULL) {
+		replayfs_filemap_destroy(&map);
+		fput(filp);
+		if (entry != NULL) {
+			return PTR_ERR(entry);
+		}
+		return -ENOMEM;
+	}
+
+	replayfs_filemap_destroy(&map);
+	fput(filp);
+
+	// okay cool, walk the file map now
+	for (i = 0; i < num_entries; i++) {
+		struct replayfs_filemap_value* value;
+		value = (entry->elms) + i;
+		if (copy_to_user(entries + (i * sizeof(struct replayfs_filemap_value)), value, sizeof(struct replayfs_filemap_value))) {
+			rc = -EFAULT;
+			break;
+		}
+	}
+
+	kfree(entry);
+	return rc;
+}
+EXPORT_SYMBOL(get_filemap);
+
 // For glibc hack - allocate and return the LD_LIBRARY_PATH env variable
 static char* 
 get_libpath (const char __user* const __user* env)
@@ -2227,7 +2303,6 @@ get_libpath (const char __user* const __user* env)
 			printk ("get_libpath cannot copy path from user\n");
 			return NULL;
 		}
-		DPRINT ("pid %d: libpath is %s\n", current->pid, retbuf);
 		return retbuf;
 	} while (1);
 
@@ -2253,11 +2328,12 @@ is_libpath_present (struct record_group* prg, char* p)
 	for (i = 0; i < cnt; i++) {
 		len = *((int *) p);
 		if (strncmp(p+sizeof(int), "LD_LIBRARY_PATH=", 16) == 0) {
+			DPRINT ("pid %d: libpath is %s\n", current->pid, (char *)(p+sizeof(int)));
 			if (strcmp(p+sizeof(int), prg->rg_libpath) == 0) {
 				DPRINT ("pid %d: libpath matches\n", current->pid);
 				return 0; // match found
 			}
-			DPRINT ("pid %d: libpath does not match %d %d\n", current->pid, strlen(prg->rg_libpath)+1, len);
+			DPRINT ("pid %d: libpath does not match %d %d, return %d\n", current->pid, strlen(prg->rg_libpath)+1, len, i);
 			return i; // libarary path there at this index but does not match
 		}
 		p += sizeof(int) + len;
@@ -5323,8 +5399,8 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 #ifdef TRACE_SOCKET_READ_WRITE
 	int err;
 #endif
-
-	new_syscall_enter (3);
+	new_syscall_enter (3);					
+	DPRINT ("pid %d, record read off of fd %d\n", current->pid, fd);
 	is_cache_file = is_record_cache_file_lock(current->record_thrd->rp_cache_files, fd);
 	rc = sys_read (fd, buf, count);
 	new_syscall_done (3, rc);
@@ -6078,7 +6154,6 @@ record_execve(const char *filename, const char __user *const __user *__argv, con
 
 	new_syscall_done (11, rc);
 	if (rc >= 0) {
-
 		prt->rp_user_log_addr = 0; // User log address no longer valid since new address space entirely
 #ifdef USE_EXTRA_DEBUG_LOG
 		prt->rp_user_extra_log_addr = 0;
@@ -10062,7 +10137,7 @@ record_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, un
 		up_read(&mm->mmap_sem);
 	}
 
-	DPRINT ("Pid %d records mmap_pgoff with addr %lx len %lx prot %lx flags %lx fd %lu ret %lx\n", current->pid, addr, len, prot, flags, fd, rc);
+	DPRINT ("Pid %d records mmap_pgoff with addr %lx len %lx prot %lx flags %lx fd %ld ret %lx\n", current->pid, addr, len, prot, flags, fd, rc);
 
 	/* Save the regions to pre-allocate later for replay,
 	 * Needed for Pin support	
