@@ -286,7 +286,7 @@ static void setkey(struct btree_geo *geo, struct page *page, int n,
 	void *addr =kmap(page);
 	SetPageDirty(page);
 	keycpy(bkey(geo, addr, n), key);
-	kunmap(addr);
+	kunmap(page);
 }
 
 /* 
