@@ -781,6 +781,10 @@ static struct page *find_level(struct replayfs_btree128_head *head, struct btree
 		oldpage_data = node_data;
 	}
 
+	if (oldpage) {
+		bval_put(head, oldpage);
+	}
+
 	*page_data = node_data;
 
 	BUG_ON(!node);
