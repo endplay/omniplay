@@ -9,6 +9,7 @@ class IPCGraph(object):
 
     def add_node(self, group_id, pid, cmd=""):
         node = IPCNode(group_id, pid, cmd=cmd)
+	assert(node)
         self.nodes.append(node)
 
     def has_node(self, group_id, pid):

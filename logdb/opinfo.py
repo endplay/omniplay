@@ -1,10 +1,11 @@
 class OpInfo(object):
-    def __init__(self, group_id, pid, syscall, offset, size=1):
+    def __init__(self, group_id, pid, syscall, offset, size=1, channel=""):
         self.group_id = group_id
         self.pid = pid
         self.syscall = syscall
         self.offset = offset
         self.size = size
+        self.channel = channel
 
     def __hash__(self):
         s = ''.join([str(self.group_id), str(self.pid), str(self.syscall), str(self.offset)])
@@ -17,17 +18,25 @@ class OpInfo(object):
                 self.offset == other.offset
 
 class WriteInfo(OpInfo):
-    def __init__(self, group_id, pid, syscall, offset, size=1):
-        OpInfo.__init__(self, group_id, pid, syscall, offset, size)
+    def __init__(self, group_id, pid, syscall, offset, size=1, channel=""):
+        OpInfo.__init__(self, group_id, pid, syscall, offset, size, channel)
 
     def __str__(self):
         return "WriteInfo: group %d, pid %d, syscall %d, offset %d, size %d" % \
                 (self.group_id, self.pid, self.syscall, self.offset, self.size)
 
 class ReadInfo(OpInfo):
-    def __init__(self, group_id, pid, syscall, offset, size=1):
-        OpInfo.__init__(self, group_id, pid, syscall, offset, size)
+    def __init__(self, group_id, pid, syscall, offset, size=1, channel=""):
+        OpInfo.__init__(self, group_id, pid, syscall, offset, size, channel)
 
     def __str__(self):
         return "ReadInfo: group %d, pid %d, syscall %d, offset %d, size %d" % \
+                (self.group_id, self.pid, self.syscall, self.offset, self.size)
+
+class ExecInfo(OpInfo):
+    def __init__(self, group_id, pid, syscall, offset, size=1, channel=""):
+        OpInfo.__init__(self, group_id, pid, syscall, offset, size, channel)
+
+    def __str__(self):
+        return "ExecInfo: group %d, pid %d, syscall %d, offset %d, size %d" % \
                 (self.group_id, self.pid, self.syscall, self.offset, self.size)
