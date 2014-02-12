@@ -109,11 +109,13 @@ void shift_cf_taint(struct taint* dst, struct taint* cond, struct taint* prev) {
 }
 
 void print_taint(FILE* fp, struct taint* src) {
+    if (!src) { fprintf(fp, "{ }\n"); return; }
     fprintf(fp, "id {%ld}\n", src->id);
 }
 
 GList* get_non_zero_taints(struct taint* src) {
     GList* taint_list = NULL;
+    if (!src) return NULL;
     if (src->id) {
         taint_list = g_list_append(taint_list, GINT_TO_POINTER(src->id));
     }
