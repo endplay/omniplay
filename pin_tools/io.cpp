@@ -25,6 +25,7 @@ struct thread_data {
     int record_pid; 	// per thread record pid
     int syscall_cnt;	// per thread count of syscalls
     int sysnum;		// current syscall number
+    int socketcall;	// current socketcall num if applicable
     u_long ignore_flag;
     void* syscall_info;
 };
@@ -196,7 +197,6 @@ void write_stop(int rc) {
     // successful write
     if (rc > 0) {
         struct write_info* wi = (struct write_info *) tdata->syscall_info;
-        fprintf(stderr, "write to fd %d, returns %d\n", wi->fd, rc);
         int rcc;
         FILE* fp = NULL;
         if (monitor_has_fd(open_fds, wi->fd)) {
@@ -209,6 +209,7 @@ void write_stop(int rc) {
         } else if (monitor_has_fd(open_socks, wi->fd)) {
             struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, wi->fd);
             assert(si);
+	    fprintf(stderr, "write to socket %d\n", wi->fd);
             fp = si->fp;
             if (si->accept_info) {
                 fprintf(meta_fp, "WRITE to socket %ld size: %d (accepted socket)\n", global_syscall_cnt, rc);
@@ -251,8 +252,7 @@ void open_stop(int rc) {
         int cloexec = 0;
         char stream_name[256];
         // Make the stream filename start with the global syscall cnt
-        // snprintf(stream_name, 256, "/tmp/%ld_%s\n", global_syscall_cnt, oi->filename);
-        snprintf(stream_name, 256, "/tmp/io_%ld\n", global_syscall_cnt);
+        snprintf(stream_name, 256, "/tmp/io_%ld", global_syscall_cnt);
         oi->fp = fopen(stream_name, "w");
 
         cloexec = oi->flags | O_CLOEXEC;
@@ -281,7 +281,6 @@ void close_stop(int rc) {
     // sucessful close
     if (!rc) {
         if (monitor_has_fd(open_fds, ci->fd)) {
-            fprintf(stderr, "close of fd %d\n", ci->fd);
             struct open_info* oi = (struct open_info *) monitor_get_fd_data(open_fds, ci->fd);
             assert (oi);
             fflush(oi->fp);
@@ -289,9 +288,7 @@ void close_stop(int rc) {
 
             free(oi);
             monitor_remove_fd(open_fds, ci->fd);
-            fprintf(stderr, "removed fd %d\n", ci->fd);
         } else if (monitor_has_fd(open_socks, ci->fd)) {
-            fprintf(stderr, "close of sock fd %d\n", ci->fd);
             struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, ci->fd);
             assert (si);
             fflush(si->fp);
@@ -349,6 +346,7 @@ void connect_start(int sockfd, struct sockaddr* addr, socklen_t addrlen)
             struct sockaddr_un* sun = (struct sockaddr_un*) addr;
             assert(addr->sa_family == AF_UNIX);
             strncpy(ci->path, sun->sun_path, MAX_PATH_LEN);
+	    fprintf(stderr, "connect path is %s\n", ci->path);
         } else if (si->domain == AF_INET) {
             struct sockaddr_in* sin = (struct sockaddr_in*) addr;
             assert(addr->sa_family == AF_INET);
@@ -387,7 +385,7 @@ void connect_stop(int rc)
             fprintf(meta_fp, "CONNECT %ld AF_UNIX path %s\n", global_syscall_cnt, ci->path);
             fflush(meta_fp);
 
-            snprintf(stream_name, 256, "/tmp/%ld_%s\n", global_syscall_cnt, ci->path);
+            snprintf(stream_name, 256, "/tmp/%ld_%s", global_syscall_cnt, ci->path);
             si->fp = fopen(stream_name, "w");
         } else if (si->domain == AF_INET) {
             char straddr[INET_ADDRSTRLEN];
@@ -395,7 +393,7 @@ void connect_stop(int rc)
             fprintf(meta_fp, "CONNECT %ld AF_INET addr: %s port %d\n", global_syscall_cnt, straddr, ci->port);
             fflush(meta_fp);
 
-            snprintf(stream_name, 256, "/tmp/%ld_%s_%d\n", global_syscall_cnt, straddr, ci->port);
+            snprintf(stream_name, 256, "/tmp/%ld_%s_%d", global_syscall_cnt, straddr, ci->port);
             si->fp = fopen(stream_name, "w");
         } else if (si->domain == AF_INET6) {
             char straddr[INET6_ADDRSTRLEN];
@@ -403,7 +401,7 @@ void connect_stop(int rc)
             fprintf(meta_fp, "CONNECT %ld AF_INET6 addr: %s port %d\n", global_syscall_cnt, straddr, ci->port);
             fflush(meta_fp);
 
-            snprintf(stream_name, 256, "/tmp/%ld_%s_%d\n", global_syscall_cnt, straddr, ci->port);
+            snprintf(stream_name, 256, "/tmp/%ld_%s_%d", global_syscall_cnt, straddr, ci->port);
             si->fp = fopen(stream_name, "w");
         }
     }
@@ -507,7 +505,7 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
         case SYS_writev:
             break;
         case SYS_socketcall:
-            int call = * ((int *) tdata->syscall_info);
+            int call = tdata->socketcall;
             switch (call) {
                 case SYS_SOCKET:
                     socket_stop((int) ret_value);
@@ -516,6 +514,8 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
                     connect_stop((int) ret_value);
                     break;
                 case SYS_SEND:
+                    write_stop((int) ret_value);
+		    break;
                 case SYS_SENDTO:
                     write_stop((int) ret_value);
                     break;
@@ -539,6 +539,7 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
     increment_syscall_cnt(tdata, tdata->sysnum);
     // reset the syscall number after returning from system call
     tdata->sysnum = 0;
+    tdata->socketcall = 0;
 }
 
 // called before every application system call
@@ -580,6 +581,7 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscalla
         case SYS_socketcall:
             int call = (int)syscallarg0;
             unsigned long *args = (unsigned long *)syscallarg1;
+	    tdata->socketcall = call;
             switch (call) {
                 case SYS_SOCKET:
                     socket_start((int)args[0], (int)args[1], (int)args[2]);
