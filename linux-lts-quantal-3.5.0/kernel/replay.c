@@ -59,9 +59,10 @@
 #include "../ipc/util.h" // For shm utility functions
 #include <asm/user_32.h>
 
-/* FIXME: I shoudl move this to include... */
+/* FIXME: I should move this to include... */
 #include "../kernel/replay_graph/replayfs_btree128.h"
 #include "../kernel/replay_graph/replayfs_filemap.h"
+#include "../kernel/replay_graph/replayfs_syscall_cache.h"
 
 // mcc: fix this later
 //#define MULTI_COMPUTER
@@ -71,9 +72,26 @@
 // If defined, use file cache for reads of read-only files
 #define CACHE_READS
 
+/*
+ * Enables read compression, sourcing reads of a file from another uncompressed file.
+ * This will have potential data size and performance implications on both recorded/replayed files
+ * AND non-record/replay reads from files whose creations were recorded.
+ *
+ * It may (however) drastically reduce the size of recorded reads by recording the origin of data, instead of its contents.
+ *
+ * This automatically disables TRACE_*
+ */
+//#define REPLAY_COMPRESS_READS
+
 //#define TRACE_READ_WRITE
 //#define TRACE_PIPE_READ_WRITE
 //#define TRACE_SOCKET_READ_WRITE
+
+#ifdef REPLAY_COMPRESS_READS
+#  undef TRACE_READ_WRITE
+#  undef TRACE_PIPE_READ_WRITE
+#  undef TRACE_SOCKET_READ_WRITE
+#endif
 
 #if defined(TRACE_READ_WRITE) && !defined(CACHE_READS)
 # error "TRACE_READ_WRITE without CACHE_READS unimplemented!"
@@ -101,6 +119,193 @@
 
 #define ARGSKMALLOC(size, flags) argsalloc(size)
 #define ARGSKFREE(ptr, size) argsfree(ptr, size)
+
+#ifdef REPLAY_COMPRESS_READS
+/* Okay, time for fun! */
+/* We have a syscall cache */
+extern struct replayfs_syscall_cache syscache;
+static struct btree_head32 meta_tree;
+DEFINE_MUTEX(meta_tree_lock);
+
+static int is_recorded_filename(const char *filename) {
+	int ret = 0;
+	struct file *filp = filp_open(filename, O_RDWR, 0);
+
+	if (!IS_ERR(filp) && filp != NULL) {
+		struct inode *inode = filp->f_dentry->d_inode;
+
+		/* If the inode has not been written */
+		if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0) {
+			if (i_size_read(filp->f_dentry->d_inode) == 0) {
+				//printk("%s %d: Empty file is record file! %lu\n", __func__, __LINE__, inode->i_ino);
+				ret = 1;
+			} else {
+				/* Do btree lookup */
+				ret = replayfs_filemap_exists(filp);
+				//printk("%s %d: Filemap exists for %lu returns %d\n", __func__, __LINE__, inode->i_ino, ret);
+			}
+		} else {
+			//printk("%s %d: filp is for an untracked file.\n", __func__, __LINE__);
+		}
+
+		filp_close(filp, NULL);
+	} else {
+		//printk("filp is NULL??\n");
+	}
+
+	return ret;
+}
+
+static int is_recorded_file(int fd) {
+	int ret = 0;
+	struct file *filp = fget(fd);
+
+	if (filp) {
+		struct inode *inode = filp->f_dentry->d_inode;
+
+		/* If the inode has not been written */
+		if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0) {
+			if (i_size_read(filp->f_dentry->d_inode) == 0) {
+				//printk("%s %d: Empty file is record file! %p\n", __func__, __LINE__, filp);
+				ret = 1;
+			} else {
+				/* Do btree lookup */
+				ret = replayfs_filemap_exists(filp);
+				//if (ret) {
+					//printk("%s %d: Filemap exists for %p returns %d\n", __func__, __LINE__, filp, ret);
+				//}
+			}
+		} else {
+			//printk("%s %d: filp is for an untracked file.\n", __func__, __LINE__);
+		}
+
+		fput(filp);
+	} else {
+		//printk("filp is NULL??\n");
+	}
+
+	return ret;
+}
+
+
+struct replay_recorded_file_meta {
+	struct replayfs_filemap map;
+	struct replayfs_diskalloc alloc;
+	loff_t meta_pos;
+};
+
+loff_t meta_get_size(struct replay_recorded_file_meta *meta) {
+	struct page *page;
+	struct replayfs_btree_meta *bmeta;
+	loff_t ret;
+
+	page = replayfs_diskalloc_get_page(&meta->alloc, meta->meta_pos);
+
+	bmeta = kmap(page);
+
+	ret = bmeta->i_size;
+
+	kunmap(page);
+	replayfs_diskalloc_put_page(&replayfs_alloc, page);
+
+	return ret;
+}
+
+void update_size(struct file *filp, struct replay_recorded_file_meta *met) {
+	struct page *page;
+	struct replayfs_btree_meta *meta;
+
+	page = replayfs_diskalloc_get_page(&met->alloc, met->meta_pos);
+
+	meta = kmap(page);
+
+	/* FIXME: Update saved isize! */
+	if (filp->f_pos > meta->i_size) {
+
+		meta->i_size = filp->f_pos;
+
+		SetPageDirty(page);
+	}
+
+	kunmap(page);
+	replayfs_diskalloc_put_page(&met->alloc, page);
+}
+
+static struct replay_recorded_file_meta *get_meta(struct file *filp) {
+	struct replay_recorded_file_meta *meta;
+
+	mutex_lock(&meta_tree_lock);
+	meta = btree_lookup32(&meta_tree, (u32)filp->f_dentry->d_inode);
+
+	if (meta == NULL) {
+		meta = kmalloc(sizeof(struct replay_recorded_file_meta), GFP_KERNEL);
+
+		if (replayfs_filemap_exists(filp)) {
+			//printk("%s %d: Doing load on filp %lu\n", __func__, __LINE__, filp->f_dentry->d_inode->i_ino);
+			replayfs_diskalloc_init(&meta->alloc, filp);
+		} else {
+			//printk("%s %d: Doing create on filp %lu\n", __func__, __LINE__, filp->f_dentry->d_inode->i_ino);
+			replayfs_diskalloc_create(&meta->alloc, filp);
+		}
+
+		replayfs_filemap_init_with_pos(&meta->map, &meta->alloc, filp, &meta->meta_pos);
+
+		if (btree_insert32(&meta_tree, (u32)filp->f_dentry->d_inode, meta, GFP_KERNEL)) {
+			BUG();
+		}
+	}
+
+	mutex_unlock(&meta_tree_lock);
+
+	return meta;
+}
+
+static struct replay_recorded_file_meta *replay_get_filename_meta(const char *filename) {
+	struct replay_recorded_file_meta *meta;
+	struct file *filp;
+
+	filp = filp_open(filename, O_RDWR, 0);
+
+	BUG_ON(!filp);
+
+	meta = get_meta(filp);
+
+	filp_close(filp, NULL);
+
+	return meta;
+}
+
+static struct replay_recorded_file_meta *replay_get_file_meta(int fd) {
+	struct replay_recorded_file_meta *meta;
+	struct file *filp;
+
+	filp = fget(fd);
+
+	BUG_ON(!filp);
+
+	meta = get_meta(filp);
+
+	fput(filp);
+
+	return meta;
+}
+
+void replay_filp_close(struct file *filp) {
+	struct replay_recorded_meta *meta;
+	/* The filp is closed, free its meta */
+	mutex_lock(&meta_tree_lock);
+
+	meta = btree_remove32(&meta_tree, (u32)filp->f_dentry->d_inode);
+
+	if (meta != NULL) {
+		kfree(meta);
+	}
+
+	mutex_unlock(&meta_tree_lock);
+}
+#endif
+
+#define IS_RECORDED_FILE 1<<3
 
 #ifdef TRACE_PIPE_READ_WRITE
 extern const struct file_operations read_pipefifo_fops;
@@ -2200,7 +2405,7 @@ long get_num_filemap_entries(int fd, loff_t offset, int size) {
 	}
 	replayfs_filemap_init(&map, &replayfs_alloc, filp);
 
-	printk("get filemap entries for fd %d offset %lld, size %d\n", fd, offset, size);
+	//printk("get filemap entries for fd %d offset %lld, size %d\n", fd, offset, size);
 	entry = replayfs_filemap_read(&map, offset, size);
 	if (IS_ERR(entry) || entry == NULL) {
 		printk("get filemap can't find entry %p\n", entry);
@@ -2215,7 +2420,7 @@ long get_num_filemap_entries(int fd, loff_t offset, int size) {
 	replayfs_filemap_destroy(&map);
 	fput(filp);
 	num_entries = entry->num_elms;
-	printk("get_num_filemap_entries is %d\n", num_entries);
+	//printk("get_num_filemap_entries is %d\n", num_entries);
 	kfree(entry);
 
 	return num_entries;
@@ -5401,9 +5606,132 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 #endif
 	new_syscall_enter (3);					
 	DPRINT ("pid %d, record read off of fd %d\n", current->pid, fd);
+#ifdef REPLAY_COMPRESS_READS
+	//printk("%s %d: Doing check on fd of %d\n", __func__, __LINE__, fd);
+	if (is_recorded_file(fd)) {
+		struct replay_recorded_file_meta *meta;
+		struct replayfs_filemap_entry *entry;
+		char *args;
+
+		size_t cpy_size;
+
+		//printk("%s %d: Yes, is_recorded file\n", __func__, __LINE__);
+
+		is_cache_file = IS_RECORDED_FILE;
+
+		filp = fget(fd);
+
+		//printk("%s %d: Have recorded file! (%p)\n", __func__, __LINE__, filp);
+
+		/* Okay, we need to save the btree recording from this file */
+		if (buf) {
+			struct replayfs_syscache_id id;
+			int i;
+			int buff_offs = 0;
+			loff_t size;
+			int num_available;
+			/* First step, get meta data from fd */
+			meta = replay_get_file_meta(fd);
+			BUG_ON(meta == NULL);
+
+			//printk("%s %d: Initial count is %u\n", __func__, __LINE__, count);
+			size = meta_get_size(meta);
+			num_available = filp->f_pos + count;
+			if (num_available > size) {
+				count -= num_available - size;
+			}
+			//printk("%s %d: Count adjusted to %u\n", __func__, __LINE__, count);
+			rc = count;
+			/* Now do a lookup */
+
+			//printk("%s %d: Doing filemap lookup for pos, size {%lld, %ld}\n", __func__, __LINE__, filp->f_pos, rc);
+			entry = replayfs_filemap_read(&meta->map, filp->f_pos, rc);
+
+			//printk("%s %d: Got entry %p\n", __func__, __LINE__, entry);
+			if (IS_ERR(entry) || entry == NULL) {
+				entry = kmalloc(sizeof(struct replayfs_filemap_entry), GFP_KERNEL);
+				/* FIXME: Handle this properly */
+				BUG_ON(entry == NULL);
+				entry->num_elms = 0;
+				rc = 0;
+				count = 0;
+			} else {
+				filp->f_pos += rc;
+			}
+
+			//printk("%s %d: entry->num_elms is %d\n", __func__, __LINE__, entry->num_elms);
+			for (i = 0; i < entry->num_elms; i++) {
+				struct replayfs_disk_alloc *alloc;
+				struct replayfs_filemap_value *val = &entry->elms[i];
+				loff_t entry_pos;
+
+				int copy_offs;
+
+				/* Get alloc pos ref'd by entry */
+				id.unique_id = val->bval.id.unique_id;
+				id.pid = val->bval.id.pid;
+				id.sysnum = val->bval.id.sysnum;
+
+				entry_pos = replayfs_syscache_get(&syscache, &id);
+				/* Entry should be > 0, otherwise there is a problem */
+				BUG_ON(entry_pos < 0);
+
+				/* Get the disk_alloc referenced by entry */
+				alloc = replayfs_disk_alloc_get(&replayfs_alloc, entry_pos);
+
+				copy_offs = val->read_offset + val->bval.buff_offs;
+
+				/* Copy the data into user space */
+				/* I've already checked access_ok, so I'm just doing a normal copy now */
+				replayfs_disk_alloc_read(alloc, buf + buff_offs, val->size, copy_offs + sizeof(struct replayfs_syscache_entry));
+
+				buff_offs += val->size;
+
+				replayfs_disk_alloc_put(alloc);
+			}
+
+			new_syscall_done (3, rc);
+
+			cpy_size = sizeof(u_int) + sizeof(struct replayfs_filemap_entry) +
+					(entry->num_elms * sizeof(struct replayfs_filemap_value));
+
+			/* Save results into args */
+			args = ARGSKMALLOC(cpy_size, GFP_KERNEL);
+			pretval = args;
+
+			*((u_int*)args) = is_cache_file;
+
+			memcpy(args+sizeof(u_int), entry, cpy_size);
+
+			/* Free memory */
+			kfree(entry);
+			/* dun */
+
+			/* FIXME: see below */
+			/* Yeah, this is hacky... I'll clean it up later */
+			buf = 0;
+			is_cache_file = 0;
+		} else {
+			/* FIXME: is this really the correct return code? */
+			printk("%s %d: BUG?\n", __func__, __LINE__);
+			rc = 0;
+		}
+
+		/* HACK, to fail the "if (rc>0&&buf)"... */
+		buf = NULL;
+
+		fput(filp);
+	} else {
+		is_cache_file = is_record_cache_file_lock(current->record_thrd->rp_cache_files, fd);
+		rc = sys_read (fd, buf, count);
+		new_syscall_done (3, rc);
+	}
+#else
+	//printk("%s %d: In else? of macro?\n", __func__, __LINE__);
 	is_cache_file = is_record_cache_file_lock(current->record_thrd->rp_cache_files, fd);
 	rc = sys_read (fd, buf, count);
 	new_syscall_done (3, rc);
+#endif
 	if (rc > 0 && buf) {
 		// For now, include a flag that indicates whether this is a cached read or not - this is only
 		// needed for parseklog and so we may take it out later
@@ -5419,7 +5747,6 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 
 		filp = fdt->fd[fd];
 		spin_unlock(&files->file_lock);
-
 		if (is_cache_file) {
 			// Since not all syscalls handled for cached reads, record the position
 			DPRINT ("Cached read of fd %u - record by reference\n", fd);
@@ -5657,10 +5984,62 @@ replay_read (unsigned int fd, char __user * buf, size_t count)
 	int cache_fd;
 
 	if (retparams) {
-#ifdef TRACE_PIPE_READ_WRITE
+#if defined(TRACE_PIPE_READ_WRITE) || defined(REPLAY_COMPRESS_READS)
 		u_int is_cache_file = *((u_int *)retparams);
 #endif
 		int consume_size;
+
+#ifdef REPLAY_COMPRESS_READS
+		if (is_cache_file & IS_RECORDED_FILE) {
+			struct replayfs_filemap_entry *entry = (void *)(retparams + sizeof(u_int));
+			struct replayfs_syscache_id id;
+			int buff_offs = 0;
+			int i;
+
+			BUG_ON(!access_ok(VERIFY_WRITE, buf, rc));
+
+			/* We've recorded the origin tracking info, so we'll just copy the data from the right chunks */
+			/* Here comes the syscache */
+			/* Foreach elm in entry */
+			for (i = 0; i < entry->num_elms; i++) {
+				struct replayfs_disk_alloc *alloc;
+				struct replayfs_filemap_value *val = &entry->elms[i];
+				loff_t entry_pos;
+
+				int copy_offs;
+
+				/* Get alloc pos ref'd by entry */
+				id.unique_id = val->bval.id.unique_id;
+				id.pid = val->bval.id.pid;
+				id.sysnum = val->bval.id.sysnum;
+
+				entry_pos = replayfs_syscache_get(&syscache, &id);
+				/* Entry should be > 0, otherwise there is a problem */
+				BUG_ON(entry_pos < 0);
+
+				/* Get the disk_alloc referenced by entry */
+				alloc = replayfs_disk_alloc_get(&replayfs_alloc, entry_pos);
+
+				copy_offs = val->read_offset + val->bval.buff_offs;
+
+				/* Copy the data into user space */
+				/* I've already checked access_ok, so I'm just doing a normal copy now */
+				replayfs_disk_alloc_read(alloc, buf + buff_offs, val->size, copy_offs + sizeof(struct replayfs_syscache_entry));
+
+				buff_offs += val->size;
+
+				replayfs_disk_alloc_put(alloc);
+			}
+
+			/* Consume args */
+			consume_size = sizeof(u_int) + sizeof(struct replayfs_filemap_entry) +
+					(entry->num_elms * sizeof(struct replayfs_filemap_value));
+
+			argsconsume (current->replay_thrd->rp_record_thread, consume_size); 
+
+			/* Return data */
+		} else
+#endif
 		if (is_replay_cache_file(current->replay_thrd->rp_cache_files, fd, &cache_fd)) {
 			// read from the open cache file
 			loff_t off = *((loff_t *) (retparams+sizeof(u_int)));
@@ -5771,10 +6150,69 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 		}
 	} while (0);
 #endif
+	/* Okay... this is tricky... */
+#ifdef REPLAY_COMPRESS_READS
+	/* We tweak the write of this file into the modification of its btree, oh yeah */
+	/* NOTE: iff (its a "replay" file) */
+	if (is_recorded_file(fd)) {
+		loff_t fpos;
+		struct replay_recorded_file_meta *meta;
+		struct replayfs_syscache_id id;
+		struct replayfs_filemap *map;
+		struct file *filp;
 
+		meta = replay_get_file_meta(fd);
+
+		map = &meta->map;
+		new_syscall_enter (4);
+
+		filp = fget(fd);
+		BUG_ON(filp == NULL);
+		/* 
+		 * We hack to use a bit in the pretparams to tell the replay that this write 
+		 * should be saved in the syscache on replay...
+		 */
+		if (!pretparams) {
+			pretparams = (void *)1;
+		}
+
+		/* 
+		 * All right, our btree is recording straight into this file, so
+		 * all we have to do is tweak our btree (and for performand update the syscache)
+		 */
+
+		fpos = filp->f_pos;
+
+		//printk("%s %d: Doing filemap write for data\n", __func__, __LINE__);
+		size = count;
+		replayfs_filemap_write(map, current->record_thrd->rp_group->rg_id,
+				current->record_thrd->rp_record_pid, current->record_thrd->rp_count, 0, fpos, size);
+
+		filp->f_pos += count;
+
+		/* SYSCACHE!!! */
+		id.sysnum = current->record_thrd->rp_count;
+		id.unique_id = current->record_thrd->rp_group->rg_id;
+		id.pid = current->record_thrd->rp_record_pid;
+
+		replayfs_syscache_add(&syscache, &id, size, buf);
+
+		update_size(filp, meta);
+
+		fput(filp);
+
+		new_syscall_done (4, size);			       
+	} else {
+		new_syscall_enter (4);
+		size = sys_write (fd, buf, count);
+		new_syscall_done (4, size);			       
+	}
+#else
 	new_syscall_enter (4);
 	size = sys_write (fd, buf, count);
 	new_syscall_done (4, size);			       
+#endif
+
 #ifdef TRACE_READ_WRITE
 	if (size > 0) {
 		struct file *filp;
@@ -5936,7 +6374,19 @@ replay_write (unsigned int fd, const char __user * buf, size_t count)
 		printk ("Pid %d (recpid %d) clock %ld log_clock %ld replays: %s", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid, *(current->replay_thrd->rp_preplay_clock), current->replay_thrd->rp_expected_clock - 1, kbuf);
 	}
 	DPRINT ("Pid %d replays write returning %d\n", current->pid,rc);
-#ifdef TRACE_PIPE_READ_WRITE
+#ifdef REPLAY_COMPRESS_READS
+	if (pretparams != NULL) {
+		struct replayfs_syscache_id id;
+		id.sysnum = current->replay_thrd->rp_out_ptr - 1;
+		id.unique_id = current->replay_thrd->rp_record_thread->rp_group->rg_id;
+		id.pid = current->replay_thrd->rp_record_thread->rp_record_pid;
+
+		replayfs_syscache_add(&syscache, &id, rc, buf);
+
+		/* We don't actually allocate any space! <insert evil laugh here> */
+		//argsconsume (current->replay_thrd->rp_record_thread, sizeof(int));
+	}
+#elif defined(TRACE_PIPE_READ_WRITE)
 	if (pretparams != NULL) {
 		argsconsume (current->replay_thrd->rp_record_thread, sizeof(int));
 	}
@@ -5968,6 +6418,12 @@ record_open (const char __user * filename, int flags, int mode)
 
 	// If opened read-only and a regular file, then use replay cache
 	if (rc >= 0) {
+		/*
+		file = fget(rc);
+		inode = file->f_dentry->d_inode;
+		fput(file);
+		printk("%s %d: Opened %s to fd %ld with ino %lu\n", __func__, __LINE__, filename, rc, inode->i_ino);
+		*/
 		MPRINT ("record_open of name %s with flags %x\n", filename, flags);
 		if ((flags&O_ACCMODE) == O_RDONLY && !(flags&(O_CREAT|O_DIRECTORY))) {
 			file = fget (rc);
@@ -10215,9 +10671,143 @@ asmlinkage long shim_mmap_pgoff (unsigned long addr, unsigned long len, unsigned
 
 SIMPLE_SHIM2(truncate64, 193, const char __user *, path, loff_t, length);
 SIMPLE_SHIM2(ftruncate64, 194, unsigned int, fd, loff_t, length);
-RET1_SHIM2(stat64, 195, struct stat64, statbuf, char __user *, filename, struct stat64 __user *, statbuf);
-RET1_SHIM2(lstat64, 196, struct stat64, statbuf, char __user *, filename, struct stat64 __user *, statbuf);
-RET1_SHIM2(fstat64, 197, struct stat64, statbuf, unsigned long, fd, struct stat64 __user *, statbuf);
+
+static asmlinkage long
+record_stat64(char __user *filename, struct stat64 __user *statbuf) {
+	long rc;
+	struct stat64 *pretval = NULL;
+
+	new_syscall_enter (195);
+	rc = sys_stat64 (filename, statbuf);
+	new_syscall_done (195, rc);
+	if (rc >= 0 && statbuf) {
+
+#ifdef REPLAY_COMPRESS_READS
+		//printk("Stat64 on %s\n", filename);
+		if (is_recorded_filename(filename)) {
+			struct replay_recorded_file_meta *meta;
+			meta = replay_get_filename_meta(filename);
+
+			statbuf->st_size = meta_get_size(meta);
+			//printk("%s is recorded file, adjustin size to %lld\n", filename, (loff_t)statbuf->st_size);
+		}
+#endif
+
+		pretval = ARGSKMALLOC (sizeof(struct stat64), GFP_KERNEL);
+
+		if (pretval == NULL) {
+			printk ("record_stat64: can't allocate buffer\n");
+			return -ENOMEM;
+		}
+		if (copy_from_user (pretval, statbuf, sizeof (struct stat64))) {
+			printk ("record_stat64: can't copy to buffer\n");
+			ARGSKFREE(pretval, sizeof(struct stat64));
+			pretval = NULL;
+			rc = -EFAULT;
+		}
+	}
+
+	new_syscall_exit (195, pretval);
+	return rc;
+}
+
+RET1_REPLAY (stat64, 195, struct stat64, statbuf, char __user *filename, struct stat64 __user *statbuf);
+
+asmlinkage long shim_stat64(char __user *filename, struct stat64 __user *statbuf) SHIM_CALL(stat64, 195, filename, statbuf);
+
+//RET1_SHIM2(stat64, 195, struct stat64, statbuf, char __user *, filename, struct stat64 __user *, statbuf);
+//RET1_SHIM2(lstat64, 196, struct stat64, statbuf, char __user *, filename, struct stat64 __user *, statbuf);
+//RET1_SHIM2(fstat64, 197, struct stat64, statbuf, unsigned long, fd, struct stat64 __user *, statbuf);
+
+static asmlinkage long
+record_lstat64(char __user *filename, struct stat64 __user *statbuf) {
+	long rc;
+	struct stat64 *pretval = NULL;
+
+	new_syscall_enter (196);
+	rc = sys_lstat64 (filename, statbuf);
+	new_syscall_done (196, rc);
+	if (rc >= 0 && statbuf) {
+
+#ifdef REPLAY_COMPRESS_READS
+		//printk("Stat64 on %s\n", filename);
+		if (is_recorded_filename(filename)) {
+			struct replay_recorded_file_meta *meta;
+			meta = replay_get_filename_meta(filename);
+
+			statbuf->st_size = meta_get_size(meta);
+			printk("%s is recorded file, adjustin size to %lld\n", filename, (loff_t)statbuf->st_size);
+		}
+#endif
+
+		pretval = ARGSKMALLOC (sizeof(struct stat64), GFP_KERNEL);
+
+		if (pretval == NULL) {
+			printk ("record_stat64: can't allocate buffer\n");
+			return -ENOMEM;
+		}
+		if (copy_from_user (pretval, statbuf, sizeof (struct stat64))) {
+			printk ("record_stat64: can't copy to buffer\n");
+			ARGSKFREE(pretval, sizeof(struct stat64));
+			pretval = NULL;
+			rc = -EFAULT;
+		}
+	}
+
+	new_syscall_exit (196, pretval);
+	return rc;
+}
+
+RET1_REPLAY (lstat64, 196, struct stat64, statbuf, char __user *filename, struct stat64 __user *statbuf);
+
+asmlinkage long shim_lstat64(char __user *filename, struct stat64 __user *statbuf) SHIM_CALL(lstat64, 196, filename, statbuf);
+
+
+static asmlinkage long
+record_fstat64(int fd, struct stat64 __user *statbuf) {
+	long rc;
+	struct stat64 *pretval = NULL;
+
+	new_syscall_enter (197);
+	rc = sys_fstat64 (fd, statbuf);
+	new_syscall_done (197, rc);
+	if (rc >= 0 && statbuf) {
+
+#ifdef REPLAY_COMPRESS_READS
+		//printk("fstat64 on %d\n", fd);
+		if (is_recorded_file(fd)) {
+			struct replay_recorded_file_meta *meta;
+
+			//printk("stating recorded file, getting meta for %d\n", fd);
+			meta = replay_get_file_meta(fd);
+
+			statbuf->st_size = meta_get_size(meta);
+			//printk("%d is recorded file, adjustin size to %lld\n", fd, (loff_t)statbuf->st_size);
+		}
+#endif
+
+		pretval = ARGSKMALLOC (sizeof(struct stat64), GFP_KERNEL);
+
+		if (pretval == NULL) {
+			printk ("record_fstat64: can't allocate buffer\n");
+			return -ENOMEM;
+		}
+		if (copy_from_user (pretval, statbuf, sizeof (struct stat64))) {
+			printk ("record_fstat64: can't copy to buffer\n");
+			ARGSKFREE(pretval, sizeof(struct stat64));
+			pretval = NULL;
+			rc = -EFAULT;
+		}
+	}
+
+	new_syscall_exit (197, pretval);
+	return rc;
+}
+
+RET1_REPLAY (fstat64, 197, struct stat64, statbuf, int fd, struct stat64 __user *statbuf);
+
+asmlinkage long shim_fstat64(int fd, struct stat64 __user *statbuf) SHIM_CALL(fstat64, 197, fd, statbuf);
+
 SIMPLE_SHIM3(lchown, 198, const char __user *, filename, uid_t, user, gid_t, group);
 SIMPLE_SHIM0(getuid, 199);
 SIMPLE_SHIM0(getgid, 200);
@@ -12166,6 +12756,10 @@ static int __init replay_init(void)
 {
 #ifdef CONFIG_SYSCTL
 	register_sysctl_table(replay_ctl_root);
+#endif
+
+#ifdef REPLAY_COMPRESS_READS
+	btree_init32(&meta_tree);
 #endif
 
 #ifdef TRACE_PIPE_READ_WRITE

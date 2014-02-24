@@ -602,12 +602,10 @@ out_early:
 	return err;
 }
 
-
 static int replayfs_commit_write(struct file *file, struct page *page,
 		unsigned from, unsigned to) {
 	struct inode *inode;
 	loff_t pos;
-
 
 	pos = ((loff_t)page->index << PAGE_CACHE_SHIFT) + to;
 
