@@ -31,6 +31,11 @@
 struct replayfs_btree_meta {
 	loff_t node_page;
 	int height;
+
+	/* FIXME: Yeah, its hacky... on the todo list */
+	loff_t i_size;
+
+	loff_t cache_tree_loc;
 };
 
 struct replayfs_btree128_key {
