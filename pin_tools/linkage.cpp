@@ -132,6 +132,7 @@ struct image_infos* img_list;
 #define TAINT_TRACK
 
 #define TAINT_CONDITION (ptdata->current_function == CURRENT_FUNCTION)
+// #define TAINT_CONDITION (global_syscall_cnt > 26905 && global_syscall_cnt < 26936)
 #ifdef DEBUG_TAINT
 #define TAINT_PRINT(args...) \
 {                           \
@@ -329,6 +330,8 @@ struct token {
 #else
     char name[256];
 #endif
+    uint64_t rg_id;
+    int record_pid;
 };
 
 struct handled_function{
@@ -392,6 +395,11 @@ struct read_info {
     char*    buf;
 };
 
+struct write_info {
+    int      fd;
+    char*    buf;
+};
+
 // Per-thread data structure
 struct thread_data {
     int                      threadid;
@@ -421,10 +429,9 @@ struct thread_data {
 #endif
     struct handled_function syscall_taint_info; // saved info for propagating taint across syscall
     void* save_syscall_info;			// info to be saved across syscalls
-    ADDRINT buffer_info;
     int syscall_handled;			// flag to indicate if a syscall is handled at the glibc wrapper instead
-#ifdef HAVE_REPLAY
     uint64_t rg_id;                 // record group id
+#ifdef HAVE_REPLAY
     u_long ignore_flag;             // location of the ignore flag
 #endif
     struct thread_data*      next;
@@ -604,11 +611,35 @@ int create_new_token (int type, int token_num, int syscall_cnt, int byte_offset,
 #ifdef CONFAID
 int create_new_named_token (int token_num, char* name);
 #endif
-void create_options_from_buffer (int type, long id, void* buf, int size, void* data);
+void create_options_from_buffer (int type, long id, void* buf, int size, int offset, void* data);
 struct bblock* read_return_bblock(struct thread_data*, ADDRINT);
 void rollback(struct thread_data*, int);
 void __print_dependency_tokens(FILE* file, struct taint* vector);
+void __print_taint_string_buffer(FILE* file, char* buf, int size);
 void rmdir_stop(ADDRINT res);
+
+// interface for taint accessors
+struct taint* get_reg_taint(REG reg);
+struct taint* get_mem_taint(ADDRINT mem_loc);
+
+// interface for propagating taint
+inline void add_modified_mem(struct thread_data* ptdata, ADDRINT mem_location) ;
+static inline void add_modified_reg(struct thread_data* ptdata, REG reg);
+static inline void add_modified_flag(struct thread_data* ptdata, int flag);
+static int mem_mod_dependency(struct thread_data* ptdata, ADDRINT mem_location, struct taint* vector, int mod, int ctrflow_propagate);
+static int mem_clear_dependency(struct thread_data* ptdata, ADDRINT mem_location);
+static inline void __reg_mod_dependency(struct thread_data* ptdata, REG reg, struct taint* vector, int mode, int ctrflow_propagate);
+static int reg_mod_dependency(struct thread_data* ptdata, REG reg, struct taint* vector, int mode, int ctrflow_propagate);
+static inline void __reg_clear_dependency(struct thread_data* ptdata, REG reg) ;
+static void reg_clear_dependency(struct thread_data* ptdata, REG reg);
+void flags_mod_dependency_but_cf (struct thread_data* ptdata, struct taint* vector, int mode, int ctrflow_propagate);
+void flags_mod_dependency (struct thread_data* ptdata, struct taint* vector, int mode, int ctrflow_propagate);
+void flags_clear_dependency_but_cf(struct thread_data* ptdata);
+void flags_clear_dependency(struct thread_data* ptdata);
+void flag_clear_dependency(struct thread_data* ptdata, int flag);
+
+// TODO
+// interface for propagating taints in the FPU
 
 struct writev_info {
     struct iovec* vi;
@@ -1083,7 +1114,7 @@ static int mem_clear_dependency(struct thread_data* ptdata, ADDRINT mem_location
     return 0;
 }
 
-static inline void __reg_mod_dependency(struct thread_data* ptdata, REG reg, struct taint* vector, int mode, int ctrflow_propagate) 
+static inline void __reg_mod_dependency(struct thread_data* ptdata, REG reg, struct taint* vector, int mode, int ctrflow_propagate)
 {
     GRAB_GLOBAL_LOCK (ptdata);
     int reg_num = (int)reg;
@@ -1651,12 +1682,13 @@ void taint_mem2mem (ADDRINT src_mem_loc, ADDRINT dst_mem_loc, UINT32 size)
 
     struct taint* vector;
     for(int i = 0; i < (int)size; i++) {
-        mem_clear_dependency(ptdata, dst_mem_loc + i);
         vector = get_mem_taint(src_mem_loc + i);
         if(vector) {
             TAINT_PRINT ("taint_mem2mem: src memory location %#x has mark, vector is ", src_mem_loc + i);
             TAINT_PRINT_DEP_VECTOR(vector);
-            mem_mod_dependency(ptdata, dst_mem_loc + i, vector, MERGE, 0);
+            mem_mod_dependency(ptdata, dst_mem_loc + i, vector, SET, 0);
+        } else {
+            mem_clear_dependency(ptdata, dst_mem_loc + i);
         }
     }
 
@@ -3581,6 +3613,9 @@ void instrument_cmov(INS ins, OPCODE opcode)
     }
 }
 
+/* Dst: register
+ * Src: register/memory
+ * */
 void instrument_movx (INS ins) 
 {
 #ifdef TAINT_STATS
@@ -3631,7 +3666,7 @@ void instrument_movx (INS ins)
         }
 
     } else {
-        printf("ERROR: second operand of MOVZX/MOVSX is not reg or memory\n");
+        fprintf(log_f, "ERROR: second operand of MOVZX/MOVSX is not reg or memory\n");
     }
 }       
 
@@ -3783,12 +3818,12 @@ void instrument_bt(INS ins)
                 IARG_UINT32, reg1, IARG_UINT32, SET, IARG_END);
     } else if (INS_OperandIsMemory(ins, 0) && INS_OperandIsReg(ins, 1)) {
         // REG reg2;
-        INSTRUMENT_PRINT(log_f, "[NOOP] instrument bt address %#x not implemented memory operand\n", INS_Address(ins));
+        fprintf(log_f, "[NOOP] instrument bt address %#x not implemented memory operand\n", INS_Address(ins));
         // reg2 = INS_OperandReg(ins, 1);
     } else if (INS_OperandIsMemory(ins, 0) && INS_OperandIsImmediate(ins, 1)) {
-        INSTRUMENT_PRINT(log_f, "[NOOP] instrument bt address %#x not implemented memory operand\n", INS_Address(ins));
+        fprintf(log_f, "[NOOP] instrument bt address %#x not implemented memory operand\n", INS_Address(ins));
     } else {
-        INSTRUMENT_PRINT(log_f, "[NOOP] instrument bt unknown operands\n");
+        fprintf(log_f, "[NOOP] instrument bt unknown operands\n");
     }
 }
 
@@ -3807,24 +3842,47 @@ void instrument_pmovx(INS ins)
         
     }   
     else {
-        INSTRUMENT_PRINT(log_f, "[NOOP] instrument pmovmskb unknown operands\n");
+        fprintf(log_f, "[NOOP] instrument pmovmskb unknown operands\n");
     }
 }
 */
 
 void instrument_movaps(INS ins)
 {
+    int op1mem, op2mem, op1reg, op2reg;
+    op1mem = INS_OperandIsMemory(ins, 0);
+    op2mem = INS_OperandIsMemory(ins, 1);
+    op1reg = INS_OperandIsReg(ins, 0);
+    op2reg = INS_OperandIsReg(ins, 1);
+    USIZE addrsize;
 
-    if (INS_OperandIsReg(ins, 0) && INS_OperandIsReg(ins, 1)) {
-	    MYASSERT(INS_OperandIsReg(ins, 0) == 1);
-        MYASSERT(INS_OperandIsReg(ins, 1) == 1);
+    if (op1reg && op2reg) {
+        MYASSERT (INS_OperandIsReg(ins, 0) == 1);
+        MYASSERT (INS_OperandIsReg(ins, 1) == 1);
         REG src_reg = INS_OperandReg(ins, 1);
         REG dst_reg = INS_OperandReg(ins, 0);
-        INSTRUMENT_PRINT(log_f, "instrument movaps is src reg: %d into dst reg: %d\n", src_reg, dst_reg);
+        INSTRUMENT_PRINT (log_f, "instrument movaps is src reg: %d into dst reg: %d\n", src_reg, dst_reg);
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_reg2reg), IARG_UINT32, dst_reg, IARG_UINT32, src_reg, IARG_END);
-   }   
-    else {
-        INSTRUMENT_PRINT(log_f, "[NOOP] instrument movaps unknown operands\n");
+    } else if (op1reg && op2mem) {
+        MYASSERT (INS_IsMemoryRead(ins));
+        REG dst_reg = INS_OperandReg(ins, 0);
+        addrsize = INS_MemoryReadSize(ins);
+        INSTRUMENT_PRINT (log_f, "instrument movaps dst reg %d, mem read size %u\n", dst_reg, addrsize);
+        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_mem2reg), IARG_MEMORYREAD_EA, IARG_UINT32, addrsize, IARG_UINT32, dst_reg, IARG_END);
+    } else if (op1mem && op2reg) {
+        MYASSERT (INS_IsMemoryWrite(ins));
+        REG src_reg = INS_OperandReg(ins, 1);
+        addrsize = INS_MemoryWriteSize(ins);
+        INSTRUMENT_PRINT (log_f, "instrument movaps src reg %d, mem write size %u\n", dst_reg, addrsize);
+        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_reg2mem), IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_UINT32, src_reg, IARG_END);
+    } else if (op1mem && op2mem) {
+        MYASSERT (INS_IsMemoryRead(ins));
+        MYASSERT (INS_IsMemoryWrite(ins));
+        addrsize = INS_MemoryReadSize(ins);
+        INSTRUMENT_PRINT (log_f, "instrument movaps, mem2mem size %u\n", addrsize);
+        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_mem2mem), IARG_MEMORYREAD_EA, IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_END);
+    } else {
+        fprintf(log_f, "[NOOP] instrument movaps unknown operands\n");
     }
 }
  
@@ -3839,7 +3897,7 @@ void instrument_xgetbv(INS ins)
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_reg2reg), IARG_UINT32, dst_reg, IARG_UINT32, src_reg, IARG_END);
     }   
     else {
-        INSTRUMENT_PRINT(log_f, "[NOOP] instrument xgetbv unknown operands\n");
+        fprintf(log_f, "[NOOP] instrument xgetbv unknown operands\n");
     }
 }
 
@@ -5854,20 +5912,66 @@ void instrument_store_string(INS ins, OPCODE opcode)
     }
 }
 
-void handle_buffer_start (void * buf)
+void output_buffer_result (char * output_type, char * output_channel, void* buf, int size, int offset)
 {
     struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-    GRAB_GLOBAL_LOCK (ptdata);
-    ptdata->buffer_info = (ADDRINT) buf;
-    RELEASE_GLOBAL_LOCK (ptdata);
-}
 
-void analyze_buffer_start (void* buf)
-{
-    struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+    if (size < 0) return;
+
     GRAB_GLOBAL_LOCK (ptdata);
-    ptdata->buffer_info = (ADDRINT) buf;
-    RELEASE_GLOBAL_LOCK (ptdata);
+    if (!buf) {
+        RELEASE_GLOBAL_LOCK (ptdata);
+        return;
+    }
+    for (int i = 0; i < size; i++) {
+        struct taint* t;
+        GList* options;
+        GList* tmp;
+        ADDRINT loc = ((ADDRINT) buf) + i;
+        t = get_mem_taint(loc);
+        if (!t) {
+            // only print out non-zero taints
+            continue;
+        }
+        options = get_non_zero_taints(t);
+        tmp = options;
+        // traverse list and do lookup
+        while (tmp) {
+            struct token* tok;
+            // only for non-zero taint options
+            if ((get_taint_value(t, GPOINTER_TO_INT(options->data)))) {
+                tok = (struct token* ) g_hash_table_lookup(option_info_table, options->data);
+                if (tok) {
+                    const char* token_type;
+                    char * token_channel = NULL;
+                    if (tok->type == TOK_READ) {
+                        token_type = "READ";
+                    } else if (tok->type == TOK_WRITE) {
+                        token_type = "WRITE";
+                    } else if (tok->type == TOK_EXEC) {
+                        token_type = "EXEC";
+                    } else {
+                        token_type = "UNK";
+                    }
+                    if (tok->name) {
+                        token_channel = tok->name;
+                    } else {
+                        token_channel = (char *) "--";
+                    }
+                    // Output format:
+                    // Output <-- Input that caused it
+                    // TYPE CHANNEL GROUP_ID RECORD_PID SYSCALL_CNT OFFSET
+                    fprintf(output_f, "%s %s %llu %d %d %d %s %s %llu %d %d %d\n",
+                            output_type, output_channel, ptdata->rg_id, ptdata->record_pid, global_syscall_cnt, i + offset,
+                            token_type, token_channel, tok->rg_id, tok->record_pid, tok->syscall_cnt, tok->byte_offset);
+                    fflush(output_f);
+                } else {
+                    LOG_PRINT ("  could not find input token for %d\n", GPOINTER_TO_INT(options->data));
+                }
+            }
+            tmp = g_list_next(tmp);
+        }
+    }
 }
 
 void analyze_buffer_stop (long id, void* buf, int size)
@@ -6161,6 +6265,227 @@ void handle_syscall_stop (int ret_value)
     free(si);
 }
 
+// Bookeeping functions that start and end within system calls
+inline void __sys_execve_start(struct thread_data* ptdata, char* filename, char ** argv, char ** envp) {
+#ifndef CONFAID
+    int acc = 0;
+    char **tmp = NULL;
+    if (filename) {
+        LOG_PRINT ("exec of %s\n", filename);
+        fprintf(output_f, "# execve: %s\n", filename);
+        output_buffer_result ((char *)"EXEC", (char *)"NAME", filename, strlen(filename), acc);
+        acc += strlen(filename);
+    }
+    if (argv) {
+        tmp = argv;
+        while (1) {
+            char* arg;
+            arg = *tmp;
+            // args ends with a NULL
+            if (!arg) {
+                break;
+            }
+            LOG_PRINT ("exec arg is %s\n", arg);
+            output_buffer_result ((char *)"EXEC", (char *)"ARGS", arg, strlen(arg), acc);
+            acc += strlen(arg);
+            tmp += 1;
+        }
+    }
+    if (envp) {
+        tmp = envp;
+        while (1) {
+            char * arg;
+            arg = *tmp;
+            // args ends with a NULL
+            if (!arg) {
+                break;
+            }
+            LOG_PRINT ("exec envp is %s\n", arg);
+            output_buffer_result ((char *)"EXEC", (char *)"ENVP", arg, strlen(arg), acc);
+            acc += strlen(arg);
+            tmp += 1;
+        }
+    }
+#endif
+}
+
+inline void __sys_open_start(struct thread_data* ptdata, char* filename, int flags) {
+#ifdef CONFAID
+    LOG_PRINT ("OPEN file %s %s\n", filename, confaid_data->config_filename);
+    LOG_PRINT ("strcmp %d\n", !strcmp(filename, confaid_data->config_filename));
+    if (!strcmp(filename, confaid_data->config_filename)) {
+        confaid_data->config_file_opened = 1;
+    }
+#else
+    struct open_info* oi = (struct open_info *) malloc(sizeof(struct open_info));
+    strncpy(oi->name, filename, OPEN_PATH_LEN);
+    oi->flags = flags;
+    ptdata->save_syscall_info = (void *) oi;
+#endif
+}
+
+inline void __sys_open_stop(struct thread_data* ptdata, int rc) {
+#ifdef CONFAID
+    if (confaid_data->config_file_opened && (rc > 0)) {
+        confaid_data->config_fd = rc;
+        LOG_PRINT ("config file OPENED config_fd is %d\n", confaid_data->config_fd);
+    } else if (rc <= 0) {
+        confaid_data->config_file_opened = 0;
+    }
+#else
+    if (rc > 0) {
+        monitor_add_fd(open_fds, rc, 0, ptdata->save_syscall_info);
+        ptdata->save_syscall_info = 0;
+    }
+#endif
+}
+
+inline void __sys_read_start(struct thread_data* ptdata, int fd, char* buf, int size) {
+    struct read_info* ri = (struct read_info *) malloc(sizeof(struct read_info));
+    ri->fd = fd;
+    ri->buf = buf;
+    ptdata->save_syscall_info = (void *) ri;
+    LOG_PRINT ("read on fd %d\n", fd);
+#ifdef CONFAID
+    if (fd == confaid_data->config_fd && (fd != CONFIG_FD_CLOSED)) {
+        confaid_data->read_from_config_fd = 1;
+    }
+#endif
+}
+
+inline void __sys_read_stop(struct thread_data* ptdata, int rc) {
+    struct read_info* ri = (struct read_info *) ptdata->save_syscall_info;
+    LOG_PRINT ("Pid %d syscall read returns %d\n", PIN_GetPid(), rc);
+    // new tokens created here	
+#ifndef CONFAID
+    void* data = NULL;
+    if (monitor_has_fd(open_fds, ri->fd)) {
+        data = monitor_get_fd_data(open_fds, ri->fd);
+    } else if(ri->fd == fileno(stdin)) {
+        const char* s = "stdin";
+        data = (void *) s;
+    }
+#ifdef FILTER_INPUTS
+    if (data && !strncmp(input_file_name, (char *) data, 256)) {
+        create_options_from_buffer (TOK_READ, global_syscall_cnt, (void *) ri->buf, (int) ret_value, 0, data);
+    }
+#else
+    create_options_from_buffer (TOK_READ, global_syscall_cnt, (void *) ri->buf, rc, 0, data);
+#endif // FILTER_INPUTS
+#else
+    if (confaid_data->read_from_config_fd && (((int) ret_value) > 0)) {
+        assert (ri->buf);
+        // traverse the whole buffer and mark them as having the config file taint.
+        /*
+           struct taint vector;
+           new_taint(&vector);
+           set_taint_value(&vector, 0, get_max_taint_value()); // 0 means config file taint
+           int i = 0;
+           for (i = 0; i < ((int) ret_value); i++) {
+           mem_mod_dependency(ptdata, ri->buf + i, &vector, SET, 1);
+           }
+           LOG_PRINT ("Set memory locations (%#x, %#x] to taint:", ri->buf, ri->buf + i);
+           __print_dependency_tokens(log_f, &vector);
+           */
+
+        // Read through the buffer, if we see a new line create a new token
+        int i = 0;
+        for (i = 0; i < ((int) ret_value); i++) {
+            char dst;
+            struct taint vector;
+            new_taint(&vector);
+            set_taint_value(&vector, option_cnt, get_max_taint_value());
+
+            dst = *(char *)(ri->buf + i);
+            if (dst == '\n') {
+                if (confaid_data->token_idx != 254) {
+                    confaid_data->token_acc[confaid_data->token_idx] = dst;
+                    confaid_data->token_acc[confaid_data->token_idx + 1] = '\0';
+                }
+                create_new_named_token(option_cnt, confaid_data->token_acc);
+                LOG_PRINT ("[OPTION] New token from config file, line %d, %s\n", confaid_data->line_num, confaid_data->token_acc);
+                confaid_data->token_idx = 0;
+                option_cnt++;
+                confaid_data->line_num++;
+            } else {
+                // truncate
+                if (confaid_data->token_idx == 254) {
+                    confaid_data->token_acc[confaid_data->token_idx] = '\n';
+                    confaid_data->token_acc[confaid_data->token_idx + 1] = '\0';
+                }
+                confaid_data->token_acc[confaid_data->token_idx] = dst;
+                confaid_data->token_idx++;
+            }
+            mem_mod_dependency(ptdata, ri->buf + i, &vector, SET, 1);
+        }
+    }
+#endif
+    free(ri);
+    ptdata->save_syscall_info = 0;
+}
+
+inline void __sys_write_start(struct thread_data* ptdata, int fd, char* buf, int size) {
+    struct write_info* wi = (struct write_info *) malloc(sizeof(struct write_info));
+    wi->fd = fd;
+    wi->buf = buf;
+    ptdata->save_syscall_info = (void *) wi;
+}
+
+inline void __sys_write_stop(struct thread_data* ptdata, int rc) {
+    struct write_info* wi = (struct write_info *) ptdata->save_syscall_info;
+#ifdef CONFAID
+    analyze_buffer((void *) wi->buf, rc);
+#else
+    char* channel_name = NULL;
+    if (monitor_has_fd(open_fds, wi->fd)) {
+        struct open_info* oi;
+        oi = (struct open_info *) monitor_get_fd_data(open_fds, wi->fd);
+        assert(oi);
+        channel_name = oi->name;
+    } else if (wi->fd == fileno(stdout)) {
+        channel_name = (char *) "stdout";
+    } else if (wi->fd == fileno(stderr)) {
+        channel_name = (char *) "stderr";
+    } else if (wi->fd == fileno(stdin)) {
+        channel_name = (char *) "stdin";
+    } else {
+        channel_name = (char *) "--";
+    }
+    output_buffer_result ((char *) "WRITE", channel_name, wi->buf, rc, 0);
+#endif
+    free(wi);
+}
+
+inline void __sys_close_start(struct thread_data* ptdata, int fd) {
+#ifdef CONFAID
+    // TODO handle if close fails
+    if (fd == confaid_data->config_fd) {
+        confaid_data->config_fd = CONFIG_FD_CLOSED;
+        confaid_data->config_file_opened = 0;
+        confaid_data->read_from_config_fd = 0;
+        LOG_PRINT ("config_fd is closed\n");
+    }
+#else
+    ptdata->save_syscall_info = (void *) fd;
+#endif
+}
+
+inline void __sys_close_stop(struct thread_data* ptdata, int rc) {
+#ifdef CONFAID
+#else 
+    int fd = (int) ptdata->save_syscall_info;
+    // remove the fd from the list of open files
+    if (!rc) {
+        if (monitor_has_fd(open_fds, fd)) {
+            struct open_info* oi = (struct open_info *) monitor_get_fd_data(open_fds, fd);
+            assert(oi);
+            free(oi);
+            monitor_remove_fd(open_fds, fd);
+        }
+    }
+#endif
+}
+
 void instrument_syscall(ADDRINT syscall_num, ADDRINT syscallarg1, ADDRINT syscallarg1_ref, ADDRINT syscallarg2, ADDRINT syscallarg3, ADDRINT syscallarg4, ADDRINT syscallarg5)
 {
     struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
@@ -6170,7 +6495,6 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT syscallarg1, ADDRINT syscal
 #ifdef LOGGING_ON
     SYSCALL_PRINT ("%d: Pid %d calling syscall %d\n", global_syscall_cnt, PIN_GetPid(), SYSNUM);
 #endif
-    fprintf (stderr, "%d: Pid %d calling syscall %d\n", global_syscall_cnt, PIN_GetPid(), SYSNUM);
 
 #ifdef LINKAGE_SYSCALL
     handle_syscall_start((int)syscall_num, syscallarg1, syscallarg2, syscallarg3);
@@ -6185,6 +6509,11 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT syscallarg1, ADDRINT syscal
 #endif
 
     switch (SYSNUM) {
+        case SYS_execve:
+        {
+            __sys_execve_start(ptdata, (char *)syscallarg1, (char **)syscallarg2, (char **)syscallarg3);
+            break;
+        }
 #ifdef HAVE_REPLAY
         case 31:
             // get the ignore flag location
@@ -6195,55 +6524,21 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT syscallarg1, ADDRINT syscal
         case SYS_open:
         {
             char* filename = (char *) syscallarg1;
-#ifdef CONFAID
-            LOG_PRINT ("OPEN file %s %s\n", filename, confaid_data->config_filename);
-            LOG_PRINT ("strcmp %d\n", !strcmp(filename, confaid_data->config_filename));
-            if (!strcmp(filename, confaid_data->config_filename)) {
-                confaid_data->config_file_opened = 1;
-            }
-#else
-            struct open_info* oi = (struct open_info *) malloc(sizeof(struct open_info));
-            int flags = (int) syscallarg2;
-            strncpy(oi->name, filename, OPEN_PATH_LEN);
-            oi->flags = flags;
-            ptdata->save_syscall_info = (void *) oi;
-#endif
+            __sys_open_start(ptdata, filename, (int)syscallarg2);
             break;
         }
         case SYS_close:
         {
-#ifdef CONFAID
-            // TODO handle if close fails
-            if ((int)syscallarg1 == confaid_data->config_fd) {
-                confaid_data->config_fd = CONFIG_FD_CLOSED;
-                confaid_data->config_file_opened = 0;
-                confaid_data->read_from_config_fd = 0;
-                LOG_PRINT ("config_fd is closed\n");
-            }
-#endif
+            __sys_close_start(ptdata, (int)syscallarg1);
             break;
         }
         case SYS_read:
         {
-            int fd = (int) syscallarg1;
-            char* buf = (char *) syscallarg2;
-            LOG_PRINT ("read on fd %d\n", fd);
-            struct read_info* ri = (struct read_info *) malloc(sizeof(struct read_info));
-            ri->fd = fd;
-            ri->buf = buf;
-            ptdata->save_syscall_info = (void *) ri;
-#ifdef CONFAID
-            if (fd == confaid_data->config_fd && (fd != CONFIG_FD_CLOSED)) {
-                confaid_data->read_from_config_fd = 1;
-            }
-#endif
-            handle_buffer_start(buf);
+            __sys_read_start(ptdata, (int)syscallarg1, (char *)syscallarg2, (int)syscallarg3);
             break;
         }
         case SYS_write:
-            void* b;
-            b = (void *) syscallarg2;
-            analyze_buffer_start (b);
+            __sys_write_start(ptdata, (int)syscallarg1, (char *)syscallarg2, (int)syscallarg3);
             break;
         case SYS_writev:
         {
@@ -6253,7 +6548,7 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT syscallarg1, ADDRINT syscal
             wvi->vi = (struct iovec *) syscallarg2;
 
             // we'll just stuff it in there
-            ptdata->buffer_info = (ADDRINT) wvi;
+            ptdata->save_syscall_info = (void *) wvi;
 
             break;
         }
@@ -6266,7 +6561,7 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT syscallarg1, ADDRINT syscal
             mmi->length = (int) syscallarg2;
             mmi->fd = (int) syscallarg5;
 
-            ptdata->buffer_info = (ADDRINT) mmi;
+            ptdata->save_syscall_info = (void *) mmi;
             break;
         }
         case SYS_munmap:
@@ -6276,7 +6571,7 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT syscallarg1, ADDRINT syscal
             mmi->addr = (u_long) syscallarg1;
             mmi->length = (int) syscallarg2;
 
-            ptdata->buffer_info = (ADDRINT) mmi;
+            ptdata->save_syscall_info = (void *) mmi;
             break;
         }
     }
@@ -6308,37 +6603,12 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
     switch (SYSNUM) {
         case SYS_open:
         {
-            int rc = (int) ret_value;
-#ifdef CONFAID
-            if (confaid_data->config_file_opened && (rc > 0)) {
-                confaid_data->config_fd = rc;
-                LOG_PRINT ("config file OPENED config_fd is %d\n", confaid_data->config_fd);
-            } else if (rc <= 0) {
-                confaid_data->config_file_opened = 0;
-            }
-#else
-            if (rc > 0) {
-                monitor_add_fd(open_fds, rc, 0, ptdata->save_syscall_info);
-                ptdata->save_syscall_info = 0;
-            }
-#endif
+            __sys_open_stop(ptdata, (int) ret_value);
             break;
         } 
         case SYS_close:
         {
-#ifdef CONFAID
-#else 
-            int rc = (int) ret_value;
-            // remove the fd from the list of open files
-            if (!rc) {
-                if (monitor_has_fd(open_fds, rc)) {
-                    struct open_info* oi = (struct open_info *) monitor_get_fd_data(open_fds, rc);
-                    assert(oi);
-                    free(oi);
-                    monitor_remove_fd(open_fds, rc);
-                }
-            }
-#endif
+            __sys_close_stop(ptdata, (int) ret_value);
             break;
         }
         case SYS_execve:
@@ -6353,93 +6623,21 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
         }
         case SYS_read:
         {
-            struct read_info* ri = (struct read_info *) ptdata->save_syscall_info;
-            LOG_PRINT ("Pid %d syscall read returns %d\n", PIN_GetPid(), ret_value);
-            // new tokens created here	
-#ifndef CONFAID
-            void* data = NULL;
-            if (monitor_has_fd(open_fds, ri->fd)) {
-                data = monitor_get_fd_data(open_fds, ri->fd);
-            }
-#ifdef FILTER_INPUTS
-            fprintf(stderr, "read %s, %s, %d\n", input_file_name, (char *) data, strncmp(input_file_name, (char *) data, 256));
-	    if (data && !strncmp(input_file_name, (char *) data, 256)) {
-		    create_options_from_buffer (TOK_READ, global_syscall_cnt, (void *) ptdata->buffer_info, (int) ret_value, data);
-	    }
-#else
-            create_options_from_buffer (TOK_READ, global_syscall_cnt, (void *) ptdata->buffer_info, (int) ret_value, data);
-#endif // FILTER_INPUTS
-#else
-            if (confaid_data->read_from_config_fd && (((int) ret_value) > 0)) {
-                assert (ptdata->buffer_info);
-                // traverse the whole buffer and mark them as having the config file taint.
-                /*
-                struct taint vector;
-                new_taint(&vector);
-                set_taint_value(&vector, 0, get_max_taint_value()); // 0 means config file taint
-                int i = 0;
-                for (i = 0; i < ((int) ret_value); i++) {
-                    mem_mod_dependency(ptdata, ptdata->buffer_info + i, &vector, SET, 1);
-                }
-                LOG_PRINT ("Set memory locations (%#x, %#x] to taint:", ptdata->buffer_info, ptdata->buffer_info + i);
-                __print_dependency_tokens(log_f, &vector);
-                ptdata->buffer_info = 0;
-                */
-
-                // Read through the buffer, if we see a new line create a new token
-                int i = 0;
-                for (i = 0; i < ((int) ret_value); i++) {
-                    char dst;
-                    struct taint vector;
-                    new_taint(&vector);
-                    set_taint_value(&vector, option_cnt, get_max_taint_value());
-
-                    dst = *(char *)(ptdata->buffer_info + i);
-                    if (dst == '\n') {
-                        if (confaid_data->token_idx != 254) {
-                            confaid_data->token_acc[confaid_data->token_idx] = dst;
-                            confaid_data->token_acc[confaid_data->token_idx + 1] = '\0';
-                        }
-                        create_new_named_token(option_cnt, confaid_data->token_acc);
-                        LOG_PRINT ("[OPTION] New token from config file, line %d, %s\n", confaid_data->line_num, confaid_data->token_acc);
-                        confaid_data->token_idx = 0;
-                        option_cnt++;
-                        confaid_data->line_num++;
-                    } else {
-                        // truncate
-                        if (confaid_data->token_idx == 254) {
-                            confaid_data->token_acc[confaid_data->token_idx] = '\n';
-                            confaid_data->token_acc[confaid_data->token_idx + 1] = '\0';
-                        }
-                        confaid_data->token_acc[confaid_data->token_idx] = dst;
-                        confaid_data->token_idx++;
-                    }
-                    mem_mod_dependency(ptdata, ptdata->buffer_info + i, &vector, SET, 1);
-                }
-            }
-#endif
-            free(ri);
-            ptdata->save_syscall_info = 0;
+            __sys_read_stop(ptdata, (int) ret_value);
             break;
         } 
         case SYS_write:
-#ifdef CONFAID
-            analyze_buffer((void *) ptdata->buffer_info, (int) ret_value);
-
-#else
-            analyze_buffer_stop(global_syscall_cnt, (void *) ptdata->buffer_info, (int) ret_value);
-#endif
-            ptdata->buffer_info = 0;
+            __sys_write_stop(ptdata, (int) ret_value);
             break;
         case SYS_writev:
             struct writev_info* wvi;
-            wvi = (struct writev_info*) ptdata->buffer_info;
+            wvi = (struct writev_info*) ptdata->save_syscall_info;
 
             for (int i = 0; i < wvi->count; i++) {
                 struct iovec* vi = (wvi->vi + i);
                 analyze_buffer_stop(global_syscall_cnt, vi->iov_base, vi->iov_len);
             }
-            free((void *)ptdata->buffer_info);
+            free((void *)ptdata->save_syscall_info);
             break;
         case SYS_mmap:
         case SYS_mmap2:
@@ -6448,7 +6646,7 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
             int len;
             struct mmap_info* mmi;
 
-            mmi = (struct mmap_info*) ptdata->buffer_info;
+            mmi = (struct mmap_info*) ptdata->save_syscall_info;
             addr = mmi->addr;
             len = mmi->length;
 
@@ -6469,16 +6667,16 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
                     }
 #ifdef FILTER_INPUTS
                     if (data && !strncmp(input_file_name, (char *) data, 256)) {
-                        create_options_from_buffer (TOK_READ, global_syscall_cnt, (void *) mmi->addr, mmi->length, data);
+                        create_options_from_buffer (TOK_READ, global_syscall_cnt, (void *) mmi->addr, mmi->length, 0, data);
                     }
 #else
-                    create_options_from_buffer (TOK_READ, global_syscall_cnt, (void *) mmi->addr, mmi->length, data);
+                    create_options_from_buffer (TOK_READ, global_syscall_cnt, (void *) mmi->addr, mmi->length, 0, data);
 #endif // FILTER_INPUTS
                 }
 #endif // CONFAID
             }
 
-            ptdata->buffer_info = 0;
+            ptdata->save_syscall_info = 0;
             free((void *)mmi);
             break;
         }
@@ -6488,7 +6686,7 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
             int len;
             struct mmap_info* mmi;
 
-            mmi = (struct mmap_info*) ptdata->buffer_info;
+            mmi = (struct mmap_info*) ptdata->save_syscall_info;
             addr = mmi->addr;
             len = mmi->length;
 
@@ -6500,7 +6698,7 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
                 }
 #endif
             }
-            ptdata->buffer_info = 0;
+            ptdata->save_syscall_info = 0;
             free((void *)mmi);
             break;
         }
@@ -7607,6 +7805,7 @@ void instrument_inst(ADDRINT inst_ptr, ADDRINT next_addr, ADDRINT target, ADDRIN
 #ifdef LOGGING_ON
     if ((inst_count % INST_COUNT_INCREMENT) == 0) {
         LOG_PRINT ("inst count is %lu, inst_ptr is %#x\n", inst_count, inst_ptr);
+	LOG_PRINT ("num options is %d\n", option_cnt);
     }
 #endif
 
@@ -7982,7 +8181,7 @@ void track_file(INS ins, void *v)
                 case XED_ICLASS_STOSD:
                 case XED_ICLASS_STOSQ:
 // XXX Is this a copy or a data linkage?
-#ifdef LINKAGE_DATA
+#ifdef LINKAGE_COPY
                     //flags affected: none
                     INSTRUMENT_PRINT(log_f, "%#x: about to instrument store string\n", INS_Address(ins));
                     instrument_store_string(ins, opcode);
@@ -8326,11 +8525,21 @@ void track_file(INS ins, void *v)
                     break;
 
                 case XED_ICLASS_BSWAP:
+                case XED_ICLASS_ROR:
+                case XED_ICLASS_ROL:
+                case XED_ICLASS_CWDE:
+                case XED_ICLASS_CBW:
+                case XED_ICLASS_CDQE:
                     // No taint propogation here
                     break;
 
+                case XED_ICLASS_BSF:
+                case XED_ICLASS_BSR:
+                    instrument_set_src2dst(ins);
+                    break;
+
                 case XED_ICLASS_XGETBV:
-#ifdef LINKAGE_COPY
+#ifdef LINKAGE_DATA
                     instrument_xgetbv(ins);
 #endif
                     break;
@@ -8787,11 +8996,6 @@ void writev_stop(ADDRINT res)
     free_handled_function(ptdata);
     RELEASE_GLOBAL_LOCK (ptdata);
 }
-
-struct write_info {
-    int      fd;
-    char*    buf;
-};
 
 void write_start(ADDRINT fd, ADDRINT fd_ref, ADDRINT buf, ADDRINT size)
 {
@@ -9349,6 +9553,8 @@ int create_new_token (int type, int token_num, int syscall_cnt, int byte_offset,
     tok->token_num = token_num;
     tok->syscall_cnt = syscall_cnt;
     tok->byte_offset = byte_offset;
+    tok->rg_id = ptdata->rg_id;
+    tok->record_pid = ptdata->record_pid;
 #ifndef CONFAID
     if (data) {
         strncpy(tok->name, (char *)data, 256);
@@ -9403,7 +9609,7 @@ int create_new_named_token (int token_num, char* token_name)
  * @param buf
  * @param size
  * */
-void create_options_from_buffer (int type, long id, void* buf, int size, void* data)
+void create_options_from_buffer (int type, long id, void* buf, int size, int offset, void* data)
 {
     int rc;
     char c;
@@ -9433,7 +9639,7 @@ void create_options_from_buffer (int type, long id, void* buf, int size, void* d
                 new_taint(&vector);
                 set_taint_value(&vector, option_cnt, get_max_taint_value());
 
-                create_new_token (type, option_cnt, global_syscall_cnt, i, data);
+                create_new_token (type, option_cnt, global_syscall_cnt, i + offset, data);
 
                 option_cnt++;    
                 mem_mod_dependency(ptdata, mem_location, &vector, SET, 1);
@@ -12042,6 +12248,31 @@ void dump_taints(FILE* out_file)
 }
 #endif
 
+void __print_taint_string_buffer(FILE* file, char* buf, int size)
+{
+    int cnt = 0;
+    char dest_char;
+    struct taint* vector;
+    ADDRINT tmp = (ADDRINT) buf;
+    fprintf(file, "will print string starting at %#x to %#x\n", (ADDRINT) buf, ((ADDRINT) buf) + size);
+    fflush(file);
+    while(1) {
+        if ((PIN_SafeCopy(&dest_char, (const void*)tmp, 1) != 1) || (dest_char == '\0')) {
+            break;
+        }
+        if (cnt >= size) {
+            break;
+        }
+        vector = get_mem_taint((ADDRINT) tmp);
+        fprintf(file, "%#x: ", (ADDRINT) tmp);
+        __print_dependency_tokens(file, vector);
+        fflush(file);
+        tmp += 1;
+        cnt += 1;
+    }
+    fflush(file);
+}
+
 void fini(INT32 code, void* v) {
     time_t t = time(0);
     struct tm* tm = localtime(&t);
@@ -12053,7 +12284,7 @@ void fini(INT32 code, void* v) {
     fprintf(stderr, "index cnt is %ld\n", idx_cnt);
 #endif
     fprintf(stderr, "Instrument insts: %ld\n", instrumented_insts);
-    print_input_data (stderr);
+    // print_input_data (stderr);
 #endif // TAINT_STATS
 
 #ifdef DUMP_TAINTS
@@ -12109,6 +12340,8 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
     get_record_group_id(dev_fd, &ptdata->rg_id);
     fprintf(stderr, "record group is is %llu\n", ptdata->rg_id);
     ptdata->ignore_flag = 0; // set when syscall 31 is called
+#else
+    ptdata->rg_id = get_record_pid();
 #endif
     ptdata->app_syscall = 0;
     ptdata->brk_saved_loc = 0;
@@ -12152,7 +12385,6 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 
     ptdata->save_syscall_info = 0;
     ptdata->syscall_handled = 0;
-    ptdata->buffer_info = 0;
 
 #ifdef HAVE_REPLAY
     if (!no_replay) {
@@ -12168,6 +12400,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
     if (!no_replay && first_thread) {
         // Need to make the args and envp in an exec count as input
         // Retrieve the location of the args from the kernel
+        int acc = 0;
         char** args;
         args = (char **) get_replay_args (dev_fd);
         LOG_PRINT ("replay args are %#lx\n", (unsigned long) args);
@@ -12181,7 +12414,8 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
             }
             LOG_PRINT ("arg is %s\n", arg);
 #ifndef FILTER_INPUTS
-            create_options_from_buffer (TOK_EXEC, global_syscall_cnt, arg, strlen(arg) + 1, (void *) "ARGS");
+            create_options_from_buffer (TOK_EXEC, global_syscall_cnt, arg, strlen(arg) + 1, acc, (void *) "ARGS");
+            acc += strlen(arg) + 1;
 #endif
             args += 1;
         }
@@ -12198,13 +12432,19 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
             }
             LOG_PRINT ("arg is %s\n", arg);
 #ifndef FILTER_INPUTS
-            create_options_from_buffer (TOK_EXEC, global_syscall_cnt, arg, strlen(arg) + 1, (void *) "ENV");
+            create_options_from_buffer (TOK_EXEC, global_syscall_cnt, arg, strlen(arg) + 1, acc, (void *) "ENV");
+            acc += strlen(arg) + 1;
 #endif
             args += 1;
         }
     }
 #endif // CONFAID
 #endif
+
+#ifdef DEBUG_TAINT
+    fprintf(stderr, "DEBUG TAINT is ON\n");
+#endif
+
 #ifdef CONFAID
     if (first_thread) {
         // set the first option to be the config file.

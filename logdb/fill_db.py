@@ -15,11 +15,13 @@ def main():
     # See logdb.py, but the defaul location for the db is /replay_logdb/replay.db
     #  and creates the table 'replays'
     rldb = logdb.ReplayLogDB(omniplay_path, logdb_name="replay.db", logdb_dir="/replay_logdb", replay_table_name="replays")
+    rldb.init_cursor()
     rldb.create_table()
 
     # looks in logdb_dir and populates the DB from this directory.
     # Ignores replays already in the DB
     rldb.populate()
+    rldb.close_cursor()
 
 if __name__ == "__main__":
     main()

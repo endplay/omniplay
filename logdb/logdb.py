@@ -5,8 +5,13 @@ import subprocess
 import collections
 import re
 
+# our modules
+import opinfo
+
 class GraphEdge(object):
-    def __init__(self, read_log, read_pid, read_sysnum, read_offset, read_size, write_log, write_pid, write_sysnum, write_offset, write_size, exhausts_reader=0, exhausts_writer=0):
+    def __init__(self, read_log, read_pid, read_sysnum, read_offset, read_size,
+		    write_log, write_pid, write_sysnum, write_offset, write_size, 
+		    exhausts_reader=0, exhausts_writer=0):
         self.read_log = read_log
         self.read_pid = read_pid
         self.read_sysnum = read_sysnum
@@ -21,21 +26,17 @@ class GraphEdge(object):
         self.exhausts_writer = exhausts_writer
 
     def __str__(self):
-        #return ''.join(["OrderedPipe(read_log=", str(self.read_log), ", read_pid=", str(self.pid), ", sysnum=", str(self.sysnum), ", size=", str(self.size), ", pipe_offset=", str(self.pipe_offset), ", write_id=", str(self.write_id), ")"])
         return str(self.__dict__)
    
-
-
 class ParseInfo(object):
-    def __init__(self, ctime=0, program_name="", log_id=0, record_pid=0, program_args="", replay_graph=None):
+    def __init__(self, ctime=0, program_name="", log_id=0, record_pid=0, parent_groupid=0, program_args="", replay_graph=None):
         self.ctime = ctime
         self.program_name = program_name
         self.logid = log_id
         self.record_pid = record_pid
+        self.parent_groupid = parent_groupid
         self.program_args = program_args
         self.replay_graph = replay_graph
-
-
 
 class OrderedPipe(object):
     def __init__(self, log_id, pid, sysnum, size, pipe_offset, writer_id=0):
@@ -47,7 +48,12 @@ class OrderedPipe(object):
         self.pid = pid
 
     def __str__(self):
-        return ''.join(["OrderedPipe(logid=", str(self.log_id), ", pid=", str(self.pid), ", sysnum=", str(self.sysnum), ", size=", str(self.size), ", pipe_offset=", str(self.pipe_offset), ", write_id=", str(self.write_id), ")"])
+        return ''.join(["OrderedPipe(logid=", str(self.log_id),
+            ", pid=", str(self.pid), 
+            ", sysnum=", str(self.sysnum),
+            ", size=", str(self.size),
+            ", pipe_offset=", str(self.pipe_offset),
+            ", write_id=", str(self.write_id), ")"])
    
     def get_graph_edge(self, writer_pipe):
         # Figure out which bytes this writer supplys by matching the pipe_size
@@ -56,7 +62,6 @@ class OrderedPipe(object):
             return None
 
         # Now, find the overlapping range
-
         min_offset = max(writer_pipe.pipe_offset, self.pipe_offset)
         max_offset = min(writer_pipe.pipe_offset + writer_pipe.size, self.pipe_offset + self.size)
         exhausts_reader = False
@@ -75,7 +80,6 @@ class OrderedPipe(object):
         edge = GraphEdge(self.log_id, self.pid, self.sysnum, read_offset, size, writer_pipe.log_id, writer_pipe.pid, writer_pipe.sysnum, write_offset, size, exhausts_reader, exhausts_writer)
         return edge
 
-
 class UnorderedPipe(object):
     def __init__(self, log_id, pid, sysnum, writer_id, size, start_clock):
         self.log_id = log_id
@@ -86,7 +90,12 @@ class UnorderedPipe(object):
         self.sysnum = sysnum
 
     def __str__(self):
-        return ''.join(["UnorderedPipe(logid=", str(self.log_id), ", pid=", str(self.pid), ", sysnum=", str(self.sysnum), ", writer_id=", str(self.writer_id),  ", size=", str(self.size), ", start_clock=", str(self.start_clock), ")"])
+        return ''.join(["UnorderedPipe(logid=", str(self.log_id),
+            ", pid=", str(self.pid),
+            ", sysnum=", str(self.sysnum),
+            ", writer_id=", str(self.writer_id),
+            ", size=", str(self.size),
+            ", start_clock=", str(self.start_clock), ")"])
 
     def get_offset(self, prevPipe):
         assert(prevPipe is None or self.log_id == prevPipe.log_id)
@@ -118,7 +127,6 @@ class PipeInfo(object):
             regex parse
             Add the data to a write_array
         '''
-
         logdb_dir = self.db.logdb_dir
 
         # get a list of replay directories
@@ -147,7 +155,6 @@ class PipeInfo(object):
                     if int(match.group(1)) == pipe_id:
                         write_array.append(UnorderedPipe(log_id, pid, int(match.group(4)), log_id, int(match.group(2)), int(match.group(3))));
 
-
     def compute_pipes(self, graph_edges):
         '''
         For each pipe_id 
@@ -169,9 +176,7 @@ class PipeInfo(object):
 
             log_id = pipe_readers[0].writer_id
 
-            '''
-            Now, get all writes from this log_id
-            '''
+            # Now, get all writes from this log_id
             write_array = []
             self.get_writes(log_id, write_array, pipe_id)
 
@@ -283,6 +288,9 @@ class ReplayLogDB(object):
     Using sqlite3 for now...we might want to change the backing db store later.
     Need to change create_table, replay_id_exists, and insert_replay then.
     '''
+    # XXX Bleh, probably need to have a file lock on the replay directory whenever I'm doing
+    #  any sort of operation. But right now, assuming there's not enough concurrent access to the logdb directory as
+    #  this is just a convenience DB anyways
     def __init__(self, omniplay_path, logdb_name="replay.db", logdb_dir="/replay_logdb", replay_table_name="replays", graph_table_name="graph_edges"):
         # Path of the omniplay root directory
         self.omniplay_path = omniplay_path
@@ -298,20 +306,38 @@ class ReplayLogDB(object):
         
         self.graph_table_name = graph_table_name
 
+        # stateful state
+        self.cursor = None
+        self.conn = None
+
+    def init_cursor(self):
+        self.conn = sqlite3.connect(self.get_logdb_path())
+        self.cursor = self.conn.cursor()
+
+    def close_cursor(self):
+        self.conn.commit()
+        self.conn.close()
+
+        self.conn = None
+        self.cursor = None
+
+    def commit_transaction(self):
+        self.conn.commit()
+
     def get_logdb_path(self):
         return ''.join([self.logdb_dir, "/", self.logdb_name])
 
     def get_ndx_path(self):
         return ''.join([self.logdb_dir, "/", "ndx"])
 
+    def get_replay_directory(self, group_id):
+        return ''.join([self.logdb_dir, "/rec_", str(group_id)])
+
     def create_table(self):
         '''
         Create a new table in the db for replays
         '''
-        logdb = self.get_logdb_path() 
-        conn = sqlite3.connect(logdb)
-
-        c = conn.cursor()
+        c = self.cursor
 
         # create a table indexing the replays
         # date: time replay started in seconds since epoch (bleh, no good way to store dates in sqlite)
@@ -320,18 +346,34 @@ class ReplayLogDB(object):
         # program: short program name, e.g. ls
         # args: arguments to the program, e.g. -l
         sql = '''CREATE TABLE IF NOT EXISTS {table_name} 
-        (date INT, id INT, record_pid INT, program TEXT, args TEXT)'''.format(table_name=self.replay_table_name)
+        (date INT, id INT, record_pid INT, parent_id INT, program TEXT, args TEXT)'''.format(table_name=self.replay_table_name)
         c.execute(sql)
 
         sql = '''CREATE TABLE IF NOT EXISTS {table_name} 
         (write_id INT, write_pid INT, write_sysnum INT, write_offset INT, write_size INT, read_id INT, read_pid INT, read_sysnum INT, read_offset INT, read_size INT)'''.format(table_name=self.graph_table_name)
         c.execute(sql)
 
-        conn.commit()
+        sql = '''CREATE INDEX IF NOT EXISTS read_index on {table_name} (read_id, read_pid, read_sysnum)'''.format(table_name=self.graph_table_name)
+        c.execute(sql)
+        
+        sql = '''CREATE INDEX IF NOT EXISTS write_index on {table_name} (write_id, write_pid, write_sysnum)'''.format(table_name=self.graph_table_name)
+        c.execute(sql)
+
+        self.commit_transaction()
+        print("Created db %s, with tables %s, %s" % (self.logdb_name, self.replay_table_name, self.graph_table_name))
+
+    def get_ids(self):
+        '''
+        Returns a list of IDs in the db
+        '''
+        ids = []
+        conn = sqlite3.connect(self.get_logdb_path())
+        c = conn.cursor()
+        for row in c.execute("SELECT id from {table_name}".format(table_name=self.replay_table_name)):
+            ids.append(row[0])
 
         conn.close()
-
-        print("Created db %s" % self.logdb_name)
+        return sorted(ids)
 
     def replay_id_exists(self, replay_id):
         '''
@@ -343,35 +385,52 @@ class ReplayLogDB(object):
         c.execute("SELECT * from {table_name} WHERE id=?".format(table_name=self.replay_table_name),
                 (replay_id, ))
         fetched = c.fetchone()
+
+        conn.close()
+
         if fetched is None:
             return False
         return True
 
-    def insert_replay(self, ctime, program_name, log_id, record_pid, args):
+    def get_parent_id(self, replay_id):
+        conn = sqlite3.connect(self.get_logdb_path())
+        c = conn.cursor()
+
+        c.execute("SELECT parent_id from {table_name} WHERE id=?".format(table_name=self.replay_table_name), (replay_id, ))
+        fetched = c.fetchone()
+
+        conn.close()
+
+        if fetched is None:
+            return 0
+        return int(fetched[0])
+
+    def insert_replay(self, cursor, ctime, program_name, log_id, record_pid, parent_id, args):
         '''
         Insert a replay into the DB
         '''
+        values = (ctime, log_id, record_pid, parent_id, program_name, args)
+        cursor.execute('''INSERT INTO {table_name} VALUES (?,?,?,?,?,?)'''.format(table_name=self.replay_table_name),
+                values)
+
+    def remove_replay(self, replay_id):
         conn = sqlite3.connect(self.get_logdb_path())
         c = conn.cursor()
-        values = (ctime, log_id, record_pid, program_name, args)
-        c.execute('''INSERT INTO {table_name} VALUES (?,?,?,?,?)'''.format(table_name=self.replay_table_name),
-                values)
+        c.execute('''DELETE FROM {table_name} WHERE id?'''.format(table_name=self.replay_table_name),
+                (replay_id, ))
         conn.commit()
         conn.close()
 
-    def insert_graph(self, graph_edges):
+    def insert_graph(self, cursor, graph_edges):
         '''
         Insert a replay into the DB
         '''
-        conn = sqlite3.connect(self.get_logdb_path())
-        c = conn.cursor()
         for edge in graph_edges:
-            (read_id, read_pid, read_sysnum, read_offset, read_size, write_id, write_pid, write_sysnum, write_offset, write_size) = (edge.read_log, edge.read_pid, edge.read_sysnum, edge.read_offset, edge.read_size, edge.write_log, edge.write_pid, edge.write_sysnum, edge.write_offset, edge.write_size)
+            (read_id, read_pid, read_sysnum, read_offset, read_size, write_id, write_pid, write_sysnum, write_offset, write_size) = \
+                (edge.read_log, edge.read_pid, edge.read_sysnum, edge.read_offset, edge.read_size, edge.write_log, edge.write_pid, edge.write_sysnum, edge.write_offset, edge.write_size)
             values = (write_id, write_pid, write_sysnum, write_offset, write_size, read_id, read_pid, read_sysnum, read_offset, read_size)
-            c.execute('''INSERT INTO {table_name} VALUES (?,?,?,?,?,?,?,?,?,?)'''.format(table_name=self.graph_table_name),
+            cursor.execute('''INSERT INTO {table_name} VALUES (?,?,?,?,?,?,?,?,?,?)'''.format(table_name=self.graph_table_name),
                     values)
-        conn.commit()
-        conn.close()
 
     def populate(self):
         '''
@@ -380,10 +439,17 @@ class ReplayLogDB(object):
         '''
         # get a list of replay directories
         replay_directories = os.listdir(self.logdb_dir)
-        # filter out everything that is not a directory
-        replay_directories = filter(lambda x: not os.path.isdir(x), replay_directories)
+        # only get the replay directories
+        replay_directories = filter(lambda x: x.startswith("rec_"), replay_directories)
+
         # Gets the full path
         replay_directories = map(lambda x: ''.join([self.logdb_dir, "/", x]), replay_directories)
+        # filter out everything that is not a directory
+        replay_directories = filter(lambda x: os.path.isdir(x), replay_directories)
+
+        if self.cursor is None:
+            print("Error: cursor is not inited, could not populate db")
+            return
 
         for directory in replay_directories:
             # parse ckpt
@@ -400,9 +466,27 @@ class ReplayLogDB(object):
                 continue
 
             assert(graph_edges is not None)
-            self.insert_replay(ctime, program_name, log_id, record_pid, args)
-            self.insert_graph(graph_edges)
-            print("Inserted replay id %d" % log_id)
+            self.insert_replay(self.cursor, ctime, program_name, log_id, record_pid, info.parent_groupid, args)
+            self.insert_graph(self.cursor, graph_edges)
+            print("Inserted replay id %d, parent %d" % (log_id, info.parent_groupid))
+
+    def lookup_writes(self, read_info):
+        return self.lookup_sourcing_writes(read_info.group_id, read_info.pid, read_info.syscall)
+
+    def lookup_sourcing_writes(self, group_id, pid, syscall):
+        graph_table_name="graph_edges"
+        c = self.cursor
+        c.execute("SELECT write_id, write_pid, write_sysnum, write_offset, write_size, read_id, read_pid, read_sysnum, read_offset, read_size from {table_name} WHERE read_id=? AND read_pid=? AND read_sysnum=?".format(table_name=graph_table_name), (group_id, pid, syscall))
+        fetched = c.fetchall()
+
+        links = {}
+        for row in fetched:
+            (write_id, write_pid, write_sysnum, write_offset, write_size,
+                    read_id, read_pid, read_sysnum, read_offset, read_size) = row
+            wi = opinfo.WriteInfo(write_id, write_pid, write_sysnum, write_offset, size=write_size)
+            ri = opinfo.ReadInfo(read_id, read_pid, read_sysnum, read_offset, size=read_size)
+            links[ri] = wi
+        return links
 
     def parse_directory(self, logdb_dir):
         '''
@@ -500,6 +584,18 @@ class ReplayLogDB(object):
                     print("ERROR: parseckpt format must have changed!")
                     print("See line: %s (directory %s)" % (line, logdb_dir))
                     return None
+            elif line.startswith("parent record group id:"):
+                fields = line.split(" ")
+                if len(fields) != 5:
+                    print("ERROR: parseckpt format must have changed!")
+                    print("See line: %s (directory %s)" % (line, logdb_dir))
+                    return None
+                try:
+                    parent_id = int(fields[4])
+                except ValueError:
+                    print("ERROR: parseckpt format must have changed!")
+                    print("See line: %s (directory %s)" % (line, logdb_dir))
+                    return None
             elif line.startswith("Argument"):
                 fields = line.split(" ")
                 if len(fields) < 4:
@@ -520,5 +616,29 @@ class ReplayLogDB(object):
                 else:
                     program_args = ''.join([program_args, " ", fields[3]])
 
-        return ParseInfo(ctime, program_name, logid, record_pid, program_args, graph_edges)
+        return ParseInfo(ctime, program_name, logid, record_pid, parent_id, program_args, graph_edges)
+    def get_program_args(self, group_id):
+        conn = sqlite3.connect(self.get_logdb_path())
+        c = conn.cursor()
+        c.execute("SELECT program from {table_name} WHERE id=?".format(table_name=self.replay_table_name), (group_id,))
+        fetched = c.fetchone()
+        if fetched is None:
+            program = None
+        else:
+            program = fetched[0]
 
+        c.execute("SELECT args from {table_name} WHERE id=?".format(table_name=self.replay_table_name), (group_id,))
+        fetched = c.fetchone()
+        if fetched is None:
+            args = None
+        else:
+            args = fetched[0]
+
+        conn.close()
+
+        if program is None:
+            return None
+        elif args is None:
+            return program
+        else:
+            return program + args

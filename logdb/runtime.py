@@ -56,3 +56,9 @@ class RunTimeInfo(object):
 
         process = subprocess.Popen(shlex.split(cmd), shell=False, stdout=pipe_output, stderr=pipe_output)
         return process
+
+    def filemap(self, filename):
+        filemap_output = "/tmp/filemap_output"
+        cmd = ''.join([self.omniplay_location, "/test/filemap", " ", filename, " ", filemap_output])
+        process = subprocess.Popen(shlex.split(cmd), shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return process
