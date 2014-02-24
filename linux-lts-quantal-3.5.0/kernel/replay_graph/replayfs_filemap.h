@@ -7,16 +7,6 @@
 #include "replayfs_btree.h"
 #include "replayfs_btree128.h"
 
-//#define REPLAYFS_FILEMAP_DEDUP_FILE "/home/replayfs_data_dir/replayfs.dedup"
-
-/* 
- * FXIME: Right now, I'm just using a ram tree, I'll figure out what to do about
- * an on-disk one later
- *
- * I have to modify the kernel btree to:
- *   Search over a range of entries, and hold that range in the key
- *   Insert a key that occupies a range of entries (adjust other keys range...)
- */
 struct replayfs_unique_id {
 	loff_t log_num;
 	loff_t sys_num;
@@ -47,12 +37,20 @@ extern struct replayfs_diskalloc replayfs_alloc;
 
 int replayfs_filemap_init_key (struct replayfs_filemap *map,
 		struct replayfs_diskalloc *alloc, struct replayfs_btree128_key *key);
+
+int replayfs_filemap_exists(struct file *filp);
 /* Reinitialize with the location of the root node */
 int replayfs_filemap_init(struct replayfs_filemap *map,
 		struct replayfs_diskalloc *alloc, struct file *filp);
-/* Create a new one! */
+
+/* Reinitialize with the location of the root node */
+int replayfs_filemap_init_with_pos(struct replayfs_filemap *map,
+		struct replayfs_diskalloc *alloc, struct file *filp, loff_t *meta_pos);
+/* Can't explicitly create a new one externally! */
+/*
 int replayfs_filemap_create(struct replayfs_filemap *map,
-		struct replayfs_diskalloc *alloc, struct file *filp);
+		struct replayfs_diskalloc *alloc, struct file *filp, loff_t *pos);
+		*/
 /* Get rid of the filemap */
 void replayfs_filemap_destroy(struct replayfs_filemap *map);
 

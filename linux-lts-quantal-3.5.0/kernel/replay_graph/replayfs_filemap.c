@@ -19,40 +19,40 @@
 DEFINE_MUTEX(meta_lock);
 extern struct replayfs_btree128_head filemap_meta_tree;
 
-int replayfs_filemap_create(struct replayfs_filemap *map,
-		struct replayfs_diskalloc *alloc, struct file *filp) {
+static int replayfs_filemap_create(struct replayfs_filemap *map,
+		struct replayfs_diskalloc *alloc, struct replayfs_btree128_key *key, loff_t *pos) {
 	int ret;
 	struct page *page;
-	struct replayfs_btree128_key unique_id;
 	struct replayfs_btree128_value val;
 
 	/* Populate val */
 	page = replayfs_diskalloc_alloc_page(alloc);
 
-	/* calc unique id */
-	unique_id.id1 = filp->f_dentry->d_inode->i_ino;
-	unique_id.id2 = filp->f_dentry->d_inode->i_sb->s_dev;
+	if (pos) {
+		*pos = PAGE_SIZE * (loff_t)page->index;
+	}
+
+	replayfs_diskalloc_put_page(alloc, page);
 
 	ret = replayfs_btree_create(&map->entries, alloc,
-			(loff_t)page->index * PAGE_SIZE);
+			PAGE_SIZE * (loff_t)page->index);
 	if (ret) {
-		replayfs_diskalloc_free_page(alloc, page);
+		//replayfs_diskalloc_free_page(alloc, page);
 		goto out;
 	}
 
-	val.id = page->index * PAGE_SIZE;
+	val.id = PAGE_SIZE * (loff_t)page->index;
 
-	debugk("%s %d: Inserting tree with unique_id {%llu, %llu} to {%lld}\n",
-			__func__, __LINE__, unique_id.id1, unique_id.id2, val.id);
-	mutex_lock(&meta_lock);
-	ret = replayfs_btree128_insert(&filemap_meta_tree, &unique_id, &val,
+	debugk("%s %d: Inserting tree with key {%llu, %llu} to {%lld}\n",
+			__func__, __LINE__, key->id1, key->id2, val.id);
+
+	ret = replayfs_btree128_insert(&filemap_meta_tree, key, &val,
 			GFP_KERNEL);
-	mutex_unlock(&meta_lock);
 
 	if (ret) {
 		/* error is -EEXIST or -ENOMEM... thats bad */
 		replayfs_btree_destroy(&map->entries);
-		replayfs_diskalloc_free_page(alloc, page);
+		//replayfs_diskalloc_free_page(alloc, page);
 		BUG();
 		goto out;
 	}
@@ -100,6 +100,95 @@ out:
 	return ret;
 }
 
+int replayfs_filemap_exists(struct file *filp) {
+	int ret;
+	struct replayfs_btree128_value *disk_pos;
+	struct page *page;
+	struct replayfs_btree128_key key;
+
+	glbl_diskalloc_init();
+
+	//printk("%s %d: Checking for the existance of %p\n", __func__, __LINE__, filp);
+	/* Give the file a unique id, filp->dentry->ino->sb->s_dev concat ino->i_no */
+	key.id1 = filp->f_dentry->d_inode->i_ino;
+	key.id2 = filp->f_dentry->d_inode->i_sb->s_dev;
+	//printk("%s %d: Checking for the existance of {%lld, %lld}\n", __func__,
+			//__LINE__, key.id1, key.id2);
+
+	mutex_lock(&meta_lock);
+	/* Check for this file in the meta btree */
+	disk_pos = replayfs_btree128_lookup(&filemap_meta_tree, &key, &page);
+
+	/* If exists */
+	if (disk_pos != NULL) {
+		ret = 1;
+		replayfs_btree128_put_page(&filemap_meta_tree, page);
+	} else {
+		ret = 0;
+	}
+
+	//printk("%s %d: Ret for %p is %d\n", __func__, __LINE__, filp, ret);
+	mutex_unlock(&meta_lock);
+
+	return ret;
+}
+
+/* Reinitialize with the location of the root node */
+int replayfs_filemap_init_with_pos(struct replayfs_filemap *map,
+		struct replayfs_diskalloc *alloc, struct file *filp, loff_t *meta_pos) {
+	int ret;
+	struct replayfs_btree128_value *disk_pos;
+	struct page *page;
+	struct replayfs_btree128_key key;
+
+	glbl_diskalloc_init();
+
+	/* Give the file a unique id, filp->dentry->ino->sb->s_dev concat ino->i_no */
+	key.id1 = filp->f_dentry->d_inode->i_ino;
+	key.id2 = filp->f_dentry->d_inode->i_sb->s_dev;
+
+	mutex_init(&map->lock);
+
+	mutex_lock(&meta_lock);
+	/* Check for this file in the meta btree */
+	debugk("%s %d: Checking btree for key {%lld, %lld}\n", __func__, __LINE__,
+			key.id1, key.id2);
+	disk_pos = replayfs_btree128_lookup(&filemap_meta_tree, &key, &page);
+
+	/* If exists */
+	if (disk_pos != NULL) {
+		loff_t id;
+		/*
+		debugk("%s %d: Opening filemap for file {%llu} with disk_pos of %lld\n",
+				__func__, __LINE__, inode->i_ino, disk_pos->id);
+				*/
+
+		id = disk_pos->id;
+		*meta_pos = id;
+		replayfs_btree128_put_page(&filemap_meta_tree, page);
+		mutex_unlock(&meta_lock);
+
+		debugk("%s %d: ----LOADING btree from %lld\n", __func__, __LINE__,
+				disk_pos->id);
+		ret = replayfs_btree_init(&map->entries, alloc, id);
+	} else {
+		debugk("%s %d: ----Creating btree\n", __func__, __LINE__);
+		/* Save the location of the btree entry metadata in the meta btree */
+		ret = replayfs_filemap_create(map, alloc, &key, meta_pos);
+		debugk("%s %d: ----Btree created at %lld\n", __func__, __LINE__,
+				map->entries.meta_loc);
+
+		mutex_unlock(&meta_lock);
+	}
+
+	if (ret) {
+		goto out;
+	}
+
+out:
+	return ret;
+}
+
 int replayfs_filemap_init(struct replayfs_filemap *map,
 		struct replayfs_diskalloc *alloc, struct file *filp) {
 	int ret;
@@ -135,12 +224,12 @@ int replayfs_filemap_init(struct replayfs_filemap *map,
 				disk_pos->id);
 		ret = replayfs_btree_init(&map->entries, alloc, id);
 	} else {
-		mutex_unlock(&meta_lock);
 		debugk("%s %d: ----Creating btree\n", __func__, __LINE__);
 		/* Save the location of the btree entry metadata in the meta btree */
-		ret = replayfs_filemap_create(map, alloc, filp);
+		ret = replayfs_filemap_create(map, alloc, &key, NULL);
 		debugk("%s %d: ----Btree created at %lld\n", __func__, __LINE__,
 				map->entries.meta_loc);
+		mutex_unlock(&meta_lock);
 	}
 
 	if (ret) {
@@ -166,8 +255,10 @@ void replayfs_filemap_delete(struct replayfs_filemap *map,
 	replayfs_btree_delete(&map->entries);
 	debugk("%s %d: Done deleting btree\n", __func__, __LINE__);
 
+	mutex_lock(&meta_lock);
 	replayfs_btree128_remove(&filemap_meta_tree, key, &page);
 	replayfs_btree128_put_page(&filemap_meta_tree, page);
+	mutex_unlock(&meta_lock);
 	debugk("%s %d: Done\n", __func__, __LINE__);
 }
 
@@ -181,7 +272,6 @@ int replayfs_filemap_write(struct replayfs_filemap *map, loff_t unique_id,
 	value.id.unique_id = unique_id;
 	value.id.pid = pid;
 	value.id.sysnum = syscall_num;
-	value.id.mod = mod;
 	value.buff_offs = 0;
 
 	key.offset = offset;
@@ -239,10 +329,8 @@ struct replayfs_filemap_entry *replayfs_filemap_read(struct replayfs_filemap *ma
 		struct replayfs_btree_value *val;
 		struct page *btree_page;
 
-		/*
-		printk("%s %d: In loop, looking up %lld from btree with loc %lld!\n", __func__,
-				__LINE__, cur_addr, map->entries.meta_loc);
-				*/
+		//printk("%s %d: In loop, looking up %lld from btree with loc %lld!\n", __func__,
+				//__LINE__, cur_addr, map->entries.meta_loc);
 		val = replayfs_btree_lookup(&map->entries,
 				cur_addr, &key, &btree_page);
 
@@ -336,7 +424,7 @@ struct replayfs_filemap_entry *replayfs_filemap_read(struct replayfs_filemap *ma
 out:
 	kfree(vals);
 	if (ret) {
-		debugk("%s %d: Erroring out with ret %d!\n", __func__, __LINE__, ret);
+		debugk("%s %d: Erroring out with ret %lld!\n", __func__, __LINE__, ret);
 		entry = ERR_PTR(ret);
 	}
 	return entry;

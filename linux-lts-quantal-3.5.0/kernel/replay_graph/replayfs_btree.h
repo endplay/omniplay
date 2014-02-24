@@ -6,15 +6,8 @@
 #include <linux/mempool.h>
 #include <linux/slab.h>
 
-//#include "replayfs_syscall_cache.h"
+#include "replayfs_syscall_cache.h"
 #include "replayfs_diskalloc.h"
-
-struct replayfs_syscache_id {
-	loff_t unique_id : 48; 
-	loff_t pid : 16; 
-	loff_t sysnum : 56; 
-	loff_t mod : 8;
-} __attribute__((aligned(16)));
 
 /**
  * DOC: B+Tree basics
