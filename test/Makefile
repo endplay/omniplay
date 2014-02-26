@@ -9,6 +9,9 @@ parseklog: parseklog.c
 parseulog: parseulog.c
 	gcc parseulog.c -o parseulog -Wall -Werror -g
 
+parsemlog: parsemlog.c
+	gcc parsemlog.c -o parsemlog -Wall -Werror -g
+
 parseelog: parseelog.c
 	gcc parseelog.c -o parseelog -Wall -Werror -g
 
@@ -24,6 +27,8 @@ resume: resume.o libutil.a
 getstats: getstats.c libutil.a
 	gcc getstats.c -o getstats libutil.a -Wall -Werror --static -g
 
+filemap: filemap.c libutil.a
+	gcc filemap.c -o filemap libutil.a -Wall -Werror --static -g
 
 libutil.a: util.o
 	ar rv libutil.a util.o
