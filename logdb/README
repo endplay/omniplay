@@ -1,3 +1,8 @@
+This directory contains a set of scripts that populate a database
+containing information about replays.
+
+$ python fill_db.py <omniplay path>
+
 To make queries, install the sqlite3 CLI.
 
 $ sudo apt-get install sqlite3
@@ -13,3 +18,15 @@ sqlite> .schema replays
 
 List all replay instances of Firefox, ordered by date
 sqlite> SELECT datetime(date, 'unixepoch'), * FROM replays WHERE program LIKE '%firefox' ORDER BY date;
+
+
+Running Queries:
+To run a query, the db first needs to be populated (see above).
+
+Next, use the run_query.py script to run a query:
+Ex: python run_query.py -v [file]
+
+This query runs a backwards query that shows the processes that produced [file].
+The -v flag is optional and produces verbose output.
+
+It produces a dot graph of the output in /tmp/output.dot
