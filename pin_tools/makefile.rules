@@ -48,7 +48,7 @@ TOOL_ROOTS :=
 SA_TOOL_ROOTS :=
 
 # This defines all the applications that will be run during the tests.
-APP_ROOTS := interpret_tokens parse_result
+APP_ROOTS := interpret_tokens parse_result parse_filenames
 
 # This defines any additional object files that need to be compiled.
 OBJECT_ROOTS := taints_glib_hash
@@ -87,6 +87,9 @@ $(OBJDIR)interpret_tokens$(EXE_SUFFIX): interpret_tokens.c
 
 $(OBJDIR)parse_result$(EXE_SUFFIX): parse_result.c
 	$(APP_CC) -o $(OBJDIR)parse_result parse_result.c
+
+$(OBJDIR)parse_filenames$(EXE_SUFFIX): parse_filenames.c
+	$(APP_CC) -o $(OBJDIR)parse_filenames parse_filenames.c
 
 # Pintools
 $(OBJDIR)print_instructions$(OBJ_SUFFIX): print_instructions.cpp
