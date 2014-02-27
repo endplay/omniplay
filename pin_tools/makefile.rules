@@ -24,7 +24,7 @@ TOOL_CXXFLAGS += $(GLIB_INCLUDES) -I$(SDEV) -g
 # This defines tests which run tools of the same name.  This is simply for convenience to avoid
 # defining the test name twice (once in TOOL_ROOTS and again in TEST_ROOTS).
 # Tests defined here should not be defined in TOOL_ROOTS and TEST_ROOTS.
-TEST_TOOL_ROOTS := print_instructions race_checker linkage_copy linkage_data linkage_copy_nr
+TEST_TOOL_ROOTS := print_instructions race_checker linkage_copy linkage_data linkage_copy_nr io
 
 # This defines the tests to be run that were not already defined in TEST_TOOL_ROOTS.
 TEST_ROOTS :=
@@ -48,7 +48,7 @@ TOOL_ROOTS :=
 SA_TOOL_ROOTS :=
 
 # This defines all the applications that will be run during the tests.
-APP_ROOTS :=
+APP_ROOTS := interpret_tokens parse_result
 
 # This defines any additional object files that need to be compiled.
 OBJECT_ROOTS := taints_glib_hash
@@ -81,6 +81,13 @@ LIB_ROOTS :=
 # See makefile.default.rules for the default build rules.
 $(OBJDIR)taints_glib_hash$(OBJ_SUFFIX): $(TAINTS_LIB)/taints_glib_hash.c $(TAINTS_LIB)/taints.h
 	$(APP_CC) -c -o $(OBJDIR)taints$(OBJ_SUFFIX) $(TAINTS_LIB)/taints_glib_hash.c $(GLIB_INCLUDES)
+
+$(OBJDIR)interpret_tokens$(EXE_SUFFIX): interpret_tokens.c
+	$(APP_CC) -o $(OBJDIR)interpret_tokens $(GLIB_INCLUDES) interpret_tokens.c -lglib-2.0
+
+$(OBJDIR)parse_result$(EXE_SUFFIX): parse_result.c
+	$(APP_CC) -o $(OBJDIR)parse_result parse_result.c
+
 # Pintools
 $(OBJDIR)print_instructions$(OBJ_SUFFIX): print_instructions.cpp
 	$(CXX) $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<

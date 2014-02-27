@@ -37,6 +37,7 @@
 #include "xray_monitor.h"
 #include "reentry_lock.h"
 #include "xray_image.h"
+#include "xray_token.h"
 
 #ifdef LINKAGE_COPY
  #ifndef LINKAGE_DATA
@@ -76,7 +77,7 @@ struct image_infos* img_list;
 #define STACK_SIZE 8388608
 
 // Logging
-// #define LOGGING_ON
+#define LOGGING_ON
 #define LOG_F log_f
 #define MEM_F log_f
 #define TRACE_F trace_f
@@ -318,26 +319,6 @@ struct check_point{
     struct check_point*          prev;
 };
 
-// token types
-#define TOK_READ 1
-#define TOK_WRITE 2
-#define TOK_EXEC 3
-struct token {
-    int type;
-    int token_num;
-    int syscall_cnt;
-    int byte_offset;
-#ifdef CONFAID
-    char config_token[256];	// Name of the config token
-    int line_num;		// Line number
-    char config_filename[256];	// Name of the config file
-#else
-    char name[256];
-#endif
-    uint64_t rg_id;
-    int record_pid;
-};
-
 struct handled_function{
     char                            name[64];
     struct taint    args_taint;
@@ -486,6 +467,7 @@ int no_replay = 0;
 int first_thread = 1; // Needed to create exec args
 TLS_KEY tls_key; // Key for accessing TLS. 
 struct token* tokens; // Tokens read from config file
+FILE* tokens_f = NULL; // File to write tokens to, one per replay group
 struct malloc_entry malloc_array[MAX_MALLOC_INDEX]; // Keeps track of allocations
 int malloc_index = 0; // Index into the used entries in the above array
 ADDRINT main_low_addr; // Low address of image
@@ -502,12 +484,12 @@ struct input_bblock* current_input_bbl; // List of basic block to analyze
 struct thread_data* tdhead = NULL; // doubly-linked list of per-thread structures
 int option_cnt = 0; // Current count of an input-option, monotonically increasing
 int option_byte = 1;       // Byte-to-byte analysis? (otherwise, we're doing message analysis)
-GHashTable* option_info_table;    // Mapping of option_cnt to metadata about each option
 regex_t* input_message_regex = NULL; // Regex to match the start of input messages
 regex_t* output_message_regex = NULL; // Regex to match the start of input messages
 int count_syscall = 0; // count
 int global_syscall_cnt = 0;
 struct xray_monitor* open_fds = NULL; // List of open fds
+char group_directory[256];
 #ifdef FILTER_INPUTS
 char input_file_name[256];
 #endif
@@ -522,10 +504,10 @@ FILE* trace_f = NULL; // for tracing taints
 /* Command line Knobs */
 #ifdef CONFAID
 KNOB<string> KnobOutputFile(KNOB_MODE_WRITEONCE, "pintool",
-        "o", "/tmp/confaid.result", "output file");
+        "o", "confaid.result", "output file");
 #else
 KNOB<string> KnobOutputFile(KNOB_MODE_WRITEONCE, "pintool",
-        "o", "/tmp/dataflow.result", "output file");
+        "o", "dataflow.result", "output file");
 #endif
 KNOB<string> KnobInputFile(KNOB_MODE_WRITEONCE, "pintool", "i", "/tmp/dataflow.in", "input file");
 KNOB<string> KnobInputType(KNOB_MODE_WRITEONCE, "pintool", "t", "CMDLINE", "input type");
@@ -615,7 +597,6 @@ int set_max_file_rlimit() {
 
 //prototypes
 int setup_logs(void);
-int create_new_token (int type, int token_num, int syscall_cnt, int byte_offset, void* data);
 #ifdef CONFAID
 int create_new_named_token (int token_num, char* name);
 #endif
@@ -647,6 +628,7 @@ void flags_clear_dependency(struct thread_data* ptdata);
 void flag_clear_dependency(struct thread_data* ptdata, int flag);
 
 struct writev_info {
+    int fd;
     struct iovec* vi;
     int count;
 };
@@ -6328,152 +6310,16 @@ void output_buffer_result (char * output_type, char * output_channel, void* buf,
         tmp = options;
         // traverse list and do lookup
         while (tmp) {
-            struct token* tok;
             // only for non-zero taint options
             if ((get_taint_value(t, GPOINTER_TO_INT(options->data)))) {
-                tok = (struct token* ) g_hash_table_lookup(option_info_table, options->data);
-                if (tok) {
-                    const char* token_type;
-                    char * token_channel = NULL;
-                    if (tok->type == TOK_READ) {
-                        token_type = "READ";
-                    } else if (tok->type == TOK_WRITE) {
-                        token_type = "WRITE";
-                    } else if (tok->type == TOK_EXEC) {
-                        token_type = "EXEC";
-                    } else {
-                        token_type = "UNK";
-                    }
-                    if (tok->name) {
-                        token_channel = tok->name;
-                    } else {
-                        token_channel = (char *) "--";
-                    }
-                    // Output format:
-                    // Output <-- Input that caused it
-                    // TYPE CHANNEL GROUP_ID RECORD_PID SYSCALL_CNT OFFSET
-                    fprintf(output_f, "%s %s %llu %d %d %d %s %s %llu %d %d %d\n",
-                            output_type, output_channel, ptdata->rg_id, ptdata->record_pid, global_syscall_cnt, i + offset,
-                            token_type, token_channel, tok->rg_id, tok->record_pid, tok->syscall_cnt, tok->byte_offset);
-                    fflush(output_f);
-                } else {
-                    LOG_PRINT ("  could not find input token for %d\n", GPOINTER_TO_INT(options->data));
-                }
+                struct byte_result* result;
+                result = create_new_byte_result(output_type, output_channel, ptdata->rg_id, ptdata->record_pid, global_syscall_cnt, i + offset, GPOINTER_TO_INT(options->data));
+                write_byte_result_to_file(output_f, result);
+                free(result);
             }
             tmp = g_list_next(tmp);
         }
     }
-}
-
-void analyze_buffer_stop (long id, void* buf, int size)
-{
-    struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-
-    if (size < 0) return;
-
-    GRAB_GLOBAL_LOCK (ptdata);
-    if (!buf) {
-        RELEASE_GLOBAL_LOCK (ptdata);
-        return;
-    }
-
-    char* bufcpy;
-    bufcpy = (char*) malloc(sizeof(char) * (size + 1));
-    strncpy(bufcpy, (char *) buf, size);
-    bufcpy[size] = '\0';
-
-    int line_offset = 0;
-    int new_line = 1;
-    //int orig_curr_line = 1;
-
-    // fprintf(output_f, "write syscall number: %ld\n", id);
-    // write out the results to the output file
-    for (int i = 0; i < size; i++) {
-        struct taint* t;
-        GList* options;
-        GList* tmp;
-        ADDRINT loc = ((ADDRINT) buf) + i;
-
-        // fprintf(output_f, "%#x (value: \"%c\"): ", loc, *((char *)loc));
-        t = get_mem_taint(loc);
-        if (!t) {
-            continue;
-        }
-        else if(t && bufcpy[i] == '\n') {
-            fprintf(output_f, "byte:\\n\n"); 
-            fprintf(output_f, "taint empty.\n");
-            fprintf(output_f, "Line:"); 
-            for (int j = line_offset; j < i; j++) {
-                fprintf(output_f, "%c", bufcpy[j]);
-            }
-
-            fprintf(output_f, "\\n \n");
-            fprintf(output_f, "----- New Line ----------------------------------\n");
-            line_offset = i;
-            new_line++;
-        }
-        options = get_non_zero_taints(t);
-        tmp = options;
-        // traverse list and do lookup
-        while (tmp) {
-            struct token* tok;
-            // only for non-zero taint options
-            if ((get_taint_value(t, GPOINTER_TO_INT(options->data)))) {
-                tok = (struct token* ) g_hash_table_lookup(option_info_table, options->data);
-                if (!tok) {
-                    LOG_PRINT ("  could not find input token for %d\n", GPOINTER_TO_INT(options->data));
-                    // fprintf(output_f, "\n");
-                } else {
-#ifndef CONFAID
-#ifdef HAVE_REPLAY
-                    const char* token_type;
-                    if (tok->type == TOK_READ) {
-                        token_type = "READ";
-                    } else if (tok->type == TOK_WRITE) {
-                        token_type = "WRITE";
-                    } else if (tok->type == TOK_EXEC) {
-                        token_type = "EXEC";
-                    } else {
-                        token_type = "UNK";
-                    }
-                    fprintf(output_f, "%s %s %llu %d %ld %d %s %s %s %llu %d %d %d %s\n",
-                            "WRITE", "--", ptdata->rg_id, ptdata->record_pid, id, i, "FILE",
-                            token_type, "--", ptdata->rg_id, ptdata->record_pid, tok->syscall_cnt, tok->byte_offset, tok->name);
-                    fflush(output_f);
-                    // fprintf(output_f, "input byte num: %d, record_pid %d, syscall_cnt %d, byte_offset %d -- file %s\n", tok->token_num, get_record_pid(), tok->syscall_cnt, tok->byte_offset, tok->name); 
-#else
-                    //fprintf(output_f, "taint for %#x: ", loc);
-                    __print_dependency_tokens(output_f, t);
-
-#endif // HAVE_REPLAY
-#else
-                    fprintf(output_f, "input byte num: %d, record_pid %d, syscall_cnt %d, byte_offset %d\n", tok->token_num, get_record_pid(), tok->syscall_cnt, tok->byte_offset); 
-#endif
-                }
-            }
-
-            tmp = g_list_next(tmp);
-        }
-        // __print_dependency_tokens(output_f, t);
-    }
-
-    RELEASE_GLOBAL_LOCK (ptdata);
-}
-
-void print_input_data (FILE* fp)
-{
-    int i = 0;
-    struct token* tok;
-    fprintf(fp, "Inputs:\n");
-    for (i = 0; i < option_cnt; i++) {
-        tok = (struct token *) g_hash_table_lookup(option_info_table, GINT_TO_POINTER(i));
-        if (!tok) {
-            fprintf(fp, "%d: NO TOKEN?!\n", i);
-        } else {
-            fprintf(fp, "%d: syscall cnt %d byte %d %s\n", i, tok->syscall_cnt, tok->byte_offset, tok->name);
-        }
-    }
-    fflush(fp);
 }
 
 #ifdef CONFAID
@@ -6488,6 +6334,7 @@ void print_confaid_results (FILE* fp, struct thread_data* ptdata)
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
+#ifdef CONFAID
 void analyze_buffer (void* buf, int size)
 {
     struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
@@ -6523,6 +6370,7 @@ void analyze_buffer (void* buf, int size)
     free(cbuf);
     RELEASE_GLOBAL_LOCK (ptdata);
 }
+#endif
 
 // checks to see if the argument could be possible valid string.
 // It walks the value from the pointer until it reaches either
@@ -6814,11 +6662,14 @@ inline void __sys_read_stop(struct thread_data* ptdata, int rc) {
 
             dst = *(char *)(ri->buf + i);
             if (dst == '\n') {
+                struct token* tok;
                 if (confaid_data->token_idx != 254) {
                     confaid_data->token_acc[confaid_data->token_idx] = dst;
                     confaid_data->token_acc[confaid_data->token_idx + 1] = '\0';
                 }
-                create_new_named_token(option_cnt, confaid_data->token_acc);
+                tok = create_new_named_token(option_cnt, confaid_data->token_acc);
+                write_token_to_file(tokens_f, tok);
+                free(tok);
                 LOG_PRINT ("[OPTION] New token from config file, line %d, %s\n", confaid_data->line_num, confaid_data->token_acc);
                 confaid_data->token_idx = 0;
                 option_cnt++;
@@ -6902,6 +6753,40 @@ inline void __sys_close_stop(struct thread_data* ptdata, int rc) {
 #endif
 }
 
+inline void __sys_writev_start(struct thread_data* ptdata, int fd, struct iovec* iov, int count)
+{
+    struct writev_info* wvi;
+    wvi = (struct writev_info *) malloc(sizeof(struct writev_info));
+    wvi->fd = fd;
+    wvi->count = count;
+    wvi->vi = iov;
+
+    ptdata->save_syscall_info = (void *) wvi;
+}
+
+inline void __sys_writev_stop(struct thread_data* ptdata, int rc)
+{
+    int offset_count = 0;
+    struct writev_info* wvi = (struct writev_info *) ptdata->save_syscall_info;
+    char* channel_name = NULL;
+    if (monitor_has_fd(open_fds, wvi->fd)) {
+        struct open_info* oi;
+        oi = (struct open_info *) monitor_get_fd_data(open_fds, wvi->fd);
+        assert (oi);
+        channel_name = oi->name;
+    } else {
+        channel_name = (char *) "--";
+    }
+
+    for (int i = 0; i < wvi->count; i++) {
+        struct iovec* vi = (wvi->vi + i);
+        output_buffer_result((char *) "WRITEV", channel_name, vi->iov_base, vi->iov_len, offset_count);
+        offset_count += vi->iov_len;
+    }
+
+    free((void *) ptdata->save_syscall_info);
+}
+
 void instrument_syscall(ADDRINT syscall_num, ADDRINT syscallarg1, ADDRINT syscallarg1_ref, ADDRINT syscallarg2, ADDRINT syscallarg3, ADDRINT syscallarg4, ADDRINT syscallarg5)
 {
     struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
@@ -6957,17 +6842,8 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT syscallarg1, ADDRINT syscal
             __sys_write_start(ptdata, (int)syscallarg1, (char *)syscallarg2, (int)syscallarg3);
             break;
         case SYS_writev:
-            {
-                struct writev_info* wvi;
-                wvi = (struct writev_info*) malloc(sizeof(struct writev_info));
-                wvi->count = (int) syscallarg3;
-                wvi->vi = (struct iovec *) syscallarg2;
-
-                // we'll just stuff it in there
-                ptdata->save_syscall_info = (void *) wvi;
-
-                break;
-            }
+            __sys_writev_start(ptdata, (int)syscallarg1, (struct iovec *)syscallarg2, (int) syscallarg3);
+            break;
         case SYS_mmap:
         case SYS_mmap2:
             {
@@ -6993,7 +6869,7 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT syscallarg1, ADDRINT syscal
     }
 
 #ifdef HAVE_REPLAY
-    if (SYSNUM == 91 || SYSNUM == 120 || SYSNUM == 125 || SYSNUM == 174 || SYSNUM == 175 || SYSNUM == 190 || SYSNUM == 192) {
+    if (SYSNUM == 45 || SYSNUM == 91 || SYSNUM == 120 || SYSNUM == 125 || SYSNUM == 174 || SYSNUM == 175 || SYSNUM == 190 || SYSNUM == 192) {
         check_clock_before_syscall (dev_fd, (int) syscall_num);
     }
 #endif
@@ -7046,14 +6922,7 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
             __sys_write_stop(ptdata, (int) ret_value);
             break;
         case SYS_writev:
-            struct writev_info* wvi;
-            wvi = (struct writev_info*) ptdata->save_syscall_info;
-
-            for (int i = 0; i < wvi->count; i++) {
-                struct iovec* vi = (wvi->vi + i);
-                analyze_buffer_stop(global_syscall_cnt, vi->iov_base, vi->iov_len);
-            }
-            free((void *)ptdata->save_syscall_info);
+            __sys_writev_stop(ptdata, (int) ret_value);
             break;
         case SYS_mmap:
         case SYS_mmap2:
@@ -9974,43 +9843,6 @@ void mmap_stop(ADDRINT result) {
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
-struct option_info {
-    int option_num;     // which option is this?
-    long clock_value;   // clock value that option was created from, if no replay, then use the global syscall count
-    int offset;         // offset into a buffer from the syscall that this option was created from
-};
-
-int create_new_token (int type, int token_num, int syscall_cnt, int byte_offset, void* data)
-{
-    struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-
-    struct token* tok; 
-    tok = (struct token *) malloc(sizeof(struct token));
-    tok->type = type;
-    tok->token_num = token_num;
-    tok->syscall_cnt = syscall_cnt;
-    tok->byte_offset = byte_offset;
-    tok->rg_id = ptdata->rg_id;
-    tok->record_pid = ptdata->record_pid;
-#ifndef CONFAID
-    if (data) {
-        strncpy(tok->name, (char *)data, 256);
-    } else {
-        strncpy(tok->name, (char *) "NOTAFILE", 256);
-    }
-#endif
-
-    GRAB_GLOBAL_LOCK (ptdata);
-    MYASSERT (option_info_table);
-    g_hash_table_insert(option_info_table, GINT_TO_POINTER(token_num), tok);
-
-    // LOG_PRINT ("[OPTION] Created new token (option metadata) %d, %d, %d\n", tok->token_num, tok->syscall_cnt, tok->byte_offset);
-
-    RELEASE_GLOBAL_LOCK (ptdata);
-
-    return token_num;
-}
-
 #ifdef CONFAID
 int create_new_named_token (int token_num, char* token_name)
 {
@@ -10078,6 +9910,7 @@ void create_options_from_buffer (int type, long id, void* buf, int size, int off
             rc = PIN_SafeCopy((void*)&c, (void *) mem_location, sizeof(char));
             if (rc) {
                 struct taint vector;
+		struct token* tok;
 
                 if (option_cnt >= NUM_OPTIONS) {
                     fprintf(stderr, "[ERROR]Not enough options\n");
@@ -10086,7 +9919,11 @@ void create_options_from_buffer (int type, long id, void* buf, int size, int off
                 new_taint(&vector);
                 set_taint_value(&vector, option_cnt, get_max_taint_value());
 
-                create_new_token (type, option_cnt, global_syscall_cnt, i + offset, data);
+                tok = create_new_token (type, option_cnt, global_syscall_cnt, i + offset, ptdata->rg_id, ptdata->record_pid, data);
+                LOG_PRINT ("Created new token %d\n", option_cnt);
+                write_token_to_file(tokens_f, tok);
+                LOG_PRINT ("Wrote token to file\n");
+                free(tok);
 
                 option_cnt++;    
                 mem_mod_dependency(ptdata, mem_location, &vector, SET, 1);
@@ -10151,6 +9988,7 @@ void strcmp_start(ADDRINT first_arg, ADDRINT second_arg)
     int tainted2 = 0;
     ADDRINT tmp_ptr = first_arg;
     char tmp_char;
+    struct token* tok;
     while(1) {
         if ((arg_taint = get_mem_taint(tmp_ptr)) != NULL) {
             merge_taints(&hf->args_taint, arg_taint);
@@ -10209,7 +10047,10 @@ void strcmp_start(ADDRINT first_arg, ADDRINT second_arg)
 #endif
     tmp_ptr = (tainted1 == 1) ? first_arg : second_arg;
 
-    create_new_named_token(option_cnt, (char *) tmp_ptr);
+    tok = create_new_named_token(option_cnt, (char *) tmp_ptr);
+    write_token_to_file(tokens_f, tok);
+    free(tok);
+
     set_taint_value(&new_token_dep, option_cnt, get_max_taint_value());
     LOG_PRINT ("[OPTION] Created new option %d for config token %s\n", option_cnt, (char *) tmp_ptr);
 
@@ -12844,6 +12685,19 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 
     PIN_SetThreadData (tls_key, ptdata, threadid);
 
+    // Create the tokens file for the replay group
+    if (first_thread) {
+        if (!tokens_f) {
+            char name[256];
+            snprintf(name, 256, "%s/tokens_%llu", group_directory, ptdata->rg_id);
+            tokens_f = fopen(name, "w");
+            if (!tokens_f) {
+                fprintf(stderr, "Could not open tokens file %s\n", name);
+                exit(-1);
+            }
+        }
+    }
+
     // create options for each of the program args
 #ifdef HAVE_REPLAY
 #ifndef CONFAID
@@ -12898,7 +12752,9 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
     if (first_thread) {
         // set the first option to be the config file.
         // The config file is used to tokenize the config options.
-        create_new_named_token (0, (char *) "config_file");
+        struct token* tok = create_new_named_token (0, (char *) "config_file");
+        write_token_to_file(tokens_f, tok);
+        free(tok);
         option_cnt = 1;
     }
 #endif
@@ -12912,7 +12768,7 @@ void force_exit() {
 
 int setup_logs() {
     int rc;
-    char log_name[64];
+    char log_name[256];
 #ifdef DEBUG_TAINT
 #ifdef TAINT_PRINT
     char taint_log_name[256];
@@ -12923,10 +12779,10 @@ int setup_logs() {
 #endif
 
     if (log_f) fclose(log_f);
-    sprintf(log_name, "/tmp/confaid.log.%d", PIN_GetPid());
+    snprintf(log_name, 256, "%s/confaid.log.%d", group_directory, PIN_GetPid());
     log_f = fopen(log_name, "a");
     if(!log_f) {
-        printf("ERROR: cannot open log_file\n");
+        printf("ERROR: cannot open log_file %s\n", log_name);
         return -1;
     }
     fprintf(stderr, "Log file name is %s\n", log_name);
@@ -12935,7 +12791,7 @@ int setup_logs() {
 #ifdef TAINT_PRINT
     if (taint_f) fclose(taint_f);
     // set up taint printing
-    sprintf(taint_log_name, "/tmp/confaid.taintfile.%d", get_record_pid());
+    snprintf(taint_log_name, 256, "%s/confaid.taintfile.%d", group_directory, get_record_pid());
     taint_f = fopen(taint_log_name, "w");
     if(!taint_f) {
         printf("ERROR: cannot open taint_file\n");
@@ -12945,7 +12801,7 @@ int setup_logs() {
 #ifdef TRACE_TAINTS
     if (trace_f) fclose(trace_f);
     // set up taint tracing
-    sprintf(trace_log_name, "/tmp/confaid.tracefile.%d", get_record_pid());
+    snprintf(trace_log_name, 256, "%s/confaid.tracefile.%d", group_directory, get_record_pid());
     trace_f = fopen(trace_log_name, "w");
     if (!trace_f) {
         printf("ERROR: cannot open trace_file\n");
@@ -12995,7 +12851,6 @@ void setup_message_input(const char* input_msg)
 int main(int argc, char** argv) 
 {
     int rc;
-
     fprintf(stderr, "Starting up\n");
 
     PIN_InitSymbols();
@@ -13005,6 +12860,14 @@ int main(int argc, char** argv)
 
     fprintf(stderr, "output file is %s\n", KnobOutputFile.Value().c_str());
     fprintf(stderr, "Starting up the PIN tool, pid: %d\n", PIN_GetPid());
+
+    /* Create a directory for logs etc for this replay group*/
+    snprintf(group_directory, 256, "/tmp/%d", PIN_GetPid());
+    if (mkdir(group_directory, 0755)) {
+        fprintf(stderr, "could not make directory %s\n", group_directory);
+        exit(-1);
+    }
+
     /*Initialization*/
     rc = setup_logs();
     if (rc) {
@@ -13028,9 +12891,12 @@ int main(int argc, char** argv)
     LOG_PRINT ("this is the dataflow too, we'll be running the dataflow analysis\n");
 
     // Open in "w+" mode because an exec will wipe out this file, if in "w"
-    output_f = fopen(KnobOutputFile.Value().c_str(), "w+");
+    char output_file_name[256];
+    snprintf(output_file_name, 256, "%s/%s", group_directory, KnobOutputFile.Value().c_str());
+    output_f = fopen(output_file_name, "w+");
     if (output_f == 0) {
-        fprintf(stderr, "no output file is specified, exiting..\n");
+        fprintf(stderr, "no output file is specified, exiting.., errno is %d\n", errno);
+        fprintf(stderr, "output_file_name is %s\n", output_file_name);
         exit(-1);
     }
 
@@ -13077,9 +12943,6 @@ int main(int argc, char** argv)
 
     // init the list of images
     img_list = new_image_infos();
-
-    // init the option metadata hashtable
-    option_info_table = g_hash_table_new(g_direct_hash, g_direct_equal);
 
     if (!open_fds) {
         open_fds = new_xray_monitor(sizeof(struct open_info));
