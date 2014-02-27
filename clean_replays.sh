@@ -20,5 +20,5 @@ pushd /replay_cache/ &> /dev/null || {
 sudo rm -rf *
 popd  &> /dev/null
 
-sudo rm -rf /replay_logdb/* /replay_cache/*
+sudo rm -rf /replay_logdb/* /replay_cache/* /replay_cache/replaymap.disk
 

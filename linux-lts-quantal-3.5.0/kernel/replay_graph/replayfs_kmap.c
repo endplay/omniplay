@@ -35,6 +35,7 @@ static atomic_t num_kmaps = {0};
 static atomic_t num_kunmaps = {0};
 static struct mutex lock;
 struct btree_head64 mapping_table;
+struct btree_head64 alloc_table;
 
 #define TYPE_INVALID -1
 #define IS_KMAP 0
@@ -73,6 +74,7 @@ static inline u64 key(struct page *page) {
 void replayfs_kmap_init(void) {
 	mutex_init(&lock);
 	btree_init64(&mapping_table);
+	btree_init64(&alloc_table);
 }
 
 void replayfs_kmap_destroy(void) {
@@ -80,6 +82,7 @@ void replayfs_kmap_destroy(void) {
 			__func__, __LINE__);
 	mutex_destroy(&lock);
 	btree_destroy64(&mapping_table);
+	btree_destroy64(&alloc_table);
 }
 
 #ifdef MAPPING_TRACING
@@ -142,11 +145,11 @@ static void get_stack_info(struct allocation_entry *entry) {
 	}
 }
 
-static void destroy_entry(u64 key) {
+static void destroy_entry(struct btree_head64 *tree, u64 key) {
 	struct allocation_entry *entry;
 	struct allocation_record *record;
 
-	entry = btree_remove64(&mapping_table, key);
+	entry = btree_remove64(&tree, key);
 	BUG_ON(entry == NULL);
 
 	if (entry->first_stack_frame != NULL) {
@@ -236,22 +239,25 @@ static void check_entry(struct allocation_entry *entry) {
 		CURRENT_TIME_SEC.tv_sec - entry->alloc_time.tv_sec;
 
 	if (allocation_lifetime > MAX_ALLOCATION_LIFETIME) {
+		/*
 		printk("%s %d: Warning, mapping is living longer than expected!\n", __func__,
 				__LINE__);
+				*/
 		print_entry_status(entry);
 	}
 #endif
 }
 
-static void check_all_entries(void) {
+static void check_all_entries(struct btree_head64 *tree) {
 	u64 key;
 	struct allocation_entry *entry;
-	btree_for_each_safe64(&mapping_table, key, entry) {
+	btree_for_each_safe64(tree, key, entry) {
 		check_entry(entry);
 	}
 }
 
-static void update_entry(struct page *page, const char *func, int line, int type) {
+static void update_entry(struct page *page, const char *func, int line,
+		int type, struct btree_head64 *tree, int do_checks) {
 	struct allocation_entry *entry;
 	struct allocation_record *record;
 	struct allocation_record *cur_record;
@@ -262,7 +268,7 @@ static void update_entry(struct page *page, const char *func, int line, int type
 			((type)?"Kunmap":"Kmap"),
 			key(page), page->index, page->mapping);
 			*/
-	entry = btree_lookup64(&mapping_table, key(page));
+	entry = btree_lookup64(tree, key(page));
 	if (entry == NULL) {
 		int err;
 		entry = kmalloc(sizeof(struct allocation_entry), GFP_KERNEL);
@@ -284,7 +290,7 @@ static void update_entry(struct page *page, const char *func, int line, int type
 		entry->first_stack_frame = NULL;
 		entry->second_stack_frame = NULL;
 		
-		err = btree_insert64(&mapping_table, key(page), entry, GFP_KERNEL);
+		err = btree_insert64(tree, key(page), entry, GFP_KERNEL);
 		BUG_ON(err);
 	}
 
@@ -345,13 +351,15 @@ static void update_entry(struct page *page, const char *func, int line, int type
 	}
 
 	if (entry->nallocs == entry->nfrees) {
-		printk("%s %d: Destroying entry %lu {%lld}\n", __func__, __LINE__,
+		debugk("%s %d: Destroying entry %lu {%lld}\n", __func__, __LINE__,
 				page->index, key(page));
-		destroy_entry(key(page));
+		destroy_entry(tree, key(page));
 	}
 
-	check_use(entry);
-	check_all_entries();
+	if (do_checks) {
+		check_use(entry);
+		check_all_entries(tree);
+	}
 
 	get_stack_info(entry);
 
@@ -362,6 +370,24 @@ static void update_entry(struct page *page, const char *func, int line, int type
 #define periodic_check(...)
 #endif
 
+void __pagealloc_get(struct page *page, const char *function, int line) {
+	update_entry(page, function, line, IS_KMAP, &alloc_table, 0);
+}
+
+void __pagealloc_put(struct page *page, const char *function, int line) {
+	update_entry(page, function, line, IS_KUNMAP, &alloc_table, 0);
+}
+
+void pagealloc_print_status(struct page *page) {
+	struct allocation_entry *entry;
+
+	entry = btree_lookup64(&alloc_table, key(page));
+
+	if (entry != NULL) {
+		print_entry_status(entry);
+	}
+}
+
 void *__replayfs_kmap(struct page *page, const char *function, int line) {
 	void *ret;
 	ret = kmap(page);
@@ -370,7 +396,7 @@ void *__replayfs_kmap(struct page *page, const char *function, int line) {
 	atomic_inc(&num_kmaps);
 
 	/* Okay, keep a record of this allocation (if enabled) */
-	update_entry(page, function, line, IS_KMAP);
+	update_entry(page, function, line, IS_KMAP, &mapping_table, 1);
 
 	BUG_ON(ret == NULL);
 	return ret;
@@ -379,7 +405,7 @@ void *__replayfs_kmap(struct page *page, const char *function, int line) {
 void __replayfs_kunmap(struct page *page, const char *function, int line) {
 	debugk("%s %d: Unmap on {%llX}\n", __func__, __LINE__, key(page));
 
-	update_entry(page, function, line, IS_KUNMAP);
+	update_entry(page, function, line, IS_KUNMAP, &mapping_table, 1);
 
 	atomic_inc(&num_kunmaps);
 	kunmap(page);

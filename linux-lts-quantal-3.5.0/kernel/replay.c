@@ -81,7 +81,7 @@
  *
  * This automatically disables TRACE_*
  */
-//#define REPLAY_COMPRESS_READS
+#define REPLAY_COMPRESS_READS
 
 //#define TRACE_READ_WRITE
 //#define TRACE_PIPE_READ_WRITE
