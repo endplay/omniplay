@@ -23,6 +23,7 @@ int main (int argc, char* argv[])
     int fd, i;
     pid_t record_pid;
     uint64_t rg_id;
+    uint64_t parent_rg_id;
     struct rlimit rlimits[RLIM_NLIMITS];
     struct k_sigaction sighands[_NSIGS];
 
@@ -51,6 +52,13 @@ int main (int argc, char* argv[])
         return -1;
     }
     printf ("record group id: %llu\n", rg_id);
+
+    copyed = read(fd, (char *) &parent_rg_id, sizeof(parent_rg_id));
+    if (copyed != sizeof(parent_rg_id)) {
+        printf ("parseckpt: tried to read parent_rg_id, got %ld\n", copyed);
+        return -1;
+    }
+    printf ("parent record group id: %llu\n", parent_rg_id);
 
     copyed = read(fd, (char *) &len, sizeof(len));
     if (copyed != sizeof(len)) {
