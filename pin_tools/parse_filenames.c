@@ -23,29 +23,23 @@ int main(int argc, char** argv)
         return -1;
     }
 
-    if (buf.st_size % (sizeof(struct byte_result)) != 0) {
+    if (buf.st_size % (sizeof(int) + 256) != 0) {
         fprintf(stderr, "size of file is %lu\n", (unsigned long) buf.st_size);
         fprintf(stderr, "size of byte result is %u\n", sizeof(struct byte_result));
         assert (buf.st_size % (sizeof(struct byte_result)) == 0);
     }
-    assert (buf.st_size % (sizeof(struct byte_result)) == 0);
+    assert (buf.st_size % (sizeof(int) + 256) == 0);
 
     while (count < buf.st_size) {
-        struct byte_result* result;
-        result = (struct byte_result *) malloc(sizeof(struct byte_result));
-        assert(result);
-        if (read_byte_result_from_file(fdopen(fd, "r"), result)) {
-            fprintf(stderr, "could not read byte_result, count is %lu\n", count);
+        int file_cnt;
+        char* filename;
+        filename = (char *) malloc(256);
+        assert(filename);
+        if (read_filename_mapping(fdopen(fd, "r"), &file_cnt, filename)) {
+            fprintf(stderr, "could not read, count is %lu\n", count);
         }
-        fprintf(stdout, "%d %d %llu %d %d %d %d\n",
-                result->output_type,
-                result->output_fileno,
-                result->rg_id,
-                result->record_pid,
-                result->syscall_cnt,
-                result->offset,
-                result->token_num);
-        free(result);
-        count += sizeof(struct byte_result);
+        fprintf(stdout, "%d %s\n", file_cnt, filename);
+        free(filename);
+        count += (sizeof(int) + 256);
     }
 }
