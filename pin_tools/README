@@ -28,3 +28,6 @@ Tools created
 
 To create a new tool rule, create a new makefile rule at the bottom of makefile.rules.
 To turn on different linkages, use the linkage definitions, e.g. -DLINKAGE_COPY, -DLINKAGE_DATA, -DCTRL_FLOW
+
+The linkage tool outputs a result in binary format. Use the interpret_tokens tool to interpret the data.
+Ex: $ ~/omniplay/pin_tools/obj-ia32/interpret_tokens tokens_file filenames_file tool_output result_file
