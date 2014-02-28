@@ -291,13 +291,15 @@ static struct replay_recorded_file_meta *replay_get_file_meta(int fd) {
 }
 
 void replay_filp_close(struct file *filp) {
-	struct replay_recorded_meta *meta;
+	struct replay_recorded_file_meta *meta;
 	/* The filp is closed, free its meta */
 	mutex_lock(&meta_tree_lock);
 
 	meta = btree_remove32(&meta_tree, (u32)filp->f_dentry->d_inode);
 
 	if (meta != NULL) {
+		replayfs_filemap_destroy(&meta->map);
+		replayfs_diskalloc_destroy(&meta->alloc);
 		kfree(meta);
 	}
 

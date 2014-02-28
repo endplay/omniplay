@@ -298,9 +298,11 @@ static void alloc_evict_page(void) {
 			list_del(&page->lru);
 			btree_remove32(&crappy_pagecache, page->index);
 			ret = alloc_free_page(page);
-			if (ret) {
+			/*
+			if (!ret) {
 				pagealloc_print_status(page);
 			}
+			*/
 			break;
 		}
 	}
@@ -415,7 +417,7 @@ void replayfs_diskalloc_sync_page(struct replayfs_diskalloc *alloc,
 
 static void alloc_put_page(struct replayfs_diskalloc *alloc, struct page *page) {
 
-	replayfs_pagealloc_get(page);
+	replayfs_pagealloc_put(page);
 
 	if (PageDirty(page)) {
 		/*

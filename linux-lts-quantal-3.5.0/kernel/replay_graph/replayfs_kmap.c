@@ -28,9 +28,6 @@
 #define MAX_ALLOCATION_LIFETIME 5
 
 
-/* Only use code if we're debugging mappings */
-#ifdef REPLAYFS_DEBUG_MAPPINGS
-
 static atomic_t num_kmaps = {0};
 static atomic_t num_kunmaps = {0};
 static struct mutex lock;
@@ -149,7 +146,7 @@ static void destroy_entry(struct btree_head64 *tree, u64 key) {
 	struct allocation_entry *entry;
 	struct allocation_record *record;
 
-	entry = btree_remove64(&tree, key);
+	entry = btree_remove64(tree, key);
 	BUG_ON(entry == NULL);
 
 	if (entry->first_stack_frame != NULL) {
@@ -411,4 +408,3 @@ void __replayfs_kunmap(struct page *page, const char *function, int line) {
 	kunmap(page);
 }
 
-#endif // REPLAYFS_DEBUG_MAPPINGS
