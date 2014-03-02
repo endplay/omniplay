@@ -18,6 +18,9 @@ def main(args):
 
     # form the right query to run
     runtime_info = runtime.RunTimeInfo(verbose=args.verbose)
+    # make sure everything is in order
+    runtime_info.check_system()
+
     filemap_process = runtime_info.filemap(args.filename)
     # filemap output is to stdout
     filemap_process.wait()
@@ -47,16 +50,20 @@ def main(args):
         print("File %s has no write information!")
         sys.exit(0)
 
-    # write_info = opinfo.WriteInfo(4143, 3468, 42, 0, 5)
-    q = query.Query(runtime_info, writes)
+    # set linkages from command-line args
+    linkages = []
+    if args.linkages:
+        linkages = args.linkages
+
+    q = query.Query(runtime_info, writes, linkages)
     q.run()
     q.draw_graph()
     q.graph.output_graph()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("Runs a provenance query")
-    parser.add_argument("filename", help="File to run query on")
     parser.add_argument("-v", "--verbose", help="Verbose output", dest="verbose", action="store_true")
+    parser.add_argument("filename", help="File to run query on")
     parser.add_argument("-l", "--linkages", help="The linkages to use to run the query",
             nargs='+', dest='linkages')
     args = parser.parse_args()
