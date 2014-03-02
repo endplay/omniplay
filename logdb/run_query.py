@@ -19,16 +19,20 @@ def main(args):
     # form the right query to run
     runtime_info = runtime.RunTimeInfo(verbose=args.verbose)
     filemap_process = runtime_info.filemap(args.filename)
+    # filemap output is to stdout
     filemap_process.wait()
+    filemap_output = filemap_process.communicate()[0]
     
-    if not os.path.exists("/tmp/filemap_output"):
-        print("Could not get filemap?")
+    if not filemap_output:
+        print("Could not get filemap info for %s" % args.filename)
         sys.exit(0)
 
     writes = []
+    print(filemap_output.split("\n"))
     # now process the filemap results
-    f = open("/tmp/filemap_output", "r")
-    for line in f.readlines():
+    for line in filemap_output.split("\n"):
+        if not line:
+            continue
         fields = line.split(" ")
         offset = int(fields[0])
         size = int(fields[1])
@@ -47,6 +51,7 @@ def main(args):
     q = query.Query(runtime_info, writes)
     q.run()
     q.draw_graph()
+    q.graph.output_graph()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("Runs a provenance query")
