@@ -31,7 +31,7 @@ class IPCGraph(object):
         pynodes = {}
         for node in self.nodes:
             name = "Group " + str(node.group_id) + " Pid " + str(node.pid)
-	    name += "\n" + node.cmd
+            name += "\n" + node.cmd
             pynode = pydot.Node(name, shape="box")
             pynodes[node] = pynode
             graph.add_node(pynode)
@@ -39,10 +39,30 @@ class IPCGraph(object):
         for node in self.nodes:
             for edge in node.edges:
                 pydot_edge = pydot.Edge(pynodes[edge.from_node], pynodes[edge.to_node])
-		pydot_edge.set_label("%s , %s" % (str(edge.write_info), str(edge.read_info)))
+                pydot_edge.set_label("%s , %s" % (str(edge.write_info), str(edge.read_info)))
                 graph.add_edge(pydot_edge)
 
         graph.write(output_file)
+
+    def output_graph(self):
+        root_nodes = []
+        printed_nodes = {}
+
+        # find root node(s) aka nodes with in-degree 0
+        for node in self.nodes:
+            if len(node.edges_to) == 0:
+                root_nodes.append(node)
+
+        queue = []
+        for node in root_nodes:
+            queue.append(node)
+        while queue:
+            node = queue.pop()
+            if node in printed_nodes:
+                continue
+            print(str(node))
+            for edge in node.edges:
+                queue.add(edge.from_node)
 
 class IPCNode(object):
     '''
@@ -51,7 +71,7 @@ class IPCNode(object):
     def __init__(self, group_id, pid, cmd=""):
         self.group_id = group_id
         self.pid = pid
-	self.cmd = cmd
+        self.cmd = cmd
 
         # Reads in this process
         self.read_infos = []
@@ -87,6 +107,9 @@ class IPCNode(object):
 
     def __eq__(self, other):
         return self.group_id == other.group_id and self.pid == other.pid
+
+    def __str__(self):
+        return str(self.__dict__)
 
 class IPCEdge(object):
     def __init__(self, from_node, to_node, write_info, read_info):
