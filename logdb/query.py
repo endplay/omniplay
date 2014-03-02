@@ -1,13 +1,14 @@
 #!/usr/bin/python
 
-import argparse
-import sys
-import os
-import time
-import subprocess
-import sqlite3
-import collections
 import re
+import os
+import sys
+import time
+import shlex
+import sqlite3
+import argparse
+import subprocess
+import collections
 
 # our modules
 import ipc
@@ -21,7 +22,8 @@ class Query(object):
         self.linkages = linkages
         self.query_log_filename = "/tmp/query_log"
         self.query_log = open(self.query_log_filename, "w")
-        self.query_output = "/tmp/query_output"
+	# relative to the process's log directory
+        self.query_output = "query_output"
 
         # IPC graph to walk up as the query is done
         self.graph = ipc.IPCGraph()
@@ -47,6 +49,11 @@ class Query(object):
         if not self.linkage_tool:
             print("Could not find appropriate linkage")
             sys.exit(0)
+
+        # the current pid and group id of the 
+        # replay process the query is currently running
+        self.current_pid = 0
+        self.current_gid = 0
 
     def find_linkage_tool(self):
         '''
@@ -76,7 +83,9 @@ class Query(object):
         return links
 
     def verify_replay(self):
-        return os.path.isfile(self.query_output)
+        path = "/tmp/" + str(self.current_pid) + "/" + self.query_output
+        print("verify replay path: %s" % path)
+        return os.path.exists("/tmp/" + str(self.current_pid) + self.query_output)
 
     def find_matching_exec(self, group_id, pid):
         klog = self.rldb.get_replay_directory(group_id) + "/klog.id." + str(pid)
@@ -123,6 +132,36 @@ class Query(object):
 
         exec_info = opinfo.ExecInfo(group_id, pid, idx, 0)
         return exec_info
+
+    def interpret_query_output(self):
+        '''
+        We need a post-processing step after the linkage tool is run.
+        The output is in a binary format that needs to be interpreted
+        and the mapping from the tokens also needs to be interpreted.
+        '''
+        interpret_tokens = self.runtime_info.tools_location + "/interpret_tokens"
+        assert os.path.exists(interpret_tokens)
+
+        assert (self.current_pid)
+        assert (self.current_gid)
+        tokens_file = ''.join(["/tmp/", str(self.current_pid), "/tokens_", str(self.current_gid)])
+        filenames_file = ''.join(["/tmp/", str(self.current_pid), "/filenames_", str(self.current_gid)])
+        interpret_file = "/tmp/interpret_result"
+        assert os.path.exists(interpret_tokens)
+        query_output = ''.join(["/tmp/", str(self.current_pid), "/", self.query_output])
+        cmd = ' '.join([interpret_tokens, tokens_file, filenames_file, query_output, interpret_file])
+        print(cmd)
+
+        process = subprocess.Popen(shlex.split(cmd), shell=False, stderr=subprocess.PIPE)
+        process.wait()
+        stderr_output = process.communicate()[1]
+        if stderr_output:
+            print("There was an error interpretting the tokens")
+            print(stderr_output)
+            sys.exit(1)
+
+        # update the output file
+        self.query_output = interpret_file
 
     def parse_query_output(self):
 
@@ -193,6 +232,18 @@ class Query(object):
         return links
 
     def run(self):
+        '''
+        Actually run the query. Here are the steps that happen when running a query:
+        1) Get the replay group id to replay from the write info
+        2) Start the replay
+        3) Attach the correct Pin tool and wait until it's done executing
+        4) Do post-processing on the output, in order to interpret the binary output
+        and do token interpretation.
+        5) Parse the output from the linkage tool, producing intraprocess
+        read to write links
+        6) Query the IPC graph database for the writes that produced the the reads.
+        7) Repeat starting from step 1 for each of the writes
+        '''
         self.query_start_time = time.time()
         while len(self.run_queue) > 0:
             wis = self.run_queue.pop()
@@ -207,6 +258,8 @@ class Query(object):
 
             replay_dir = "/replay_logdb/rec_" + str(group_id)
             replay_process = self.runtime_info.replay(replay_dir, self.query_log, pin=True)
+            self.current_pid = replay_process.pid
+            self.current_gid = group_id
 
             # wake for a little interval
             time.sleep(1)
@@ -219,12 +272,14 @@ class Query(object):
             print("Copy tool took %d secs" % (self.tool_end - self.tool_start))
 
             # make sure that the replay suceed
-            if not self.verify_replay():
-                print("ERROR: query failed to replay, group id %d, linkage copy" % (group_id))
-                print("You might want to look for errors in %s" % self.query_log_filename)
-                return False
+            # if not self.verify_replay():
+            #     print("ERROR: query failed to replay, group id %d, linkage copy" % (group_id))
+            #     print("You might want to look for errors in %s" % self.query_log_filename)
+            #     return False
 
             new_writes = []
+            # Extra post-processing step for interpreting tokens
+            self.interpret_query_output()
             # find intraprocess links
             links = self.parse_query_output()
             # For every write that we are interested in, look up the write to the sourcing read
