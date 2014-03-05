@@ -249,6 +249,7 @@ static struct replay_recorded_file_meta *get_meta(struct file *filp) {
 		}
 
 		replayfs_filemap_init_with_pos(&meta->map, &meta->alloc, filp, &meta->meta_pos);
+		//printk("%s %d: Created filemap with metapos %lld\n", __func__, __LINE__, meta->meta_pos);
 
 		if (btree_insert32(&meta_tree, (u32)filp->f_dentry->d_inode, meta, GFP_KERNEL)) {
 			BUG();
@@ -290,20 +291,81 @@ static struct replay_recorded_file_meta *replay_get_file_meta(int fd) {
 	return meta;
 }
 
-void replay_filp_close(struct file *filp) {
+struct file_work_struct {
+	struct work_struct work;
+	struct list_head list;
+	u32 entry;
+};
+
+#define NUM_WORK_ENTRIES 0x100
+DEFINE_SPINLOCK(work_lock);
+struct list_head file_work_entries;
+struct file_work_struct file_work_entries_alloc[NUM_WORK_ENTRIES];
+
+void replay_filp_close_work(struct work_struct *ws);
+
+void put_work_struct(struct file_work_struct *fws) {
+
+	spin_lock(&work_lock);
+	list_add(&fws->list, &file_work_entries);
+	spin_unlock(&work_lock);
+}
+
+struct file_work_struct *get_work_struct(void) {
+	struct file_work_struct *entry;
+	spin_lock(&work_lock);
+	BUG_ON(list_empty(&file_work_entries));
+	if (list_empty(&file_work_entries)) {
+		entry = NULL; 
+	} else {
+		entry = list_first_entry(&file_work_entries, struct file_work_struct, list);
+		list_del(&entry->list);
+		INIT_WORK(&entry->work, replay_filp_close_work);
+	}
+	spin_unlock(&work_lock);
+
+	return entry;
+}
+
+static void replay_filp_close_internal(u32 key) {
 	struct replay_recorded_file_meta *meta;
 	/* The filp is closed, free its meta */
 	mutex_lock(&meta_tree_lock);
 
-	meta = btree_remove32(&meta_tree, (u32)filp->f_dentry->d_inode);
+	meta = btree_remove32(&meta_tree, key);
 
 	if (meta != NULL) {
+		//printk("%s %d: Destroying filemap for %lld with key %u\n", __func__, __LINE__, meta->meta_pos, key);
 		replayfs_filemap_destroy(&meta->map);
 		replayfs_diskalloc_destroy(&meta->alloc);
 		kfree(meta);
 	}
 
 	mutex_unlock(&meta_tree_lock);
+}
+
+void replay_filp_close_work(struct work_struct *ws) {
+	struct file_work_struct *fws = container_of(ws, struct file_work_struct, work);
+
+	replay_filp_close_internal(fws->entry);
+
+	put_work_struct(fws);
+}
+
+void replay_filp_close(struct file *filp) {
+	/*
+	if (current->record_thrd != NULL || current->replay_thrd != NULL) {
+		struct file_work_struct *work = get_work_struct();
+
+		work->entry = (u32)filp->f_dentry->d_inode;
+
+		//printk("%s %d: Scheduling destruction of filemap key %u\n", __func__, __LINE__, work->entry);
+		schedule_work(&work->work);
+	}
+	*/
+}
+#else
+void replay_filp_close(struct file *filp) {
 }
 #endif
 
@@ -6477,6 +6539,15 @@ static asmlinkage long
 record_close (int fd)
 {									
 	long rc;							
+#ifdef REPLAY_COMPRESS_READS
+	do {
+		struct file *filp = fget(fd);
+		if (filp != NULL) {
+			replay_filp_close_internal((u32)filp->f_dentry->d_inode);
+			fput(filp);
+		}
+	} while (0);
+#endif
 	new_syscall_enter (6);
 	rc = sys_close (fd);
 	new_syscall_done (6, rc);
@@ -12762,6 +12833,14 @@ static int __init replay_init(void)
 
 #ifdef REPLAY_COMPRESS_READS
 	btree_init32(&meta_tree);
+	INIT_LIST_HEAD(&file_work_entries);
+
+	do {
+		int i;
+		for (i = 0; i < NUM_WORK_ENTRIES; i++) {
+			list_add(&file_work_entries_alloc[i].list, &file_work_entries);
+		}
+	} while (0);
 #endif
 
 #ifdef TRACE_PIPE_READ_WRITE

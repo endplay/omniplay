@@ -55,7 +55,7 @@
 //#include "replayfs_fs.h"
 //#include "replayfs_inode.h"
 
-//#define REPLAYFS_BTREE_DEBUG
+#define REPLAYFS_BTREE_DEBUG
 
 #ifdef REPLAYFS_BTREE_DEBUG
 #define debugk(...) printk(__VA_ARGS__)
@@ -1521,16 +1521,14 @@ int __must_check replayfs_btree_insert_update(struct replayfs_btree_head *head,
 				struct replayfs_btree_value new_val;
 
 				memcpy(&new_val, in_val, sizeof(struct replayfs_btree_value));
-				bval_put(head, page);
 				new_key.offset = in_key.offset;
 				new_key.size = key->offset - in_key.offset;
 				debugk("%s %d: Inserting val with buff_offs: %d\n", __func__, __LINE__,
 						new_val.buff_offs);
 				replayfs_btree_insert(head, &new_key, &new_val, gfp);
-			} else {
-				bval_put(head, page);
 			}
 
+			bval_put(head, page);
 
 			//keycpy(&new_key, in_key);
 			/* Get prev key, and repeat */
@@ -1613,10 +1611,6 @@ static void merge(struct replayfs_btree_head *head, struct btree_geo *geo, int l
 					lpos)->size, lpos);
 		btree_remove_level(head, geo, bkey(geo, parent_data, lpos), level + 1, &page);
 		bval_put(head, page);
-
-		/* Must unmap before free */
-		replayfs_kunmap(right);
-		replayfs_diskalloc_free_page(head->allocator, right);
 	} else {
 		for (i = 0; i < rfill; i++) {
 			struct replayfs_btree_value *tmp;

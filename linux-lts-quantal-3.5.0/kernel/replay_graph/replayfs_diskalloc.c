@@ -19,9 +19,17 @@
 
 //#define REPLAYFS_DISKALLOC_DEBUG
 
-#define REPLAYFS_DISKALLOC_DEBUG_CACHE
+//#define REPLAYFS_DISKALLOC_DEBUG_MIN
+
+//#define REPLAYFS_DISKALLOC_DEBUG_CACHE
 
 //#define REPLAYFS_DISKALLOC_ALLOC_DEBUG
+
+#ifdef REPLAYFS_DISKALLOC_DEBUG_MIN
+#define min_debugk(...) printk(__VA_ARGS__)
+#else
+#define min_debugk(...)
+#endif
 
 #ifdef REPLAYFS_DISKALLOC_DEBUG
 #define debugk(...) printk(__VA_ARGS__)
@@ -218,6 +226,10 @@ static int alloc_readpage(struct file *file, struct page *page,
 		printk("%s %d: Filling Page %lld\n", __func__, __LINE__,
 				(loff_t)page->index*PAGE_SIZE);
 		*/
+
+		min_debugk("%s %d: Loading page %lu into %p\n", __func__, __LINE__, page->index,
+				page);
+
 		replayfs_diskalloc_read_page_location(alloc,
 			page_addr, page_num);
 	} else {
@@ -251,6 +263,8 @@ int alloc_writepage(struct page *page,
 	printk("%s %d: Writing back page %lld\n", __func__, __LINE__, (loff_t)page->index *
 			PAGE_SIZE);
 	*/
+	min_debugk("%s %d: Writing back page %lu from page %p\n", __func__, __LINE__,
+			page->index, page);
 	replayfs_diskalloc_write_page_location(alloc,
 			page_addr, (loff_t)page->index * PAGE_SIZE);
 
@@ -271,6 +285,12 @@ static int alloc_free_page(struct page *page) {
 		cache_debugk("%s %d: Re-incing page %p to count of %d\n", __func__, __LINE__,
 				page, atomic_read(&page->_count));
 		cache_debugk("%s %d: Freeing page with count %d\n", __func__, __LINE__, atomic_read(&page->_count));
+
+		/* NOTE: We have to take this page off of the crappy pagecache list only
+		 * after its count has been dec'd for the last time... otherwise it may be
+		 * allocated (and duplicated) twice
+		 */
+		btree_remove32(&crappy_pagecache, page->index);
 
 		/* I don't trust this... we're going to do some other stuffs */
 		//__free_page(page);
@@ -296,7 +316,6 @@ static void alloc_evict_page(void) {
 			int ret;
 			ClearPageReferenced(page);
 			list_del(&page->lru);
-			btree_remove32(&crappy_pagecache, page->index);
 			ret = alloc_free_page(page);
 			/*
 			if (!ret) {
@@ -320,7 +339,7 @@ static struct page *alloc_make_page(pgoff_t pg_offset) {
 		alloc_evict_page();
 	}
 
-	if (crappy_pagecache_allocated_pages < CRAPPY_PAGECACHE_MAX_SIZE) {
+	if (list_empty(&crappy_pagecache_free_list)) {
 		crappy_pagecache_allocated_pages++;
 		cache_debugk("%s %d: Alloc page\n", __func__, __LINE__);
 		page = alloc_page(GFP_KERNEL);
@@ -435,9 +454,12 @@ static void alloc_put_page(struct replayfs_diskalloc *alloc, struct page *page) 
 
 	debugk("%s %d: Putting page %lu\n", __func__, __LINE__,
 			page->index);
+
 	atomic_inc(&puts);
 	/* OOps! */
+	mutex_lock(&crappy_pagecache_lock);
 	alloc_free_page(page);
+	mutex_unlock(&crappy_pagecache_lock);
 
 	//BUG_ON(atomic_read(&gets) > atomic_read(&puts)+10);
 	//page_cache_release(page);
@@ -551,7 +573,7 @@ static int replayfs_diskalloc_create_with_extent(struct replayfs_diskalloc *allo
 	int ret;
 	mutex_init(&alloc->lock);
 
-	atomic_long_inc(&filp->f_count);
+	get_file(filp);
 	alloc->filp = filp;
 
 	ret = init_diskalloc(alloc, filp, 1);
@@ -564,7 +586,7 @@ int replayfs_diskalloc_create(struct replayfs_diskalloc *alloc,
 	int ret;
 	mutex_init(&alloc->lock);
 
-	atomic_long_inc(&filp->f_count);
+	get_file(filp);
 	alloc->filp = filp;
 
 	ret = init_diskalloc(alloc, filp, 0);
@@ -578,7 +600,7 @@ int replayfs_diskalloc_init(struct replayfs_diskalloc *alloc, struct file *filp)
 	debugk("%s %d: Initing %p\n", __func__, __LINE__, &alloc->lock);
 	mutex_init(&alloc->lock);
 
-	atomic_long_inc(&filp->f_count);
+	get_file(filp);
 	alloc->filp = filp;
 
 	ret = read_diskalloc(alloc);
@@ -1318,7 +1340,9 @@ void replayfs_diskalloc_free_page(struct replayfs_diskalloc *alloc,
 	/* Undo the magic */
 	mark_free(alloc, (loff_t)page->index * PAGE_SIZE);
 
+	mutex_lock(&crappy_pagecache_lock);
 	alloc_put_page(alloc, page);
+	mutex_unlock(&crappy_pagecache_lock);
 
 	mutex_unlock(&alloc->lock);
 }

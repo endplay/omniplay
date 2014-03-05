@@ -16,7 +16,7 @@
 #define debugk(...)
 #endif
 
-DEFINE_MUTEX(meta_lock);
+static DEFINE_MUTEX(meta_lock);
 extern struct replayfs_btree128_head filemap_meta_tree;
 
 static int replayfs_filemap_create(struct replayfs_filemap *map,
@@ -43,9 +43,11 @@ static int replayfs_filemap_create(struct replayfs_filemap *map,
 
 	val.id = PAGE_SIZE * (loff_t)page->index;
 
-	debugk("%s %d: Inserting tree with key {%llu, %llu} to {%lld}\n",
-			__func__, __LINE__, key->id1, key->id2, val.id);
-
+	/*
+	printk("%s %d - %p: Inserting tree with key {%llu, %llu} to {%lld}\n",
+			__func__, __LINE__, current, key->id1, key->id2, val.id);
+			*/
+	BUG_ON(!mutex_is_locked(&meta_lock));
 	ret = replayfs_btree128_insert(&filemap_meta_tree, key, &val,
 			GFP_KERNEL);
 
@@ -69,7 +71,18 @@ int replayfs_filemap_init_key (struct replayfs_filemap *map,
 
 	mutex_lock(&meta_lock);
 	/* Check for this file in the meta btree */
+	/*
+	printk("%s %d - %p: Looking for key {%llu, %llu}  -- ",
+			__func__, __LINE__, current, key->id1, key->id2);
+			*/
 	disk_pos = replayfs_btree128_lookup(&filemap_meta_tree, key, &page);
+	/*
+	if (disk_pos != NULL) {
+		printk("Found!\n");
+	} else {
+		printk("Not Found\n");
+	}
+	*/
 
 	/* If exists */
 	if (disk_pos != NULL) {
@@ -117,7 +130,18 @@ int replayfs_filemap_exists(struct file *filp) {
 
 	mutex_lock(&meta_lock);
 	/* Check for this file in the meta btree */
+	/*
+	printk("%s %d - %p: Looking for key {%llu, %llu}  -- ",
+			__func__, __LINE__, current, key.id1, key.id2);
+			*/
 	disk_pos = replayfs_btree128_lookup(&filemap_meta_tree, &key, &page);
+	/*
+	if (disk_pos != NULL) {
+		printk("Found!\n");
+	} else {
+		printk("Not Found\n");
+	}
+	*/
 
 	/* If exists */
 	if (disk_pos != NULL) {
@@ -153,7 +177,18 @@ int replayfs_filemap_init_with_pos(struct replayfs_filemap *map,
 	/* Check for this file in the meta btree */
 	debugk("%s %d: Checking btree for key {%lld, %lld}\n", __func__, __LINE__,
 			key.id1, key.id2);
+	/*
+	printk("%s %d - %p: Looking for key {%llu, %llu}  -- ",
+			__func__, __LINE__, current, key.id1, key.id2);
+			*/
 	disk_pos = replayfs_btree128_lookup(&filemap_meta_tree, &key, &page);
+	/*
+	if (disk_pos != NULL) {
+		printk("Found!\n");
+	} else {
+		printk("Not Found\n");
+	}
+	*/
 
 	/* If exists */
 	if (disk_pos != NULL) {
@@ -206,7 +241,18 @@ int replayfs_filemap_init(struct replayfs_filemap *map,
 
 	mutex_lock(&meta_lock);
 	/* Check for this file in the meta btree */
+	/*
+	printk("%s %d - %p: Looking for key {%llu, %llu}  -- ",
+			__func__, __LINE__, current, key.id1, key.id2);
+			*/
 	disk_pos = replayfs_btree128_lookup(&filemap_meta_tree, &key, &page);
+	/*
+	if (disk_pos != NULL) {
+		printk("Found!\n");
+	} else {
+		printk("Not Found\n");
+	}
+	*/
 
 	/* If exists */
 	if (disk_pos != NULL) {
@@ -256,6 +302,10 @@ void replayfs_filemap_delete(struct replayfs_filemap *map,
 	debugk("%s %d: Done deleting btree\n", __func__, __LINE__);
 
 	mutex_lock(&meta_lock);
+	/*
+	printk("%s %d - %p: Removing key {%llu, %llu}\n", __func__, __LINE__, current,
+			key->id1, key->id2);
+			*/
 	replayfs_btree128_remove(&filemap_meta_tree, key, &page);
 	replayfs_btree128_put_page(&filemap_meta_tree, page);
 	mutex_unlock(&meta_lock);
