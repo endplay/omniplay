@@ -5,18 +5,72 @@
 #include "util.h"
 #include <string.h>
 #include <stdlib.h>
+// edited by hyihe
+#include "happens_before.h"
 
-#define START_AT_SYSCALL 717020
-#define STOP_AT_SYSCALL  717031
+#define START_AT_SYSCALL 1024
+#define STOP_AT_SYSCALL  1024
 
 // BEGIN GENERIC STUFF NEEDED TO REPLAY WITH PIN
+
+
+// moved forward by hyihe
+int fd; // File descriptor for the replay device
+TLS_KEY tls_key; // Key for accessing TLS. 
+int syscall_cnt = 0;
+
+// edited by hyihe
+#define MEM_REF_READ  0
+#define MEM_REF_WRITE 1
+#define MEM_REF_READ2 2
+
+typedef std::map<var_key_t, var_t *, var_key_comp> var_map_t;
+// current intervals of the threads
+std::vector<interval_t *> thd_ints;
+std::vector<int> thd_entr_type;
+int num_threads = 0;
+// the map containing all variables accessed in the program
+var_map_t variables;
+
+static inline bool inrange() {
+    return ((syscall_cnt >= START_AT_SYSCALL) 
+        && (syscall_cnt <= STOP_AT_SYSCALL));
+}
+
+bool detect_race(THREADID tid, VOID *ref_addr, ADDRINT size, VOID *ip, int ref_type) {
+    // Ignore instructions from shared libraries/syscalls
+    if((unsigned long)ip > 0x80000000 || num_threads == 1)
+        return false;
+    if(!inrange())
+        return false;
+    var_map_t::iterator lkup = variables.find(std::make_pair((void *)ref_addr, (int)size));
+    if(lkup == variables.end()) {
+        // No sharing conflict upon first access
+        var_t *insert = new var_t;
+        insert->resize_intvls(num_threads);
+        insert->update_intvls(ref_type, thd_ints, tid);
+        variables.insert(std::make_pair(std::make_pair((void *)ref_addr, (int)size), insert));
+        return false;
+    } else {
+    	// Update varible access history and check for violations
+        int race;
+        bool ret = false;
+        lkup->second->resize_intvls(num_threads);
+        race = lkup->second->check_for_race(ref_type, thd_ints, tid);
+        if(race) {
+            fprintf(stderr, "race at %p, addr %p, size %d\n", ip, ref_addr, size);
+            // do not abort, always return false
+            //ret = true;
+        }
+        lkup->second->update_intvls(ref_type, thd_ints, tid);
+        return ret;
+    }
+}
+// end edited by hyihe
 
 struct thread_data {
     u_long app_syscall; // Per thread address for specifying pin vs. non-pin system calls
 };
-
-int fd; // File descriptor for the replay device
-TLS_KEY tls_key; // Key for accessing TLS. 
 
 void inst_syscall_end(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD std, VOID* v)
 {
@@ -27,8 +81,6 @@ void inst_syscall_end(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD std, V
 	fprintf (stderr, "inst_syscall_end: NULL tdata\n");
     }	
 }
-
-int syscall_cnt = 0;
 
 void set_address_one(ADDRINT syscall_num, ADDRINT eax_ref)
 {   
@@ -56,7 +108,7 @@ void syscall_after (ADDRINT ip)
 	    } else {
 		fprintf (stderr, "Check clock failed\n");
 	    }
-	    tdata->app_syscall = 0;  
+	    tdata->app_syscall = 0;
 	}
     } else {
 	fprintf (stderr, "syscall_after: NULL tdata\n");
@@ -93,6 +145,14 @@ void instrument_ret(ADDRINT address, ADDRINT target)
     }
 }
 
+bool type_is_enter (ADDRINT type) {
+    if((type & 0x1) && (type != 15) && (type != 17)) {
+        return true;
+    } else {
+        return false;
+    }
+}
+
 void log_replay_enter (ADDRINT type, ADDRINT check)
 {
     if (syscall_cnt > START_AT_SYSCALL) {
@@ -103,6 +163,23 @@ void log_replay_enter (ADDRINT type, ADDRINT check)
 #ifdef STOP_AT_SYSCALL
 	}
 #endif
+    }
+    
+    // edited by hyihe
+    long curr_clock = get_clock_value(fd);
+    if(type_is_enter(type)) {
+    	// *_ENTER type
+        // Indicates the end of an interval
+        thd_entr_type[PIN_ThreadId()] = type;
+        fprintf (stderr, "Thread %5d reaches sync point (%d) at clock %ld\n", PIN_ThreadId(), type, curr_clock);
+        update_interval_speculate(thd_ints, PIN_ThreadId(), curr_clock);
+    } else {
+    	// *_EXIT type
+        // do not do anything
+        // Indicates the start of a new interval
+        thd_entr_type[PIN_ThreadId()] = type;
+        //fprintf (stderr, "Thread %5d resumes (%d) at clock %ld\n", PIN_ThreadId(), type, curr_clock);
+    	//thd_ints[PIN_ThreadId()] = new_interval(curr_clock);
     }
 }
 
@@ -117,6 +194,9 @@ void record_read (VOID* ip, VOID* addr, ADDRINT size)
 	}
 #endif
     }
+    // edited by hyihe
+    if(detect_race(PIN_ThreadId(), addr, size, ip, MEM_REF_READ))
+        exit(1);
 }
 
 void record_read2 (VOID* ip, VOID* addr)
@@ -143,6 +223,9 @@ void record_write (VOID* ip, VOID* addr, ADDRINT size)
 	}
 #endif
     }
+    // edited by hyihe
+    if(detect_race(PIN_ThreadId(), addr, size, ip, MEM_REF_WRITE))
+        exit(1);
 }
 
 void record_locked (VOID* ip)
@@ -169,6 +252,23 @@ void log_replay_exit ()
 	}
 #endif
     }
+    int type = thd_entr_type[PIN_ThreadId()];
+    if(!type_is_enter(type)) {
+        long curr_clock = get_clock_value(fd) - 1;
+        fprintf (stderr, "Thread %5d resumes (%d) at clock %ld\n", PIN_ThreadId(), type, curr_clock);
+        thd_ints[PIN_ThreadId()] = new_interval(curr_clock);
+    }
+}
+
+// edited by hyihe
+// Update the exit time of the current interval upon context switch
+void log_replay_block(ADDRINT block_until) {
+    long curr_clock = get_clock_value(fd);
+    fprintf(stderr, "Context Switch! Thread %d reaches %d, current clock is %ld\n",
+        PIN_ThreadId(), block_until, curr_clock);
+    // do not overwrite if context switch happened after an _EXIT
+    if(type_is_enter(thd_entr_type[PIN_ThreadId()]))
+        update_interval_overwrite(thd_ints, PIN_ThreadId(), block_until);
 }
 
 void track_function(RTN rtn, void* v) 
@@ -179,6 +279,9 @@ void track_function(RTN rtn, void* v)
         RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR) log_replay_enter, 
 		       IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_END);
         RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR) log_replay_exit, IARG_END);
+    } else if (!strcmp (name, "pthread_log_block")) {
+        // edited by hyihe
+        RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR) log_replay_block, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_END);
     }
     RTN_Close(rtn);
 }
@@ -268,7 +371,13 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 
     ptdata = (struct thread_data *) malloc (sizeof(struct thread_data));
     assert (ptdata);
-    
+
+    // edited by hyihe
+    num_threads++;
+    // need to start a new interval for a new thread
+    thd_ints.push_back(new_interval(get_clock_value(fd)));
+    thd_entr_type.push_back(0);
+
     ptdata->app_syscall = 0;
 
     PIN_SetThreadData (tls_key, ptdata, threadid);
@@ -300,3 +409,88 @@ int main(int argc, char** argv)
     return 0;
 }
 // END GENERIC STUFF NEEDED TO REPLAY WITH PIN
+
+
+// edited by hyihe
+// Implementations of functions and data types defined in happens_before.h
+int var_t::check_for_race(int acc_type, std::vector<interval_t *> &thd_ints, uint32_t tid) {
+	int ret = 0;
+	interval_t prev;
+	interval_t *current = thd_ints[tid];
+	if (acc_type == MEM_REF_WRITE) {
+		for(uint32_t i=0; i<thd_ints.size(); i++) {
+			if(i == tid)
+				continue;
+			// Write must happen AFTER all previous writes
+			// AND reads
+			if(!happens_before(this->last_wr[i], current) || 
+				!happens_before(this->last_rd[i], current)) {
+				ret = 1;
+				prev = (!happens_before(this->last_wr[i], current))?
+					*this->last_wr[i] : *this->last_rd[i];
+				break;
+			}
+		}
+	} else {
+		for(uint32_t i=0; i<thd_ints.size(); i++) {
+			if(i == tid)
+				continue;
+			// Read must happen AFTER all previous writes
+			if(!happens_before(this->last_wr[i], current)) {
+				ret = 1;
+				prev = *this->last_wr[i];
+				break;
+			}
+		}
+	}
+	if(ret) {
+		std::cerr << "@@@@ Race detected! Violating access is a "
+		<< ((acc_type==MEM_REF_WRITE)? "write" : "read") << "!" << std::endl;
+		fprintf(stderr, "@@@@ Interval interleaving %ld:%ld with %ld:%ld\n",
+			prev.first, prev.second, current->first, current->second);
+	}
+	return ret;
+}
+
+void var_t::update_intvls(int acc_type, const std::vector<interval_t *> &thd_ints, uint32_t tid) {
+	// skipping error checking here to speed up
+	interval_t *current = thd_ints[tid];
+	if(acc_type == MEM_REF_WRITE) {
+		this->last_wr[tid] = current;
+	} else {
+		this->last_rd[tid] = current;
+	}
+}
+
+int var_t::resize_intvls(int target_size) {
+	int diff = target_size - this->last_rd.size();
+	if(diff < 0)
+		return -1;
+	for(int i = 0; i < diff; ++i) {
+		// Intervals associated with NULL pointers
+		// happens before all other intervals
+		this->last_rd.push_back(0);
+		this->last_wr.push_back(0);
+	}
+	return 0;
+}
+
+interval_t *new_interval(long clock) {
+	interval_t *ret = new interval_t;
+	ret->first = clock;
+	ret->second = clock + 1;
+	return ret;
+}
+
+void update_interval_speculate(std::vector<interval_t *> &thd_ints, uint32_t tid, long clock) {
+	if(thd_ints[tid]->second != clock) {
+		fprintf(stderr, "Thread %5d's interval updated (spec) from %ld to %ld\n",
+			tid, thd_ints[tid]->second, clock);
+		thd_ints[tid]->second = clock;
+	}
+}
+
+void update_interval_overwrite(std::vector<interval_t *> &thd_ints, uint32_t tid, long clock) {
+	thd_ints[tid]->second = clock;
+}
+// end edited by hyihe
