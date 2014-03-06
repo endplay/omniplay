@@ -81,9 +81,9 @@
  *
  * This automatically disables TRACE_*
  */
-#define REPLAY_COMPRESS_READS
+//#define REPLAY_COMPRESS_READS
 
-//#define TRACE_READ_WRITE
+#define TRACE_READ_WRITE
 //#define TRACE_PIPE_READ_WRITE
 //#define TRACE_SOCKET_READ_WRITE
 
@@ -5736,22 +5736,61 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 				id.pid = val->bval.id.pid;
 				id.sysnum = val->bval.id.sysnum;
 
-				entry_pos = replayfs_syscache_get(&syscache, &id);
-				/* Entry should be > 0, otherwise there is a problem */
-				BUG_ON(entry_pos < 0);
+				if (syscache_id_is_zero(&id)) {
+					int size_max;
 
-				/* Get the disk_alloc referenced by entry */
-				alloc = replayfs_disk_alloc_get(&replayfs_alloc, entry_pos);
+					/*
+					printk("%s %d: Got val with buff_offs of %d\n", __func__, __LINE__,
+							val->bval.buff_offs);
+							*/
+					BUG_ON(val->bval.buff_offs < 0);
 
-				copy_offs = val->read_offset + val->bval.buff_offs;
+					size_max = rc - buff_offs;
+					if (size_max > val->bval.buff_offs) {
+						size_max = val->bval.buff_offs;
+					}
 
-				/* Copy the data into user space */
-				/* I've already checked access_ok, so I'm just doing a normal copy now */
-				replayfs_disk_alloc_read(alloc, buf + buff_offs, val->size, copy_offs + sizeof(struct replayfs_syscache_entry));
+					memset(buf+buff_offs, 0, size_max);
+					buff_offs += val->bval.buff_offs;
+				} else {
+					int size_max;
+					entry_pos = replayfs_syscache_get(&syscache, &id);
+					/* Entry should be > 0, otherwise there is a problem */
+					BUG_ON(entry_pos < 0);
 
-				buff_offs += val->size;
+					/* Get the disk_alloc referenced by entry */
+					alloc = replayfs_disk_alloc_get(&replayfs_alloc, entry_pos);
 
-				replayfs_disk_alloc_put(alloc);
+					copy_offs = val->read_offset + val->bval.buff_offs;
+
+					size_max = rc - buff_offs;
+					if (size_max < val->size) {
+						size_max = val->size;
+					}
+					/*
+					printk("%s %d: Adjusting size_max to %d, rc %ld, buff_offs %d, val->size %d\n",
+							__func__, __LINE__, size_max, rc, buff_offs, val->size);
+							*/
+
+					/* Copy the data into user space */
+					/* I've already checked access_ok, so I'm just doing a normal copy now */
+					/*
+					printk("%s %d: buf is %p, buff_offs is %lld, size_max is %d, size is %d\n",
+							__func__, __LINE__, buf, buff_offs, size_max, size);
+							*/
+					if (replayfs_disk_alloc_read(alloc, buf + buff_offs, size_max, copy_offs +
+							sizeof(struct replayfs_syscache_entry), 1)) {
+						printk("%s %d: Failed to copy data to userpace???\n", __func__,
+								__LINE__);
+						rc = -EFAULT;
+						replayfs_disk_alloc_put(alloc);
+						break;
+					}
+
+					buff_offs += val->size;
+
+					replayfs_disk_alloc_put(alloc);
+				}
 			}
 
 			new_syscall_done (3, rc);
@@ -6077,22 +6116,46 @@ replay_read (unsigned int fd, char __user * buf, size_t count)
 				id.pid = val->bval.id.pid;
 				id.sysnum = val->bval.id.sysnum;
 
-				entry_pos = replayfs_syscache_get(&syscache, &id);
-				/* Entry should be > 0, otherwise there is a problem */
-				BUG_ON(entry_pos < 0);
+				if (syscache_id_is_zero(&id)) {
+					int size_max;
 
-				/* Get the disk_alloc referenced by entry */
-				alloc = replayfs_disk_alloc_get(&replayfs_alloc, entry_pos);
+					BUG_ON(buff_offs == 0);
 
-				copy_offs = val->read_offset + val->bval.buff_offs;
+					size_max = rc - buff_offs;
+					if (size_max > val->bval.buff_offs) {
+						size_max = val->bval.buff_offs;
+					}
 
-				/* Copy the data into user space */
-				/* I've already checked access_ok, so I'm just doing a normal copy now */
-				replayfs_disk_alloc_read(alloc, buf + buff_offs, val->size, copy_offs + sizeof(struct replayfs_syscache_entry));
+					memset(buf+buff_offs, 0, size_max);
 
-				buff_offs += val->size;
+					buff_offs += val->bval.buff_offs;
+				} else {
+					int size_max;
+					entry_pos = replayfs_syscache_get(&syscache, &id);
+					/* Entry should be > 0, otherwise there is a problem */
+					BUG_ON(entry_pos < 0);
 
-				replayfs_disk_alloc_put(alloc);
+					/* Get the disk_alloc referenced by entry */
+					alloc = replayfs_disk_alloc_get(&replayfs_alloc, entry_pos);
+
+					copy_offs = val->read_offset + val->bval.buff_offs;
+
+					size_max = rc - buff_offs;
+					if (size_max < val->size) {
+						size_max = val->size;
+					}
+
+					/* Copy the data into user space */
+					/* I've already checked access_ok, so I'm just doing a normal copy now */
+					if (replayfs_disk_alloc_read(alloc, buf + buff_offs, size_max, copy_offs +
+							sizeof(struct replayfs_syscache_entry), 1)) {
+						BUG();
+					}
+
+					buff_offs += val->size;
+
+					replayfs_disk_alloc_put(alloc);
+				}
 			}
 
 			/* Consume args */
@@ -6259,6 +6322,10 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 		id.unique_id = current->record_thrd->rp_group->rg_id;
 		id.pid = current->record_thrd->rp_record_pid;
 
+		/*
+		printk("%s %d: Adding syscache with id {%lld, %lld, %lld}\n", __func__,
+				__LINE__, (loff_t)id.sysnum, (loff_t)id.unique_id, (loff_t)id.pid);
+				*/
 		replayfs_syscache_add(&syscache, &id, size, buf);
 
 		update_size(filp, meta);
@@ -6445,6 +6512,8 @@ replay_write (unsigned int fd, const char __user * buf, size_t count)
 		id.unique_id = current->replay_thrd->rp_record_thread->rp_group->rg_id;
 		id.pid = current->replay_thrd->rp_record_thread->rp_record_pid;
 
+		printk("%s %d: Adding syscache with id {%lld, %lld, %lld}\n", __func__,
+				__LINE__, (loff_t)id.sysnum, (loff_t)id.unique_id, (loff_t)id.pid);
 		replayfs_syscache_add(&syscache, &id, rc, buf);
 
 		/* We don't actually allocate any space! <insert evil laugh here> */

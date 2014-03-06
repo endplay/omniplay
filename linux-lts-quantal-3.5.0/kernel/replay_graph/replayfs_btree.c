@@ -55,12 +55,20 @@
 //#include "replayfs_fs.h"
 //#include "replayfs_inode.h"
 
-#define REPLAYFS_BTREE_DEBUG
+//#define REPLAYFS_BTREE_DEBUG
+
+//#define REPLAYFS_BTREE_ALLOC_DEBUG
 
 #ifdef REPLAYFS_BTREE_DEBUG
 #define debugk(...) printk(__VA_ARGS__)
 #else
 #define debugk(...)
+#endif
+
+#ifdef REPLAYFS_BTREE_ALLOC_DEBUG
+#define alloc_debugk(...) printk(__VA_ARGS__)
+#else
+#define alloc_debugk(...)
 #endif
 
 #define LONG_PER_U64 (64 / BITS_PER_LONG)
@@ -72,7 +80,8 @@
 struct replayfs_btree_value replayfs_zero_value = {
 	.id = {
 		.unique_id = -1,
-		.sysnum = -1
+		.sysnum = -1,
+		.pid = 0
 	},
 	.buff_offs = 0
 };
@@ -254,6 +263,9 @@ static struct page *bval(struct replayfs_diskalloc *allocator,
 		*page_data = replayfs_kmap(page);
 	}
 
+	alloc_debugk("%s %d: Get on page %lu (%p)\n", __func__, __LINE__,
+			page->index, page);
+
 	return page;
 }
 
@@ -265,6 +277,10 @@ static void bval_put(struct replayfs_btree_head *head, struct page *page) {
 		} else {
 			replayfs_diskalloc_sync_page(head->allocator, page);
 		}
+
+		alloc_debugk("%s %d: Put on page %lu (%p)\n", __func__, __LINE__,
+				page->index, page);
+
 		replayfs_kunmap(page);
 	}
 }
@@ -493,8 +509,7 @@ void replayfs_btree_delete(struct replayfs_btree_head *head)
 
 		replayfs_btree_put_page(head, page);
 
-		value = replayfs_btree_remove(head, &_key, &page);
-		replayfs_btree_put_page(head, page);
+		replayfs_btree_remove(head, &_key, NULL);
 
 		value = replayfs_btree_last(head, &key, &page);
 	}
@@ -518,6 +533,9 @@ static struct page *get_head_page(struct replayfs_btree_head *head,
 	ret = head->node_page;
 	if (ret != NULL) {
 		*data = replayfs_kmap(ret);
+
+		alloc_debugk("%s %d: Headpage map on page %lu (%p)\n", __func__, __LINE__,
+				ret->index, ret);
 	} else {
 		*data = NULL;
 	}
@@ -1415,10 +1433,16 @@ int __must_check replayfs_btree_insert_update(struct replayfs_btree_head *head,
 		if (in_val == NULL) {
 			if (key->offset > 0) {
 				struct replayfs_btree_key fill_key;
+				struct replayfs_btree_value fill_value;
 				fill_key.offset = 0;
 				fill_key.size = key->offset;
 				debugk("%s %d: Detected an initial key with a non-zero offset, zero padding before that offset\n",
 						__func__, __LINE__);
+
+				memcpy(&fill_value, &replayfs_zero_value,
+						sizeof(fill_value));
+
+				fill_value.buff_offs = fill_key.size;
 				if (replayfs_btree_insert(head, &fill_key, &replayfs_zero_value, gfp)) {
 					return -ENOMEM;
 				}
@@ -1426,6 +1450,7 @@ int __must_check replayfs_btree_insert_update(struct replayfs_btree_head *head,
 			debugk("%s %d: Calling insert %p!\n", __func__, __LINE__, val);
 			debugk("%s %d: Inserting val with buff_offs: %d\n", __func__, __LINE__,
 					val->buff_offs);
+
 			return replayfs_btree_insert(head, key, val, gfp);
 		}
 
@@ -1441,10 +1466,18 @@ int __must_check replayfs_btree_insert_update(struct replayfs_btree_head *head,
 		/* If there is a gap in the range, zero fill it */
 		if (in_key.offset + in_key.size < key->offset) {
 			struct replayfs_btree_key fill_key;
+			struct replayfs_btree_value fill_value;
+
 			fill_key.offset = in_key.offset + in_key.size;
 			fill_key.size = key->offset - fill_key.offset;
 			debugk("%s %d: Inserting val with buff_offs: %d\n", __func__, __LINE__,
 					replayfs_zero_value.buff_offs);
+
+			memcpy(&fill_value, &replayfs_zero_value,
+					sizeof(fill_value));
+
+			fill_value.buff_offs = fill_key.size;
+
 			if (replayfs_btree_insert(head, &fill_key, &replayfs_zero_value, gfp)) {
 				return -ENOMEM;
 			}
@@ -1465,6 +1498,8 @@ int __must_check replayfs_btree_insert_update(struct replayfs_btree_head *head,
 	 * we're scanning backwards
 	 */
 	while (in_key.offset + in_key.size > key->offset) {
+		int found;
+		struct replayfs_btree_value _in_val;
 		/* 
 		 * Update the key's size/offset, if it is updated to zero size, remove the
 		 * key 
@@ -1490,9 +1525,11 @@ int __must_check replayfs_btree_insert_update(struct replayfs_btree_head *head,
 		bval_put(head, page);
 		debugk("%s %d: Deleting in_key {%lld, %lld}\n", __func__, __LINE__,
 				in_key.offset, in_key.size);
-		in_val = replayfs_btree_remove(head, &in_key, &page);
+		found = replayfs_btree_remove(head, &in_key, &_in_val);
 
-		if (in_val != NULL) {
+		if (found) {
+			in_val = &_in_val;
+			page = NULL;
 			/* If the top of our address range is above key */
 			debugk("%s %d: cmparing in_max to key_max: %lld <> %lld!\n", __func__,
 					__LINE__, in_key.offset + in_key.size, key->offset + key->size);
@@ -1503,9 +1540,14 @@ int __must_check replayfs_btree_insert_update(struct replayfs_btree_head *head,
 
 				new_key.offset = key->offset + key->size;
 				new_key.size = in_key.offset + in_key.size - new_key.offset;
-				new_val.buff_offs = in_val->buff_offs + (
-							key->offset + key->size - in_key.offset
-						);
+
+				if (syscache_id_is_zero(&new_val.id)) {
+					new_val.buff_offs = new_key.size;
+				} else {
+					new_val.buff_offs = in_val->buff_offs + (
+								key->offset + key->size - in_key.offset
+							);
+				}
 				debugk("%s %d: Inserting val with buff_offs: %d (key {%lld, %lld}\n", __func__, __LINE__,
 						new_val.buff_offs, new_key.offset, new_key.size);
 				replayfs_btree_insert(head, &new_key, &new_val, gfp);
@@ -1523,12 +1565,15 @@ int __must_check replayfs_btree_insert_update(struct replayfs_btree_head *head,
 				memcpy(&new_val, in_val, sizeof(struct replayfs_btree_value));
 				new_key.offset = in_key.offset;
 				new_key.size = key->offset - in_key.offset;
+
+				if (syscache_id_is_zero(&new_val.id)) {
+					new_val.buff_offs = new_key.size;
+				}
+
 				debugk("%s %d: Inserting val with buff_offs: %d\n", __func__, __LINE__,
 						new_val.buff_offs);
 				replayfs_btree_insert(head, &new_key, &new_val, gfp);
 			}
-
-			bval_put(head, page);
 
 			//keycpy(&new_key, in_key);
 			/* Get prev key, and repeat */
@@ -1578,15 +1623,14 @@ int replayfs_btree_insert(struct replayfs_btree_head *head,
 	return btree_insert_level(head, &replayfs_geo, key, val, 1, gfp);
 }
 
-static void *btree_remove_level(struct replayfs_btree_head *head, struct btree_geo *geo,
-		struct replayfs_btree_key *key, int level, struct page **);
+static int btree_remove_level(struct replayfs_btree_head *head, struct btree_geo *geo,
+		struct replayfs_btree_key *key, int level, struct replayfs_btree_value *value); 
 static void merge(struct replayfs_btree_head *head, struct btree_geo *geo, int level,
 		struct page *left, unsigned long *left_data, int lfill,
 		struct page *right, unsigned long *right_data, int rfill,
 		struct page *parent, unsigned long *parent_data, int lpos)
 {
 	int i;
-	struct page *page = NULL;
 
 	if (level > 1) {
 		for (i = 0; i < rfill; i++) {
@@ -1609,8 +1653,7 @@ static void merge(struct replayfs_btree_head *head, struct btree_geo *geo, int l
 		debugk("%s %d: Deleting key {%lld, %lld} (pos %d)\n", __func__, __LINE__,
 				bkey(geo, parent_data, lpos)->offset, bkey(geo, parent_data,
 					lpos)->size, lpos);
-		btree_remove_level(head, geo, bkey(geo, parent_data, lpos), level + 1, &page);
-		bval_put(head, page);
+		btree_remove_level(head, geo, bkey(geo, parent_data, lpos), level + 1, NULL);
 	} else {
 		for (i = 0; i < rfill; i++) {
 			struct replayfs_btree_value *tmp;
@@ -1634,8 +1677,7 @@ static void merge(struct replayfs_btree_head *head, struct btree_geo *geo, int l
 		debugk("%s %d: Deleting key {%lld, %lld} (pos %d)\n", __func__, __LINE__,
 				bkey(geo, parent_data, lpos)->offset, bkey(geo, parent_data,
 					lpos)->size, lpos);
-		btree_remove_level(head, geo, bkey(geo, parent_data, lpos), level + 1, &page);
-		bval_put(head, page);
+		btree_remove_level(head, geo, bkey(geo, parent_data, lpos), level + 1, NULL);
 	}
 
 	/* Got to free the right node */
@@ -1651,7 +1693,6 @@ static int rebalance(struct replayfs_btree_head *head, struct btree_geo *geo,
 	unsigned long *left_data = NULL;
 	unsigned long *right_data = NULL;
 	struct page *parent, *left = NULL, *right = NULL;
-	struct page *page;
 	int i, no_left, no_right;
 
 
@@ -1660,8 +1701,7 @@ static int rebalance(struct replayfs_btree_head *head, struct btree_geo *geo,
 		 * can happen.  Parent node contains a single child, this
 		 * node, so merging with a sibling never happens.
 		 */
-		btree_remove_level(head, geo, key, level + 1, &page);
-		bval_put(head, page);
+		btree_remove_level(head, geo, key, level + 1, NULL);
 		//mempool_free(child, head->mempool);
 		replayfs_diskalloc_free_page(head->allocator, child);
 		return 1;
@@ -1751,26 +1791,29 @@ static int rebalance(struct replayfs_btree_head *head, struct btree_geo *geo,
 	return 1;
 }
 
-static void *btree_remove_level(struct replayfs_btree_head *head, struct btree_geo *geo,
-		struct replayfs_btree_key *key, int level, struct page **page)
+static int btree_remove_level(struct replayfs_btree_head *head, struct btree_geo *geo,
+		struct replayfs_btree_key *key, int level, struct replayfs_btree_value *out_value)
 {
 	unsigned long *node_data = NULL;
 	struct page *node;
 	int i, pos, fill;
-	void *ret;
 
 	struct replayfs_btree_key k1, k2;
 	int do_replace = 0;
+
+	int ret = 0;
 
 	if (level > head->height) {
 		/* we recursed all the way up */
 		head->height = 0;
 		head->node_page = NULL;
 		update_meta(head);
-		return NULL;
+		return 0;
 	}
 
 	node = find_level(head, geo, key, level, &node_data);
+	alloc_debugk("%s %d Mapped page %lu (%p) from find_level\n", __func__,
+			__LINE__, node->index, node);
 
 	pos = getpos(geo, node_data, key->offset);
 
@@ -1779,10 +1822,18 @@ static void *btree_remove_level(struct replayfs_btree_head *head, struct btree_g
 			fill, pos, geo->no_pairs);
 	if ((level == 1) && (keycmp(geo, node_data, pos, key) != 0)) {
 		debugk("%s %d: !!!!!!! returning NULL?\n", __func__, __LINE__);
-		return NULL;
+		bval_put(head, node);
+		return 0;
 	}
-	*page = node;
-	ret = bval_at(head->allocator, geo, node_data, pos);
+
+
+	if (bval_at(head->allocator, geo, node_data, pos) != NULL) {
+		ret = 1;
+		if (out_value) {
+		 memcpy(out_value, bval_at(head->allocator, geo, node_data, pos),
+				 sizeof(struct replayfs_btree_value));
+		}
+	}
 
 	debugk("%s %d: Removing key: {%lld, %lld} from page %lu\n", __func__, __LINE__,
 			bkey(geo, node_data, pos)->offset, bkey(geo, node_data, pos)->size,
@@ -1833,11 +1884,11 @@ static void *btree_remove_level(struct replayfs_btree_head *head, struct btree_g
 		if (level < head->height) {
 			struct replayfs_btree_key *oldkey = 
 				(do_replace) ? &k1 : NULL;
-			printk("%s %d: here\n", __func__, __LINE__);
+			//printk("%s %d: here\n", __func__, __LINE__);
 			do_replace &= 
 				rebalance(head, geo, key, level, node, node_data, fill - 1, oldkey);
 		} else if (fill - 1 == 1) {
-			printk("%s %d: here\n", __func__, __LINE__);
+			//printk("%s %d: here\n", __func__, __LINE__);
 			btree_shrink(head, geo);
 		}
 	}
@@ -1852,13 +1903,13 @@ static void *btree_remove_level(struct replayfs_btree_head *head, struct btree_g
 	return ret;
 }
 
-struct replayfs_btree_value *replayfs_btree_remove(struct replayfs_btree_head *head,
-		   struct replayfs_btree_key *key, struct page **page)
+int replayfs_btree_remove(struct replayfs_btree_head *head,
+		   struct replayfs_btree_key *key, struct replayfs_btree_value *value)
 {
 	if (head->height == 0)
-		return NULL;
+		return 0;
 
-	return btree_remove_level(head, &replayfs_geo, key, 1, page);
+	return btree_remove_level(head, &replayfs_geo, key, 1, value);
 }
 
 int replayfs_btree_merge(struct replayfs_btree_head *target, struct replayfs_btree_head *victim,
@@ -1903,7 +1954,7 @@ int replayfs_btree_merge(struct replayfs_btree_head *target, struct replayfs_btr
 		/* We must make a copy of the key, as the original will get
 		 * mangled inside btree_remove. */
 		keycpy(&dup, &key);
-		replayfs_btree_remove(victim, &dup, &page);
+		replayfs_btree_remove(victim, &dup, NULL);
 		bval_put(victim, val);
 	}
 	return 0;

@@ -4,7 +4,7 @@
 #include <linux/mm_types.h>
 
 //#define REPLAYFS_DEBUG_MAPPINGS
-#define REPLAYFS_DEBUG_PAGEALLOC
+//#define REPLAYFS_DEBUG_PAGEALLOC
 
 #ifdef REPLAYFS_DEBUG_PAGEALLOC
 void pagealloc_print_status(struct page *page);
@@ -32,6 +32,7 @@ void __replayfs_kunmap(struct page *page, const char *func, int line);
 #endif
 
 #if defined(REPLAYFS_DEBUG_PAGEALLOC) || defined(REPLAYFS_DEBUG_MAPPINGS)
+#  define BUILD_KMAP
 void replayfs_kmap_init(void);
 void replayfs_kmap_destroy(void);
 #else

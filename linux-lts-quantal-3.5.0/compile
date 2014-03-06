@@ -34,5 +34,8 @@ if [ $is_vm -eq 0 ]; then
 	popd
 fi
 
+# Beep!
+echo -e "\a"
+
 exit $ret
 

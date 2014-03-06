@@ -10,10 +10,24 @@
 
 //#define REPLAYFS_FILEMAP_DEBUG
 
+//#define REPLAYFS_FILEMAP_DEBUG_LOCK
+
 #ifdef  REPLAYFS_FILEMAP_DEBUG
 #define debugk(...) printk(__VA_ARGS__)
 #else
 #define debugk(...)
+#endif
+
+#ifdef  REPLAYFS_FILEMAP_DEBUG_LOCK_META
+#define meta_lock_debugk(...) printk(__VA_ARGS__)
+#else
+#define meta_lock_debugk(...)
+#endif
+
+#ifdef  REPLAYFS_FILEMAP_DEBUG_LOCK
+#define lock_debugk(...) printk(__VA_ARGS__)
+#else
+#define lock_debugk(...)
 #endif
 
 static DEFINE_MUTEX(meta_lock);
@@ -69,7 +83,11 @@ int replayfs_filemap_init_key (struct replayfs_filemap *map,
 	struct replayfs_btree128_value *disk_pos;
 	struct page *page;
 
+	meta_lock_debugk("%s %d - %p: Locking %p\n", __func__, __LINE__, current,
+			&meta_lock);
 	mutex_lock(&meta_lock);
+	meta_lock_debugk("%s %d - %p: Locked %p\n", __func__, __LINE__, current,
+			meta_lock);
 	/* Check for this file in the meta btree */
 	/*
 	printk("%s %d - %p: Looking for key {%llu, %llu}  -- ",
@@ -94,13 +112,18 @@ int replayfs_filemap_init_key (struct replayfs_filemap *map,
 
 		id = disk_pos->id;
 		replayfs_btree128_put_page(&filemap_meta_tree, page);
+		meta_lock_debugk("%s %d - %p: Unlocking %p\n", __func__, __LINE__, current,
+				&meta_lock);
 		mutex_unlock(&meta_lock);
 
 		debugk("%s %d: ----LOADING btree from %lld\n", __func__, __LINE__,
 				disk_pos->id);
+		lock_debugk("%s %d - %p: Mutex init: %p\n", __func__, __LINE__, current, &map->lock);
 		mutex_init(&map->lock);
 		ret = replayfs_btree_init(&map->entries, alloc, id);
 	} else {
+		meta_lock_debugk("%s %d - %p: Unlocking %p\n", __func__, __LINE__, current,
+				&meta_lock);
 		mutex_unlock(&meta_lock);
 		ret = -ENOENT;
 	}
@@ -128,7 +151,11 @@ int replayfs_filemap_exists(struct file *filp) {
 	//printk("%s %d: Checking for the existance of {%lld, %lld}\n", __func__,
 			//__LINE__, key.id1, key.id2);
 
+	meta_lock_debugk("%s %d - %p: Locking %p\n", __func__, __LINE__, current,
+			&meta_lock);
 	mutex_lock(&meta_lock);
+	meta_lock_debugk("%s %d - %p: Locked %p\n", __func__, __LINE__, current,
+			&meta_lock);
 	/* Check for this file in the meta btree */
 	/*
 	printk("%s %d - %p: Looking for key {%llu, %llu}  -- ",
@@ -152,6 +179,8 @@ int replayfs_filemap_exists(struct file *filp) {
 	}
 
 	//printk("%s %d: Ret for %p is %d\n", __func__, __LINE__, filp, ret);
+	meta_lock_debugk("%s %d - %p: Unlocking %p\n", __func__, __LINE__, current,
+			&meta_lock);
 	mutex_unlock(&meta_lock);
 
 	return ret;
@@ -171,9 +200,14 @@ int replayfs_filemap_init_with_pos(struct replayfs_filemap *map,
 	key.id1 = filp->f_dentry->d_inode->i_ino;
 	key.id2 = filp->f_dentry->d_inode->i_sb->s_dev;
 
+	lock_debugk("%s %d - %p: Mutex init: %p\n", __func__, __LINE__, current, &map->lock);
 	mutex_init(&map->lock);
 
+	meta_lock_debugk("%s %d - %p: Locking %p\n", __func__, __LINE__, current,
+			&meta_lock);
 	mutex_lock(&meta_lock);
+	meta_lock_debugk("%s %d - %p: Locked %p\n", __func__, __LINE__, current,
+			&meta_lock);
 	/* Check for this file in the meta btree */
 	debugk("%s %d: Checking btree for key {%lld, %lld}\n", __func__, __LINE__,
 			key.id1, key.id2);
@@ -201,6 +235,8 @@ int replayfs_filemap_init_with_pos(struct replayfs_filemap *map,
 		id = disk_pos->id;
 		*meta_pos = id;
 		replayfs_btree128_put_page(&filemap_meta_tree, page);
+		meta_lock_debugk("%s %d - %p: Unlocking %p\n", __func__, __LINE__, current,
+				&meta_lock);
 		mutex_unlock(&meta_lock);
 
 		debugk("%s %d: ----LOADING btree from %lld\n", __func__, __LINE__,
@@ -213,6 +249,8 @@ int replayfs_filemap_init_with_pos(struct replayfs_filemap *map,
 		debugk("%s %d: ----Btree created at %lld\n", __func__, __LINE__,
 				map->entries.meta_loc);
 
+		meta_lock_debugk("%s %d - %p: Unlocking %p\n", __func__, __LINE__, current,
+				&meta_lock);
 		mutex_unlock(&meta_lock);
 	}
 
@@ -237,9 +275,14 @@ int replayfs_filemap_init(struct replayfs_filemap *map,
 	key.id1 = filp->f_dentry->d_inode->i_ino;
 	key.id2 = filp->f_dentry->d_inode->i_sb->s_dev;
 
+	lock_debugk("%s %d - %p: Mutex init: %p\n", __func__, __LINE__, current, &map->lock);
 	mutex_init(&map->lock);
 
+	meta_lock_debugk("%s %d - %p: Locking %p\n", __func__, __LINE__, current,
+			&meta_lock);
 	mutex_lock(&meta_lock);
+	meta_lock_debugk("%s %d - %p: Locked %p\n", __func__, __LINE__, current,
+			&meta_lock);
 	/* Check for this file in the meta btree */
 	/*
 	printk("%s %d - %p: Looking for key {%llu, %llu}  -- ",
@@ -264,6 +307,8 @@ int replayfs_filemap_init(struct replayfs_filemap *map,
 
 		id = disk_pos->id;
 		replayfs_btree128_put_page(&filemap_meta_tree, page);
+		meta_lock_debugk("%s %d - %p: Unlocking %p\n", __func__, __LINE__, current,
+				&meta_lock);
 		mutex_unlock(&meta_lock);
 
 		debugk("%s %d: ----LOADING btree from %lld\n", __func__, __LINE__,
@@ -275,6 +320,8 @@ int replayfs_filemap_init(struct replayfs_filemap *map,
 		ret = replayfs_filemap_create(map, alloc, &key, NULL);
 		debugk("%s %d: ----Btree created at %lld\n", __func__, __LINE__,
 				map->entries.meta_loc);
+		meta_lock_debugk("%s %d - %p: Unlocking %p\n", __func__, __LINE__, current,
+				&meta_lock);
 		mutex_unlock(&meta_lock);
 	}
 
@@ -301,6 +348,8 @@ void replayfs_filemap_delete(struct replayfs_filemap *map,
 	replayfs_btree_delete(&map->entries);
 	debugk("%s %d: Done deleting btree\n", __func__, __LINE__);
 
+	meta_lock_debugk("%s %d - %p: Locking %p\n", __func__, __LINE__, current,
+			&meta_lock);
 	mutex_lock(&meta_lock);
 	/*
 	printk("%s %d - %p: Removing key {%llu, %llu}\n", __func__, __LINE__, current,
@@ -308,6 +357,8 @@ void replayfs_filemap_delete(struct replayfs_filemap *map,
 			*/
 	replayfs_btree128_remove(&filemap_meta_tree, key, &page);
 	replayfs_btree128_put_page(&filemap_meta_tree, page);
+	meta_lock_debugk("%s %d - %p: Unlocking %p\n", __func__, __LINE__, current,
+			&meta_lock);
 	mutex_unlock(&meta_lock);
 	debugk("%s %d: Done\n", __func__, __LINE__);
 }
@@ -329,8 +380,14 @@ int replayfs_filemap_write(struct replayfs_filemap *map, loff_t unique_id,
 
 	debugk("%s %d: Inserting into filemap btree (%lld) key {%lld, %lld}\n", __func__,
 			__LINE__, map->entries.meta_loc, key.offset, key.size);
+	lock_debugk("%s %d - %p: Locking %p\n", __func__, __LINE__, current,
+			&map->lock);
 	mutex_lock(&map->lock);
+	lock_debugk("%s %d - %p: Locked %p\n", __func__, __LINE__, current,
+			&map->lock);
 	ret = replayfs_btree_insert_update(&map->entries, &key, &value, GFP_NOFS);
+	lock_debugk("%s %d - %p: Unlocking %p\n", __func__, __LINE__, current,
+			&map->lock);
 	mutex_unlock(&map->lock);
 	debugk("%s %d: Btree insert update\n", __func__, __LINE__);
 
@@ -365,7 +422,11 @@ struct replayfs_filemap_entry *replayfs_filemap_read(struct replayfs_filemap *ma
 	debugk("%s %d: Doing read with offset %lld, size %d, cur_addr %lld end_addr %lld\n",
 			__func__, __LINE__, offset, size, cur_addr, end_addr);
 
+	lock_debugk("%s %d - %p: Locking %p\n", __func__, __LINE__, current,
+			&map->lock);
 	mutex_lock(&map->lock);
+	lock_debugk("%s %d - %p: Locked %p\n", __func__, __LINE__, current,
+			&map->lock);
 
 	ret = 0;
 
@@ -385,10 +446,16 @@ struct replayfs_filemap_entry *replayfs_filemap_read(struct replayfs_filemap *ma
 				cur_addr, &key, &btree_page);
 
 		if (val == NULL) {
+			lock_debugk("%s %d - %p: Unlocking %p\n", __func__, __LINE__, current,
+					&map->lock);
+			mutex_unlock(&map->lock);
 			return ERR_PTR(-ENOENT);
 		}
 
 		if (IS_ERR(val)) {
+			lock_debugk("%s %d - %p: Unlocking %p\n", __func__, __LINE__, current,
+					&map->lock);
+			mutex_unlock(&map->lock);
 			return (void *)val;
 		}
 
@@ -425,12 +492,15 @@ struct replayfs_filemap_entry *replayfs_filemap_read(struct replayfs_filemap *ma
 			struct replayfs_filemap_value *old_vals;
 			vals_size <<=1;
 			old_vals = vals;
+			lock_debugk("%s %d: Trying to allocate %lld bytes\n", __func__, __LINE__,
+					sizeof(struct replayfs_filemap_value) * (loff_t)vals_size);
 			vals = kmalloc(sizeof(struct replayfs_filemap_value) * vals_size,
 					GFP_KERNEL);
 			if (vals == NULL) {
+				printk("%s %d: vals allocation failed???\n", __func__, __LINE__);
 				vals = old_vals;
 				ret = -ENOMEM;
-				goto out;
+				goto out_unlock;
 			}
 			memcpy(vals, old_vals,
 					sizeof(struct replayfs_filemap_value) * (vals_size>>1));
@@ -451,6 +521,8 @@ struct replayfs_filemap_entry *replayfs_filemap_read(struct replayfs_filemap *ma
 
 		replayfs_btree_put_page(&map->entries, btree_page);
 	}
+	lock_debugk("%s %d - %p: Unlocking %p\n", __func__, __LINE__, current,
+			&map->lock);
 	mutex_unlock(&map->lock);
 
 	/* Now copy the vals into a dedup struct */
@@ -478,5 +550,11 @@ out:
 		entry = ERR_PTR(ret);
 	}
 	return entry;
+
+out_unlock:
+	lock_debugk("%s %d - %p: Unlocking %p\n", __func__, __LINE__, current,
+			&map->lock);
+	mutex_unlock(&map->lock);
+	goto out;
 }
 

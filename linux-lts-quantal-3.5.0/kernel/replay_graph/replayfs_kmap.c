@@ -8,9 +8,9 @@
 
 #include "replayfs_kmap.h"
 
-#define KMAP_DEBUG_PRINTING
+//#define KMAP_DEBUG_PRINTING
 
-#ifdef KMAP_DEBUG_PRINTK
+#ifdef KMAP_DEBUG_PRINTING
 #define debugk(...) printk(__VA_ARGS__)
 #else
 #define debugk(...)
@@ -28,6 +28,7 @@
 #define MAX_ALLOCATION_LIFETIME 5
 
 
+#ifdef BUILD_KMAP
 static atomic_t num_kmaps = {0};
 static atomic_t num_kunmaps = {0};
 static struct mutex lock;
@@ -368,10 +369,25 @@ static void update_entry(struct page *page, const char *func, int line,
 #endif
 
 void __pagealloc_get(struct page *page, const char *function, int line) {
+
+	debugk("%s %d: Pagealloc_get on (%lu) {%llX}\n", __func__, __LINE__,
+			page->index, key(page));
+
+	if (page->index == 217) {
+		dump_stack();
+	}
+
 	update_entry(page, function, line, IS_KMAP, &alloc_table, 0);
 }
 
 void __pagealloc_put(struct page *page, const char *function, int line) {
+	debugk("%s %d: Pagealloc_put on (%lu) {%llX}\n", __func__, __LINE__,
+			page->index, key(page));
+
+	if (page->index == 217) {
+		dump_stack();
+	}
+
 	update_entry(page, function, line, IS_KUNMAP, &alloc_table, 0);
 }
 
@@ -388,7 +404,7 @@ void pagealloc_print_status(struct page *page) {
 void *__replayfs_kmap(struct page *page, const char *function, int line) {
 	void *ret;
 	ret = kmap(page);
-	debugk("%s %d: Map on {%llX}\n", __func__, __LINE__, key(page));
+	debugk("%s %d: Map on (%lu) {%llX}\n", __func__, __LINE__, page->index, key(page));
 
 	atomic_inc(&num_kmaps);
 
@@ -400,7 +416,7 @@ void *__replayfs_kmap(struct page *page, const char *function, int line) {
 }
 
 void __replayfs_kunmap(struct page *page, const char *function, int line) {
-	debugk("%s %d: Unmap on {%llX}\n", __func__, __LINE__, key(page));
+	debugk("%s %d: Unmap on (%lu) {%llX}\n", __func__, __LINE__, page->index, key(page));
 
 	update_entry(page, function, line, IS_KUNMAP, &mapping_table, 1);
 
@@ -408,3 +424,4 @@ void __replayfs_kunmap(struct page *page, const char *function, int line) {
 	kunmap(page);
 }
 
+#endif // BUILD_KMAP

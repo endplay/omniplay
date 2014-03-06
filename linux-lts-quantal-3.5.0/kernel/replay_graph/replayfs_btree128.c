@@ -50,7 +50,7 @@
 #include "replayfs_diskalloc.h"
 #include "replayfs_kmap.h"
 
-#define REPLAYFS_BTREE128_DEBUG
+//#define REPLAYFS_BTREE128_DEBUG
 
 #ifdef REPLAYFS_BTREE128_DEBUG
 #define debugk(...) printk(__VA_ARGS__)
@@ -520,35 +520,29 @@ struct replayfs_btree128_value *replayfs_btree128_lookup(
 
 	for ( ; height > 1; height--) {
 		struct page *tmppage;
-		/*
 		debugk("%s %d: On non-leaf node (key is {%llu, %llu})!\n", __func__,
 				__LINE__, pos->id1, pos->id2);
-				*/
 		for (i = 0; i < replayfs128_geo.no_pairs; i++) {
-			/*
 			debugk("%s %d: Checking against {%llu, %llu}\n", __func__, __LINE__, 
 					bkey(&replayfs128_geo, node_data, i)->id1,
 					bkey(&replayfs128_geo, node_data, i)->id2);
-					*/
 			if (valkeycmp(&replayfs128_geo, node_data, i, pos) <= 0) {
-				//debugk("%s %d: Match!\n", __func__, __LINE__);
+				debugk("%s %d: Match!\n", __func__, __LINE__);
 				break;
 			}
 		}
 
 		if (i == replayfs128_geo.no_pairs) {
-			//debugk("%s %d: key not found, returning NULL\n", __func__, __LINE__);
+			debugk("%s %d: key not found, returning NULL\n", __func__, __LINE__);
 			bval_put(head, node);
 			return NULL;
 		}
 
 		tmppage = node;
 
-		/*
 		debugk("%s %d: bkey is {%llu, %llu}\n", __func__, __LINE__,
 				bkey(&replayfs128_geo, node_data, i)->id1,
 				bkey(&replayfs128_geo, node_data, i)->id2);
-				*/
 
 		node = bval(head->allocator, &replayfs128_geo, node_data, &node_data, i);
 		if (!node) {
@@ -565,20 +559,22 @@ struct replayfs_btree128_value *replayfs_btree128_lookup(
 		return NULL;
 	}
 
-	//debugk("%s %d: Base key is {%llu, %llu}\n", __func__, __LINE__, pos->id1, pos->id2);
+	debugk("%s %d: Base key is {%llu, %llu}\n", __func__, __LINE__, pos->id1, pos->id2);
 	for (i = 0; i < replayfs128_geo.no_pairs; i++) {
 		int ret;
-		/*
 		debugk("%s %d: Comparing to key {%llu, %llu}\n", __func__, __LINE__,
 				bkey(&replayfs128_geo, node_data, i)->id1,
 				bkey(&replayfs128_geo, node_data, i)->id2);
-				*/
 
 		ret = valkeycmp(&replayfs128_geo, node_data, i, pos);
 		if (ret == 0) {
-			//debugk("%s %d: Found key at %d\n", __func__, __LINE__, i);
+			debugk("%s %d: Found key at %d\n", __func__, __LINE__, i);
 			*ret_page = node;
 			return (void *)bval_at(head->allocator, &replayfs128_geo, node_data, i);
+		}
+
+		if (keyzero(&replayfs128_geo, bkey(&replayfs128_geo, node_data, i))) {
+				break;
 		}
 	}
 
@@ -914,7 +910,7 @@ retry:
 	/* two identical keys are not allowed */
 	debugk("%s %d: keycmp key {%llu, %llu} with fill {%llu, %llu}\n", __func__, __LINE__,
 			key->id1, key->id2, bkey(geo, node_data, pos)->id1, bkey(geo, node_data, pos)->id2);
-	dump_stack();
+	//dump_stack();
 	BUG_ON(pos < fill && keycmp(geo, node_data, pos, key) == 0);
 
 	debugk("%s %d: fill is %d, pos is %d no_pars is %d!\n", __func__, __LINE__,

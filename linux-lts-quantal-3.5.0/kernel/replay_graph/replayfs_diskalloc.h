@@ -85,10 +85,10 @@ struct replayfs_disk_alloc *replayfs_diskalloc_alloc(
 		struct replayfs_diskalloc *alloc, int size);
 void replayfs_diskalloc_free(struct replayfs_disk_alloc *alloc);
 
-void replayfs_disk_alloc_write(struct replayfs_disk_alloc *alloc, void *data,
-		size_t size, loff_t offset);
-void replayfs_disk_alloc_read(struct replayfs_disk_alloc *alloc, void *data,
-		size_t size, loff_t offset);
+__must_check int replayfs_disk_alloc_write(struct replayfs_disk_alloc *alloc, void *data,
+		size_t size, loff_t offset, int user);
+__must_check int replayfs_disk_alloc_read(struct replayfs_disk_alloc *alloc, void *data,
+		size_t size, loff_t offset, int user);
 void replayfs_disk_alloc_put(struct replayfs_disk_alloc *alloc);
 
 struct replayfs_disk_alloc *replayfs_disk_alloc_get(struct replayfs_diskalloc *alloc, loff_t pos);
