@@ -12,12 +12,19 @@
 #include "util.h"
 #include <sys/socket.h>
 #include <linux/net.h>
+#include <sys/mman.h>
 
 #include <sys/wait.h>
 #include <signal.h>
 
 #include "xray_monitor.h"
 
+// Defined in the makefile.rules
+// #define ONLY_X
+
+int copy_data = 0;
+long bytes_read = 0;
+long bytes_written = 0;
 long global_syscall_cnt = 0;
 
 struct thread_data {
@@ -53,12 +60,12 @@ int get_record_pid(void);
 
 ADDRINT find_static_address(ADDRINT ip)
 {
-	PIN_LockClient();
-	IMG img = IMG_FindByAddress(ip);
-	if (!IMG_Valid(img)) return ip;
-	ADDRINT offset = IMG_LoadOffset(img);
-	PIN_UnlockClient();
-	return ip - offset;
+    PIN_LockClient();
+    IMG img = IMG_FindByAddress(ip);
+    if (!IMG_Valid(img)) return ip;
+    ADDRINT offset = IMG_LoadOffset(img);
+    PIN_UnlockClient();
+    return ip - offset;
 }
 
 struct read_info {
@@ -82,6 +89,15 @@ struct open_info {
 
 struct close_info {
     int fd;
+};
+
+struct mmap_info {
+    void* addr;
+    int length;
+    int prot;
+    int flags;
+    int fd;
+    off_t offset;
 };
 
 struct socket_info {
@@ -159,6 +175,7 @@ void read_stop(int rc) {
             fprintf(stderr, "read from file %s\n", oi->filename);
             fprintf(meta_fp, "READ %ld size: %d from %s\n", global_syscall_cnt, rc, oi->filename);
             fflush(meta_fp);
+            fp = oi->fp;
         } else if (monitor_has_fd(open_socks, ri->fd)) {
             struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, ri->fd);
             assert (si);
@@ -168,13 +185,14 @@ void read_stop(int rc) {
             fprintf(stderr, "untracked read\n");
         }
 
-        if (fp) {
+        if (copy_data && fp) {
             rcc = write(fileno(fp), ri->buf, rc);
             if (rcc != rc) {
                 fprintf(stderr, "could not write %d bytes\n", rcc);
             }
             fflush(fp);
         }
+        bytes_read += rc;
     }
 
     free(tdata->syscall_info);
@@ -222,13 +240,14 @@ void write_stop(int rc) {
         }
 
         // write out contents of buffer
-        if (fp) {
+        if (copy_data && fp) {
             rcc = write(fileno(fp), wi->buf, rc);
             if (rcc != rc) {
                 fprintf(stderr, "could not write %d bytes\n", rcc);
             }
             fflush(fp);
         }
+        bytes_written += rc;
     }
 
     free(tdata->syscall_info);
@@ -249,6 +268,9 @@ void open_stop(int rc) {
     struct open_info* oi = (struct open_info *) tdata->syscall_info;
     // on successful open
     if (rc > 0) {
+#ifdef ONLY_X
+        if (!strncmp(oi->filename, "/tmp/.X11-unix/X", 16)) {
+#endif
         int cloexec = 0;
         char stream_name[256];
         // Make the stream filename start with the global syscall cnt
@@ -258,6 +280,9 @@ void open_stop(int rc) {
         cloexec = oi->flags | O_CLOEXEC;
         fprintf(stderr, "Open add fd %d, cloexec %d\n", rc, cloexec);
         monitor_add_fd(open_fds, rc, cloexec, oi);
+#ifdef ONLY_X
+        }
+#endif
         tdata->syscall_info = 0;
     }
 
@@ -304,6 +329,53 @@ void close_stop(int rc) {
             monitor_remove_fd(open_socks, ci->fd);
         }
     }
+    free(tdata->syscall_info);
+}
+
+void mmap_start(void* addr, int length, int prot, int flags, int fd, off_t offset) {
+    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+    struct mmap_info* mi;
+    mi = (struct mmap_info *) malloc(sizeof(struct mmap_info));
+
+    mi->addr = addr;
+    mi->length = length;
+    mi->prot = prot;
+    mi->flags = flags;
+    mi->fd = fd;
+    mi->offset = offset;
+
+    tdata->syscall_info = (void *) mi;
+}
+
+void mmap_stop(void* rc) {
+    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+
+    if (rc != MAP_FAILED) {
+        int rcc;
+        struct mmap_info* mi = (struct mmap_info *) tdata->syscall_info;
+        FILE* fp = NULL;
+        assert (mi);
+        if (monitor_has_fd(open_fds, mi->fd)) {
+            struct open_info* oi = (struct open_info *) monitor_get_fd_data(open_fds, mi->fd);
+            assert (oi);
+            fprintf(stderr, "mmaped file %s\n", oi->filename);
+            fprintf(meta_fp, "MMAP %ld size: %d from %s\n", global_syscall_cnt, mi->length, oi->filename);
+            fflush(meta_fp);
+            fp = oi->fp;
+        } else if (mi->fd != -1) {
+            fprintf(stderr, "untracked mmap");
+        }
+
+        if (copy_data && fp) {
+            rcc = write(fileno(fp), rc, mi->length);
+            if (rcc != mi->length) {
+                fprintf(stderr, "could not write %d bytes, shadowing mmap\n", rcc);
+            }
+            fflush(fp);
+        }
+        bytes_read += mi->length;
+    }
+
     free(tdata->syscall_info);
 }
 
@@ -504,6 +576,9 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
             break;
         case SYS_writev:
             break;
+        case SYS_mmap2:
+            mmap_stop((void *) ret_value);
+            break;
         case SYS_socketcall:
             int call = tdata->socketcall;
             switch (call) {
@@ -543,7 +618,7 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
 }
 
 // called before every application system call
-void instrument_syscall(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscallarg0, ADDRINT syscallarg1, ADDRINT syscallarg2)
+void instrument_syscall(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscallarg0, ADDRINT syscallarg1, ADDRINT syscallarg2, ADDRINT syscallarg3, ADDRINT syscallarg4, ADDRINT syscallarg5)
 {   
     struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
     if (tdata) {
@@ -551,7 +626,7 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscalla
 	
 	fprintf (stderr, "%ld Pid %d, tid %d, (record pid %d), %d: syscall num is %d\n", global_syscall_cnt, PIN_GetPid(), PIN_GetTid(), tdata->record_pid, tdata->syscall_cnt, (int) syscall_num);
 
-	if (sysnum == 91 || sysnum == 120 || sysnum == 125 || sysnum == 174 || sysnum == 175 || sysnum == 190 || sysnum == 192) {
+	if (sysnum == 45 || sysnum == 91 || sysnum == 120 || sysnum == 125 || sysnum == 174 || sysnum == 175 || sysnum == 190 || sysnum == 192) {
 	    check_clock_before_syscall (fd, (int) syscall_num);
 	}
 	tdata->sysnum = syscall_num;
@@ -578,6 +653,10 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscalla
         case SYS_close:
             close_start((int)syscallarg0);
             break;
+	case SYS_mmap2:
+	    mmap_start((void*)syscallarg0, (int)syscallarg1, (int)syscallarg2, (int)syscallarg3,
+			    (int)syscallarg4, (off_t)syscallarg5);
+	    break;
         case SYS_socketcall:
             int call = (int)syscallarg0;
             unsigned long *args = (unsigned long *)syscallarg1;
@@ -654,6 +733,9 @@ void track_inst(INS ins, void* data)
 		    IARG_SYSARG_VALUE, 0, 
 		    IARG_SYSARG_VALUE, 1,
 		    IARG_SYSARG_VALUE, 2,
+            IARG_SYSARG_VALUE, 3,
+            IARG_SYSARG_VALUE, 4,
+            IARG_SYSARG_VALUE, 5,
 		    IARG_END);
     }
 }
@@ -734,6 +816,8 @@ void thread_fini (THREADID threadid, const CONTEXT* ctxt, INT32 code, VOID* v)
     struct thread_data* ptdata;
     ptdata = (struct thread_data *) malloc (sizeof(struct thread_data));
     fprintf(stderr, "Pid %d (recpid %d, tid %d) thread fini\n", PIN_GetPid(), ptdata->record_pid, PIN_GetTid());
+    fprintf(stderr, "bytes read %ld\n", bytes_read);
+    fprintf(stderr, "bytes written %ld\n", bytes_written);
 }
 
 VOID ImageLoad (IMG img, VOID *v)

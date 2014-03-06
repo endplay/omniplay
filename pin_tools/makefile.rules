@@ -24,7 +24,7 @@ TOOL_CXXFLAGS += $(GLIB_INCLUDES) -I$(SDEV) -g
 # This defines tests which run tools of the same name.  This is simply for convenience to avoid
 # defining the test name twice (once in TOOL_ROOTS and again in TEST_ROOTS).
 # Tests defined here should not be defined in TOOL_ROOTS and TEST_ROOTS.
-TEST_TOOL_ROOTS := print_instructions race_checker linkage_copy linkage_data linkage_copy_nr io
+TEST_TOOL_ROOTS := print_instructions race_checker linkage_copy linkage_data linkage_copy_nr io xio
 
 # This defines the tests to be run that were not already defined in TEST_TOOL_ROOTS.
 TEST_ROOTS :=
@@ -48,7 +48,7 @@ TOOL_ROOTS :=
 SA_TOOL_ROOTS :=
 
 # This defines all the applications that will be run during the tests.
-APP_ROOTS := interpret_tokens parse_result parse_filenames
+APP_ROOTS := interpret_tokens parse_result parse_filenames parse_tokens
 
 # This defines any additional object files that need to be compiled.
 OBJECT_ROOTS := taints_glib_hash
@@ -83,19 +83,34 @@ $(OBJDIR)taints_glib_hash$(OBJ_SUFFIX): $(TAINTS_LIB)/taints_glib_hash.c $(TAINT
 	$(APP_CC) -c -o $(OBJDIR)taints$(OBJ_SUFFIX) $(TAINTS_LIB)/taints_glib_hash.c $(GLIB_INCLUDES)
 
 $(OBJDIR)interpret_tokens$(EXE_SUFFIX): interpret_tokens.c
-	$(APP_CC) -o $(OBJDIR)interpret_tokens $(GLIB_INCLUDES) interpret_tokens.c -lglib-2.0
+	$(APP_CC) -g -o $(OBJDIR)interpret_tokens $(GLIB_INCLUDES) interpret_tokens.c -lglib-2.0
 
 $(OBJDIR)parse_result$(EXE_SUFFIX): parse_result.c
-	$(APP_CC) -o $(OBJDIR)parse_result parse_result.c
+	$(APP_CC) -g -o $(OBJDIR)parse_result parse_result.c
 
 $(OBJDIR)parse_filenames$(EXE_SUFFIX): parse_filenames.c
-	$(APP_CC) -o $(OBJDIR)parse_filenames parse_filenames.c
+	$(APP_CC) -g -o $(OBJDIR)parse_filenames parse_filenames.c
+
+$(OBJDIR)parse_tokens$(EXE_SUFFIX): parse_tokens.c
+	$(APP_CC) -g -o $(OBJDIR)parse_tokens parse_tokens.c
 
 # Pintools
 $(OBJDIR)print_instructions$(OBJ_SUFFIX): print_instructions.cpp
 	$(CXX) $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
 
 $(OBJDIR)print_instructions$(PINTOOL_SUFFIX): $(OBJDIR)print_instructions$(OBJ_SUFFIX)
+	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS)
+
+$(OBJDIR)io$(OBJ_SUFFIX): io.cpp
+	$(CXX) $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
+
+$(OBJDIR)io$(PINTOOL_SUFFIX): $(OBJDIR)io$(OBJ_SUFFIX)
+	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS)
+
+$(OBJDIR)xio$(OBJ_SUFFIX): io.cpp
+	$(CXX) -DONLY_X $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
+
+$(OBJDIR)xio$(PINTOOL_SUFFIX): $(OBJDIR)xio$(OBJ_SUFFIX)
 	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS)
 
 # Copy linkage tool with replay support
