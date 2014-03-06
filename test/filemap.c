@@ -24,19 +24,18 @@ struct replay_filemap_entry {
 	size_t read_offset;
 };
 
-// format: ./filemap <filename> <output>
+// format: ./filemap <filename>
 int main(int argc, char** argv)
 {
     int fd_file;
     int fd_spec;
     int rc;
     int num_entries, i;
-    FILE* fp;
     struct stat buf;
     struct replay_filemap_entry* entries;
 
-    if (argc < 3) {
-        fprintf(stderr, "Not enough args, usage: ./filemap <filename> <output>\n");
+    if (argc < 2) {
+        fprintf(stderr, "Not enough args, usage: ./filemap <filename>\n");
         return 0;
     }
 
@@ -59,10 +58,9 @@ int main(int argc, char** argv)
     }
     num_entries = get_num_filemap_entries(fd_spec, fd_file, 0, buf.st_size);
     if (num_entries < 0) {
-        fprintf(stderr, "could not get number of entries\n");
+        fprintf(stderr, "could not get number of entries %d\n", num_entries);
         return 0;
     }
-    fprintf(stderr, "Got %d entries\n", num_entries);
 
     if (num_entries == 0) {
         return 0;
@@ -76,11 +74,10 @@ int main(int argc, char** argv)
         return -1;
     }
     
-    fp = fopen(argv[2], "w");
     for (i=0; i < num_entries; i++) {
         struct replay_filemap_entry* entry;
         entry = entries + i;
-	fprintf(fp, "%lld %d %lld %d %lld %d\n",
+	fprintf(stdout, "%lld %d %lld %d %lld %d\n",
 			entry->offset,
 			entry->size,
 			(loff_t)entry->bval.id.unique_id,
@@ -88,9 +85,6 @@ int main(int argc, char** argv)
 			(loff_t)entry->bval.id.sysnum,
 			entry->read_offset);
     }
-
-    fflush(fp);
-    fclose(fp);
 
     free(entries);
     return 0;

@@ -43,7 +43,9 @@
  #ifndef LINKAGE_DATA
   #include "taints/taints_copy.h"
  #else
-  #include "taints/taints_data.h"
+  //#include "taints/taints_data.h"
+  #include "taints/taints_index.h"
+  #define TAINT_IMPL_INDEX
   //#include "taints/taints.h"
  #endif
 #else
@@ -520,7 +522,7 @@ KNOB<string> KnobStaticAnalysisPath(KNOB_MODE_WRITEONCE, "pintool", "s", "/tmp/s
 KNOB<string> KnobTurnOffReplay(KNOB_MODE_WRITEONCE, "pintool", "n", "0", "standalone, no replay when compiled with replay support");
 KNOB<string> KnobErrorRegex(KNOB_MODE_WRITEONCE, "pintool", "e", "blahblabhablahbalh", "error regex to match against");
 #ifdef FILTER_INPUTS
-KNOB<string> KnobInputFileFilter(KNOB_MODE_WRITEONCE, "pintool", "f", "blahbalbhablah", "input file to only create taints from");
+KNOB<string> KnobInputFileFilter(KNOB_MODE_WRITEONCE, "pintool", "f", "xray.tex", "input file to only create taints from");
 #endif
 
 #ifdef CONFAID
@@ -897,7 +899,12 @@ int in_main_image (ADDRINT addr) {
     return ((unsigned)addr > (unsigned)main_low_addr && (unsigned)addr < (unsigned)main_high_addr);
 }
 
-#define print_dependency_tokens(args) __print_dependency_tokens(log_f, args)
+inline void print_dependency_tokens(struct taint* vector)
+{
+#ifdef LOGGING_ON
+    __print_dependency_tokens(log_f, vector);
+#endif
+}
 
 void __print_dependency_tokens(FILE* file, struct taint* vector)
 {
@@ -3613,16 +3620,15 @@ void cmov_regmov(INS ins, INT32 cmov_type, USIZE addrsize, UINT32 mask, UINT32 c
 
 void print_reg_taint(REG dst, REG src, int mode)
 {
-    //fprintf(log_f, "In print_reg_taint for instruction %s.\n", (char *)name);
     if(!REG_valid(dst) || !REG_valid(src)){
-        fprintf(log_f, "Arguments are not regs, does not match. Returning.\n");
+        LOG_PRINT ("Arguments are not regs, does not match. Returning.\n");
         return;
     }
     if(mode){
-        fprintf(log_f, "Printing Reg taints before instrumenting pcmpgtb.\n");
+        LOG_PRINT ("Printing Reg taints before instrumenting pcmpgtb.\n");
     }
     else{
-        fprintf(log_f, "Printing Reg taints after instrumenting pcmpgtb.\n");
+        LOG_PRINT ("Printing Reg taints after instrumenting pcmpgtb.\n");
     }
 
     struct taint* src_vector;
@@ -3631,22 +3637,21 @@ void print_reg_taint(REG dst, REG src, int mode)
     dst_vector= get_reg_taint(dst);
 
     if(src_vector) {
-        fprintf(log_f, "Taint for src reg (%s): \n", REG_StringShort(src).c_str());
-        __print_dependency_tokens(log_f, src_vector);
+        LOG_PRINT ("Taint for src reg (%s): \n", REG_StringShort(src).c_str());
+        print_dependency_tokens(src_vector);
     }
     else{
-        fprintf(log_f, "Taint for src reg (%s) empty.\n", REG_StringShort(src).c_str());
+        LOG_PRINT ("Taint for src reg (%s) empty.\n", REG_StringShort(src).c_str());
     }
 
     if(dst_vector) {
-        fprintf(log_f, "Taint for dst reg (%s): \n", REG_StringShort(dst).c_str());
-        __print_dependency_tokens(log_f, dst_vector);
+        LOG_PRINT ("Taint for dst reg (%s): \n", REG_StringShort(dst).c_str());
+        print_dependency_tokens(dst_vector);
     }
     else{
-        fprintf(log_f, "Taint for dst reg (%s) empty.\n", REG_StringShort(dst).c_str());;
+        LOG_PRINT ("Taint for dst reg (%s) empty.\n", REG_StringShort(dst).c_str());;
     }
 }
-
 
 void instrument_cmov(INS ins, OPCODE opcode) 
 {
@@ -4000,14 +4005,13 @@ void instrument_fld (INS ins)
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_fpu_reg2fpu_reg), IARG_UINT32, src_reg, IARG_UINT32, dst_reg, IARG_END); 
     }
     else {
-        fprintf(log_f, "[FPU] Unknown operand for FLD. \n");
+        ERROR_PRINT (log_f, "[ERROR] Unknown operand for FLD. \n");
     }
     return;
 }
 
 void instrument_fst (INS ins, bool with_pop)
 {
-    fprintf(log_f, "[FST] Testing FST.\n");
     REG src_reg = INS_OperandReg(ins, 1);
     if(INS_OperandIsMemory(ins, 0)) {
         UINT32 addrsize = INS_MemoryReadSize(ins);
@@ -4018,7 +4022,7 @@ void instrument_fst (INS ins, bool with_pop)
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_fpu_reg2fpu_reg), IARG_UINT32, src_reg, IARG_UINT32, dst_reg, IARG_END);
     }
     else {
-        fprintf(log_f, "[FST] Unknown Operand for FST. \n");
+        ERROR_PRINT (log_f, "[FST] Unknown Operand for FST. \n");
     }
     if(with_pop) {
         pop_fpu();
@@ -4719,12 +4723,8 @@ static inline void __fpu_reg_mod_dependency(struct thread_data* ptdata, REG reg,
     } else if(mode == MERGE) {
         merge_fpu_reg(reg_num, vector);
     }
-    //#ifdef PPRINT
-    //	if (pprint) {
-    fprintf (log_f, "[FPU] \treg %d now has vector ", reg); 
-    __print_dependency_tokens(log_f, &FPU_reg_table[reg_num]);
-    //	}
-    //#endif
+    LOG_PRINT ("[FPU] \treg %d now has vector ", reg); 
+    print_dependency_tokens (&FPU_reg_table[reg_num]);
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
@@ -6636,8 +6636,8 @@ inline void __sys_read_stop(struct thread_data* ptdata, int rc) {
         read_fileno = 0;
     }
 #ifdef FILTER_INPUTS
-    if (data && !strncmp(input_file_name, oi->name, 256)) {
-        create_options_from_buffer (TOK_READ, global_syscall_cnt, (void *) ri->buf, (int) ret_value, 0, read_fileno);
+    if (oi && !strncmp(input_file_name, oi->name, 256)) {
+        create_options_from_buffer (TOK_READ, global_syscall_cnt, (void *) ri->buf, rc, 0, read_fileno);
     }
 #else
     create_options_from_buffer (TOK_READ, global_syscall_cnt, (void *) ri->buf, rc, 0, read_fileno);
@@ -6953,14 +6953,14 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
                     // treat this as a read if we've mmap'ed a file
                     if (option_byte && mmi->fd != -1) {
                         int read_fileno = -1;
+                        struct open_info* oi= NULL;
                         if (monitor_has_fd(open_fds, mmi->fd)) {
-                            struct open_info* oi;
                             oi = (struct open_info *) monitor_get_fd_data(open_fds, mmi->fd);
                             MYASSERT (oi);
                             read_fileno = oi->fileno;
                         }
 #ifdef FILTER_INPUTS
-                        if (data && !strncmp(input_file_name, oi->name, 256)) {
+                        if (oi && !strncmp(input_file_name, oi->name, 256)) {
                             create_options_from_buffer (TOK_READ, global_syscall_cnt, (void *) mmi->addr, mmi->length, 0, read_fileno);
                         }
 #else
@@ -8273,10 +8273,14 @@ void track_file(INS ins, void *v)
         case XED_ICLASS_JNB:
         case XED_ICLASS_JBE:
         case XED_ICLASS_JNBE:
+        case XED_ICLASS_JL:
+        case XED_ICLASS_JNL:
         case XED_ICLASS_JLE:
         case XED_ICLASS_JNLE:
         case XED_ICLASS_JNO:
         case XED_ICLASS_JO:
+        case XED_ICLASS_JNP:
+        case XED_ICLASS_JP:
         case XED_ICLASS_JNS:
         case XED_ICLASS_JS:
         case XED_ICLASS_JNZ:
@@ -8560,15 +8564,14 @@ void track_file(INS ins, void *v)
             case XED_ICLASS_PSUBW:
             case XED_ICLASS_PSUBD:
             case XED_ICLASS_PSUBQ:
-
             case XED_ICLASS_PMADDWD:
             case XED_ICLASS_PMULHUW:
+            case XED_ICLASS_PMINUB:
                 /*
                    case XED_ICLASS_PAND:
                    case XED_ICLASS_PAVGB:
                    case XED_ICLASS_PAVGW:
                    case XED_ICLASS_PMAXUB:
-                   case XED_ICLASS_PMINUB:
                    case XED_ICLASS_POR:
                    case XED_ICLASS_PXOR:
                    case XED_ICLASS_XORPS:
@@ -8825,6 +8828,7 @@ void track_file(INS ins, void *v)
             case XED_ICLASS_CWDE:
             case XED_ICLASS_CBW:
             case XED_ICLASS_CDQE:
+            case XED_ICLASS_STD:
                 // No taint propogation here
                 break;
 
@@ -8847,21 +8851,22 @@ void track_file(INS ins, void *v)
             case XED_ICLASS_FILD:
                 INSTRUMENT_PRINT(log_f, "%#x: about to instrument %s, address: %#x\n", INS_Disassemble(ins).c_str(), (unsigned)INS_Address(ins));
                 instrument_fld(ins);
-
                 break;
 
             case XED_ICLASS_FST:
+#ifdef LINKAGE_DATA
                 //case XED_ICLASS_FSTP:
-                fprintf(log_f, "[FST] about to instrument %s, address: %#x\n", INS_Disassemble(ins).c_str(), (unsigned)INS_Address(ins));
+                INSTRUMENT_PRINT (log_f, "[FST] about to instrument %s, address: %#x\n", INS_Disassemble(ins).c_str(), (unsigned)INS_Address(ins));
                 instrument_fst(ins, false);
+#endif
                 break;
 
             case XED_ICLASS_FSTP:
-                fprintf(log_f, "[FST] about to instrument %s, address: %#x\n", INS_Disassemble(ins).c_str(), (unsigned)INS_Address(ins));
+#ifdef LINKAGE_DATA
+                INSTRUMENT_PRINT (log_f, "[FST] about to instrument %s, address: %#x\n", INS_Disassemble(ins).c_str(), (unsigned)INS_Address(ins));
                 instrument_fst(ins, true);
+#endif
                 break;
-
-
 
             default:
                 {
@@ -8877,6 +8882,9 @@ void track_file(INS ins, void *v)
                     if (INS_IsRDTSC(ins)) {
                         INSTRUMENT_PRINT(log_f, "%#x: not instrument an rdtsc\n", INS_Address(ins));
                         break;
+                    }
+                    if (INS_IsSysenter(ins)) {
+                        INSTRUMENT_PRINT(log_f, "%#x: not instrument a sysenter\n", INS_Address(ins));
                     }
                     ERROR_PRINT(log_f, "[NOOP] ERROR: instruction %s is not instrumented, address: %#x\n", INS_Disassemble(ins).c_str(), (unsigned)INS_Address(ins));
                     INSTRUMENT_PRINT(log_f, " instruction category %d, %s, opcode: %d, %s\n", category, CATEGORY_StringShort(category).c_str(), opcode, INS_Mnemonic(ins).c_str());
@@ -12691,7 +12699,9 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
     if (!no_replay && first_thread) {
         // Need to make the args and envp in an exec count as input
         // Retrieve the location of the args from the kernel
+#ifndef FILTER_INPUTS
         int acc = 0;
+#endif
         char** args;
         args = (char **) get_replay_args (dev_fd);
         LOG_PRINT ("replay args are %#lx\n", (unsigned long) args);
@@ -12704,7 +12714,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
             }
             LOG_PRINT ("arg is %s\n", arg);
 #ifndef FILTER_INPUTS
-            create_options_from_buffer (TOK_EXEC, global_syscall_cnt, arg, strlen(arg) + 1, acc, 1);
+            create_options_from_buffer (TOK_EXEC, global_syscall_cnt, arg, strlen(arg) + 1, acc, FILENO_NAME);
             acc += strlen(arg) + 1;
 #endif
             args += 1;
@@ -12722,7 +12732,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
             }
             LOG_PRINT ("arg is %s\n", arg);
 #ifndef FILTER_INPUTS
-            create_options_from_buffer (TOK_EXEC, global_syscall_cnt, arg, strlen(arg) + 1, acc, 2);
+            create_options_from_buffer (TOK_EXEC, global_syscall_cnt, arg, strlen(arg) + 1, acc, FILENO_ARGS);
             acc += strlen(arg) + 1;
 #endif
             args += 1;

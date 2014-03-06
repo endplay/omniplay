@@ -1,7 +1,7 @@
 CFLAGS := -Wall -Werror -g 
 LDFLAGS := -Wall -Werror -g 
 
-all: libutil.a parseklog parseulog launcher resume parseckpt getstats # parseelog
+all: libutil.a parseklog parseulog parsemlog launcher resume parseckpt getstats filemap # parseelog
 
 parseklog: parseklog.c
 	gcc parseklog.c -o parseklog -Wall -Werror -g

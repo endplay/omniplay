@@ -454,7 +454,6 @@ int main (int argc, char* argv[])
 			expected_clock = stop_clock+1;
 
 			printf ("%6d: sysnum %3d flags %x retval %ld (%lx) begin %lu end %lu", index, psr.sysnum, psr.flags, retval, retval, start_clock, stop_clock);
-			index++;
 #ifdef USE_HPC
 			printf (" %Lu", psr.hpc_begin);
 			printf (" %Lu ticks ", (psr.hpc_end - psr.hpc_begin));
@@ -932,6 +931,8 @@ int main (int argc, char* argv[])
 					printf ("\tmtime is %lx.%lx\n", ((struct mmap_pgoff_retvals *)buf)->mtime.tv_sec, ((struct mmap_pgoff_retvals *)buf)->mtime.tv_nsec);
 				}
 			}
+			// next system call
+			index++;
 		}
 	}
 
