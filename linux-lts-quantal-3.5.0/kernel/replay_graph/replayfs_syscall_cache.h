@@ -23,7 +23,7 @@
 struct replayfs_syscache_id {
 	loff_t unique_id : 48;
 	loff_t pid : 16;
-	loff_t sysnum : 56;
+	loff_t sysnum : 64;
 } __attribute__((aligned(16)));
 
 static inline struct replayfs_btree128_key *k(struct replayfs_syscache_id *id) {

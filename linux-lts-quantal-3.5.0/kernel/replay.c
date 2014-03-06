@@ -83,7 +83,7 @@
  */
 //#define REPLAY_COMPRESS_READS
 
-//#define TRACE_READ_WRITE
+#define TRACE_READ_WRITE
 //#define TRACE_PIPE_READ_WRITE
 //#define TRACE_SOCKET_READ_WRITE
 
@@ -249,6 +249,7 @@ static struct replay_recorded_file_meta *get_meta(struct file *filp) {
 		}
 
 		replayfs_filemap_init_with_pos(&meta->map, &meta->alloc, filp, &meta->meta_pos);
+		//printk("%s %d: Created filemap with metapos %lld\n", __func__, __LINE__, meta->meta_pos);
 
 		if (btree_insert32(&meta_tree, (u32)filp->f_dentry->d_inode, meta, GFP_KERNEL)) {
 			BUG();
@@ -290,18 +291,81 @@ static struct replay_recorded_file_meta *replay_get_file_meta(int fd) {
 	return meta;
 }
 
-void replay_filp_close(struct file *filp) {
-	struct replay_recorded_meta *meta;
+struct file_work_struct {
+	struct work_struct work;
+	struct list_head list;
+	u32 entry;
+};
+
+#define NUM_WORK_ENTRIES 0x100
+DEFINE_SPINLOCK(work_lock);
+struct list_head file_work_entries;
+struct file_work_struct file_work_entries_alloc[NUM_WORK_ENTRIES];
+
+void replay_filp_close_work(struct work_struct *ws);
+
+void put_work_struct(struct file_work_struct *fws) {
+
+	spin_lock(&work_lock);
+	list_add(&fws->list, &file_work_entries);
+	spin_unlock(&work_lock);
+}
+
+struct file_work_struct *get_work_struct(void) {
+	struct file_work_struct *entry;
+	spin_lock(&work_lock);
+	BUG_ON(list_empty(&file_work_entries));
+	if (list_empty(&file_work_entries)) {
+		entry = NULL; 
+	} else {
+		entry = list_first_entry(&file_work_entries, struct file_work_struct, list);
+		list_del(&entry->list);
+		INIT_WORK(&entry->work, replay_filp_close_work);
+	}
+	spin_unlock(&work_lock);
+
+	return entry;
+}
+
+static void replay_filp_close_internal(u32 key) {
+	struct replay_recorded_file_meta *meta;
 	/* The filp is closed, free its meta */
 	mutex_lock(&meta_tree_lock);
 
-	meta = btree_remove32(&meta_tree, (u32)filp->f_dentry->d_inode);
+	meta = btree_remove32(&meta_tree, key);
 
 	if (meta != NULL) {
+		//printk("%s %d: Destroying filemap for %lld with key %u\n", __func__, __LINE__, meta->meta_pos, key);
+		replayfs_filemap_destroy(&meta->map);
+		replayfs_diskalloc_destroy(&meta->alloc);
 		kfree(meta);
 	}
 
 	mutex_unlock(&meta_tree_lock);
+}
+
+void replay_filp_close_work(struct work_struct *ws) {
+	struct file_work_struct *fws = container_of(ws, struct file_work_struct, work);
+
+	replay_filp_close_internal(fws->entry);
+
+	put_work_struct(fws);
+}
+
+void replay_filp_close(struct file *filp) {
+	/*
+	if (current->record_thrd != NULL || current->replay_thrd != NULL) {
+		struct file_work_struct *work = get_work_struct();
+
+		work->entry = (u32)filp->f_dentry->d_inode;
+
+		//printk("%s %d: Scheduling destruction of filemap key %u\n", __func__, __LINE__, work->entry);
+		schedule_work(&work->work);
+	}
+	*/
+}
+#else
+void replay_filp_close(struct file *filp) {
 }
 #endif
 
@@ -5672,22 +5736,61 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 				id.pid = val->bval.id.pid;
 				id.sysnum = val->bval.id.sysnum;
 
-				entry_pos = replayfs_syscache_get(&syscache, &id);
-				/* Entry should be > 0, otherwise there is a problem */
-				BUG_ON(entry_pos < 0);
+				if (syscache_id_is_zero(&id)) {
+					int size_max;
 
-				/* Get the disk_alloc referenced by entry */
-				alloc = replayfs_disk_alloc_get(&replayfs_alloc, entry_pos);
+					/*
+					printk("%s %d: Got val with buff_offs of %d\n", __func__, __LINE__,
+							val->bval.buff_offs);
+							*/
+					BUG_ON(val->bval.buff_offs < 0);
 
-				copy_offs = val->read_offset + val->bval.buff_offs;
+					size_max = rc - buff_offs;
+					if (size_max > val->bval.buff_offs) {
+						size_max = val->bval.buff_offs;
+					}
 
-				/* Copy the data into user space */
-				/* I've already checked access_ok, so I'm just doing a normal copy now */
-				replayfs_disk_alloc_read(alloc, buf + buff_offs, val->size, copy_offs + sizeof(struct replayfs_syscache_entry));
+					memset(buf+buff_offs, 0, size_max);
+					buff_offs += val->bval.buff_offs;
+				} else {
+					int size_max;
+					entry_pos = replayfs_syscache_get(&syscache, &id);
+					/* Entry should be > 0, otherwise there is a problem */
+					BUG_ON(entry_pos < 0);
 
-				buff_offs += val->size;
+					/* Get the disk_alloc referenced by entry */
+					alloc = replayfs_disk_alloc_get(&replayfs_alloc, entry_pos);
 
-				replayfs_disk_alloc_put(alloc);
+					copy_offs = val->read_offset + val->bval.buff_offs;
+
+					size_max = rc - buff_offs;
+					if (size_max < val->size) {
+						size_max = val->size;
+					}
+					/*
+					printk("%s %d: Adjusting size_max to %d, rc %ld, buff_offs %d, val->size %d\n",
+							__func__, __LINE__, size_max, rc, buff_offs, val->size);
+							*/
+
+					/* Copy the data into user space */
+					/* I've already checked access_ok, so I'm just doing a normal copy now */
+					/*
+					printk("%s %d: buf is %p, buff_offs is %lld, size_max is %d, size is %d\n",
+							__func__, __LINE__, buf, buff_offs, size_max, size);
+							*/
+					if (replayfs_disk_alloc_read(alloc, buf + buff_offs, size_max, copy_offs +
+							sizeof(struct replayfs_syscache_entry), 1)) {
+						printk("%s %d: Failed to copy data to userpace???\n", __func__,
+								__LINE__);
+						rc = -EFAULT;
+						replayfs_disk_alloc_put(alloc);
+						break;
+					}
+
+					buff_offs += val->size;
+
+					replayfs_disk_alloc_put(alloc);
+				}
 			}
 
 			new_syscall_done (3, rc);
@@ -6013,22 +6116,46 @@ replay_read (unsigned int fd, char __user * buf, size_t count)
 				id.pid = val->bval.id.pid;
 				id.sysnum = val->bval.id.sysnum;
 
-				entry_pos = replayfs_syscache_get(&syscache, &id);
-				/* Entry should be > 0, otherwise there is a problem */
-				BUG_ON(entry_pos < 0);
+				if (syscache_id_is_zero(&id)) {
+					int size_max;
 
-				/* Get the disk_alloc referenced by entry */
-				alloc = replayfs_disk_alloc_get(&replayfs_alloc, entry_pos);
+					BUG_ON(buff_offs == 0);
 
-				copy_offs = val->read_offset + val->bval.buff_offs;
+					size_max = rc - buff_offs;
+					if (size_max > val->bval.buff_offs) {
+						size_max = val->bval.buff_offs;
+					}
 
-				/* Copy the data into user space */
-				/* I've already checked access_ok, so I'm just doing a normal copy now */
-				replayfs_disk_alloc_read(alloc, buf + buff_offs, val->size, copy_offs + sizeof(struct replayfs_syscache_entry));
+					memset(buf+buff_offs, 0, size_max);
 
-				buff_offs += val->size;
+					buff_offs += val->bval.buff_offs;
+				} else {
+					int size_max;
+					entry_pos = replayfs_syscache_get(&syscache, &id);
+					/* Entry should be > 0, otherwise there is a problem */
+					BUG_ON(entry_pos < 0);
 
-				replayfs_disk_alloc_put(alloc);
+					/* Get the disk_alloc referenced by entry */
+					alloc = replayfs_disk_alloc_get(&replayfs_alloc, entry_pos);
+
+					copy_offs = val->read_offset + val->bval.buff_offs;
+
+					size_max = rc - buff_offs;
+					if (size_max < val->size) {
+						size_max = val->size;
+					}
+
+					/* Copy the data into user space */
+					/* I've already checked access_ok, so I'm just doing a normal copy now */
+					if (replayfs_disk_alloc_read(alloc, buf + buff_offs, size_max, copy_offs +
+							sizeof(struct replayfs_syscache_entry), 1)) {
+						BUG();
+					}
+
+					buff_offs += val->size;
+
+					replayfs_disk_alloc_put(alloc);
+				}
 			}
 
 			/* Consume args */
@@ -6195,6 +6322,10 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 		id.unique_id = current->record_thrd->rp_group->rg_id;
 		id.pid = current->record_thrd->rp_record_pid;
 
+		/*
+		printk("%s %d: Adding syscache with id {%lld, %lld, %lld}\n", __func__,
+				__LINE__, (loff_t)id.sysnum, (loff_t)id.unique_id, (loff_t)id.pid);
+				*/
 		replayfs_syscache_add(&syscache, &id, size, buf);
 
 		update_size(filp, meta);
@@ -6381,6 +6512,8 @@ replay_write (unsigned int fd, const char __user * buf, size_t count)
 		id.unique_id = current->replay_thrd->rp_record_thread->rp_group->rg_id;
 		id.pid = current->replay_thrd->rp_record_thread->rp_record_pid;
 
+		printk("%s %d: Adding syscache with id {%lld, %lld, %lld}\n", __func__,
+				__LINE__, (loff_t)id.sysnum, (loff_t)id.unique_id, (loff_t)id.pid);
 		replayfs_syscache_add(&syscache, &id, rc, buf);
 
 		/* We don't actually allocate any space! <insert evil laugh here> */
@@ -6475,6 +6608,15 @@ static asmlinkage long
 record_close (int fd)
 {									
 	long rc;							
+#ifdef REPLAY_COMPRESS_READS
+	do {
+		struct file *filp = fget(fd);
+		if (filp != NULL) {
+			replay_filp_close_internal((u32)filp->f_dentry->d_inode);
+			fput(filp);
+		}
+	} while (0);
+#endif
 	new_syscall_enter (6);
 	rc = sys_close (fd);
 	new_syscall_done (6, rc);
@@ -12760,6 +12902,14 @@ static int __init replay_init(void)
 
 #ifdef REPLAY_COMPRESS_READS
 	btree_init32(&meta_tree);
+	INIT_LIST_HEAD(&file_work_entries);
+
+	do {
+		int i;
+		for (i = 0; i < NUM_WORK_ENTRIES; i++) {
+			list_add(&file_work_entries_alloc[i].list, &file_work_entries);
+		}
+	} while (0);
 #endif
 
 #ifdef TRACE_PIPE_READ_WRITE

@@ -11,7 +11,7 @@
 
 #include <linux/replay.h>
 
-//#define REPLAY_DATA_DEBUG
+#define REPLAY_DATA_DEBUG
 /* #define REPLAY_DATA_ALLOC_DEBUG */
 /*#define REPLAY_DATA_LOCK_DEBUG*/
 
@@ -332,6 +332,7 @@ static int replay_desc_start(struct replay_desc *replay) {
 	argv[1] = arg1;
 
 	dir_hash = hash64(replay->unique_id);
+	BUG_ON(replay->unique_id <= 0);
 	sprintf(argv[1], REPLAYFS_LOG_DIR "rec_%lld",
 			(unsigned long long)replay->unique_id);
 
