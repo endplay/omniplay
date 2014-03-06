@@ -129,7 +129,7 @@ copy_args (const char __user* const __user* args, const char __user* const __use
 
 // This function writes the process state to a disk file
 long 
-replay_checkpoint_to_disk (char* filename, char* execname, char* buf, int buflen)
+replay_checkpoint_to_disk (char* filename, char* execname, char* buf, int buflen, __u64 parent_rg_id)
 {
 	mm_segment_t old_fs = get_fs();
 	int fd, rc, copyed, len;
@@ -164,6 +164,15 @@ replay_checkpoint_to_disk (char* filename, char* execname, char* buf, int buflen
 	copyed = vfs_write (file, (char *) &rg_id, sizeof(rg_id), &pos);
 	if (copyed != sizeof(rg_id)) {
 		printk ("replay_checkpoint_to_disk: tried to write rg_id, got rc %d\n", copyed);
+		rc = copyed;
+		goto exit;
+	}
+
+	// Next, record the parent group identifier
+	MPRINT ("Pid %d parent record group id %llu\n", current->pid, parent_rg_id);
+	copyed = vfs_write (file, (char *) &parent_rg_id, sizeof(rg_id), &pos);
+	if (copyed != sizeof(parent_rg_id)) {
+		printk ("replay_checkpoint_to_disk: tried to write parent_rg_id, got %d\n", copyed);
 		rc = copyed;
 		goto exit;
 	}
@@ -226,6 +235,7 @@ long replay_resume_from_disk (char* filename, char** execname, char*** argsp, ch
 	loff_t pos = 0;
 	pid_t record_pid;
 	__u64 rg_id;
+	__u64 parent_rg_id;
 	char** args;
 	char** env;
 
@@ -257,6 +267,15 @@ long replay_resume_from_disk (char* filename, char** execname, char*** argsp, ch
 		goto exit;
 	}
 	*prg_id = rg_id;
+
+	// Next read the parent record group id
+	copyed = vfs_read(file, (char *) &parent_rg_id, sizeof(parent_rg_id), &pos);
+	MPRINT ("Pid %d replay_resume_from_disk: parent_rg_id %llu", current->pid, parent_rg_id);
+	if (copyed != sizeof(parent_rg_id)) {
+		printk ("replay_resume_from_disk: parent_rg_id %llu\n", parent_rg_id);
+		rc = copyed;
+		goto exit;
+	}
 
 	// Next read the exec name
 	copyed = vfs_read(file, (char *) &len, sizeof(len), &pos);
