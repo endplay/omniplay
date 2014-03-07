@@ -13,6 +13,8 @@
 #include <sys/socket.h>
 #include <linux/net.h>
 #include <sys/mman.h>
+#include <errno.h>
+#include <sys/stat.h>
 
 #include <sys/wait.h>
 #include <signal.h>
@@ -35,6 +37,10 @@ struct thread_data {
     int socketcall;	// current socketcall num if applicable
     u_long ignore_flag;
     void* syscall_info;
+
+    FILE* stream_fp; // description of all the reads/writes going on
+    long bytes_read;
+    long bytes_written;
 };
 
 ADDRINT array[10000];
@@ -54,6 +60,7 @@ struct xray_monitor* open_fds = NULL;
 /* List of open sockets */
 struct xray_monitor* open_socks = NULL;
 
+/* Just contains information about reads and writes */
 FILE* meta_fp;
 
 int get_record_pid(void);
@@ -80,10 +87,17 @@ struct write_info {
     int write_size;
 };
 
+struct writev_info {
+    int fd;
+    struct iovec* iov;
+    int count;
+};
+
 #define MAX_PATH_LEN 256
 struct open_info {
     char filename[MAX_PATH_LEN];
-    FILE* fp;
+    FILE* read_fp;
+    FILE* write_fp;
     int flags;
 };
 
@@ -109,7 +123,8 @@ struct socket_info {
     /* Contains information about the accepting socket.
      * NULL if this socket wasn't accepted */
     struct connect_info* accept_info; 
-    FILE* fp;
+    FILE* read_fp;
+    FILE* write_fp;
 #ifdef ONLY_X
     int is_x;
 #endif
@@ -173,9 +188,9 @@ void read_stop(int rc) {
         if (monitor_has_fd(open_socks, ri->fd)) {
             struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, ri->fd);
             if (si->is_x) {
-                fprintf(stderr, "READ FROM XSOCKET size: %d\n", rc);
                 fprintf(meta_fp, "READ from X socket, size: %d\n", rc);
                 fflush(meta_fp);
+                tdata->bytes_read += rc;
                 bytes_read += rc;
             }
         }
@@ -188,14 +203,14 @@ void read_stop(int rc) {
             struct open_info* oi = (struct open_info *) monitor_get_fd_data(open_fds, ri->fd);
             assert (oi);
             fprintf(stderr, "read from file %s\n", oi->filename);
-            fprintf(meta_fp, "READ %ld size: %d from %s\n", global_syscall_cnt, rc, oi->filename);
-            fflush(meta_fp);
-            fp = oi->fp;
+            fprintf(tdata->stream_fp, "READ %ld size: %d from %s\n", global_syscall_cnt, rc, oi->filename);
+            fflush(tdata->stream_fp);
+            fp = oi->read_fp;
         } else if (monitor_has_fd(open_socks, ri->fd)) {
             struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, ri->fd);
             assert (si);
-            fprintf(meta_fp, "READ from socket %ld size: %d\n", global_syscall_cnt, rc);
-            fflush(meta_fp);
+            fprintf(tdata->stream_fp, "READ from socket %ld size: %d\n", global_syscall_cnt, rc);
+            fflush(tdata->stream_fp);
         } else {
             fprintf(stderr, "untracked read\n");
         }
@@ -207,6 +222,7 @@ void read_stop(int rc) {
             }
             fflush(fp);
         }
+        tdata->bytes_read += rc;
         bytes_read += rc;
 #endif
     }
@@ -235,8 +251,9 @@ void write_stop(int rc) {
         if (monitor_has_fd(open_socks, wi->fd)) {
             struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, wi->fd);
             if (si->is_x) {
-                fprintf(meta_fp, "WRITE TO X socket, size: %d\n", rc);
-                fflush(meta_fp);
+                fprintf(tdata->stream_fp, "WRITE TO X socket, size: %d\n", rc);
+                fflush(tdata->stream_fp);
+                tdata->bytes_written += rc;
                 bytes_written += rc;
             }
         }
@@ -248,24 +265,22 @@ void write_stop(int rc) {
             struct open_info* oi = (struct open_info *) monitor_get_fd_data(open_fds, wi->fd);
             assert(oi);
             fprintf(stderr, "write to file %s", oi->filename);
-            fp = oi->fp;
-            fprintf(meta_fp, "WRITE %ld size: %d from %s\n", global_syscall_cnt, rc, oi->filename);
-            fflush(meta_fp);
-            bytes_written += rc;
+            fp = oi->write_fp;
+            fprintf(tdata->stream_fp, "WRITE %ld size: %d to %s\n", global_syscall_cnt, rc, oi->filename);
+            fflush(tdata->stream_fp);
         } else if (monitor_has_fd(open_socks, wi->fd)) {
             struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, wi->fd);
             assert(si);
             fprintf(stderr, "write to socket %d\n", wi->fd);
-            fp = si->fp;
+            fp = si->write_fp;
             if (si->accept_info) {
-                fprintf(meta_fp, "WRITE to socket %ld size: %d (accepted socket)\n", global_syscall_cnt, rc);
+                fprintf(tdata->stream_fp, "WRITE to socket %ld size: %d (accepted socket)\n", global_syscall_cnt, rc);
             } else {
-                fprintf(meta_fp, "WRITE to socket %ld size: %d\n", global_syscall_cnt, rc);
+                fprintf(tdata->stream_fp, "WRITE to socket %ld size: %d\n", global_syscall_cnt, rc);
             }
-            fflush(meta_fp);
-            bytes_written += rc;
+            fflush(tdata->stream_fp);
         } else {
-            fprintf(stderr, "untracked write\n");
+            fprintf(stderr, "write to untracked fd\n");
         }
 
         // write out contents of buffer
@@ -276,10 +291,92 @@ void write_stop(int rc) {
             }
             fflush(fp);
         }
+        tdata->bytes_written += rc;
+        bytes_written += rc;
 #endif
     }
 
     free(tdata->syscall_info);
+}
+
+void writev_start(int fd, struct iovec* iov, int count)
+{
+    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+    struct writev_info* wvi;
+    wvi = (struct writev_info *) malloc(sizeof(struct writev_info));
+    wvi->fd = fd;
+    wvi->iov = iov;
+    wvi->count = count;
+
+    tdata->syscall_info = (void *) wvi;
+}
+
+void writev_stop(int rc)
+{
+    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+    struct writev_info* wvi = (struct writev_info *) tdata->syscall_info;
+    int i;
+
+    if (rc > 0) {
+#ifdef ONLY_X
+        if (monitor_has_fd(open_socks, wvi->fd)) {
+            struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, wvi->fd);
+            if (si->is_x) {
+                for (i = 0; i < wvi->count; i++) {
+                    struct iovec* vi = (wvi->iov + i);
+                    fprintf(tdata->stream_fp, "WRITEV %ld count %d size: %d to X\n", global_syscall_cnt, i, vi->iov_len);
+                    fflush(tdata->stream_fp);
+                }
+            }
+        }
+        tdata->bytes_written += rc;
+        bytes_written += rc;
+#else
+        if ((monitor_has_fd(open_fds, wvi->fd))) {
+            FILE* fp = NULL;
+            struct open_info* oi = (struct open_info *) monitor_get_fd_data(open_fds, wvi->fd);
+            assert (oi);
+            fp = oi->write_fp;
+            for (i = 0; i < wvi->count; i++) {
+                struct iovec* vi = (wvi->iov + i);
+                fprintf(tdata->stream_fp, "WRITEV %ld count %d size: %d to %s\n", global_syscall_cnt, i, vi->iov_len, oi->filename);
+                if (copy_data && fp) {
+                    unsigned int rcc;
+                    rcc = write(fileno(fp), vi->iov_base, vi->iov_len);
+                    if (rcc != vi->iov_len) {
+                        fprintf(stderr, "could not write mirror stream %d bytes\n", rcc);
+                    }
+                    fflush(fp);
+                }
+            }
+        } else if (monitor_has_fd(open_socks, wvi->fd)) {
+            FILE* fp = NULL;
+            struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, wvi->fd);
+            assert (si);
+            fp = si->write_fp;
+
+            for (i = 0; i < wvi->count; i++) {
+                struct iovec* vi = (wvi->iov + i);
+                fprintf(tdata->stream_fp, "WRITEV %ld count %d size: %d to socket\n", global_syscall_cnt, i, vi->iov_len);
+                if (copy_data && fp) {
+                    unsigned int rcc;
+                    rcc = write(fileno(fp), vi->iov_base, vi->iov_len);
+                    if (rcc != vi->iov_len) {
+                        fprintf(stderr, "could not write mirror stream %d bytes\n", rcc);
+                    }
+                    fflush(fp);
+                }
+            }
+            fflush(tdata->stream_fp);
+        } else {
+            fprintf(stderr, "writev to untracked fd\n");
+        }
+        tdata->bytes_written += rc;
+        bytes_written += rc;
+#endif
+    }
+
+    free((void *) tdata->syscall_info);
 }
 
 void open_start(char* filename, int flags) {
@@ -298,10 +395,15 @@ void open_stop(int rc) {
     // on successful open
     if (rc > 0) {
         int cloexec = 0;
-        char stream_name[256];
-        // Make the stream filename start with the global syscall cnt
-        snprintf(stream_name, 256, "/tmp/io_%ld", global_syscall_cnt);
-        oi->fp = fopen(stream_name, "w");
+        if (copy_data) {
+            char read_stream_name[256];
+            char write_stream_name[256];
+            // Make the stream filename start with the global syscall cnt
+            snprintf(read_stream_name, 256, "/tmp/io/%ld_read", global_syscall_cnt);
+            snprintf(write_stream_name, 256, "/tmp/io/%ld_write", global_syscall_cnt);
+            oi->read_fp = fopen(read_stream_name, "w");
+            oi->write_fp = fopen(write_stream_name, "w");
+        }
 
         cloexec = oi->flags | O_CLOEXEC;
         fprintf(stderr, "Open add fd %d, cloexec %d\n", rc, cloexec);
@@ -331,16 +433,26 @@ void close_stop(int rc) {
         if (monitor_has_fd(open_fds, ci->fd)) {
             struct open_info* oi = (struct open_info *) monitor_get_fd_data(open_fds, ci->fd);
             assert (oi);
-            fflush(oi->fp);
-            fclose(oi->fp);
+
+            if (copy_data) {
+                fflush(oi->read_fp);
+                fflush(oi->write_fp);
+                fclose(oi->read_fp);
+                fclose(oi->write_fp);
+            }
 
             free(oi);
             monitor_remove_fd(open_fds, ci->fd);
         } else if (monitor_has_fd(open_socks, ci->fd)) {
             struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, ci->fd);
             assert (si);
-            fflush(si->fp);
-            fclose(si->fp);
+
+            if (copy_data) {
+                fflush(si->read_fp);
+                fflush(si->write_fp);
+                fclose(si->read_fp);
+                fclose(si->write_fp);
+            }
 
             if (si->ci) {
                 free(si->ci);
@@ -382,9 +494,9 @@ void mmap_stop(void* rc) {
             struct open_info* oi = (struct open_info *) monitor_get_fd_data(open_fds, mi->fd);
             assert (oi);
             fprintf(stderr, "mmaped file %s\n", oi->filename);
-            fprintf(meta_fp, "MMAP %ld size: %d from %s\n", global_syscall_cnt, mi->length, oi->filename);
-            fflush(meta_fp);
-            fp = oi->fp;
+            fprintf(tdata->stream_fp, "MMAP %ld size: %d from %s\n", global_syscall_cnt, mi->length, oi->filename);
+            fflush(tdata->stream_fp);
+            fp = oi->read_fp;
         } else if (mi->fd != -1) {
             fprintf(stderr, "untracked mmap\n");
         }
@@ -396,6 +508,7 @@ void mmap_stop(void* rc) {
             }
             fflush(fp);
         }
+        tdata->bytes_read += mi->length;
         bytes_read += mi->length;
     }
 
@@ -440,8 +553,7 @@ void connect_start(int sockfd, struct sockaddr* addr, socklen_t addrlen)
         if (si->domain == AF_UNIX) {
             struct sockaddr_un* sun = (struct sockaddr_un*) addr;
             assert(addr->sa_family == AF_UNIX);
-            strncpy(ci->path, sun->sun_path, MAX_PATH_LEN);
-	    fprintf(stderr, "connect path is %s\n", ci->path);
+            memcpy(ci->path, sun->sun_path, 108); // apparently 108 is the magic number
         } else if (si->domain == AF_INET) {
             struct sockaddr_in* sin = (struct sockaddr_in*) addr;
             assert(addr->sa_family == AF_INET);
@@ -469,44 +581,74 @@ void connect_stop(int rc)
     // successful connect
     if (!rc && tdata->syscall_info) {
         struct connect_info* ci = (struct connect_info *) tdata->syscall_info;
-        struct socket_info* si = (struct socket_info*) monitor_get_fd_data(open_socks, ci->fd);
+        struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, ci->fd);
         assert(si);
 
         si->ci = ci;
         tdata->syscall_info = 0;
-#if ONLY_X
+#ifdef ONLY_X
         if (si->domain == AF_UNIX) {
-            if (strstr(ci->path, "tmp/.X11-unix/X")) {
-                fprintf(stderr, "connect to X11\n");
+            char* c;
+            c = ci->path;
+            c += 1;
+            if (strstr(ci->path, "tmp/.X11-unix/X") ||
+                    strstr(c, "tmp/.X11-unix/X")) {
+                fprintf(stderr, "connect to X11, fd %d\n", ci->fd);
                 si->is_x = 1;
+            }
+        } else if (si->domain == AF_INET) {
+            struct in_addr ina;
+            // X port is 6010, address is 127.0.0.1
+            if (!inet_pton(AF_INET, "127.0.0.1", &ina)) {
+                assert(false);
+            }
+            fprintf(stderr, "connect to port %d\n", ci->port);
+            if (ci->port == 6010 && ina.s_addr == ci->sin_addr.s_addr) {
+                si->is_x = 1;
+                fprintf(stderr, "connect to X11 (over ssh forwarding)\n");
             }
         }
 #else
         if (si->domain == AF_UNIX) {
-            char stream_name[256];
-            fprintf(meta_fp, "CONNECT %ld AF_UNIX path %s\n", global_syscall_cnt, ci->path);
-            fflush(meta_fp);
+            char read_stream_name[256];
+            char write_stream_name[256];
+            fprintf(tdata->stream_fp, "CONNECT %ld AF_UNIX path %s\n", global_syscall_cnt, ci->path);
+            fflush(tdata->stream_fp);
 
-            snprintf(stream_name, 256, "/tmp/%ld_%s", global_syscall_cnt, ci->path);
-            si->fp = fopen(stream_name, "w");
+            if (copy_data) {
+                snprintf(read_stream_name, 256, "/tmp/%ld_%s_read", global_syscall_cnt, ci->path);
+                snprintf(write_stream_name, 256, "/tmp/%ld_%s_write", global_syscall_cnt, ci->path);
+                si->read_fp = fopen(read_stream_name, "w");
+                si->write_fp = fopen(write_stream_name, "w");
+            }
         } else if (si->domain == AF_INET) {
-            char stream_name[256];
+            char read_stream_name[256];
+            char write_stream_name[256];
             char straddr[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &ci->sin_addr, straddr, INET_ADDRSTRLEN);
-            fprintf(meta_fp, "CONNECT %ld AF_INET addr: %s port %d\n", global_syscall_cnt, straddr, ci->port);
-            fflush(meta_fp);
+            fprintf(tdata->stream_fp, "CONNECT %ld AF_INET addr: %s port %d\n", global_syscall_cnt, straddr, ci->port);
+            fflush(tdata->stream_fp);
 
-            snprintf(stream_name, 256, "/tmp/%ld_%s_%d", global_syscall_cnt, straddr, ci->port);
-            si->fp = fopen(stream_name, "w");
+            if (copy_data) {
+                snprintf(read_stream_name, 256, "/tmp/%ld_%s_%d_read", global_syscall_cnt, straddr, ci->port);
+                snprintf(write_stream_name, 256, "/tmp/%ld_%s_%d_write", global_syscall_cnt, straddr, ci->port);
+                si->read_fp = fopen(read_stream_name, "w");
+                si->write_fp = fopen(write_stream_name, "w");
+            }
         } else if (si->domain == AF_INET6) {
-            char stream_name[256];
+            char read_stream_name[256];
+            char write_stream_name[256];
             char straddr[INET6_ADDRSTRLEN];
             inet_ntop(AF_INET6, &ci->sin_addr6, straddr, INET6_ADDRSTRLEN);
-            fprintf(meta_fp, "CONNECT %ld AF_INET6 addr: %s port %d\n", global_syscall_cnt, straddr, ci->port);
-            fflush(meta_fp);
+            fprintf(tdata->stream_fp, "CONNECT %ld AF_INET6 addr: %s port %d\n", global_syscall_cnt, straddr, ci->port);
+            fflush(tdata->stream_fp);
 
-            snprintf(stream_name, 256, "/tmp/%ld_%s_%d", global_syscall_cnt, straddr, ci->port);
-            si->fp = fopen(stream_name, "w");
+            if (copy_data) {
+                snprintf(read_stream_name, 256, "/tmp/%ld_%s_%d_read", global_syscall_cnt, straddr, ci->port);
+                snprintf(write_stream_name, 256, "/tmp/%ld_%s_%d_write", global_syscall_cnt, straddr, ci->port);
+                si->read_fp = fopen(read_stream_name, "w");
+                si->write_fp = fopen(write_stream_name, "w");
+            }
         }
 #endif
     }
@@ -610,11 +752,20 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
         case SYS_readv:
             break;
         case SYS_writev:
+	    writev_stop((int) ret_value);
             break;
         case SYS_mmap2:
 #ifndef ONLY_X
             mmap_stop((void *) ret_value);
 #endif
+            break;
+        case SYS_dup:
+            break;
+        case SYS_dup3:
+            break;
+        case SYS_dup2:
+            break;
+        case SYS_fcntl:
             break;
         case SYS_socketcall:
             int call = tdata->socketcall;
@@ -684,12 +835,15 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscalla
         case SYS_write:
             write_start((int)syscallarg0, (void *)syscallarg1, (int)syscallarg2);
             break;
-        case SYS_open:
+	case SYS_writev:
+	    writev_start((int)syscallarg0, (struct iovec*)syscallarg1, (int)syscallarg2);
+	    break;
+    case SYS_open:
 #ifdef ONLY_X
             open_start((char *)syscallarg0, (int)syscallarg1);
 #endif
             break;
-        case SYS_close:
+    case SYS_close:
             close_start((int)syscallarg0);
             break;
 	case SYS_mmap2:
@@ -698,7 +852,22 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscalla
 			    (int)syscallarg4, (off_t)syscallarg5);
 #endif
 	    break;
-        case SYS_socketcall:
+    case SYS_dup:
+    case SYS_dup2:
+    case SYS_dup3:
+        // TODO
+        fprintf(stderr, "dup not supported yet\n");
+        break;
+    case SYS_fcntl:
+    {
+        // TODO
+        int cmd = (int)syscallarg1;
+        if ((cmd | F_DUPFD) || (cmd | F_DUPFD_CLOEXEC)) {
+            fprintf(stderr, "fcntl dupfd not supported yet\n");
+        }
+        break;
+    }
+    case SYS_socketcall:
             int call = (int)syscallarg0;
             unsigned long *args = (unsigned long *)syscallarg1;
 	    tdata->socketcall = call;
@@ -847,6 +1016,12 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
     ptdata->record_pid = get_record_pid();
     ptdata->syscall_cnt = 0;
 
+    char stream_filename[256];
+    snprintf(stream_filename, 256, "/tmp/streams_info_%d", ptdata->record_pid);
+    ptdata->stream_fp = fopen(stream_filename, "w");
+    ptdata->bytes_read = 0;
+    ptdata->bytes_written = 0;
+
     PIN_SetThreadData (tls_key, ptdata, threadid);
 
     set_pin_addr (fd, (u_long) ptdata);
@@ -854,23 +1029,15 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 
 void thread_fini (THREADID threadid, const CONTEXT* ctxt, INT32 code, VOID* v)
 {
-    struct thread_data* ptdata;
-    ptdata = (struct thread_data *) malloc (sizeof(struct thread_data));
+    struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
     fprintf(stderr, "Pid %d (recpid %d, tid %d) thread fini\n", PIN_GetPid(), ptdata->record_pid, PIN_GetTid());
+    fprintf(stderr, "thread %d bytes read %ld\n", ptdata->record_pid, ptdata->bytes_read);
+    fprintf(stderr, "thread %d bytes written %ld\n", ptdata->record_pid, ptdata->bytes_written);
 }
 
 void fini(INT32 code, void* v) {
     fprintf(stderr, "bytes read %ld\n", bytes_read);
     fprintf(stderr, "bytes written %ld\n", bytes_written);
-}
-
-VOID ImageLoad (IMG img, VOID *v)
-{
-	uint32_t id = IMG_Id (img);
-
-	ADDRINT load_offset = IMG_LoadOffset(img);
-	fprintf(stderr, "[IMG] Loading image id %d, name %s with load offset %#x\n",
-			id, IMG_Name(img).c_str(), load_offset);
 }
 
 int main(int argc, char** argv) 
@@ -889,6 +1056,16 @@ int main(int argc, char** argv)
         exit(-1);
     }
 
+    if (mkdir("/tmp/io", 0755)) {
+        if (errno == EEXIST) {
+            // fine
+            fprintf(stderr, "directory already exists, want to make sure previous run stuff was cleared\n");
+        } else {
+            fprintf(stderr, "could not make directory /tmp/io\n");
+            exit(-1);
+        }
+    }
+
     if (!open_fds) {
 #ifndef ONLY_X
         struct open_info* oi;
@@ -899,17 +1076,20 @@ int main(int argc, char** argv)
         oi = (struct open_info *) malloc(sizeof(struct open_info));
         strcpy(oi->filename, "stdin");
         oi->flags = 0;
-        oi->fp = fopen("/tmp/stdin", "w");
+        oi->read_fp = fopen("/tmp/io/stdin_read", "w");
+        oi->write_fp = fopen("/tmp/io/stdin_write", "w");
         monitor_add_fd(open_fds, fileno(stdin), 0, oi);
         oi = (struct open_info *) malloc(sizeof(struct open_info));
         strcpy(oi->filename, "stdout");
         oi->flags = 0;
-        oi->fp = fopen("/tmp/stdout", "w");
+        oi->read_fp = fopen("/tmp/io/stdout_read", "w");
+        oi->write_fp = fopen("/tmp/io/stdout_write", "w");
         monitor_add_fd(open_fds, fileno(stdout), 0, oi);
         oi = (struct open_info *) malloc(sizeof(struct open_info));
         strcpy(oi->filename, "stderr");
         oi->flags = 0;
-        oi->fp = fopen("/tmp/stderr", "w");
+        oi->read_fp = fopen("/tmp/io/stderr_read", "w");
+        oi->write_fp = fopen("/tmp/io/stderr_write", "w");
         monitor_add_fd(open_fds, fileno(stderr), 0, oi);
 #endif
     }
@@ -939,7 +1119,6 @@ int main(int argc, char** argv)
     // forks a new process
     PIN_AddForkFunction(FPOINT_AFTER_IN_CHILD, AfterForkInChild, 0);
 
-    IMG_AddInstrumentFunction (ImageLoad, 0);
     TRACE_AddInstrumentFunction (track_trace, 0);
 
     PIN_AddSyscallExitFunction(instrument_syscall_ret, 0);
