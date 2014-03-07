@@ -313,7 +313,7 @@ __check_pf (bool *seen_ipv4, bool *seen_ipv6,
       struct cached_data *olddata = NULL;
       struct cached_data *data = NULL;
 
-      __libc_lock_lock (lock);
+      replay_ext_mutex_lock(&lock);
 
 #ifdef IS_IN_nscd
 # define cache_valid() nl_timestamp != 0 && cache->timestamp == nl_timestamp
@@ -354,8 +354,6 @@ __check_pf (bool *seen_ipv4, bool *seen_ipv6,
 	    }
 	}
 
-      __libc_lock_unlock (lock);
-
       if (data != NULL)
 	{
 	  /* It worked.  */
@@ -367,9 +365,11 @@ __check_pf (bool *seen_ipv4, bool *seen_ipv6,
 	  if (olddata != NULL && olddata->usecnt > 0
 	      && atomic_add_zero (&olddata->usecnt, -1))
 	    free (olddata);
-
+	  replay_ext_mutex_unlock (&lock);
 	  return;
 	}
+      replay_ext_mutex_unlock (&lock);
+
 
 #if __ASSUME_NETLINK_SUPPORT == 0
       /* Remember that there is no netlink support.  */
@@ -418,15 +418,17 @@ __free_in6ai (struct in6addrinfo *ai)
 	(struct cached_data *) ((char *) ai
 				- offsetof (struct cached_data, in6ai));
 
+      replay_ext_mutex_lock(&lock);
       if (atomic_add_zero (&data->usecnt, -1))
 	{
-	  __libc_lock_lock (lock);
+	  //__libc_lock_lock (lock);
 
 	  if (data->usecnt == 0)
 	    /* Still unused.  */
 	    free (data);
 
-	  __libc_lock_unlock (lock);
+	  //__libc_lock_unlock (lock);
 	}
+      replay_ext_mutex_unlock (&lock);
     }
 }

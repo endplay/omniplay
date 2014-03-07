@@ -36,6 +36,10 @@ unsigned long* ppthread_log_clock = 0;
 #define SET_NEW_STACKP()		__asm__ __volatile__ ("movl %0, %%esp\n\t" : : "r" (&(head->stack[DEFAULT_STACKSIZE-2048])))
 #define RESET_OLD_STACKP()	__asm__ __volatile__ ("movl %0, %%esp\n\t" : : "r" (head->old_stackp)) 
 
+#ifdef USE_EXTRA_DEBUG_LOG
+void pthread_extra_log_mismatch ();
+#endif
+
 // This prints a message outside of the record/replay mechanism - useful for debugging
 void pthread_log_debug(const char* fmt,...)
 {
@@ -413,10 +417,15 @@ pthread_log_replay (unsigned long type, unsigned long check)
 
     if (data->check != check || data->type != type) {
 	pthread_log_debug ("Replay mismatch: log record %lu has type %lu check %x - but called with type %lu check %lx\n", data->clock, data->type, data->check, type, check);
+#ifdef USE_EXTRA_DEBUG_LOG
+	pthread_extra_log_mismatch ();
+#endif
+#if 0
 	pthread_log_debug ("Callee 0 is 0x%p\n", __builtin_return_address(0));
 	pthread_log_debug ("Callee 1 is 0x%p\n", __builtin_return_address(1));
 	pthread_log_debug ("Callee 2 is 0x%p\n", __builtin_return_address(2));
 	pthread_log_debug ("Callee 3 is 0x%p\n", __builtin_return_address(3));
+#endif
 	exit (0);
     }
 
@@ -629,7 +638,7 @@ pthread_extra_log_replay (char* msg, int len)
     int rc = 0;
 
     if (head == NULL) return 0;
-    if (head->next + sizeof(u_long) + len >= head->end) {
+    if (head->next + sizeof(u_long) + len > head->end) {
 	INTERNAL_SYSCALL_DECL(__err);
 	INTERNAL_SYSCALL(pthread_extra_log,__err,2,1,0); // Log full
 	head->next = ((char *) head + sizeof (struct pthread_extra_log_head));
@@ -637,20 +646,31 @@ pthread_extra_log_replay (char* msg, int len)
     data = head->next;
     log_clock = *((u_long *) data);
     data += sizeof(u_long);
-    if (*ppthread_log_clock != log_clock) {
-	pthread_log_debug ("extra log clock difference: record %lx replay %lx\n", log_clock, *ppthread_log_clock);
-	rc = -1;
-    }
     if (memcmp (msg, data, len)) {
-	pthread_log_debug ("extra log message difference\n");
-	for (i = 0; i < len; i += 4) {
-	    pthread_log_debug ("byte %d record %lx replay %lx\n", i, *((u_long *) &data[i]), *((u_long *) &msg[i]));
-	}
-	rc = -1;
+      pthread_log_debug ("extra log message difference at clock %lx/%lx\n", log_clock, *ppthread_log_clock);
+      for (i = 0; i < len; i += 4) {
+	pthread_log_debug ("byte %d record %lx replay %lx\n", i, *((u_long *) &data[i]), *((u_long *) &msg[i]));
+      }
+      rc = -1;
     }
     data += len;
     head->next = data;
     return rc;
+}
+
+void
+pthread_extra_log_mismatch ()
+{
+  int i;
+  struct pthread_extra_log_head* head = THREAD_GETMEM (THREAD_SELF, extra_log_head);
+  char* data = head->next;
+  u_long log_clock = *((u_long *) data);
+  data += sizeof(u_long);
+  pthread_log_debug ("elog clock %ld\n", log_clock);
+  for (i = 0; i < 10; i++) {
+    pthread_log_debug ("\tlog word %lx\n", *((u_long *) data));
+    data += sizeof(u_long);
+  }
 }
 
 void pthread_log_msg_dummy (char* msg, int len)
@@ -2357,6 +2377,41 @@ int pthread_log_lll_timedwait_tid (int* ptid, const struct timespec* abstime)
 }
 
 static int sync_lock = LLL_LOCK_INITIALIZER;
+
+int pthread_log__sync_read(volatile int* val)
+{
+  struct pthread_log_head* head;
+  int ret, t;
+
+  if (is_recording()) { 
+    head = THREAD_GETMEM (THREAD_SELF, log_head);
+
+    head->ignore_flag = 1;
+    // Enforce that only one thread can be doing a sync operation at a time
+    lll_lock(sync_lock, LLL_PRIVATE);
+    pthread_log_record (0, SYNC_READ_ENTER, (u_long) val, 1); 
+    ret = *val; // This is not an atomic op but we still need to synchronize it
+    pthread_log_record (ret, SYNC_READ_EXIT, (u_long) val, 1); 
+    lll_unlock(sync_lock, LLL_PRIVATE);
+    head->ignore_flag = 0;
+  } else if (is_replaying()) {
+    head = THREAD_GETMEM (THREAD_SELF, log_head);
+
+    // Enforced ordering ensures deterministic result
+    pthread_log_replay (SYNC_READ_ENTER, (u_long) val); 
+    head->ignore_flag = 1;
+    ret = *val;
+    head->ignore_flag = 0;
+    t = pthread_log_replay (SYNC_READ_EXIT, (u_long) val); 
+    if (t != ret) {
+      pthread_log_debug ("sync_read recorded %d replayed %d ret\n", t, ret);
+      ret = t;
+    }
+  } else {
+    ret = *val;
+  }
+  return ret;
+}
 
 int pthread_log__sync_add_and_fetch(int* val, int x)
 {
