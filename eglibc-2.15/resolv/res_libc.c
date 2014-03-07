@@ -36,8 +36,9 @@ extern unsigned long long int __res_initstamp attribute_hidden;
 # define atomicincunlock(lock) (void) 0
 # define atomicinc(var) catomic_increment (&(var))
 #else
-# define atomicinclock(lock) __libc_lock_lock (lock)
-# define atomicincunlock(lock) __libc_lock_unlock (lock)
+/* REPLAY */
+# define atomicinclock(lock) replay_ext_mutex_lock (lock) 
+# define atomicincunlock(lock) replay_ext_mutex_unlock (lock)
 # define atomicinc(var) ++var
 #endif
 
@@ -99,13 +100,18 @@ __res_maybe_init (res_state resp, int preinit)
 	int ret;
 
 	if (resp->options & RES_INIT) {
+	    {
+	      char buf[80];
+	      sprintf (buf, "_res_maybe_init RES_INIT\n");
+	      write (99999, buf, strlen(buf)+1);
+	    }
 		ret = stat (_PATH_RESCONF, &statbuf);
-		__libc_lock_lock (lock);
+		replay_ext_mutex_lock (&lock); // REPLAY
 		if ((ret == 0) && (last_mtime != statbuf.st_mtime)) {
 			last_mtime = statbuf.st_mtime;
 			atomicinc (__res_initstamp);
 		}
-		__libc_lock_unlock (lock);
+		replay_ext_mutex_unlock (&lock); // REPLAY
 		if (__res_initstamp != resp->_u._ext.initstamp) {
 			if (resp->nscount > 0)
 				__res_iclose (resp, true);
@@ -113,6 +119,11 @@ __res_maybe_init (res_state resp, int preinit)
 		}
 		return 0;
 	} else if (preinit) {
+	    {
+	      char buf[80];
+	      sprintf (buf, "_res_maybe_init preinit\n");
+	      write (99999, buf, strlen(buf)+1);
+	    }
 		if (!resp->retrans)
 			resp->retrans = RES_TIMEOUT;
 		if (!resp->retry)
@@ -121,8 +132,14 @@ __res_maybe_init (res_state resp, int preinit)
 		if (!resp->id)
 			resp->id = res_randomid ();
 		return __res_vinit (resp, 1);
-	} else
+	} else {
+	    {
+	      char buf[80];
+	      sprintf (buf, "_res_maybe_init ninit\n");
+	      write (99999, buf, strlen(buf)+1);
+	    }
 		return __res_ninit (resp);
+	}
 }
 libc_hidden_def (__res_maybe_init)
 

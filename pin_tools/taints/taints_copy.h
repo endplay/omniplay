@@ -13,7 +13,6 @@ extern "C" {
  * */
 
 #define NUM_OPTIONS INT_MAX
-
 struct taint {
     long id;
 };
@@ -23,11 +22,6 @@ typedef unsigned char TAINT_TYPE;
 typedef long OPTION_TYPE;
 
 #define new_taint(t) { (t)->id = 0; }
-/*
-void new_taint(struct taint* t) {
-    t->id = 0;
-}
-*/
 
 struct taint* new_ptaint(void) {
     struct taint *t;
@@ -42,17 +36,6 @@ void destroy_taint(struct taint* vector) {
 
 #define get_taint_value(vector, option) { ((vector)->id == option); }
 #define set_taint_value(vector, option, value) { (vector)->id = option; }
-/*
-TAINT_TYPE get_taint_value(struct taint* vector, OPTION_TYPE option) {
-    return vector->id == option;
-}
-*/
-
-/*
-void set_taint_value(struct taint* vector, OPTION_TYPE option, TAINT_TYPE value) {
-    vector->id = option;
-}
-*/
 
 inline int is_taint_equal(struct taint* first, struct taint* second) {
     if (!first && !second) return 0;
@@ -86,7 +69,7 @@ inline int get_num_taint_values(struct taint* src) {
 #define set_taint(dst, src) { (dst)->id = (src)->id; }
 #define __merge_taints(dst, src) { \
 	if ((dst)->id != (src)->id && (src)->id != 0) { \
-		(dst)->id = (src)->id; \
+		(dst)->id = 0; \
 	} \
 }
 inline void merge_taints(struct taint* dst, struct taint* src) {

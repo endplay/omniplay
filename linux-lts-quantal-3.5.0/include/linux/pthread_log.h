@@ -59,7 +59,7 @@ struct pthread_extra_log_head {
 };
 #endif
 
-#define PTHREAD_LOG_SIZE (20*1024*1024)
+#define PTHREAD_LOG_SIZE (10*1024*1024)
 
 #define PTHREAD_LOG_NONE           0
 #define PTHREAD_LOG_RECORD         1
