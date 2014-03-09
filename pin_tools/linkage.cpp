@@ -6646,7 +6646,7 @@ inline void __sys_read_stop(struct thread_data* ptdata, int rc) {
         read_fileno = oi->fileno;
         LOG_PRINT ("read into %#lx, size %d, file is %s, option cnt is %d\n", (unsigned long) ri->buf, rc, oi->name, option_cnt);
 #ifdef TAINT_IMPL_INDEX
-        LOG_PRINT ("  index cnt is %ld\n", (long) idx_cnt);
+        LOG_PRINT ("  index cnt is %ld\n", (long) taint_count);
 #endif
     } else if(ri->fd == fileno(stdin)) {
         read_fileno = 0;
@@ -7043,7 +7043,7 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
 #ifdef TAINT_IMPL_INDEX
     // mark_and_sweep_unused_taints();
 #ifdef MERGE_STATS
-    fprintf(stderr, "unique taint count is %lu\n", (unsigned long) idx_cnt);
+    fprintf(stderr, "unique taint count is %ld\n", (long) taint_count);
     fprintf(stderr, "option cnt is %d\n", option_cnt);
     fprintf(stderr, "merge count is %ld\n", merge_count);
     fprintf(stderr, "unique merge count is %ld\n", unique_merge_count);
@@ -12674,7 +12674,7 @@ void fini(INT32 code, void* v) {
 #ifdef TAINT_IMPL_INDEX
     fprintf(stderr, "option cnt is %d\n", option_cnt);
 #ifdef MERGE_STATS
-    fprintf(stderr, "unqiue taint count is %lu\n", (unsigned long) idx_cnt);
+    fprintf(stderr, "unqiue taint count is %ld\n", (long) taint_count);
     fprintf(stderr, "merge count is %ld\n", merge_count);
     fprintf(stderr, "unique merge count is %ld\n", unique_merge_count);
 #endif
