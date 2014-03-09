@@ -77,7 +77,7 @@ struct image_infos* img_list;
 #define STACK_SIZE 8388608
 
 // Logging
-// #define LOGGING_ON
+#define LOGGING_ON
 #define LOG_F log_f
 #define MEM_F log_f
 #define TRACE_F trace_f
@@ -524,7 +524,7 @@ KNOB<string> KnobStaticAnalysisPath(KNOB_MODE_WRITEONCE, "pintool", "s", "/tmp/s
 KNOB<string> KnobTurnOffReplay(KNOB_MODE_WRITEONCE, "pintool", "n", "0", "standalone, no replay when compiled with replay support");
 KNOB<string> KnobErrorRegex(KNOB_MODE_WRITEONCE, "pintool", "e", "blahblabhablahbalh", "error regex to match against");
 #ifdef FILTER_INPUTS
-KNOB<string> KnobInputFileFilter(KNOB_MODE_WRITEONCE, "pintool", "f", "xray.tex", "input file to only create taints from");
+KNOB<string> KnobInputFileFilter(KNOB_MODE_WRITEONCE, "pintool", "f", "poster.bib", "input file to only create taints from");
 #endif
 
 #ifdef CONFAID
@@ -809,6 +809,7 @@ void print_mems()
     fprintf(log_f, "There are %d elements with zero count in the array\n", zero);
 }
 #endif
+
 
 #ifdef FUNC_TIME
 void print_function_times()
@@ -6645,7 +6646,7 @@ inline void __sys_read_stop(struct thread_data* ptdata, int rc) {
         read_fileno = oi->fileno;
         LOG_PRINT ("read into %#lx, size %d, file is %s, option cnt is %d\n", (unsigned long) ri->buf, rc, oi->name, option_cnt);
 #ifdef TAINT_IMPL_INDEX
-        LOG_PRINT ("  index cnt is %lu\n", (unsigned long) idx_cnt);
+        LOG_PRINT ("  index cnt is %ld\n", (long) idx_cnt);
 #endif
     } else if(ri->fd == fileno(stdin)) {
         read_fileno = 0;
@@ -7041,19 +7042,14 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
 
 #ifdef TAINT_IMPL_INDEX
     // mark_and_sweep_unused_taints();
+#ifdef MERGE_STATS
+    fprintf(stderr, "unique taint count is %lu\n", (unsigned long) idx_cnt);
+    fprintf(stderr, "option cnt is %d\n", option_cnt);
+    fprintf(stderr, "merge count is %ld\n", merge_count);
+    fprintf(stderr, "unique merge count is %ld\n", unique_merge_count);
 #endif
-#ifdef DUMP_TAINTS
-    if (global_syscall_cnt >= 475 && global_syscall_cnt < 505) {
-        char dump_filename[256];
-        snprintf(dump_filename, 256, "%s/taint_dump_%d", group_directory, global_syscall_cnt);
-        FILE* dump_fp = fopen(dump_filename, "w");
-        MYASSERT(dump_fp);
-        dump_taints(dump_fp);
-        fflush(dump_fp);
-        fclose(dump_fp);
-    }
 #endif
-
+    
     // Increment on syscall return for consistency with the log
     increment_syscall_cnt (ptdata, (int)SYSNUM);
 }
@@ -7995,181 +7991,176 @@ void instrument_ret(ADDRINT address, ADDRINT target)
     struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
     if (ptdata == NULL) return;
 
-        GRAB_GLOBAL_LOCK (ptdata);
+    GRAB_GLOBAL_LOCK (ptdata);
 
-        if (!CALLING_BBLOCK_HEAD) {
+    if (!CALLING_BBLOCK_HEAD) {
 #ifdef CTRL_FLOW
-            while (MERGE_ON_NEXT_RET > 0) {
-                reached_merge_point(ptdata);
-                MERGE_ON_NEXT_RET--;
-            }
+        while (MERGE_ON_NEXT_RET > 0) {
+            reached_merge_point(ptdata);
+            MERGE_ON_NEXT_RET--;
+        }
 #endif // CTRL_FLOW
-            RELEASE_GLOBAL_LOCK (ptdata);
-            return;
-        }
-        if (CALLING_BBLOCK_HEAD->next_address != target) {
-            RELEASE_GLOBAL_LOCK (ptdata);
-            return;
-        }
+        RELEASE_GLOBAL_LOCK (ptdata);
+        return;
+    }
+    if (CALLING_BBLOCK_HEAD->next_address != target) {
+        RELEASE_GLOBAL_LOCK (ptdata);
+        return;
+    }
 #ifdef FUNC_TIME
-        struct timeval new_time;
-        gettimeofday(&new_time, NULL);
-        add_stat_to_function(&new_time, total_inst_count, address);
-        current_time = new_time;
-        current_num_inst = total_inst_count;
+    struct timeval new_time;
+    gettimeofday(&new_time, NULL);
+    add_stat_to_function(&new_time, total_inst_count, address);
+    current_time = new_time;
+    current_num_inst = total_inst_count;
 #endif    
 #ifdef CTRL_FLOW
-        if ((CALLING_BBLOCK_HEAD->status & MERGE_POINT) != 0) {
-            while (CALLING_BBLOCK_HEAD->is_merge_point > 0) {
-                reached_merge_point(ptdata);
-                CALLING_BBLOCK_HEAD->is_merge_point--;
-            }
+    if ((CALLING_BBLOCK_HEAD->status & MERGE_POINT) != 0) {
+        while (CALLING_BBLOCK_HEAD->is_merge_point > 0) {
+            reached_merge_point(ptdata);
+            CALLING_BBLOCK_HEAD->is_merge_point--;
         }
+    }
 #endif
-        BBL_OVER = 0;
-        CURRENT_BBL = 0;
+    BBL_OVER = 0;
+    CURRENT_BBL = 0;
 
-        //if ctrflow_taint is 0, we don't want current_bbl
-        //if (CTRFLOW_TAINT_STACK->prev) {
-        instbbl tmp_key;
-        instbbl* tmp = 0;
-        tmp_key.inst_addr = target;
-        tmp = (instbbl*)(g_hash_table_lookup(hashtable, &tmp_key));
-        if (tmp) {
-            CURRENT_BBL = tmp->bblock;
-        } else {
-            if (CALLING_BBLOCK_HEAD) {
-                CURRENT_BBL = CALLING_BBLOCK_HEAD->bblock;
-                if (CURRENT_BBL) {
-                    SPEC_PRINT(log_f, "instrument_ret: the bblock is set to %#x\n", CURRENT_BBL->first_inst->inst_addr);
+    //if ctrflow_taint is 0, we don't want current_bbl
+    //if (CTRFLOW_TAINT_STACK->prev) {
+    instbbl tmp_key;
+    instbbl* tmp = 0;
+    tmp_key.inst_addr = target;
+    tmp = (instbbl*)(g_hash_table_lookup(hashtable, &tmp_key));
+    if (tmp) {
+        CURRENT_BBL = tmp->bblock;
+    } else {
+        if (CALLING_BBLOCK_HEAD) {
+            CURRENT_BBL = CALLING_BBLOCK_HEAD->bblock;
+            if (CURRENT_BBL) {
+                SPEC_PRINT(log_f, "instrument_ret: the bblock is set to %#x\n", CURRENT_BBL->first_inst->inst_addr);
                 }
             }
         }
-        //}
+    //}
 
 #ifdef CTRL_FLOW
-        //There are crazy cases where it's not possible to correctly
-        //identify the pdoms of a branch (compile_branch in apache for instance)
-        //and therefore, we can't automatically eliminate the taint added to 
-        //CTRFLOW_TAINT_STACK.
-        while (CTRFLOW_TAINT_STACK_SIZE != CALLING_BBLOCK_HEAD->ctrflow_taint_stack_size) {
+    //There are crazy cases where it's not possible to correctly
+    //identify the pdoms of a branch (compile_branch in apache for instance)
+    //and therefore, we can't automatically eliminate the taint added to 
+    //CTRFLOW_TAINT_STACK.
+    while (CTRFLOW_TAINT_STACK_SIZE != CALLING_BBLOCK_HEAD->ctrflow_taint_stack_size) {
 #ifdef PRINT_WARNINGS
-            fprintf(stderr, "WARNING: the size of ctrflow stack at the end of function %d and at the begining %d "
-                    "are not matching, address is %#x, target is %#x\n", CTRFLOW_TAINT_STACK_SIZE, CALLING_BBLOCK_HEAD->ctrflow_taint_stack_size, address, target);
+        fprintf(stderr, "WARNING: the size of ctrflow stack at the end of function %d and at the begining %d "
+                "are not matching, address is %#x, target is %#x\n", CTRFLOW_TAINT_STACK_SIZE, CALLING_BBLOCK_HEAD->ctrflow_taint_stack_size, address, target);
 #endif
-            fix_taints_and_remove_from_ctrflow (ptdata, SUCCESS);
-        }
+        fix_taints_and_remove_from_ctrflow (ptdata, SUCCESS);
+    }
 #endif // CTRL_FLOW
 
-        // remove calling bblock head
-        struct calling_bblock* tmp_head = CALLING_BBLOCK_HEAD;
+    // remove calling bblock head
+    struct calling_bblock* tmp_head = CALLING_BBLOCK_HEAD;
 
-        if (tmp_head == NULL) {
-            goto close;
-        }
+    if (tmp_head == NULL) {
+        goto close;
+    }
 
 #ifdef TRACE_TAINTS
-        for (int spaces = 0; spaces < (CALLING_BBLOCK_SIZE-1); spaces++) {
-            fprintf(TRACE_F, "\t");
-            fflush(TRACE_F);
-        }
-        fprintf(TRACE_F, "ret %#x (%#x) (return of %#x (%#x)) CTRFLOW_STACK_SIZE %d CALLING_BBLOCK_HEAD size %d\n",
-                address, (unsigned int) get_static_address(img_list, address), tmp_head->call_address,
-                (unsigned int) get_static_address(img_list, tmp_head->call_address),
-                CTRFLOW_TAINT_STACK_SIZE, CALLING_BBLOCK_SIZE);
+    for (int spaces = 0; spaces < (CALLING_BBLOCK_SIZE-1); spaces++) {
+        fprintf(TRACE_F, "\t");
+        fflush(TRACE_F);
+    }
+    fprintf(TRACE_F, "ret %#x (%#x) (return of %#x (%#x)) CTRFLOW_STACK_SIZE %d CALLING_BBLOCK_HEAD size %d\n",
+            address, (unsigned int) get_static_address(img_list, address), tmp_head->call_address,
+            (unsigned int) get_static_address(img_list, tmp_head->call_address),
+            CTRFLOW_TAINT_STACK_SIZE, CALLING_BBLOCK_SIZE);
 #endif
-        CALLING_BBLOCK_HEAD = tmp_head->prev;
-        free (tmp_head);
+    CALLING_BBLOCK_HEAD = tmp_head->prev;
+    free (tmp_head);
 #ifdef MEM
-        mems[8] -= sizeof(struct calling_bblock);
+    mems[8] -= sizeof(struct calling_bblock);
 #endif
-        CALLING_BBLOCK_SIZE--;
+    CALLING_BBLOCK_SIZE--;
 
 close:
-        RELEASE_GLOBAL_LOCK (ptdata);
-    }
+    RELEASE_GLOBAL_LOCK (ptdata);
+}
 
-    ADDRINT find_static_address(ADDRINT ip)
-    {
-        PIN_LockClient();
-        IMG img = IMG_FindByAddress(ip);
-        if (!IMG_Valid(img)) return ip;
-        ADDRINT offset = IMG_LoadOffset(img);
-        PIN_UnlockClient();
-        return ip - offset;
+ADDRINT find_static_address(ADDRINT ip)
+{
+    PIN_LockClient();
+    IMG img = IMG_FindByAddress(ip);
+    if (!IMG_Valid(img)) return ip;
+    ADDRINT offset = IMG_LoadOffset(img);
+    PIN_UnlockClient();
+    return ip - offset;
+}
+
+void print_static_instruction(FILE* fp, ADDRINT inst_ptr)
+{
+    PIN_LockClient();
+    fprintf(fp, "[INST] Pid %d (tid: %d) (record %d) - %ld: %#x\n", 
+            PIN_GetPid(), PIN_GetTid(), get_record_pid(), inst_count, inst_ptr);
+    if (IMG_Valid(IMG_FindByAddress(inst_ptr))) {
+        fprintf(fp, "%s -- img %s static %#x\n", RTN_FindNameByAddress(inst_ptr).c_str(), IMG_Name(IMG_FindByAddress(inst_ptr)).c_str(), find_static_address(inst_ptr));
     }
+    PIN_UnlockClient();
+}
 
 #ifdef LOGGING_ON
-    void instrument_inst(ADDRINT inst_ptr, ADDRINT next_addr, ADDRINT target, ADDRINT sp, ADDRINT opcode)
-    {
-        struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-        GRAB_GLOBAL_LOCK (ptdata);
+void instrument_inst(ADDRINT inst_ptr, ADDRINT next_addr, ADDRINT target, ADDRINT sp, ADDRINT opcode)
+{
+    struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+    GRAB_GLOBAL_LOCK (ptdata);
 
-        if (print_first_inst) {
-            LOG_PRINT ("first inst: %#x, sp %#x\n", inst_ptr, sp);
-            print_first_inst = 0;
+    if (print_first_inst) {
+        LOG_PRINT ("first inst: %#x, sp %#x\n", inst_ptr, sp);
+        print_first_inst = 0;
 
 #ifdef TRACK_MEMORY_AREAS
-            if (add_memory_area (ma_list, sp, sp + STACK_SIZE)) {
-                MEM_PRINT (MEM_F, "Could not add stack [%#x, %#x)\n", sp, sp + STACK_SIZE);
-            }
-            LOG_PRINT ("Added stack [%#x, %#x)\n", sp, sp+STACK_SIZE);
-#endif
+        if (add_memory_area (ma_list, sp, sp + STACK_SIZE)) {
+            MEM_PRINT (MEM_F, "Could not add stack [%#x, %#x)\n", sp, sp + STACK_SIZE);
         }
+        LOG_PRINT ("Added stack [%#x, %#x)\n", sp, sp+STACK_SIZE);
+#endif
+    }
 
-        // #if 0
-        if (TAINT_CONDITION) {
-            PIN_LockClient();
-            fprintf(LOG_F, "[INST] Pid %d (tid: %d) (record %d) - %#x\n", PIN_GetPid(), PIN_GetTid(), get_record_pid(), inst_ptr);
-            if (IMG_Valid(IMG_FindByAddress(inst_ptr))) {
-                fprintf(LOG_F, "%s -- img %s static %#x\n", RTN_FindNameByAddress(inst_ptr).c_str(), IMG_Name(IMG_FindByAddress(inst_ptr)).c_str(), find_static_address(inst_ptr));
-                PIN_UnlockClient();
-            } else {
-                PIN_UnlockClient();
-            }
-        }
-        // #endif
-
-        // Count instructios
-        inst_count++;
-#ifdef LOGGING_ON
-        if ((inst_count % INST_COUNT_INCREMENT) == 0) {
-            LOG_PRINT ("inst count is %lu, inst_ptr is %#x\n", inst_count, inst_ptr);
-            LOG_PRINT ("num options is %d\n", option_cnt);
-        }
-#endif
-
-#if 0
-        if (opcode == XED_ICLASS_RET_NEAR || opcode == XED_ICLASS_RET_FAR) {
-#ifndef CTRL_FLOW
-            if (CALLING_BBLOCK_SIZE != 0) {
-#endif
-                instrument_ret(inst_ptr, target);
-#ifndef CTRL_FLOW
-            }
-#endif
-        }
-#endif
-        /*
-           if (CALLING_BBLOCK_HEAD && (CALLING_BBLOCK_HEAD->status == HANDLED || ((CALLING_BBLOCK_HEAD->status & CONSERVATIVE) != 0))) {
-           if (opcode == XED_ICLASS_RET_NEAR || opcode == XED_ICLASS_RET_FAR) {
-//LOG_PRINT ("Inst %#x ret (handled)\n", inst_ptr);
-//#ifdef CTRL_FLOW
-instrument_ret(inst_ptr, target);
-//#endif
-} else {
-        //LOG_PRINT("Inst %#x (handled)\n", inst_ptr);
-        }
+    #if 0
+    if (TAINT_CONDITION) {
+        PIN_LockClient();
+        fprintf(LOG_F, "[INST] Pid %d (tid: %d) (record %d) - %#x\n", PIN_GetPid(), PIN_GetTid(), get_record_pid(), inst_ptr);
+        if (IMG_Valid(IMG_FindByAddress(inst_ptr))) {
+            fprintf(LOG_F, "%s -- img %s static %#x\n", RTN_FindNameByAddress(inst_ptr).c_str(), IMG_Name(IMG_FindByAddress(inst_ptr)).c_str(), find_static_address(inst_ptr));
+            PIN_UnlockClient();
         } else {
-        if (opcode == XED_ICLASS_RET_NEAR || opcode == XED_ICLASS_RET_FAR) {
-//LOG_PRINT("Inst %#x ret\n", inst_ptr);
-//instrument_ret(inst_ptr, target);
-} else {
-        //LOG_PRINT("Inst %#x\n", inst_ptr);
+            PIN_UnlockClient();
         }
-        }
-         */
-RELEASE_GLOBAL_LOCK (ptdata);
+    }
+    #endif
+
+    // Count instructios
+    inst_count++;
+#ifdef LOGGING_ON
+    if ((inst_count % INST_COUNT_INCREMENT) == 0) {
+        LOG_PRINT ("inst count is %lu, inst_ptr is %#x\n", inst_count, inst_ptr);
+        LOG_PRINT ("num options is %d\n", option_cnt);
+        print_static_instruction(log_f, inst_ptr);
+
+    }
+    /*
+#ifdef TAINT_IMPL_INDEX
+    if (inst_count > 90358000 && inst_count <= 903600000) {
+        print_static_instruction(log_f, inst_ptr);
+        mark_and_sweep_unused_taints();
+    } 
+    if (inst_count == 90360000 || inst_count == 90355000 || inst_count == 90357000 || inst_count == 90358000) {
+        LOG_PRINT("inst count is %lu\n", inst_count);
+        mark_and_sweep_unused_taints();
+    }
+#endif
+*/
+#endif
+
+    RELEASE_GLOBAL_LOCK (ptdata);
 }
 #endif // LOGGING_ON
 
@@ -9941,6 +9932,7 @@ void create_options_from_buffer (int type, long id, void* buf, int size, int off
     GRAB_GLOBAL_LOCK (ptdata);
 
     if (option_byte) {
+        LOG_PRINT ("Creating options for buffer starting at %#lx, size %d)\n", (unsigned long) buf, size);
         for (int i = 0; i < size; i++) {
            ADDRINT mem_location = ((ADDRINT) buf) + i;
            struct taint vector;
@@ -12568,6 +12560,7 @@ void dump_taints(FILE* out_file)
 }
 
 #ifdef TAINT_IMPL_INDEX
+/*
 void mark_and_sweep_unused_taints()
 {
     struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
@@ -12644,6 +12637,7 @@ void mark_and_sweep_unused_taints()
     cleaned_idx_size = num_indices;
     RELEASE_GLOBAL_LOCK (ptdata);
 }
+*/
 #endif
 
 void __print_taint_string_buffer(FILE* file, char* buf, int size)
@@ -12678,10 +12672,15 @@ void fini(INT32 code, void* v) {
     fprintf(stderr, "time is: %d:%d:%d\n", tm->tm_hour, tm->tm_min, tm->tm_sec);
 
 #ifdef TAINT_IMPL_INDEX
-    fprintf(stderr, "index cnt is %lu\n", (unsigned long) idx_cnt);
     fprintf(stderr, "option cnt is %d\n", option_cnt);
+#ifdef MERGE_STATS
+    fprintf(stderr, "unqiue taint count is %lu\n", (unsigned long) idx_cnt);
     fprintf(stderr, "merge count is %ld\n", merge_count);
     fprintf(stderr, "unique merge count is %ld\n", unique_merge_count);
+#endif
+#ifdef MERGE_PREDICTOR
+    fprintf(stderr, "merge predictions %ld\n", merge_predict_count);
+#endif
 #endif
 
 #ifdef TAINT_STATS

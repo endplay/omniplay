@@ -20,6 +20,10 @@ extern "C" {
 #define CONFIDENCE_LEVELS 1
 typedef guint8 TAINT_TYPE;
 
+/* Different options */
+// #define MERGE_PREDICTOR // simple 1-bit predictor
+#define MERGE_STATS
+
 // the type of an index
 typedef guint32 OPTION_TYPE;
 
@@ -40,17 +44,27 @@ GHashTable* taint_merge_index;
 // structure to map indices to options (to figure out which syscall created a taint)
 GHashTable* index_option_table;
 
-// #define MERGE_STATS
 #ifdef MERGE_STATS
 long merge_count = 0;
 long unique_merge_count = 0;
 #endif
 
+#ifdef MERGE_PREDICTOR
+long merge_predict_count = 0;
+GHashTable* merge_cache_table;
+#define INIT_TAINT_INDEX() { \
+    taint_index_table = g_hash_table_new(g_direct_hash, g_direct_equal); \
+    taint_merge_index = g_hash_table_new_full(g_int64_hash, g_int64_equal, free, NULL); \
+    index_option_table = g_hash_table_new(g_direct_hash, g_direct_equal); \
+    merge_cache_table = g_hash_table_new(g_direct_hash, g_direct_equal); \
+}
+#else
 #define INIT_TAINT_INDEX() { \
     taint_index_table = g_hash_table_new(g_direct_hash, g_direct_equal); \
     taint_merge_index = g_hash_table_new_full(g_int64_hash, g_int64_equal, free, NULL); \
     index_option_table = g_hash_table_new(g_direct_hash, g_direct_equal); \
 }
+#endif
 
 inline guint64 hash_indices(guint32 index1, guint32 index2) {
     guint64 hash;
@@ -178,6 +192,18 @@ inline guint32 merge_indices(guint32 index1, guint32 index2) {
     if (index1 != 0 && index2 == 0) return index1;
     if (index1 == index2) return index1;
 
+#ifdef MERGE_PREDICTOR
+    // Okay, given index1, see what the previous merge index was for index2
+    do {
+        guint32 prev_idx;
+        prev_idx = (guint32) g_hash_table_lookup(merge_cache_table, GUINT_TO_POINTER(index1));
+        if (prev_idx == index2) {
+            merge_predict_count++;
+        }
+        g_hash_table_insert(merge_cache_table, GUINT_TO_POINTER(index1), GUINT_TO_POINTER(index2));
+    } while(0);
+#endif
+
     hash_idx = hash_indices(index1, index2);
     phash_idx = (guint64 *) malloc(sizeof(guint64));
     memcpy(phash_idx, &hash_idx, sizeof(guint64));
@@ -186,7 +212,7 @@ inline guint32 merge_indices(guint32 index1, guint32 index2) {
 
 #ifdef MERGE_STATS
     merge_count++;
-    fprintf(stderr, "[MERGE] %lu %lu\n", (unsigned long) index1, (unsigned long) index2);
+    // fprintf(stderr, "[MERGE] %lu %lu\n", (unsigned long) index1, (unsigned long) index2);
 #endif
 
     if (merge_idx) {
@@ -196,7 +222,7 @@ inline guint32 merge_indices(guint32 index1, guint32 index2) {
 
 #ifdef MERGE_STATS
     unique_merge_count++;
-    fprintf(stderr, "[MERGE] %lu %lu -> %lu\n", (unsigned long) index1, (unsigned long) index2, (unsigned long) merge_idx);
+    // fprintf(stderr, "[MERGE] %lu %lu -> %lu\n", (unsigned long) index1, (unsigned long) index2, (unsigned long) merge_idx);
 #endif
 
     assert (!g_hash_table_contains(taint_merge_index, phash_idx));
@@ -213,6 +239,7 @@ inline void merge_taints(struct taint* dst, struct taint* src) {
     struct merge_pair* mp;
     if (!dst || !src) return;    
     if (dst->id == 0) {
+        dst->id = src->id;
         return;
     }
     if (src->id == 0) {
@@ -286,10 +313,12 @@ GList* get_non_zero_taints(struct taint* t) {
             // leaf node
             OPTION_TYPE option;
             option = get_option_from_index(mp->id2);
+            /*
             if (!option) {
-                fprintf(stderr, "could not look up index %lu\n", (unsigned long) mp->id2);
+                fprintf(stderr, "could not look up index %lu, taint id is %ld\n", (unsigned long) mp->id2, (unsigned long) t->id);
             }
             assert(option);
+            */
             list = g_list_prepend(list, GUINT_TO_POINTER(option));
         } else {
             g_queue_push_tail(queue, GUINT_TO_POINTER(mp->id1));
