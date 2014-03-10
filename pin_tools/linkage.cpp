@@ -66,7 +66,7 @@
 // #define FILTER_INPUTS
 // #define DUMP_TAINTS
 // #define TAINT_STATS
-#define TAINT_PROFILE
+// #define TAINT_PROFILE
 
 // #define TRACK_MEMORY_AREAS
 #ifdef TRACK_MEMORY_AREAS
@@ -614,6 +614,7 @@ int setup_logs(void);
 void create_options_from_buffer (int type, long id, void* buf, int size, int offset, int fileno);
 void mark_and_sweep_unused_taints(void);
 void dump_taints(FILE* out_file);
+long count_tainted_addresses(void);
 struct bblock* read_return_bblock(struct thread_data*, ADDRINT);
 void rollback(struct thread_data*, int);
 void __print_dependency_tokens(FILE* file, struct taint* vector);
@@ -1515,9 +1516,15 @@ void taint_mem2reg (ADDRINT mem_loc, UINT32 size, REG reg)
     TAINT_PRINT ("taint_mem2reg: memory location %#x has mark, vector is ", mem_loc);
     TAINT_PRINT_DEP_VECTOR (vector);
     if(vector) {
-        reg_mod_dependency(ptdata, reg, vector, SET, 1);    
+        reg_mod_dependency(ptdata, reg, vector, SET, 1);
+#ifdef TAINT_PROFILE
+        global_profile->stats_mem2reg[STATS_SET]++;
+#endif
     } else {
         reg_clear_dependency(ptdata, reg);
+#ifdef TAINT_PROFILE
+            global_profile->stats_mem2reg[STATS_CLEAR]++;
+#endif
     }
 
     for(int i = 1; i < (int)size; i++) {
@@ -1527,6 +1534,9 @@ void taint_mem2reg (ADDRINT mem_loc, UINT32 size, REG reg)
             TAINT_PRINT_DEP_VECTOR(vector);
 
             reg_mod_dependency(ptdata, reg, vector, MERGE, 0);    
+#ifdef TAINT_PROFILE
+            global_profile->stats_mem2reg[STATS_SET]++;
+#endif
         }
     }
     TAINT_PRINT ("taint_mem2reg: reg is: ");
@@ -1794,14 +1804,23 @@ void taint_reg2mem (ADDRINT mem_loc, UINT32 size, REG reg)
             mem_mod_dependency(ptdata, mem_loc + i, vector, SET, 1);    
             TAINT_PRINT ("taint_reg2mem: mem %#x ", mem_loc + i);
             TAINT_PRINT_DEP_VECTOR (get_mem_taint(mem_loc + i));
+#ifdef TAINT_PROFILE
+            global_profile->stats_reg2mem[STATS_SET]++;
+#endif
         }
     } else {
         for(int i = 0; i < (int)size; i++) {
             mem_clear_dependency(ptdata, mem_loc + i);    
+#ifdef TAINT_PROFILE
+            global_profile->stats_reg2mem[STATS_CLEAR]++;
+#endif
         }
     }   
 #ifdef TAINT_TRACK
     taint_track_locations("taint_reg2mem: dst loc", mem_loc, (int)size);
+#endif
+#ifdef TAINT_PROFILE
+    increment_taint_count(global_profile, STATS_TAINT_REG2MEM);
 #endif
     RELEASE_GLOBAL_LOCK (ptdata);
 }
@@ -1950,7 +1969,9 @@ void taint_immval2flag()
     GRAB_GLOBAL_LOCK (ptdata);
 
     flags_clear_dependency(ptdata);
-
+#ifdef TAINT_PROFILE
+    increment_taint_count(global_profile, STATS_TAINT_IMMVAL2FLAG);
+#endif
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
@@ -1968,6 +1989,9 @@ void taint_immval2reg(REG reg, int mode)
     else if (CTRFLOW_TAINT_STACK->prev != 0) {
         add_modified_reg(ptdata, reg);
     }
+#endif
+#ifdef TAINT_PROFILE
+    increment_taint_count(global_profile, STATS_TAINT_IMMVAL2REG);
 #endif
     RELEASE_GLOBAL_LOCK (ptdata);
 }
@@ -1989,8 +2013,14 @@ void taint_reg2reg (REG dst_reg, REG src_reg)
         TAINT_PRINT ("taint_reg2reg: reg %d has mark, vector is ", src_reg);
         TAINT_PRINT_DEP_VECTOR(vector);
         reg_mod_dependency(ptdata, dst_reg, vector, SET, 1);    
+#ifdef TAINT_PROFILE
+        global_profile->stats_reg2reg[STATS_SET]++;
+#endif
     } else {
         reg_clear_dependency(ptdata, dst_reg);
+#ifdef TAINT_PROFILE
+        global_profile->stats_reg2reg[STATS_CLEAR]++;
+#endif
     }
 #ifdef TAINT_PROFILE
     increment_taint_count(global_profile, STATS_TAINT_REG2REG);
@@ -2059,6 +2089,9 @@ void taint_add_reg2mem (ADDRINT mem_loc, UINT32 size, REG reg)
         TAINT_PRINT_DEP_VECTOR(vector);
         for(int i = 0; i < (int)size; i++) {
             mem_mod_dependency(ptdata, mem_loc + i, vector, MERGE, 1);    
+#ifdef TAINT_PROFILE
+            global_profile->stats_add_reg2mem[STATS_SET]++;
+#endif
         }
         TAINT_PRINT_DEP_VECTOR(vector);
     } else {
@@ -2097,6 +2130,9 @@ void taint_add_mem2reg (ADDRINT mem_loc, UINT32 size, REG reg)
 #ifdef TAINT_TRACK
             taint_track_locations("taint_add_mem2reg", mem_loc, (int)size);
 #endif
+#ifdef TAINT_PROFILE
+            global_profile->stats_add_mem2reg[STATS_SET]++;
+#endif
         }
     }
 #ifdef TAINT_PROFILE
@@ -2117,6 +2153,9 @@ void taint_add_reg2reg (REG dst_reg, REG src_reg)
         TAINT_PRINT ("taint_add_reg2reg: src reg %d has mark, vector is ", src_reg);
         TAINT_PRINT_DEP_VECTOR(vector);
         reg_mod_dependency(ptdata, dst_reg, vector, MERGE, 1);    
+#ifdef TAINT_PROFILE
+        global_profile->stats_add_reg2reg[STATS_SET]++;
+#endif
     }
 #ifdef CTRL_FLOW
     else if (CTRFLOW_TAINT_STACK->prev != 0) {
@@ -4900,8 +4939,8 @@ void instrument_pcmpeqx(INS ins)
 
     } else if (op2mem) {
         USIZE addrsize = INS_MemoryReadSize(ins);
-        assert (addrsize == 16);
-        assert (INS_IsMemoryRead(ins));
+        MYASSERT (addrsize == 16);
+        MYASSERT (INS_IsMemoryRead(ins));
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_mem2reg),
                 IARG_MEMORYREAD_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, IARG_END);
     } else {
@@ -5670,8 +5709,8 @@ void instrument_set_src2dst(INS ins)
                 IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, IARG_END);
     } else if (op1mem && op2mem) {
         USIZE addrsize = INS_MemoryReadSize(ins);
-        assert (INS_IsMemoryWrite(ins));
-        assert (INS_IsMemoryRead(ins));
+        MYASSERT (INS_IsMemoryWrite(ins));
+        MYASSERT (INS_IsMemoryRead(ins));
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_mem2mem), IARG_MEMORYREAD_EA, IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_END);
     } else {
         string instruction;
@@ -6655,7 +6694,7 @@ inline void __sys_write_stop(struct thread_data* ptdata, int rc) {
     if (monitor_has_fd(open_fds, wi->fd)) {
         struct open_info* oi;
         oi = (struct open_info *) monitor_get_fd_data(open_fds, wi->fd);
-        assert(oi);
+        MYASSERT(oi);
         channel_fileno = oi->fileno;
         LOG_PRINT ("syscall cnt: %d write at %#lx, size %d, file is %s\n", global_syscall_cnt, (unsigned long) wi->buf, rc, oi->name);
     } else if (wi->fd == fileno(stdout)) {
@@ -6694,7 +6733,7 @@ inline void __sys_close_stop(struct thread_data* ptdata, int rc) {
     if (!rc) {
         if (monitor_has_fd(open_fds, fd)) {
             struct open_info* oi = (struct open_info *) monitor_get_fd_data(open_fds, fd);
-            assert(oi);
+            MYASSERT(oi);
             free(oi);
             monitor_remove_fd(open_fds, fd);
         }
@@ -6721,7 +6760,7 @@ inline void __sys_writev_stop(struct thread_data* ptdata, int rc)
     if (monitor_has_fd(open_fds, wvi->fd)) {
         struct open_info* oi;
         oi = (struct open_info *) monitor_get_fd_data(open_fds, wvi->fd);
-        assert (oi);
+        MYASSERT (oi);
         channel_fileno = oi->fileno;
     } else {
         channel_fileno = -1;
@@ -6735,6 +6774,33 @@ inline void __sys_writev_stop(struct thread_data* ptdata, int rc)
 
     free((void *) ptdata->save_syscall_info);
 }
+
+#ifdef TAINT_PROFILE
+/* Print out a summary of stats at the current time */
+void print_summary_stats(FILE* fp, char* header)
+{
+    long count = 0;
+    if (header != NULL) {
+        fprintf(fp, "%s\n", header);
+    }
+    count = count_tainted_addresses();
+    fprintf(fp, "Tainted addresses: %ld\n", count);
+    print_taint_profile_count_op(fp, global_profile);
+    fprintf(fp, "mem2reg clears\t\t%ld\n", global_profile->stats_mem2reg[STATS_CLEAR]);
+    fprintf(fp, "mem2reg sets\t\t%ld\n", global_profile->stats_mem2reg[STATS_SET]);
+    fprintf(fp, "reg2reg clears\t\t%ld\n", global_profile->stats_reg2reg[STATS_CLEAR]);
+    fprintf(fp, "reg2reg sets\t\t%ld\n", global_profile->stats_reg2reg[STATS_SET]);
+    fprintf(fp, "reg2mem clears\t\t%ld\n", global_profile->stats_reg2mem[STATS_CLEAR]);
+    fprintf(fp, "reg2mem sets\t\t%ld\n", global_profile->stats_reg2mem[STATS_SET]);
+    fprintf(fp, "add_mem2reg clears\t\t%ld\n", global_profile->stats_add_mem2reg[STATS_CLEAR]);
+    fprintf(fp, "add_mem2reg sets\t\t%ld\n", global_profile->stats_add_mem2reg[STATS_SET]);
+    fprintf(fp, "add_reg2reg clears\t\t%ld\n", global_profile->stats_add_reg2reg[STATS_CLEAR]);
+    fprintf(fp, "add_reg2reg sets\t\t%ld\n", global_profile->stats_add_reg2reg[STATS_SET]);
+    fprintf(fp, "add_reg2mem clears\t\t%ld\n", global_profile->stats_add_reg2mem[STATS_CLEAR]);
+    fprintf(fp, "add_reg2mem sets\t\t%ld\n", global_profile->stats_add_reg2mem[STATS_SET]);
+    fflush(fp);
+}
+#endif
 
 void instrument_syscall(ADDRINT syscall_num, ADDRINT syscallarg1, ADDRINT syscallarg1_ref, ADDRINT syscallarg2, ADDRINT syscallarg3, ADDRINT syscallarg4, ADDRINT syscallarg5)
 {
@@ -6966,8 +7032,13 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
     }
     }
 
+#ifdef TAINT_PROFILE
 #ifdef TAINT_IMPL_INDEX
     // mark_and_sweep_unused_taints();
+    char header[256];
+    snprintf(header, 256, "At syscall %d", global_syscall_cnt);
+    print_summary_stats(stderr, header);
+#endif
 #endif
     
     // Increment on syscall return for consistency with the log
@@ -12479,6 +12550,34 @@ void dump_taints(FILE* out_file)
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
+long count_tainted_addresses(void)
+{
+    long count = 0;
+    struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+    GRAB_GLOBAL_LOCK (ptdata);
+
+    struct taint** first_t;
+    struct taint* second_t;
+
+    for (int i = 0; i < FIRST_TABLE_SIZE; i++) {
+        first_t = (struct taint**) mem_loc_high[i];
+        if (first_t) {
+            for (int j = 0; j < SECOND_TABLE_SIZE; j++) {
+                second_t = first_t[j];
+                if (second_t) {
+                    for (int k = 0; k < THIRD_TABLE_SIZE; k++) {
+                        if (!is_taint_zero(&second_t[k])) {
+                            count++;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    RELEASE_GLOBAL_LOCK (ptdata);
+    return count;
+}
+
 #ifdef TAINT_IMPL_INDEX
 /*
 void mark_and_sweep_unused_taints()
@@ -12595,6 +12694,9 @@ void fini(INT32 code, void* v) {
     fprintf(stderr, "option cnt is %d\n", option_cnt);
 #ifdef MERGE_STATS
     print_taint_profile_op(stderr, &merge_profile);
+#endif
+#ifdef TAINT_PROFILE
+    print_summary_stats(stderr, (char *) "fini");
 #endif
 #ifdef MERGE_PREDICTOR
     fprintf(stderr, "merge predictions %ld\n", merge_predict_count);

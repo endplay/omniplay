@@ -7,20 +7,25 @@
 #define STATS_TAINT_MEM2FLAG    2
 #define STATS_TAINT_FLAG2MEM    3
 #define STATS_TAINT_REG2REG     4
-#define STATS_TAINT_FLAG2REG    5
-#define STATS_TAINT_REG2FLAG    6
-#define STATS_TAINT_REG2FLAG_BUTCF 7
-#define STATS_TAINT_REG2CF_OF   8
-#define STATS_TAINT_REG2CF   9
-#define STATS_TAINT_WHOLEMEM2REG 10
-#define STATS_TAINT_WHOLEMEM2MEM 11
-#define STATS_TAINT_ADD_REG2MEM 12
-#define STATS_TAINT_ADD_MEM2REG 13
-#define STATS_TAINT_ADD_REG2REG 14
-#define STATS_TAINT_MEM_REG_MOV 15
-#define STATS_TAINT_MEM2REG_MOV 16
-#define STATS_TAINT_IMMVAL2MEM  17
-#define STATS_TAINT_SIZE 18
+#define STATS_TAINT_REG2MEM     5
+#define STATS_TAINT_FLAG2REG    6
+#define STATS_TAINT_REG2FLAG    7
+#define STATS_TAINT_REG2FLAG_BUTCF 8
+#define STATS_TAINT_REG2CF_OF   9
+#define STATS_TAINT_REG2CF      10
+#define STATS_TAINT_MEM2CF      11
+#define STATS_TAINT_WHOLEMEM2REG 12
+#define STATS_TAINT_WHOLEMEM2MEM 13
+#define STATS_TAINT_WHOLEREG2MEM 14
+#define STATS_TAINT_ADD_REG2MEM 15
+#define STATS_TAINT_ADD_MEM2REG 16
+#define STATS_TAINT_ADD_REG2REG 17
+#define STATS_TAINT_MEM_REG_MOV 18
+#define STATS_TAINT_MEM2REG_MOV 19
+#define STATS_TAINT_IMMVAL2MEM  20
+#define STATS_TAINT_IMMVAL2REG	21
+#define STATS_TAINT_IMMVAL2FLAG	22
+#define STATS_TAINT_SIZE 23
 
 // encode different taint operations
 #define STATS_OP_MERGE 0
@@ -30,9 +35,19 @@
 #define STATS_OP_UNIQUE_TAINTS 4
 #define STATS_OP_SIZE 5
 
+// individual operations microstats
+#define STATS_CLEAR 0
+#define STATS_SET 1
+
 struct taints_profile {
     unsigned long stats_taint_count[STATS_TAINT_SIZE];
     unsigned long stats_op_count[STATS_OP_SIZE];
+    unsigned long stats_mem2reg[2];
+    unsigned long stats_reg2reg[2];
+    unsigned long stats_reg2mem[2];
+    unsigned long stats_add_mem2reg[2];
+    unsigned long stats_add_reg2reg[2];
+    unsigned long stats_add_reg2mem[2];
 };
 
 struct taints_profile* new_taints_profile(void) {
@@ -93,6 +108,8 @@ const char* taint_count_op_to_string(int op)
             return "flag2mem";
         case STATS_TAINT_REG2REG:
             return "reg2reg";
+        case STATS_TAINT_REG2MEM:
+            return "reg2mem";
         case STATS_TAINT_FLAG2REG:
             return "flag2reg";
         case STATS_TAINT_REG2FLAG:
@@ -103,10 +120,14 @@ const char* taint_count_op_to_string(int op)
             return "reg2cf_of";
         case STATS_TAINT_REG2CF:
             return "reg2cf";
+        case STATS_TAINT_MEM2CF:
+            return "mem2cf";
         case STATS_TAINT_WHOLEMEM2REG:
             return "whole_mem2reg";
         case STATS_TAINT_WHOLEMEM2MEM:
             return "whole_mem2mem";
+        case STATS_TAINT_WHOLEREG2MEM:
+            return "whole_reg2mem";
         case STATS_TAINT_ADD_REG2MEM:
             return "add_reg2mem";
         case STATS_TAINT_ADD_MEM2REG:
@@ -119,6 +140,10 @@ const char* taint_count_op_to_string(int op)
             return "mem2reg_mov";
         case STATS_TAINT_IMMVAL2MEM:
             return "immval2mem";
+	case STATS_TAINT_IMMVAL2REG:
+	    return "immval2reg";
+	case STATS_TAINT_IMMVAL2FLAG:
+	    return "immval2flag";
         default:
             return "UNKNOWN_OP";
     }
