@@ -89,7 +89,7 @@ void set_address_one(ADDRINT syscall_num, ADDRINT eax_ref)
 	int sysnum = (int) syscall_num;
 	
 	fprintf (stderr, "In set_address_one, num is %d, cnt is %d\n", (int) syscall_num, ++syscall_cnt);
-	if (sysnum == 91 || sysnum == 120 || sysnum == 125 || sysnum == 174 || sysnum == 175 || sysnum == 190 || sysnum == 192) {
+	if (sysnum == 45 || sysnum == 91 || sysnum == 120 || sysnum == 125 || sysnum == 174 || sysnum == 175 || sysnum == 190 || sysnum == 192) {
 	    check_clock_before_syscall (fd, (int) syscall_num);
 	}
 	tdata->app_syscall = syscall_num;
