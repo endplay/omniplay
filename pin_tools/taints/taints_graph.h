@@ -23,8 +23,13 @@ extern "C" {
 typedef guint8 TAINT_TYPE;
 
 /* Different options */
-#define MERGE_PREDICTOR // simple 1-bit predictor
+// #define MERGE_PREDICTOR // simple 1-bit predictor
 #define MERGE_STATS
+
+#ifdef MERGE_STATS
+#include "../taints_profile.h"
+struct taints_profile merge_profile;
+#endif
 
 // the type of an index
 typedef guint32 OPTION_TYPE;
@@ -52,9 +57,6 @@ struct taint {
 GHashTable* taint_merge_index;
 
 #ifdef MERGE_STATS
-long taint_count = 0;
-long merge_count = 0;
-long unique_merge_count = 0;
 #ifdef MERGE_PREDICTOR
 long merge_predict_count = 0;
 #endif
@@ -152,7 +154,7 @@ inline void set_taint_value (struct taint* t, OPTION_TYPE option, TAINT_TYPE val
 
     t->id = (struct node *) ln;
 #ifdef MERGE_STATS
-    taint_count++;
+    increment_taint_op(&merge_profile, STATS_OP_UNIQUE_TAINTS);
 #endif
 }
 
@@ -177,10 +179,16 @@ inline void set_taint_full (struct taint* t) {
 
 inline void clear_taint(struct taint* t) {
     t->id = 0;
+#ifdef MERGE_STATS
+    increment_taint_op(&merge_profile, STATS_OP_CLEAR);
+#endif
 }
 
 inline void set_taint(struct taint* dst, struct taint* src) {
     dst->id = src->id;
+#ifdef MERGE_STATS
+    increment_taint_op(&merge_profile, STATS_OP_SET);
+#endif
 }
 
 inline void merge_taints(struct taint* dst, struct taint* src) {
@@ -217,7 +225,7 @@ inline void merge_taints(struct taint* dst, struct taint* src) {
 
     hash = hash_indices((guint32) dst->id, (guint32) src->id);
 #ifdef MERGE_STATS
-    merge_count++;
+    increment_taint_op(&merge_profile, STATS_OP_MERGE);	
 #endif
     n = (struct node *) g_hash_table_lookup(taint_merge_index, &hash);
     if (!n) {
@@ -226,8 +234,8 @@ inline void merge_taints(struct taint* dst, struct taint* src) {
         memcpy(phash, &hash, sizeof(guint64));
         g_hash_table_insert(taint_merge_index, phash, n);
 #ifdef MERGE_STATS
-        unique_merge_count++;
-        taint_count++;
+        increment_taint_op(&merge_profile, STATS_OP_UNIQUE_MERGE);	
+        increment_taint_op(&merge_profile, STATS_OP_UNIQUE_TAINTS);
 #endif
     }
 #ifdef MERGE_PREDICTOR
@@ -300,6 +308,13 @@ GList* get_non_zero_taints(struct taint* t) {
 void remove_index(guint32 idx) {
     // TODO
 }
+
+#ifdef MERGE_STATS
+inline unsigned long get_unique_taint_count(void)
+{
+    return merge_profile.stats_op_count[STATS_OP_UNIQUE_TAINTS];
+}
+#endif
 
 #ifdef __cplusplus
 }

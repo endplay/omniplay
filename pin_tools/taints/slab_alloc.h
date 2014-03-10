@@ -40,7 +40,6 @@ struct slab* new_slab(int size) {
     assert(slab);
     slab->s = malloc(size);
     slab->end = (void *) (((unsigned long) slab->s) + size);
-    fprintf(stderr, "new slab, size %d\n", size);
     return slab;
 }
 
@@ -58,7 +57,6 @@ void new_slab_alloc(struct slab_alloc* alloc, int slice_size, int factor) {
     alloc->current_slab = new_slab(alloc->slab_size);
     list_add(&alloc->current_slab->list, &alloc->list);
     alloc->pos = alloc->current_slab->s;
-    fprintf(stderr, "new slab alloc, slice size: %d\n", slice_size);
 }
 
 void* get_slice(struct slab_alloc* alloc) {
@@ -66,7 +64,6 @@ void* get_slice(struct slab_alloc* alloc) {
     alloc->pos = (void *) (((unsigned long)alloc->pos) + alloc->slice_size);
     if (alloc->pos == alloc->current_slab->end) {
         alloc->current_slab = new_slab(alloc->slab_size);
-        fprintf(stderr, "alloc new slab of size %d, pos %p, end %p\n", alloc->slab_size, alloc->current_slab->s, alloc->current_slab->end);
         alloc->pos = alloc->current_slab->s;
         list_add(&alloc->current_slab->list, &alloc->list);
     } 
