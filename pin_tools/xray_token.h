@@ -160,7 +160,6 @@ void write_byte_result_header_to_file(int fd, struct byte_result_header* header)
     rc = write(fd, header, sizeof(struct byte_result_header));
     if (rc != sizeof(struct byte_result_header)) {
         fprintf(stderr, "[ERROR] Could not write byte_result_header to file, got %d, expected %d\n", rc, sizeof(struct byte_result_header));
-            flock(fd, LOCK_UN);
         assert (rc == sizeof(struct byte_result_header)); // fail
     }
 
@@ -305,7 +304,6 @@ void write_byte_result_to_file(int fd, struct byte_result* byte_result)
     rc = write(fd, byte_result, sizeof(struct byte_result));
     if (rc != sizeof(struct byte_result)) {
         fprintf(stderr, "[ERROR] Could not write byte_result to file, got %d, expected %d\n", rc, sizeof(struct byte_result));
-            flock(fd, LOCK_UN);
         assert (rc == sizeof(struct byte_result)); // fail
     }
 
