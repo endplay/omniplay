@@ -7,7 +7,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
-#include <glib-2.0/glib.h>
+#include <glib.h>
 
 #define FILENO_STDIN        0
 #define FILENO_STDOUT       1

@@ -10,7 +10,8 @@ TAINTS_LIB=taints
 REPLAY_LIB += $(SDEV)/libutil.a
 TOOL_LIBS += $(SDEV)/libutil.a
 TOOL_CXXFLAGS += -I$(SDEV)
-GLIB_INCLUDES=-I/usr/include/glib-2.0 -I/usr/lib/i386-linux-gnu/glib-2.0/include -I/usr/include/glib-2.0/glib
+GLIB_INCLUDES=-I/usr/include/glib-2.0 -I/usr/lib/i386-linux-gnu/glib-2.0/include
+GLIB_LIB= -lglib-2.0
 TOOL_CXXFLAGS += $(GLIB_INCLUDES) -I$(SDEV) -g
 
 ##############################################################
@@ -86,13 +87,13 @@ $(OBJDIR)interpret_tokens$(EXE_SUFFIX): interpret_tokens.c
 	$(APP_CC) -g -o $(OBJDIR)interpret_tokens $(GLIB_INCLUDES) interpret_tokens.c -lglib-2.0
 
 $(OBJDIR)parse_result$(EXE_SUFFIX): parse_result.c
-	$(APP_CC) -g -o $(OBJDIR)parse_result parse_result.c
+	$(APP_CC) -g -o $(OBJDIR)parse_result parse_result.c $(GLIB_INCLUDES) $(GLIB_LIB)
 
 $(OBJDIR)parse_filenames$(EXE_SUFFIX): parse_filenames.c
-	$(APP_CC) -g -o $(OBJDIR)parse_filenames parse_filenames.c
+	$(APP_CC) -g -o $(OBJDIR)parse_filenames parse_filenames.c $(GLIB_INCLUDES) $(GLIB_LIB)
 
 $(OBJDIR)parse_tokens$(EXE_SUFFIX): parse_tokens.c
-	$(APP_CC) -g -o $(OBJDIR)parse_tokens parse_tokens.c
+	$(APP_CC) -g -o $(OBJDIR)parse_tokens parse_tokens.c $(GLIB_INCLUDES) $(GLIB_LIB)
 
 # Pintools
 $(OBJDIR)print_instructions$(OBJ_SUFFIX): print_instructions.cpp

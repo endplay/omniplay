@@ -14,7 +14,6 @@ long print_stop = 10;
 KNOB<string> KnobPrintStop(KNOB_MODE_WRITEONCE, "pintool", "s", "10000000", "syscall print stop");
 
 long global_syscall_cnt = 0;
-int print_instructions = 0;
 
 struct thread_data {
     u_long app_syscall; // Per thread address for specifying pin vs. non-pin system calls
@@ -106,7 +105,7 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
 
 void instrument_inst_print (ADDRINT ip)
 {
-    if ((global_syscall_cnt > print_limit && global_syscall_cnt < print_stop) || print_instructions) {
+    if (global_syscall_cnt > print_limit && global_syscall_cnt < print_stop) {
 	PIN_LockClient();
         fprintf(stderr, "[INST] Pid %d (tid: %d) (record %d) - %#x\n", PIN_GetPid(), PIN_GetTid(), get_record_pid(), ip);
 	if (IMG_Valid(IMG_FindByAddress(ip))) {
@@ -118,7 +117,9 @@ void instrument_inst_print (ADDRINT ip)
 
 void track_inst(INS ins, void* data) 
 {
-    INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)instrument_inst_print, IARG_INST_PTR, IARG_END);
+    if (print_limit != print_stop) {
+	INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)instrument_inst_print, IARG_INST_PTR, IARG_END);
+    }
     if(INS_IsSyscall(ins)) {
 	    INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(set_address_one), IARG_SYSCALL_NUMBER, 
                     IARG_REG_VALUE, LEVEL_BASE::REG_EBX, 
@@ -134,7 +135,14 @@ void track_trace(TRACE trace, void* data)
 	// System calls automatically end a Pin trace.
 	// So we can instrument every trace (instead of every instruction) to check to see if
 	// the beginning of the trace is the first instruction after a system call.
-	TRACE_InsertCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_after, IARG_INST_PTR, IARG_END);
+	struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+	if (tdata) {
+		if (tdata->app_syscall == 999) {
+			TRACE_InsertCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_after, IARG_INST_PTR, IARG_END);
+		}
+	} else {
+		fprintf (stderr, "syscall_after: NULL tdata\n");
+	}
 }
 
 BOOL follow_child(CHILD_PROCESS child, void* data)
