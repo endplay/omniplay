@@ -23,6 +23,7 @@
 #include <pwd.h>
 #include <grp.h>
 #include <sys/inotify.h>
+#include <sys/mman.h>
 #include <string>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -38,33 +39,34 @@
 #include "reentry_lock.h"
 #include "xray_image.h"
 #include "xray_token.h"
+#include "taints_profile.h"
 
-#ifdef LINKAGE_COPY
- #ifndef LINKAGE_DATA
-  #include "taints/taints_copy.h"
- #else
-  //#include "taints/taints_data.h"
-  #include "taints/taints_index.h"
-  #define TAINT_IMPL_INDEX
-  //#include "taints/taints.h"
- #endif
-#else
-#include "taints/taints.h"
+#ifdef LINKAGE_DATA
+  #ifdef COPY_ONLY
+    #include "taints/taints_copy.h"
+  #else
+    #include "taints/taints_graph.h"
+    #define TAINT_IMPL_INDEX
+  #endif
 #endif
-// #include "taints/taints.h"
-// #define TAINT_STATS
+
 
 // List of available Linkage macros
 // // DO NOT TURN THESE ON HERE. Turn these on in makefile.rules.
-// #define LINKAGE_COPY                 // just memory copies
-// #define LINKAGE_DATA                 // data copies
+// #define COPY_ONLY                    // just copies
+// #define LINKAGE_DATA                 // data flow
+// #define LINKAGE_FPU
 // #define LINKAGE_SYSCALL              // system call & libc function abstraction
 // #define CTRL_FLOW                    // direct control flow
 // #define ALT_PATH_EXPLORATION         // indirect control flow
 // #define CONFAID
 // #define HAVE_REPLAY
+
+// debug options
 // #define FILTER_INPUTS
 // #define DUMP_TAINTS
+// #define TAINT_STATS
+// #define TAINT_PROFILE
 
 // #define TRACK_MEMORY_AREAS
 #ifdef TRACK_MEMORY_AREAS
@@ -79,7 +81,7 @@ struct image_infos* img_list;
 #define STACK_SIZE 8388608
 
 // Logging
-// #define LOGGING_ON
+#define LOGGING_ON
 #define LOG_F log_f
 #define MEM_F log_f
 #define TRACE_F trace_f
@@ -93,8 +95,8 @@ struct image_infos* img_list;
 // Controls amount of log printing
 #ifdef LOGGING_ON
 #define WARN_PRINT(args...) \
-{			   \
-    fprintf(LOG_F, args);       \
+{                           \
+    fprintf(LOG_F, args);   \
     fflush(LOG_F);          \
 }
 #define LOG_PRINT(args...) \
@@ -135,11 +137,11 @@ int print_function_comp = 0;
 
 #define CURRENT_INSTRUCTION 0x80a136c
 #define CURRENT_FUNCTION 0x806c481
-#define TAINT_LOCATION 0xb
+#define TAINT_LOCATION 0x98b3655
 #define TAINT_TRACK
 
-#define TAINT_CONDITION (ptdata->current_function == CURRENT_FUNCTION)
-// #define TAINT_CONDITION (global_syscall_cnt > 26905 && global_syscall_cnt < 26936)
+//#define TAINT_CONDITION (ptdata->current_function == CURRENT_FUNCTION)
+#define TAINT_CONDITION (global_syscall_cnt >= 2056 && global_syscall_cnt < 2057)
 #ifdef DEBUG_TAINT
 #define TAINT_PRINT(args...) \
 {                           \
@@ -416,8 +418,8 @@ struct thread_data {
     ADDRINT current_function;
 #endif
     struct handled_function syscall_taint_info; // saved info for propagating taint across syscall
-    void* save_syscall_info;			// info to be saved across syscalls
-    int syscall_handled;			// flag to indicate if a syscall is handled at the glibc wrapper instead
+    void* save_syscall_info;        // info to be saved across syscalls
+    int syscall_handled;            // flag to indicate if a syscall is handled at the glibc wrapper instead
     uint64_t rg_id;                 // record group id
 #ifdef HAVE_REPLAY
     u_long ignore_flag;             // location of the ignore flag
@@ -480,13 +482,14 @@ int segfault_captured = 0; // Segfault seen - OK to be global since next instruc
 int main_started = 0; // Have we executed main() yet?
 int first_inst = 0; // Looks like this marks the first instruction in a speculative path
 FILE* output_f = NULL; // For output info
+int output_fd = 0;
 FILE* input_f; // For input info
 char process_name[64]; // Records name during exec
 long long unsigned total_inst_count = 0; // Total number of instructions
 struct thread_data* plasttd = NULL; // Used to detect thread switch
 struct input_bblock* current_input_bbl; // List of basic block to analyze
 struct thread_data* tdhead = NULL; // doubly-linked list of per-thread structures
-int option_cnt = 0; // Current count of an input-option, monotonically increasing
+unsigned int option_cnt = 0; // Current count of an input-option, monotonically increasing
 int option_byte = 1;       // Byte-to-byte analysis? (otherwise, we're doing message analysis)
 int open_file_cnt = FILENO_START; // Number of files that have been opened, 0 is stdin, 1 is args, 2 is env
 regex_t* input_message_regex = NULL; // Regex to match the start of input messages
@@ -502,9 +505,15 @@ char input_file_name[256];
 long instrumented_insts = 0;
 #endif
 int fpu_reg_num = 105;
+#ifdef TAINT_PROFILE
+struct taints_profile* global_profile;
+#endif
 
 FILE* log_f = NULL; // For debugging
 FILE* trace_f = NULL; // for tracing taints
+
+char* cleaned_idx = NULL; // cleaned indices
+int cleaned_idx_size = 0;
 
 /* Command line Knobs */
 #ifdef CONFAID
@@ -522,7 +531,7 @@ KNOB<string> KnobStaticAnalysisPath(KNOB_MODE_WRITEONCE, "pintool", "s", "/tmp/s
 KNOB<string> KnobTurnOffReplay(KNOB_MODE_WRITEONCE, "pintool", "n", "0", "standalone, no replay when compiled with replay support");
 KNOB<string> KnobErrorRegex(KNOB_MODE_WRITEONCE, "pintool", "e", "blahblabhablahbalh", "error regex to match against");
 #ifdef FILTER_INPUTS
-KNOB<string> KnobInputFileFilter(KNOB_MODE_WRITEONCE, "pintool", "f", "xray.tex", "input file to only create taints from");
+KNOB<string> KnobInputFileFilter(KNOB_MODE_WRITEONCE, "pintool", "f", "poster.bib", "input file to only create taints from");
 #endif
 
 #ifdef CONFAID
@@ -603,6 +612,9 @@ int set_max_file_rlimit() {
 //prototypes
 int setup_logs(void);
 void create_options_from_buffer (int type, long id, void* buf, int size, int offset, int fileno);
+void mark_and_sweep_unused_taints(void);
+void dump_taints(FILE* out_file);
+long count_tainted_addresses(void);
 struct bblock* read_return_bblock(struct thread_data*, ADDRINT);
 void rollback(struct thread_data*, int);
 void __print_dependency_tokens(FILE* file, struct taint* vector);
@@ -613,7 +625,7 @@ void rmdir_stop(ADDRINT res);
 struct taint* get_reg_taint(REG reg);
 struct taint* get_mem_taint(ADDRINT mem_loc);
 
-// interface for propagating taint
+// interface for add/modifying taint to registers/flags/address space
 inline void add_modified_mem(struct thread_data* ptdata, ADDRINT mem_location) ;
 static inline void add_modified_reg(struct thread_data* ptdata, REG reg);
 static inline void add_modified_flag(struct thread_data* ptdata, int flag);
@@ -629,20 +641,35 @@ void flags_clear_dependency_but_cf(struct thread_data* ptdata);
 void flags_clear_dependency(struct thread_data* ptdata);
 void flag_clear_dependency(struct thread_data* ptdata, int flag);
 
-struct writev_info {
-    int fd;
-    struct iovec* vi;
-    int count;
-};
-struct mmap_info {
-    ADDRINT addr;
-    int length;
-    int prot;
-    int flags;
-    int fd;
-    int fd_ref;
-    int offset;
-};
+// interface for different taint transfers
+void taint_mem2reg (ADDRINT mem_loc, UINT32 size, REG reg);
+void taint_mem2flag (ADDRINT mem_loc, UINT32 size);
+void taint_mem2cf (ADDRINT mem_loc, UINT32 size);
+void taint_mem2flags_but_cf (ADDRINT mem_loc, UINT32 size, REG reg);
+void taint_whole_reg2mem (ADDRINT mem_loc, ADDRINT eflags, ADDRINT reg_value, UINT32 op_size);
+void rep_taint_whole_reg2mem (BOOL first, ADDRINT mem_loc, ADDRINT eflags, ADDRINT reg_value, UINT32 op_size);
+void taint_whole_mem2reg (ADDRINT mem_loc, REG dst_reg, ADDRINT eflags, ADDRINT reg_value, UINT32 op_size);
+void rep_taint_whole_mem2reg (BOOL first, ADDRINT mem_loc, REG dst_reg, ADDRINT eflags, ADDRINT reg_value, UINT32 op_size);
+void taint_whole_mem2mem(ADDRINT src_mem_loc, ADDRINT dst_mem_loc, ADDRINT eflags, ADDRINT reg_value, UINT32 op_size);
+void rep_taint_whole_mem2mem(BOOL first, ADDRINT src_mem_loc, ADDRINT dst_mem_loc, ADDRINT eflags, ADDRINT reg_value, UINT32 op_size);
+void taint_mem2mem (ADDRINT src_mem_loc, ADDRINT dst_mem_loc, UINT32 size);
+void taint_reg2mem (ADDRINT mem_loc, UINT32 size, REG reg);
+void taint_flag_clear(UINT32 flag);
+void taint_reg2flag(REG reg);
+void taint_reg2flags_but_cf(REG reg);
+void taint_reg2cf_of(REG reg);
+void taint_reg2cf(REG reg, int mode);
+void taint_flag2mem (ADDRINT mem_loc, UINT32 size, UINT32 mask, int mode);
+void taint_immval2flag(void);
+void taint_immval2reg(REG reg, int mode);
+void taint_reg2reg (REG dst_reg, REG src_reg);
+void taint_flag2reg (REG reg, UINT32 mask, int mode);
+void taint_immval2mem (ADDRINT mem_loc, UINT32 size, int mode);
+void taint_add_reg2mem (ADDRINT mem_loc, UINT32 size, REG reg);
+void taint_add_mem2reg (ADDRINT mem_loc, UINT32 size, REG reg);
+void taint_add_reg2reg (REG dst_reg, REG src_reg);
+void taint_mem_reg_mov(ADDRINT mem_loc, UINT32 size, REG addr_reg, REG dst_reg, ADDRINT addr_val);
+void taint_mem_2reg_mov(ADDRINT mem_loc, UINT32 size, REG index_reg, REG base_reg, REG dst_reg, ADDRINT index_val, ADDRINT base_val);
 
 //########################################################################
 
@@ -663,8 +690,8 @@ void fpu_reg_clear_dependency(struct thread_data* ptdata, REG reg);
 void set_fpu_reg_taint(int reg_num, int offset, struct taint* new_taint);
 void set_fpu_reg(int reg_num, struct taint* new_taint);
 
-void push_fpu();
-void pop_fpu();
+void push_fpu(void);
+void pop_fpu(void);
 
 /*
    Not yet implemented, may not need these:
@@ -714,6 +741,21 @@ return return_taint;
 }
  */
 //#########################################################################
+
+struct writev_info {
+    int fd;
+    struct iovec* vi;
+    int count;
+};
+struct mmap_info {
+    ADDRINT addr;
+    int length;
+    int prot;
+    int flags;
+    int fd;
+    int fd_ref;
+    int offset;
+};
 
 #ifdef TAINT_STATS
 void instrument_inst_count(void)
@@ -806,6 +848,7 @@ void print_mems()
 }
 #endif
 
+
 #ifdef FUNC_TIME
 void print_function_times()
 {
@@ -892,6 +935,18 @@ int get_record_pid()
     } \
     if (reg == LEVEL_BASE::REG_BL || reg == LEVEL_BASE::REG_BH || reg == LEVEL_BASE::REG_BX) { \
         reg = LEVEL_BASE::REG_EBX; \
+    } \
+    if (reg == LEVEL_BASE::REG_IP) { \
+        reg = LEVEL_BASE::REG_EIP; \
+    } \
+    if (reg == LEVEL_BASE::REG_SI) { \
+        reg = LEVEL_BASE::REG_ESI; \
+    } \
+    if (reg == LEVEL_BASE::REG_DI) { \
+        reg = LEVEL_BASE::REG_EDI; \
+    } \
+    if (reg == LEVEL_BASE::REG_BP) { \
+        reg = LEVEL_BASE::REG_EBP; \
     } \
 }
 
@@ -997,7 +1052,7 @@ inline void increment_syscall_cnt (struct thread_data* ptdata, int syscall_num)
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
-#define print_only_token(f,vector,token_num) {					\
+#define print_only_token(f,vector,token_num) {  \
     if (has_nonzero_token(vector, token_num)) { \
         __print_dependency_tokens(f, vector); \
     } \
@@ -1194,12 +1249,6 @@ static inline void __reg_mod_dependency(struct thread_data* ptdata, REG reg, str
     } else if(mode == MERGE) {
         merge_taints(&reg_table[reg_num], vector);
     }
-#ifdef PPRINT
-    if (pprint) {
-        fprintf (stderr, "\treg %d now has vector ", reg); 
-        __print_dependency_tokens(stderr, &reg_table[reg_num]);
-    }
-#endif
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
@@ -1245,12 +1294,7 @@ static inline void __reg_clear_dependency(struct thread_data* ptdata, REG reg)
         add_modified_reg(ptdata, reg);
 #endif
     clear_taint(&reg_table[reg_num]);
-#ifdef PPRINT
-    if (pprint) {
-        fprintf (stderr, "\treg %d now has vector ", reg); 
-        __print_dependency_tokens(stderr, &reg_table[reg_num]);
-    }
-#endif
+
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
@@ -1345,20 +1389,6 @@ void flags_mod_dependency (struct thread_data* ptdata, struct taint* vector, int
     }
     DEP_PRINT(log_f, "flags_mod_dependency: flags are marked, the vector is:");
     PRINT_DEP_VECTOR(vector);
-#ifdef PPRINT
-    if (pprint) {
-        for (int i = 0; i < NUM_FLAGS; i++) {
-            if (mode == SET) {
-                fprintf (stderr, "\tflag %d set with vector ", i); 
-            } else {
-                fprintf (stderr, "\tflag %d merged with vector ", i); 
-            }
-            __print_dependency_tokens(stderr, vector);
-            fprintf (stderr, "\tflag %d now has taint ", i); 
-            __print_dependency_tokens(stderr, &flag_table[i]);
-        }
-    }
-#endif
 
     RELEASE_GLOBAL_LOCK (ptdata);
 }
@@ -1433,15 +1463,6 @@ inline struct taint* get_mem_taint(ADDRINT mem_loc)
 
     int low_index = location & LOW_INDEX_MASK;
     if (!is_taint_zero(second + low_index)) {
-
-#if 0
-#ifdef PPRINT
-        if (pprint) {
-            fprintf (stderr, "get_mem_taint of address 0x%x returns: ", mem_loc);
-            __print_dependency_tokens(stderr, second + low_index);
-        }
-#endif
-#endif
         RELEASE_GLOBAL_LOCK (ptdata);
         return (second + low_index);
     }
@@ -1457,12 +1478,6 @@ inline struct taint* get_reg_taint(REG reg)
     adjust_partial_reg(reg);
 
     if (!is_taint_zero(&reg_table[(int)reg])) {
-#ifdef PPRINT
-        if (pprint) {
-            fprintf (stderr, "\tget_reg_taint of reg %d returns: ", reg);
-            __print_dependency_tokens(stderr, &reg_table[(int)reg]);
-        }
-#endif
         RELEASE_GLOBAL_LOCK (ptdata);
         return &reg_table[(int)reg];
     }
@@ -1501,9 +1516,15 @@ void taint_mem2reg (ADDRINT mem_loc, UINT32 size, REG reg)
     TAINT_PRINT ("taint_mem2reg: memory location %#x has mark, vector is ", mem_loc);
     TAINT_PRINT_DEP_VECTOR (vector);
     if(vector) {
-        reg_mod_dependency(ptdata, reg, vector, SET, 1);    
+        reg_mod_dependency(ptdata, reg, vector, SET, 1);
+#ifdef TAINT_PROFILE
+        global_profile->stats_mem2reg[STATS_SET]++;
+#endif
     } else {
         reg_clear_dependency(ptdata, reg);
+#ifdef TAINT_PROFILE
+            global_profile->stats_mem2reg[STATS_CLEAR]++;
+#endif
     }
 
     for(int i = 1; i < (int)size; i++) {
@@ -1513,6 +1534,9 @@ void taint_mem2reg (ADDRINT mem_loc, UINT32 size, REG reg)
             TAINT_PRINT_DEP_VECTOR(vector);
 
             reg_mod_dependency(ptdata, reg, vector, MERGE, 0);    
+#ifdef TAINT_PROFILE
+            global_profile->stats_mem2reg[STATS_SET]++;
+#endif
         }
     }
     TAINT_PRINT ("taint_mem2reg: reg is: ");
@@ -1520,6 +1544,9 @@ void taint_mem2reg (ADDRINT mem_loc, UINT32 size, REG reg)
 
 #ifdef TAINT_TRACK
     taint_track_locations("taint_mem2reg", mem_loc, (int)size);
+#endif
+#ifdef TAINT_PROFILE
+    increment_taint_count(global_profile, STATS_TAINT_MEM2REG);
 #endif
 
     RELEASE_GLOBAL_LOCK (ptdata);
@@ -1548,6 +1575,9 @@ void taint_mem2flag (ADDRINT mem_loc, UINT32 size)
             flags_mod_dependency(ptdata, vector, MERGE, 0);
         }
     }
+#ifdef TAINT_PROFILE
+    increment_taint_count(global_profile, STATS_TAINT_MEM2FLAG);
+#endif
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
@@ -1672,26 +1702,15 @@ void taint_whole_mem2reg (ADDRINT mem_loc, REG dst_reg, ADDRINT eflags, ADDRINT 
         if(vector) {
             TAINT_PRINT("taint_whole_mem2reg: memory location %#x has mark, vector is ", mem_loc + i*dir);
             TAINT_PRINT_DEP_VECTOR(vector);
-
-#ifdef PPRINT
-#ifdef TARGET_PPRINT
-            if (pprint && ptdata->record_pid == pid_pprint && total_inst_count >= start_pprint && total_inst_count < end_pprint) {
-                if (has_nonzero_token(vector, INTERESTED_TOKEN)) {
-                    fprintf(stderr, "taint_whole_mem2reg: mem_loc %#x has mark, vector is ", mem_loc + i*dir);
-                    __print_dependency_tokens(stderr, vector);
-                }
-            }
-#endif
-#endif
-
             reg_mod_dependency(ptdata, dst_reg, vector, MERGE, 0);    
-
 #ifdef TAINT_TRACK
             taint_track_locations("taint_whole_mem2reg", mem_loc, size);
 #endif
-
         }
     }
+#ifdef TAINT_PROFILE
+    increment_taint_count(global_profile, STATS_TAINT_WHOLEMEM2REG);
+#endif
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
@@ -1733,7 +1752,9 @@ void taint_whole_mem2mem(ADDRINT src_mem_loc, ADDRINT dst_mem_loc, ADDRINT eflag
     taint_track_locations("taint_whole_mem2mem: src loc", src_mem_loc, (int)size);
     taint_track_locations("taint_whole_mem2mem: dst loc", dst_mem_loc, (int)size);
 #endif
-
+#ifdef TAINT_PROFILE
+    increment_taint_count(global_profile, STATS_TAINT_WHOLEMEM2MEM);
+#endif
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
@@ -1759,6 +1780,9 @@ void taint_mem2mem (ADDRINT src_mem_loc, ADDRINT dst_mem_loc, UINT32 size)
     taint_track_locations("taint_mem2mem: src loc", src_mem_loc, (int)size);
     taint_track_locations("taint_mem2mem: dst loc", dst_mem_loc, (int)size);
 #endif
+#ifdef TAINT_PROFILE
+    increment_taint_count(global_profile, STATS_TAINT_MEM2MEM);
+#endif
 
     RELEASE_GLOBAL_LOCK (ptdata);
 }
@@ -1780,12 +1804,24 @@ void taint_reg2mem (ADDRINT mem_loc, UINT32 size, REG reg)
             mem_mod_dependency(ptdata, mem_loc + i, vector, SET, 1);    
             TAINT_PRINT ("taint_reg2mem: mem %#x ", mem_loc + i);
             TAINT_PRINT_DEP_VECTOR (get_mem_taint(mem_loc + i));
+#ifdef TAINT_PROFILE
+            global_profile->stats_reg2mem[STATS_SET]++;
+#endif
         }
     } else {
         for(int i = 0; i < (int)size; i++) {
             mem_clear_dependency(ptdata, mem_loc + i);    
+#ifdef TAINT_PROFILE
+            global_profile->stats_reg2mem[STATS_CLEAR]++;
+#endif
         }
     }   
+#ifdef TAINT_TRACK
+    taint_track_locations("taint_reg2mem: dst loc", mem_loc, (int)size);
+#endif
+#ifdef TAINT_PROFILE
+    increment_taint_count(global_profile, STATS_TAINT_REG2MEM);
+#endif
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
@@ -1809,22 +1845,13 @@ void taint_reg2flag(REG reg)
     if(vector) {
         TAINT_PRINT ("taint_reg2flag: reg %d has mark, vector is ", reg);
         TAINT_PRINT_DEP_VECTOR(vector);
-
-#ifdef PPRINT
-#ifdef TARGET_PPRINT
-        if (pprint && ptdata->record_pid == pid_pprint && total_inst_count >= start_pprint && total_inst_count < end_pprint) {
-            if (has_nonzero_token(vector, INTERESTED_TOKEN)) {
-                fprintf(stderr, "taint_reg2flag: reg %d has mark, vector is ", reg);
-                __print_dependency_tokens(stderr, vector);
-            }
-        }
-#endif
-#endif
-
         flags_mod_dependency(ptdata, vector, SET, 1);    
     } else {
         flags_clear_dependency(ptdata);    
     }   
+#ifdef TAINT_PROFILE
+    increment_taint_count(global_profile, STATS_TAINT_REG2FLAG);
+#endif
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
@@ -1843,7 +1870,9 @@ void taint_reg2flags_but_cf(REG reg)
     } else {
         flags_clear_dependency_but_cf(ptdata);    
     }   
-
+#ifdef TAINT_PROFILE
+    increment_taint_count(global_profile, STATS_TAINT_REG2FLAG_BUTCF);
+#endif
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
@@ -1869,7 +1898,10 @@ void taint_reg2cf_of(REG reg)
     } else {
         clear_taint(&flag_table[CF_FLAG]);
         clear_taint(&flag_table[OF_FLAG]);
-    }   
+    }
+#ifdef TAINT_PROFILE
+    increment_taint_count(global_profile, STATS_TAINT_REG2CF_OF);
+#endif
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
@@ -1899,6 +1931,9 @@ void taint_reg2cf(REG reg, int mode)
             clear_taint(&flag_table[CF_FLAG]);
         }
     }
+#ifdef TAINT_PROFILE
+    increment_taint_count(global_profile, STATS_TAINT_REG2CF);
+#endif
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
@@ -1921,6 +1956,9 @@ void taint_flag2mem (ADDRINT mem_loc, UINT32 size, UINT32 mask, int mode)
     for(i = 0; i < (int)size; i++) {
         mem_mod_dependency(ptdata, mem_loc + i, &tmp, mode, 1);    
     }
+#ifdef TAINT_PROFILE
+    increment_taint_count(global_profile, STATS_TAINT_FLAG2MEM);
+#endif
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
@@ -1931,7 +1969,9 @@ void taint_immval2flag()
     GRAB_GLOBAL_LOCK (ptdata);
 
     flags_clear_dependency(ptdata);
-
+#ifdef TAINT_PROFILE
+    increment_taint_count(global_profile, STATS_TAINT_IMMVAL2FLAG);
+#endif
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
@@ -1949,6 +1989,9 @@ void taint_immval2reg(REG reg, int mode)
     else if (CTRFLOW_TAINT_STACK->prev != 0) {
         add_modified_reg(ptdata, reg);
     }
+#endif
+#ifdef TAINT_PROFILE
+    increment_taint_count(global_profile, STATS_TAINT_IMMVAL2REG);
 #endif
     RELEASE_GLOBAL_LOCK (ptdata);
 }
@@ -1970,9 +2013,18 @@ void taint_reg2reg (REG dst_reg, REG src_reg)
         TAINT_PRINT ("taint_reg2reg: reg %d has mark, vector is ", src_reg);
         TAINT_PRINT_DEP_VECTOR(vector);
         reg_mod_dependency(ptdata, dst_reg, vector, SET, 1);    
+#ifdef TAINT_PROFILE
+        global_profile->stats_reg2reg[STATS_SET]++;
+#endif
     } else {
         reg_clear_dependency(ptdata, dst_reg);
+#ifdef TAINT_PROFILE
+        global_profile->stats_reg2reg[STATS_CLEAR]++;
+#endif
     }
+#ifdef TAINT_PROFILE
+    increment_taint_count(global_profile, STATS_TAINT_REG2REG);
+#endif
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
@@ -1993,6 +2045,9 @@ void taint_flag2reg (REG reg, UINT32 mask, int mode)
     if(mask & AF_MASK) merge_taints(&tmp, &flag_table[AF_FLAG]);
     if(mask & PF_MASK) merge_taints(&tmp, &flag_table[PF_FLAG]);
     reg_mod_dependency(ptdata, reg, &tmp, mode, 1);
+#ifdef TAINT_PROFILE
+    increment_taint_count(global_profile, STATS_TAINT_FLAG2REG);
+#endif
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
@@ -2015,6 +2070,9 @@ void taint_immval2mem (ADDRINT mem_loc, UINT32 size, int mode)
             mem_clear_dependency(ptdata, mem_loc + i);
         }
     }
+#ifdef TAINT_PROFILE
+    increment_taint_count(global_profile, STATS_TAINT_IMMVAL2MEM);
+#endif
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
@@ -2031,6 +2089,9 @@ void taint_add_reg2mem (ADDRINT mem_loc, UINT32 size, REG reg)
         TAINT_PRINT_DEP_VECTOR(vector);
         for(int i = 0; i < (int)size; i++) {
             mem_mod_dependency(ptdata, mem_loc + i, vector, MERGE, 1);    
+#ifdef TAINT_PROFILE
+            global_profile->stats_add_reg2mem[STATS_SET]++;
+#endif
         }
         TAINT_PRINT_DEP_VECTOR(vector);
     } else {
@@ -2042,7 +2103,9 @@ void taint_add_reg2mem (ADDRINT mem_loc, UINT32 size, REG reg)
         }
 #endif
     }
-
+#ifdef TAINT_PROFILE
+    increment_taint_count(global_profile, STATS_TAINT_ADD_REG2MEM);
+#endif
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
@@ -2063,27 +2126,20 @@ void taint_add_mem2reg (ADDRINT mem_loc, UINT32 size, REG reg)
         if(vector) {
             DEP_PRINT(log_f, "taint_add_mem2reg: memory location %#x has mark, vector is ", mem_loc + i);
             PRINT_DEP_VECTOR(vector);
-
-#ifdef PPRINT
-#ifdef TARGET_PPRINT
-            if (pprint && ptdata->record_pid == pid_pprint && total_inst_count >= start_pprint && total_inst_count < end_pprint) {
-                if (has_nonzero_token(vector, INTERESTED_TOKEN)) {
-                    fprintf(stderr, "taint_add_mem2reg: mem_loc %#x has mark, vector is ", mem_loc + i);
-                    __print_dependency_tokens(stderr, vector);
-                }
-            }
-#endif
-#endif
             reg_mod_dependency(ptdata, reg, vector, MERGE, 0);
 #ifdef TAINT_TRACK
             taint_track_locations("taint_add_mem2reg", mem_loc, (int)size);
 #endif
+#ifdef TAINT_PROFILE
+            global_profile->stats_add_mem2reg[STATS_SET]++;
+#endif
         }
     }
-
+#ifdef TAINT_PROFILE
+    increment_taint_count(global_profile, STATS_TAINT_ADD_MEM2REG);
+#endif
     RELEASE_GLOBAL_LOCK (ptdata);
 }
-
 
 void taint_add_reg2reg (REG dst_reg, REG src_reg) 
 {
@@ -2097,13 +2153,18 @@ void taint_add_reg2reg (REG dst_reg, REG src_reg)
         TAINT_PRINT ("taint_add_reg2reg: src reg %d has mark, vector is ", src_reg);
         TAINT_PRINT_DEP_VECTOR(vector);
         reg_mod_dependency(ptdata, dst_reg, vector, MERGE, 1);    
+#ifdef TAINT_PROFILE
+        global_profile->stats_add_reg2reg[STATS_SET]++;
+#endif
     }
 #ifdef CTRL_FLOW
     else if (CTRFLOW_TAINT_STACK->prev != 0) {
         add_modified_reg(ptdata, dst_reg);    
     }
 #endif
-
+#ifdef TAINT_PROFILE
+    increment_taint_count(global_profile, STATS_TAINT_ADD_REG2REG);
+#endif
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
@@ -2119,7 +2180,9 @@ void taint_mem_reg_mov(ADDRINT mem_loc, UINT32 size, REG addr_reg, REG dst_reg, 
     } else {
         taint_mem2reg(mem_loc, size, dst_reg);
     }
-
+#ifdef TAINT_PROFILE
+    increment_taint_count(global_profile, STATS_TAINT_MEM_REG_MOV);
+#endif
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
@@ -2147,7 +2210,9 @@ void taint_mem_2reg_mov(ADDRINT mem_loc, UINT32 size, REG index_reg, REG base_re
     } else {
         taint_mem2reg(mem_loc, size, dst_reg);
     }
-
+#ifdef TAINT_PROFILE
+    increment_taint_count(global_profile, STATS_TAINT_MEM2REG_MOV);
+#endif
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
@@ -2178,7 +2243,7 @@ static void fix_modified_reg_real(struct thread_data* ptdata, int depth)
                     final_reg_shifts[i] = scache.cached[shift];
                 } else {
                     // XXX: No longer need to do this with new taint representation?
-                    // merge_line_num(&reg_table[i], &(CTRFLOW_TAINT_STACK->condition_taint));				      		
+                    // merge_line_num(&reg_table[i], &(CTRFLOW_TAINT_STACK->condition_taint));
                 }
             }
         }
@@ -2214,7 +2279,7 @@ static void fix_modified_flag_real(struct thread_data* ptdata, int depth)
                     final_flag_shifts[i] = scache.cached[shift];
                 } else {
                     // XXX: No longer need to do this with new taint representation?
-                    // merge_line_num(&flag_table[i], &(CTRFLOW_TAINT_STACK->condition_taint));				      		
+                    // merge_line_num(&flag_table[i], &(CTRFLOW_TAINT_STACK->condition_taint));
                 }
             }
         }
@@ -2265,36 +2330,7 @@ static int mem_merge_shifted_dependency(ADDRINT mem_location, struct taint* vect
     second_t = first_t[mid_index];
     value = second_t + low_index;
 
-#ifdef PPRINT    
-#ifdef TARGET_PPRINT
-    //if (pprint && ptdata->record_pid == pid_pprint && count_syscall >= start_pprint && count_syscall < end_pprint) {
-    if (pprint && ptdata->record_pid == pid_pprint && total_inst_count >= start_pprint && total_inst_count < end_pprint || mem_location == 0x814d754) {
-#else
-    if (pprint || mem_location == 0xb614c2f7) {
-#endif
-        if (has_nonzero_token(value, INTERESTED_TOKEN) || has_nonzero_token(vector, INTERESTED_TOKEN)) {
-            fprintf (stderr, "\tmem location 0x%x before merge shift with level %d at instruction %x has vector ", mem_location, level, current_instruction); 
-            __print_dependency_tokens(stderr, value);
-            fprintf (stderr, "\t\tvector was: ");
-            __print_dependency_tokens(stderr, vector);
-        }
-    }
-#endif
     shift_merge_taints (value, vector, level);
-#ifdef PPRINT    
-#ifdef TARGET_PPRINT
-    //if (pprint && ptdata->record_pid == pid_pprint && count_syscall >= start_pprint && count_syscall < end_pprint) {
-    if (pprint && ptdata->record_pid == pid_pprint && total_inst_count >= start_pprint && total_inst_count < end_pprint) {
-#else
-    if (pprint) {
-#endif
-        if (has_nonzero_token(value, INTERESTED_TOKEN)) {
-            fprintf (stderr, "\tmem location 0x%x after merge shift at instruction %x has vector ", mem_location, current_instruction); 
-            __print_dependency_tokens(stderr, value);
-        }
-    }
-#endif
-
     RELEASE_GLOBAL_LOCK (ptdata);
     return 0;
 }
@@ -2344,18 +2380,6 @@ static gboolean update_mem_taint (gpointer key, gpointer hvalue, gpointer user_d
     second_t = first_t[mid_index];
     value = second_t + low_index;
 
-#ifdef PPRINT    
-#ifdef TARGET_PPRINT
-    //if (pprint && ptdata->record_pid == pid_pprint && count_syscall >= start_pprint && count_syscall < end_pprint) {
-    if (pprint && ptdata->record_pid == pid_pprint && total_inst_count >= start_pprint && total_inst_count < end_pprint) {
-#else
-    if (pprint) {
-#endif
-        fprintf (stderr, "\tmem location 0x%x before merge shift with level %d at instruction %x has vector ", pmod->address, pmod->shift, current_instruction); 
-        __print_dependency_tokens(stderr, value);
-    }
-#endif
-
     if (!g_hash_table_lookup_extended(final_mem_shifts, &pmod->address, NULL, NULL)) {
         if (shift != CONFIDENCE_LEVELS) {
             if (!scache.cached[shift]) {
@@ -2379,17 +2403,6 @@ static gboolean update_mem_taint (gpointer key, gpointer hvalue, gpointer user_d
         // merge_line_num(value, &(CTRFLOW_TAINT_STACK->condition_taint));
     }
 
-#ifdef PPRINT    
-#ifdef TARGET_PPRINT
-    //if (pprint && ptdata->record_pid == pid_pprint && count_syscall >= start_pprint && count_syscall < end_pprint) {
-    if (pprint && ptdata->record_pid == pid_pprint && total_inst_count >= start_pprint && total_inst_count < end_pprint) {
-#else
-    if (pprint) {
-#endif
-        fprintf (stderr, "\tmem location 0x%x after merge shift at instruction %x has vector ", pmod->address, current_instruction); 
-        __print_dependency_tokens(stderr, value);
-    }
-#endif
     return TRUE;
 }
 
@@ -2522,19 +2535,6 @@ void fix_taints_and_remove_from_ctrflow (struct thread_data* ptdata, int code)
     MYASSERT(CTRFLOW_TAINT_STACK);
     CTRFLOW_TAINT_STACK_SIZE--;
 
-#ifdef PPRINT
-#ifdef TARGET_PPRINT
-    //if (pprint && ptdata->record_pid == pid_pprint && count_syscall >= start_pprint && count_syscall < end_pprint) {
-    if (pprint && ptdata->record_pid == pid_pprint && total_inst_count >= start_pprint && total_inst_count < end_pprint) {
-#else
-    if (pprint) {
-#endif
-        fprintf (stderr, "remove cf taint, now:");
-        __print_dependency_tokens(stderr, &CTRFLOW_TAINT_STACK->ctrflow_taint);
-        fprintf (stderr, " cf taint stack size: %d\n", CTRFLOW_TAINT_STACK_SIZE);
-    }
-#endif
-
 #ifdef ALT_PATH_EXPLORATION
     if (tmp->alt_path == 0) {
 #endif
@@ -2614,18 +2614,6 @@ void fix_taints_and_remove_from_ctrflow_stack(struct thread_data* ptdata, int co
     MYASSERT(CTRFLOW_TAINT_STACK);
     CTRFLOW_TAINT_STACK_SIZE--;
 
-#ifdef PPRINT
-#ifdef TARGET_PPRINT
-    if (pprint && ptdata->record_pid == pid_pprint && total_inst_count >= start_pprint && total_inst_count < end_pprint) {
-#else
-    if (pprint) {
-#endif
-        fprintf (stderr, "remove cf taint depth %d, now:", depth);
-        __print_dependency_tokens(stderr, &CTRFLOW_TAINT_STACK->ctrflow_taint);
-        fprintf (stderr, " cf taint stack size: %d\n", CTRFLOW_TAINT_STACK_SIZE);
-    }
-#endif
-
 #ifdef ALT_PATH_EXPLORATION
     if (tmp->alt_path == 0) {
 #endif
@@ -2658,7 +2646,7 @@ void fix_taints_and_remove_from_ctrflow_stack(struct thread_data* ptdata, int co
         } else {
             while (hdr->next_block) hdr = hdr->next_block;  // Find the last entry
             hdr->next_block = tmp->real_mod_mem_cache; // And stick us on the end
-        }	
+        }
     } else {
         // This frees the blocks for all the stack - necessary to allow stealing
         struct real_mem_mod_header* hdr = tmp->real_mod_mem_cache; 
@@ -2713,19 +2701,6 @@ void add_to_ctrflow_stack_onlyreal(struct thread_data* ptdata, struct taint* con
     set_taint(&tmp->Ta, &CTRFLOW_TAINT_STACK->Ta);
 #endif
     shift_cf_taint(&tmp->ctrflow_taint, condition_taint, &CTRFLOW_TAINT_STACK->ctrflow_taint);
-#ifdef PPRINT
-#ifdef TARGET_PPRINT
-    if (pprint && ptdata->record_pid == pid_pprint && total_inst_count >= start_pprint && total_inst_count < end_pprint) {
-#else
-    if (pprint) {
-#endif
-        fprintf (stderr, "adding cf taint: ");
-        __print_dependency_tokens(stderr, condition_taint);
-        fprintf (stderr, "add cf taint, now:");
-        __print_dependency_tokens(stderr, &tmp->ctrflow_taint);
-        fprintf (stderr, " cf taint stack size: %d\n", CTRFLOW_TAINT_STACK_SIZE);
-    }
-#endif
     tmp->prev = CTRFLOW_TAINT_STACK;
     CTRFLOW_TAINT_STACK = tmp;
     CTRFLOW_TAINT_STACK_SIZE++;
@@ -3457,54 +3432,70 @@ void cmov_mem2reg (ADDRINT mem_location, int size, REG reg)
 
 void cmov_memread(INS ins, INT32 cmov_type, USIZE addrsize, UINT32 mask, UINT32 condition, REG reg)
 {
-
+#ifdef CTRL_FLOW
     UINT32 new_mask = 0;
-
     switch(cmov_type) {
         case CMOV_GENERIC:
             new_mask = mask;
+            break;
+        case CMOVBE:
+            new_mask = CF_MASK | ZF_MASK;
+            break;
+        case CMOVL:
+            new_mask = SF_MASK | OF_MASK;
+            break;
+        case CMOVNL:                     
+            new_mask = SF_MASK | OF_MASK;
+            break;
+        case CMOVLE:
+            new_mask = ZF_MASK | SF_MASK | OF_MASK;
+            break;
+        case CMOVNLE:
+            new_mask = ZF_MASK | SF_MASK | OF_MASK;
+            break;
+    }
+#endif
+
+    switch(cmov_type) {
+        case CMOV_GENERIC:
             INS_InsertIfCall(ins, IPOINT_BEFORE, AFUNPTR(check_mem_cmov),
                     IARG_MEMORYREAD_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, 
                     IARG_REG_VALUE, REG_EFLAGS, IARG_UINT32, mask, IARG_UINT32, condition, IARG_END);
             break;
         case CMOVBE:
-            new_mask = CF_MASK | ZF_MASK;
             INS_InsertIfCall(ins, IPOINT_BEFORE, AFUNPTR(check_mem_cmovx),
                     IARG_MEMORYREAD_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, IARG_REG_VALUE, REG_EFLAGS, 
                     IARG_PTR, cmovbe_true, IARG_END);
-            break;	    
+            break;
         case CMOVL:
-            new_mask = SF_MASK | OF_MASK;
             INS_InsertIfCall(ins, IPOINT_BEFORE, AFUNPTR(check_mem_cmovx),
                     IARG_MEMORYREAD_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, IARG_REG_VALUE, REG_EFLAGS, 
                     IARG_PTR, cmovl_true, IARG_END);
-            break;	    
+            break;
         case CMOVNL:                     
-            new_mask = SF_MASK | OF_MASK;
             INS_InsertIfCall(ins, IPOINT_BEFORE, AFUNPTR(check_mem_cmovx),
                     IARG_MEMORYREAD_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, IARG_REG_VALUE, REG_EFLAGS, 
                     IARG_PTR, cmovnl_true, IARG_END);
-            break;	    
+            break;
         case CMOVLE:
-            new_mask = ZF_MASK | SF_MASK | OF_MASK;
             INS_InsertIfCall(ins, IPOINT_BEFORE, AFUNPTR(check_mem_cmovx),
                     IARG_MEMORYREAD_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, IARG_REG_VALUE, REG_EFLAGS, 
                     IARG_PTR, cmovle_true, IARG_END);
-            break;	    
+            break;
         case CMOVNLE:
-            new_mask = ZF_MASK | SF_MASK | OF_MASK;
             INS_InsertIfCall(ins, IPOINT_BEFORE, AFUNPTR(check_mem_cmovx),
                     IARG_MEMORYREAD_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, IARG_REG_VALUE, REG_EFLAGS, 
                     IARG_PTR, cmovnle_true, IARG_END);
-            break;	    
+            break;
     }
     INS_InsertThenCall(ins, IPOINT_BEFORE, AFUNPTR(cmov_mem2reg),
             IARG_MEMORYREAD_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, IARG_END);
 
+#ifdef CTRL_FLOW
     INS_InsertIfCall(ins, IPOINT_BEFORE, AFUNPTR(check_flag_effect), IARG_UINT32, mask, IARG_END);
     INS_InsertThenCall(ins, IPOINT_BEFORE, AFUNPTR(taint_flag2reg),
             IARG_UINT32, reg, IARG_UINT32, new_mask, IARG_UINT32, MERGE, IARG_END);
-
+#endif
 }
 
 void cmov_reg2mem (ADDRINT mem_location, int size, REG reg) 
@@ -3514,53 +3505,69 @@ void cmov_reg2mem (ADDRINT mem_location, int size, REG reg)
 
 void cmov_memwrite(INS ins, INT32 cmov_type, USIZE addrsize, UINT32 mask, UINT32 condition, REG reg)
 {
+#ifdef CTRL_FLOW
     UINT32 new_mask = 0;
-
-    switch(cmov_type) {
+    switch (cmov_type) {
         case CMOV_GENERIC:
             new_mask = mask;
+            break;
+        case CMOVBE:
+            new_mask = CF_MASK | ZF_MASK;
+            break;
+        case CMOVL:
+            new_mask = SF_MASK | OF_MASK;
+            break;
+        case CMOVNL:                     
+            new_mask = SF_MASK | OF_MASK;
+            break;
+        case CMOVLE:
+            new_mask = ZF_MASK | SF_MASK | OF_MASK;
+            break;
+        case CMOVNLE:
+            new_mask = ZF_MASK | SF_MASK | OF_MASK;
+            break;
+    }
+#endif
+    switch(cmov_type) {
+        case CMOV_GENERIC:
             INS_InsertIfCall(ins, IPOINT_BEFORE, AFUNPTR(check_mem_cmov),
                     IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, 
                     IARG_REG_VALUE, REG_EFLAGS, IARG_UINT32, mask, IARG_UINT32, condition, IARG_END);
             break;
         case CMOVBE:
-            new_mask = CF_MASK | ZF_MASK;
             INS_InsertIfCall(ins, IPOINT_BEFORE, AFUNPTR(check_mem_cmovx),
                     IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, IARG_REG_VALUE, REG_EFLAGS, 
                     IARG_PTR, cmovbe_true, IARG_END);
-            break;	    
+            break;
         case CMOVL:
-            new_mask = SF_MASK | OF_MASK;
             INS_InsertIfCall(ins, IPOINT_BEFORE, AFUNPTR(check_mem_cmovx),
                     IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, IARG_REG_VALUE, REG_EFLAGS, 
                     IARG_PTR, cmovl_true, IARG_END);
-            break;	    
+            break;
         case CMOVNL:                                    
-            new_mask = SF_MASK | OF_MASK;
             INS_InsertIfCall(ins, IPOINT_BEFORE, AFUNPTR(check_mem_cmovx),
                     IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, IARG_REG_VALUE, REG_EFLAGS, 
                     IARG_PTR, cmovnl_true, IARG_END);
-            break;	    
+            break;
         case CMOVLE:
-            new_mask = ZF_MASK | SF_MASK | OF_MASK;
             INS_InsertIfCall(ins, IPOINT_BEFORE, AFUNPTR(check_mem_cmovx),
                     IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, IARG_REG_VALUE, REG_EFLAGS, 
                     IARG_PTR, cmovle_true, IARG_END);
-            break;	    
+            break;
         case CMOVNLE:
-            new_mask = ZF_MASK | SF_MASK | OF_MASK;
             INS_InsertIfCall(ins, IPOINT_BEFORE, AFUNPTR(check_mem_cmovx),
                     IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, IARG_REG_VALUE, REG_EFLAGS, 
                     IARG_PTR, cmovnle_true, IARG_END);
-            break;	    
+            break;
     }
     INS_InsertThenCall(ins, IPOINT_BEFORE, AFUNPTR(cmov_reg2mem),
             IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, IARG_END);
 
+#ifdef CTRL_FLOW
     INS_InsertIfCall(ins, IPOINT_BEFORE, AFUNPTR(check_flag_effect), IARG_UINT32, mask, IARG_END);
     INS_InsertThenCall(ins, IPOINT_BEFORE, AFUNPTR(taint_flag2mem),
             IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_UINT32, new_mask, IARG_UINT32, MERGE, IARG_END);
-
+#endif
 }
 
 void cmov_reg2reg (REG dst_reg, REG src_reg) 
@@ -3570,52 +3577,70 @@ void cmov_reg2reg (REG dst_reg, REG src_reg)
 
 void cmov_regmov(INS ins, INT32 cmov_type, USIZE addrsize, UINT32 mask, UINT32 condition, REG src_reg, REG dst_reg)
 {
+// Ugh.
+#ifdef CTRL_FLOW
     UINT32 new_mask = 0;
-    switch(cmov_type) {
+    switch (cmov_type) {
         case CMOV_GENERIC:
             new_mask = mask;
+            break;
+        case CMOVBE:
+            new_mask = CF_MASK | ZF_MASK;
+            break;
+        case CMOVL:
+            new_mask = SF_MASK | OF_MASK;
+            break;
+        case CMOVNL:                     
+            new_mask = SF_MASK | OF_MASK;
+            break;
+        case CMOVLE:
+            new_mask = ZF_MASK | SF_MASK | OF_MASK;
+            break;
+        case CMOVNLE:
+            new_mask = ZF_MASK | SF_MASK | OF_MASK;
+            break;
+    }
+#endif
+    switch(cmov_type) {
+        case CMOV_GENERIC:
             INS_InsertIfCall(ins, IPOINT_BEFORE, AFUNPTR(check_reg_cmov),
                     IARG_UINT32, src_reg, IARG_UINT32, dst_reg,  
                     IARG_REG_VALUE, REG_EFLAGS, IARG_UINT32, mask, IARG_UINT32, condition, IARG_END);
             break;
         case CMOVBE:
-            new_mask = CF_MASK | ZF_MASK;
             INS_InsertIfCall(ins, IPOINT_BEFORE, AFUNPTR(check_reg_cmovx),
                     IARG_UINT32, src_reg, IARG_UINT32, dst_reg, IARG_REG_VALUE, REG_EFLAGS, 
                     IARG_PTR, cmovbe_true, IARG_END);
-            break;	    
+            break;
         case CMOVL:
-            new_mask = SF_MASK | OF_MASK;
             INS_InsertIfCall(ins, IPOINT_BEFORE, AFUNPTR(check_reg_cmovx),
                     IARG_UINT32, src_reg, IARG_UINT32, dst_reg, IARG_REG_VALUE, REG_EFLAGS, 
                     IARG_PTR, cmovl_true, IARG_END);
-            break;	    
+            break;
         case CMOVNL:                     
-            new_mask = SF_MASK | OF_MASK;
             INS_InsertIfCall(ins, IPOINT_BEFORE, AFUNPTR(check_reg_cmovx),
                     IARG_UINT32, src_reg, IARG_UINT32, dst_reg, IARG_REG_VALUE, REG_EFLAGS, 
                     IARG_PTR, cmovnl_true, IARG_END);
-            break;	    
+            break;
         case CMOVLE:
-            new_mask = ZF_MASK | SF_MASK | OF_MASK;
             INS_InsertIfCall(ins, IPOINT_BEFORE, AFUNPTR(check_reg_cmovx),
                     IARG_UINT32, src_reg, IARG_UINT32, dst_reg, IARG_REG_VALUE, REG_EFLAGS, 
                     IARG_PTR, cmovle_true, IARG_END);
-            break;	    
+            break;
         case CMOVNLE:
-            new_mask = ZF_MASK | SF_MASK | OF_MASK;
             INS_InsertIfCall(ins, IPOINT_BEFORE, AFUNPTR(check_reg_cmovx),
                     IARG_UINT32, src_reg, IARG_UINT32, dst_reg, IARG_REG_VALUE, REG_EFLAGS, 
                     IARG_PTR, cmovnle_true, IARG_END);
-            break;	    
+            break;
     }
     INS_InsertThenCall(ins, IPOINT_BEFORE, AFUNPTR(cmov_reg2reg),
             IARG_UINT32, dst_reg, IARG_UINT32, src_reg, IARG_END);
 
+#ifdef CTRL_FLOW
     INS_InsertIfCall(ins, IPOINT_BEFORE, AFUNPTR(check_flag_effect), IARG_UINT32, mask, IARG_END);
     INS_InsertThenCall(ins, IPOINT_BEFORE, AFUNPTR(taint_flag2reg),
             IARG_UINT32, dst_reg, IARG_UINT32, new_mask, IARG_UINT32, MERGE, IARG_END);
-
+#endif
 }
 
 void print_reg_taint(REG dst, REG src, int mode)
@@ -4001,7 +4026,7 @@ void instrument_fld (INS ins)
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_mem2fpu_reg), IARG_MEMORYREAD_EA, IARG_UINT32, addrsize, IARG_UINT32, dst_reg, IARG_END); 
     }
     else if (INS_OperandIsReg(ins, 1)) {
-        REG src_reg = INS_OperandReg(ins, 0);	
+        REG src_reg = INS_OperandReg(ins, 0);
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_fpu_reg2fpu_reg), IARG_UINT32, src_reg, IARG_UINT32, dst_reg, IARG_END); 
     }
     else {
@@ -4013,7 +4038,7 @@ void instrument_fld (INS ins)
 void instrument_fst (INS ins, bool with_pop)
 {
     REG src_reg = INS_OperandReg(ins, 1);
-    if(INS_OperandIsMemory(ins, 0)) {
+    if (INS_OperandIsMemory(ins, 0)) {
         UINT32 addrsize = INS_MemoryReadSize(ins);
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_fpu_reg2mem), IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_UINT32, src_reg, IARG_END);
     }
@@ -4024,7 +4049,7 @@ void instrument_fst (INS ins, bool with_pop)
     else {
         ERROR_PRINT (log_f, "[FST] Unknown Operand for FST. \n");
     }
-    if(with_pop) {
+    if (with_pop) {
         pop_fpu();
     }
     return;
@@ -4150,7 +4175,6 @@ void xchg_reg2reg (REG reg1, REG reg2)
         taint_reg2reg(reg1, reg2);
         reg_clear_dependency(ptdata, reg2);    
     }
-
 }
 
 void xchg_reg2mem (REG reg, ADDRINT mem_loc, UINT32 addrsize) 
@@ -4175,7 +4199,6 @@ void xchg_reg2mem (REG reg, ADDRINT mem_loc, UINT32 addrsize)
             mem_clear_dependency(ptdata, mem_loc + i);   
         }
     }
-
 }
 
 
@@ -4385,18 +4408,6 @@ void adc_reg_flag2mem (ADDRINT mem_loc, UINT32 addrsize, REG reg)
     }
 
     vector = get_mem_taint(mem_loc);
-
-#ifdef PPRINT
-#ifdef TARGET_PPRINT
-    if (pprint && ptdata->record_pid == pid_pprint && total_inst_count >= start_pprint && total_inst_count < end_pprint) {
-        if (has_nonzero_token(vector, INTERESTED_TOKEN)) {
-            fprintf(stderr, "adc_reg_flag2mem: mem_loc %#x has mark, vector is ", mem_loc);
-            __print_dependency_tokens(stderr, vector);
-        }
-    }
-#endif
-#endif
-
     flags_mod_dependency(ptdata, vector, SET, 1);
     RELEASE_GLOBAL_LOCK (ptdata);
 }
@@ -4495,17 +4506,6 @@ void adc_flag2mem (ADDRINT mem_loc, UINT32 addrsize)
     }
     vector = get_mem_taint(mem_loc);
 
-#ifdef PPRINT
-#ifdef TARGET_PPRINT
-    if (pprint && ptdata->record_pid == pid_pprint && total_inst_count >= start_pprint && total_inst_count < end_pprint) {
-        if (has_nonzero_token(vector, INTERESTED_TOKEN)) {
-            fprintf(stderr, "adc_flag2mem: mem_loc %#x has mark, vector is ", mem_loc);
-            __print_dependency_tokens(stderr, vector);
-        }
-    }
-#endif
-#endif
-
     flags_mod_dependency(ptdata, vector, SET, 1);
     RELEASE_GLOBAL_LOCK (ptdata);
 }
@@ -4593,18 +4593,6 @@ void cmp_reg_mem(ADDRINT mem_location, int size, REG reg)
     if(vector) {
         DEP_PRINT(log_f, "taint_reg_mem2flag: reg %d has mark, vector is ", reg);
         PRINT_DEP_VECTOR(vector);
-
-#ifdef PPRINT
-#ifdef TARGET_PPRINT
-        if (pprint && ptdata->record_pid == pid_pprint && total_inst_count >= start_pprint && total_inst_count < end_pprint) {
-            if (has_nonzero_token(vector, INTERESTED_TOKEN)) {
-                fprintf(stderr, "cmp_reg_mem: reg %d has mark, vector is ", reg);
-                __print_dependency_tokens(stderr, vector);
-            }
-        }
-#endif
-#endif
-
         flags_mod_dependency(ptdata, vector, MERGE, 0);    
     } 
 
@@ -4613,17 +4601,6 @@ void cmp_reg_mem(ADDRINT mem_location, int size, REG reg)
         if(vector) {
             DEP_PRINT(log_f, "taint_reg_mem2flag: memory location %#x has mark, vector is ", mem_location + i);
             PRINT_DEP_VECTOR(vector);
-#ifdef PPRINT
-#ifdef TARGET_PPRINT
-            if (pprint && ptdata->record_pid == pid_pprint && total_inst_count >= start_pprint && total_inst_count < end_pprint) {
-                if (has_nonzero_token(vector, INTERESTED_TOKEN)) {
-                    fprintf(stderr, "cmp_reg_mem: mem_loc %#x has mark, vector is ", mem_location + i);
-                    __print_dependency_tokens(stderr, vector);
-                }
-            }
-#endif
-#endif
-
             flags_mod_dependency(ptdata, vector, MERGE, 0);
         }
     }
@@ -4663,21 +4640,19 @@ void cmp_reg_reg(REG dstreg, REG reg)
 
 void set_fpu_reg(int reg_num, struct taint* new_taint)
 {
-    LOG_PRINT ("In set_fpu_reg function, testing.\n");
     if(reg_num >= FPU_REG_SIZE) {
-        LOG_PRINT ("set_fpu_reg: reg_num out of range.\n");
+        ERROR_PRINT (log_f, "[ERROR] set_fpu_reg: reg_num out of range.\n");
         return;
     }
     for (int offset = 0; offset < FPU_REG_SIZE; offset++) {
-        set_taint(&FPU_reg_table[reg_num*FPU_REG_SIZE+offset], new_taint);	
+        set_taint(&FPU_reg_table[reg_num*FPU_REG_SIZE+offset], new_taint);
     }
     return;
 }
 
 void set_fpu_reg_taint(int reg_num, int offset, struct taint* new_taint)
 {
-    LOG_PRINT ("In set_fpu_reg_taint function, testing.\n");
-    set_taint(&FPU_reg_table[reg_num*FPU_REG_SIZE+offset], new_taint);	
+    set_taint(&FPU_reg_table[reg_num*FPU_REG_SIZE+offset], new_taint);
     return;
 }
 
@@ -4723,8 +4698,6 @@ static inline void __fpu_reg_mod_dependency(struct thread_data* ptdata, REG reg,
     } else if(mode == MERGE) {
         merge_fpu_reg(reg_num, vector);
     }
-    LOG_PRINT ("[FPU] \treg %d now has vector ", reg); 
-    print_dependency_tokens (&FPU_reg_table[reg_num]);
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
@@ -4756,12 +4729,6 @@ static inline void __fpu_reg_clear_dependency(struct thread_data* ptdata, REG re
         add_modified_reg(ptdata, reg);
 #endif
     clear_fpu_reg(reg_num);
-#ifdef PPRINT
-    if (pprint) {
-        fprintf (stderr, "\treg %d now has vector ", reg); 
-        __print_dependency_tokens(stderr, &FPU_reg_table[reg_num]);
-    }
-#endif
     RELEASE_GLOBAL_LOCK (ptdata);
 
 }
@@ -4822,7 +4789,7 @@ void taint_mem2fpu_reg(ADDRINT mem_loc, UINT32 size, REG reg)
         }
     }
     TAINT_PRINT ("taint_mem2fpu_reg: reg is: ");
-    TAINT_PRINT_DEP_VECTOR (get_fpu_reg_taint(reg));
+    // TAINT_PRINT_DEP_VECTOR (get_fpu_reg_taint(reg));
 
 #ifdef TAINT_TRACK
     taint_track_locations("taint_mem2fpu_reg", mem_loc, (int)size);
@@ -4880,7 +4847,7 @@ void taint_fpu_reg2mem(ADDRINT mem_loc, UINT32 size, REG src_reg)
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
-void push_fpu()
+void push_fpu(void)
 {
     for (int i = FPU_NUM_REGS-1; i > 0; i--) {
         taint_fpu_reg2fpu_reg((REG)(i-1+fpu_reg_num), (REG)(i+fpu_reg_num));
@@ -4889,7 +4856,7 @@ void push_fpu()
     return;
 }
 
-void pop_fpu()
+void pop_fpu(void)
 {
     for (int i = 0; i < FPU_NUM_REGS-1; i++) {
         taint_fpu_reg2fpu_reg((REG)(i+1+fpu_reg_num), (REG)(i+fpu_reg_num));
@@ -4898,8 +4865,6 @@ void pop_fpu()
 
     return;
 }
-
-
 
 void instrument_test(INS ins)
 {
@@ -4974,8 +4939,8 @@ void instrument_pcmpeqx(INS ins)
 
     } else if (op2mem) {
         USIZE addrsize = INS_MemoryReadSize(ins);
-        assert (addrsize == 16);
-        assert (INS_IsMemoryRead(ins));
+        MYASSERT (addrsize == 16);
+        MYASSERT (INS_IsMemoryRead(ins));
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_mem2reg),
                 IARG_MEMORYREAD_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, IARG_END);
     } else {
@@ -5129,16 +5094,18 @@ void reg_cmpxchg(REG dst_reg, REG reg, int eflag_value)
 
     struct taint* vector;
     REG a_reg = LEVEL_BASE::REG_EAX;
-    if (REG_is_gr8)
+    if (REG_is_gr8) {
         a_reg = REG_AL;
-    else if (REG_is_gr16(dst_reg))
+    } else if (REG_is_gr16(dst_reg)) {
         a_reg = REG_AX;
-    else if (REG_is_gr32(dst_reg))
+    } else if (REG_is_gr32(dst_reg)) {
         a_reg = LEVEL_BASE::REG_EAX;
-    else 
-        printf("ERROR: in reg_cmpxchg, reg size is not gr8/16/32\n");
+    } else {
+        ERROR_PRINT (log_f, "ERROR: in reg_cmpxchg, reg size is not gr8/16/32\n");
+    }
 
     flags_clear_dependency(ptdata);
+
     if (eflag_value & ZF_MASK) {
         //ZF is set, therefore AL/AX/EAX was equal to memory operand
 #ifdef CTRL_FLOW
@@ -5339,11 +5306,15 @@ void instrument_shift(INS ins)
         if(op1reg) {
             reg = INS_OperandReg(ins, 0);
             if(!REG_valid(reg)) return;
+#ifdef CTRL_FLOW
             INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_reg2flag), IARG_UINT32, reg, IARG_END);
+#endif
         } else if(op1mem) {
             addrsize = INS_MemoryWriteSize(ins);
+#ifdef CTRL_FLOW
             INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_mem2flag), IARG_MEMORYWRITE_EA, 
                     IARG_UINT32, addrsize, IARG_END);
+#endif
         } else {
             string instruction;
             instruction = INS_Disassemble(ins);
@@ -5414,7 +5385,9 @@ void instrument_shift(INS ins)
             INSTRUMENT_PRINT(log_f, "instrument_shift: op1 is reg %s and op2 is reg %s\n", REG_StringShort(reg).c_str(), REG_StringShort(reg2).c_str());
             INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_reg2reg),
                     IARG_UINT32, reg, IARG_UINT32, reg2, IARG_END);
+#ifdef CTRL_FLOW
             INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_reg2flag), IARG_UINT32, reg, IARG_END);
+#endif
         } else if (op1mem) {
             addrsize = INS_MemoryWriteSize(ins);
             INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_reg2mem),
@@ -5736,8 +5709,8 @@ void instrument_set_src2dst(INS ins)
                 IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_UINT32, reg, IARG_END);
     } else if (op1mem && op2mem) {
         USIZE addrsize = INS_MemoryReadSize(ins);
-        assert (INS_IsMemoryWrite(ins));
-        assert (INS_IsMemoryRead(ins));
+        MYASSERT (INS_IsMemoryWrite(ins));
+        MYASSERT (INS_IsMemoryRead(ins));
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_mem2mem), IARG_MEMORYREAD_EA, IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_END);
     } else {
         string instruction;
@@ -5750,9 +5723,9 @@ void instrument_paddx_or_psubx(INS ins)
 {
     int op1reg, op2reg, op2mem;
 
-    op1reg = INS_OperandIsReg(ins, 0); 	
-    op2reg = INS_OperandIsReg(ins, 1); 	
-    op2mem = INS_OperandIsMemory(ins, 1); 	
+    op1reg = INS_OperandIsReg(ins, 0);
+    op2reg = INS_OperandIsReg(ins, 1);
+    op2mem = INS_OperandIsMemory(ins, 1);
 
     if(op1reg && op2reg) {
         REG srcreg, dstreg;
@@ -5764,7 +5737,7 @@ void instrument_paddx_or_psubx(INS ins)
     }
     else if(op1reg && op2mem) {
         REG dstreg = INS_OperandReg(ins, 0);
-        USIZE addrsize = INS_MemoryReadSize(ins);	
+        USIZE addrsize = INS_MemoryReadSize(ins);
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_add_mem2reg), IARG_MEMORYREAD_EA, IARG_UINT32, addrsize, IARG_UINT32, dstreg, IARG_END);
     }
     else {
@@ -5777,9 +5750,9 @@ void instrument_punpckx(INS ins)
     int op1reg, op2reg, op2mem;
     fprintf(log_f, "instrument_punpckx (%s) starting.\n", INS_Mnemonic(ins).c_str());
 
-    op1reg = INS_OperandIsReg(ins, 0); 	
-    op2reg = INS_OperandIsReg(ins, 1); 	
-    op2mem = INS_OperandIsMemory(ins, 1); 	
+    op1reg = INS_OperandIsReg(ins, 0);
+    op2reg = INS_OperandIsReg(ins, 1);
+    op2mem = INS_OperandIsMemory(ins, 1);
 
     if(op1reg && op2reg) {
         REG srcreg, dstreg;
@@ -6139,18 +6112,22 @@ void instrument_setcc(INS ins, UINT32 mask)
     opreg = INS_OperandIsReg(ins, 0);
 
     if (opmem) {
+#ifdef CTRL_FLOW
         UINT32 addrsize;
         INSTRUMENT_PRINT(log_f, "instrument_setcc: instruction is %s and first operand is memory\n", INS_Mnemonic(ins).c_str());
         addrsize = INS_MemoryWriteSize(ins);
         INS_InsertIfCall(ins, IPOINT_BEFORE, AFUNPTR(check_flag_effect), IARG_UINT32, mask, IARG_END);
         INS_InsertThenCall(ins, IPOINT_BEFORE, AFUNPTR(taint_flag2mem), IARG_MEMORYWRITE_EA, 
                 IARG_UINT32, addrsize, IARG_UINT32, mask, IARG_UINT32, SET, IARG_END);
+#endif
     } else if(opreg) {
+#ifdef CTRL_FLOW
         REG reg = INS_OperandReg(ins, 0);
         INSTRUMENT_PRINT(log_f, "instrument_setcc: instruction is %s and first operand is reg %d (%s)\n", INS_Mnemonic(ins).c_str(), reg,
                 REG_StringShort(reg).c_str());
         INS_InsertIfCall(ins, IPOINT_BEFORE, AFUNPTR(check_flag_effect), IARG_UINT32, mask, IARG_END);
         INS_InsertThenCall(ins, IPOINT_BEFORE, AFUNPTR(taint_flag2reg), IARG_UINT32, reg, IARG_UINT32, mask, IARG_UINT32, SET, IARG_END);
+#endif
     } else {
         string instruction;
         instruction = INS_Disassemble(ins);
@@ -6198,7 +6175,7 @@ void instrument_move_string(INS ins, OPCODE opcode)
         INSTRUMENT_PRINT(log_f, "REP-Prefix in move_string, operand width is %d\n", opw);
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(rep_taint_whole_mem2mem),
                 IARG_FIRST_REP_ITERATION, IARG_MEMORYREAD_EA, IARG_MEMORYWRITE_EA, IARG_REG_VALUE, REG_EFLAGS,
-                IARG_REG_VALUE, reg, IARG_UINT32, size, IARG_END);	
+                IARG_REG_VALUE, reg, IARG_UINT32, size, IARG_END);
         return;
     }
 
@@ -6229,7 +6206,7 @@ void instrument_load_string(INS ins, OPCODE opcode)
         }
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(rep_taint_whole_mem2reg),
                 IARG_FIRST_REP_ITERATION, IARG_MEMORYREAD_EA, IARG_UINT32, dst_reg, IARG_REG_VALUE, REG_EFLAGS, 
-                IARG_REG_VALUE, reg, IARG_UINT32, size, IARG_END);	
+                IARG_REG_VALUE, reg, IARG_UINT32, size, IARG_END);
         INSTRUMENT_PRINT(log_f, "REP-Prefix in load_string, operand width is %d\n", opw);
         return;
     }
@@ -6238,7 +6215,7 @@ void instrument_load_string(INS ins, OPCODE opcode)
         printf("ERROR: instrument_load_string: got a 64 bit load!!!\n");
     else 
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_whole_mem2reg),
-                IARG_MEMORYREAD_EA, IARG_UINT32, dst_reg, IARG_REG_VALUE, REG_EFLAGS, IARG_UINT32, size, IARG_END);	
+                IARG_MEMORYREAD_EA, IARG_UINT32, dst_reg, IARG_REG_VALUE, REG_EFLAGS, IARG_UINT32, size, IARG_END);
 }
 
 /*
@@ -6267,12 +6244,12 @@ void instrument_store_string(INS ins, OPCODE opcode)
 
         /*
            INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(store_string_debug),
-           IARG_INST_PTR, IARG_REG_VALUE, REG_CX, IARG_REG_VALUE, LEVEL_BASE::REG_ECX, IARG_END);	
+           IARG_INST_PTR, IARG_REG_VALUE, REG_CX, IARG_REG_VALUE, LEVEL_BASE::REG_ECX, IARG_END);
          */
 
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(rep_taint_whole_reg2mem),
                 IARG_FIRST_REP_ITERATION, IARG_MEMORYWRITE_EA, IARG_REG_VALUE, REG_EFLAGS,
-                IARG_REG_VALUE, rep_reg, IARG_UINT32, size, IARG_END);	
+                IARG_REG_VALUE, rep_reg, IARG_UINT32, size, IARG_END);
         INSTRUMENT_PRINT(log_f, "REP-Prefix in store_string, operand width is %d\n", opw);
         return;
     }
@@ -6281,7 +6258,7 @@ void instrument_store_string(INS ins, OPCODE opcode)
         printf("ERROR: instrument_store_string: got a 64 bit store!!!\n");
     else {
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_whole_reg2mem),
-                IARG_MEMORYWRITE_EA, IARG_REG_VALUE, REG_EFLAGS, IARG_UINT32, 1, IARG_UINT32, size, IARG_END);	
+                IARG_MEMORYWRITE_EA, IARG_REG_VALUE, REG_EFLAGS, IARG_UINT32, 1, IARG_UINT32, size, IARG_END);
     }
 }
 
@@ -6298,7 +6275,7 @@ void output_buffer_result (int output_type, int output_fileno, void* buf, int si
     }
     for (int i = 0; i < size; i++) {
         struct taint* t;
-        GList* options;
+        GList* options = NULL;
         GList* tmp;
         ADDRINT loc = ((ADDRINT) buf) + i;
         t = get_mem_taint(loc);
@@ -6311,14 +6288,15 @@ void output_buffer_result (int output_type, int output_fileno, void* buf, int si
         // traverse list and do lookup
         while (tmp) {
             // only for non-zero taint options
-            if ((get_taint_value(t, GPOINTER_TO_INT(options->data)))) {
+            //if ((get_taint_value(t, GPOINTER_TO_INT(options->data)))) {
                 struct byte_result* result;
-                result = create_new_byte_result(output_type, output_fileno, ptdata->rg_id, ptdata->record_pid, global_syscall_cnt, i + offset, GPOINTER_TO_INT(options->data));
-                write_byte_result_to_file(output_f, result);
+                result = create_new_byte_result(output_type, output_fileno, ptdata->rg_id, ptdata->record_pid, global_syscall_cnt, i + offset, GPOINTER_TO_UINT(tmp->data));
+                write_byte_result_to_file(output_fd, result);
                 free(result);
-            }
+            //}
             tmp = g_list_next(tmp);
         }
+        g_list_free(options);
     }
 }
 
@@ -6536,7 +6514,6 @@ inline void __sys_execve_start(struct thread_data* ptdata, char* filename, char 
     char **tmp = NULL;
     if (filename) {
         LOG_PRINT ("exec of %s\n", filename);
-        fprintf(output_f, "# execve: %s\n", filename);
         output_buffer_result (TOK_EXEC, FILENO_NAME, filename, strlen(filename), acc);
         acc += strlen(filename);
     }
@@ -6625,13 +6602,17 @@ inline void __sys_read_start(struct thread_data* ptdata, int fd, char* buf, int 
 inline void __sys_read_stop(struct thread_data* ptdata, int rc) {
     struct read_info* ri = (struct read_info *) ptdata->save_syscall_info;
     LOG_PRINT ("Pid %d syscall read returns %d\n", PIN_GetPid(), rc);
-    // new tokens created here	
+    // new tokens created here
 #ifndef CONFAID
     int read_fileno = -1;
     struct open_info* oi = NULL;
     if (monitor_has_fd(open_fds, ri->fd)) {
         oi = (struct open_info *)monitor_get_fd_data(open_fds, ri->fd);
         read_fileno = oi->fileno;
+        LOG_PRINT ("read into %#lx, size %d, file is %s, option cnt is %d\n", (unsigned long) ri->buf, rc, oi->name, option_cnt);
+#ifdef TAINT_IMPL_INDEX
+        LOG_PRINT ("  index cnt is %lu\n", get_unique_taint_count());
+#endif
     } else if(ri->fd == fileno(stdin)) {
         read_fileno = 0;
     }
@@ -6713,8 +6694,9 @@ inline void __sys_write_stop(struct thread_data* ptdata, int rc) {
     if (monitor_has_fd(open_fds, wi->fd)) {
         struct open_info* oi;
         oi = (struct open_info *) monitor_get_fd_data(open_fds, wi->fd);
-        assert(oi);
+        MYASSERT(oi);
         channel_fileno = oi->fileno;
+        LOG_PRINT ("syscall cnt: %d write at %#lx, size %d, file is %s\n", global_syscall_cnt, (unsigned long) wi->buf, rc, oi->name);
     } else if (wi->fd == fileno(stdout)) {
         channel_fileno = FILENO_STDOUT;
     } else if (wi->fd == fileno(stderr)) {
@@ -6751,7 +6733,7 @@ inline void __sys_close_stop(struct thread_data* ptdata, int rc) {
     if (!rc) {
         if (monitor_has_fd(open_fds, fd)) {
             struct open_info* oi = (struct open_info *) monitor_get_fd_data(open_fds, fd);
-            assert(oi);
+            MYASSERT(oi);
             free(oi);
             monitor_remove_fd(open_fds, fd);
         }
@@ -6778,7 +6760,7 @@ inline void __sys_writev_stop(struct thread_data* ptdata, int rc)
     if (monitor_has_fd(open_fds, wvi->fd)) {
         struct open_info* oi;
         oi = (struct open_info *) monitor_get_fd_data(open_fds, wvi->fd);
-        assert (oi);
+        MYASSERT (oi);
         channel_fileno = oi->fileno;
     } else {
         channel_fileno = -1;
@@ -6792,6 +6774,33 @@ inline void __sys_writev_stop(struct thread_data* ptdata, int rc)
 
     free((void *) ptdata->save_syscall_info);
 }
+
+#ifdef TAINT_PROFILE
+/* Print out a summary of stats at the current time */
+void print_summary_stats(FILE* fp, char* header)
+{
+    long count = 0;
+    if (header != NULL) {
+        fprintf(fp, "%s\n", header);
+    }
+    count = count_tainted_addresses();
+    fprintf(fp, "Tainted addresses: %ld\n", count);
+    print_taint_profile_count_op(fp, global_profile);
+    fprintf(fp, "mem2reg clears\t\t%ld\n", global_profile->stats_mem2reg[STATS_CLEAR]);
+    fprintf(fp, "mem2reg sets\t\t%ld\n", global_profile->stats_mem2reg[STATS_SET]);
+    fprintf(fp, "reg2reg clears\t\t%ld\n", global_profile->stats_reg2reg[STATS_CLEAR]);
+    fprintf(fp, "reg2reg sets\t\t%ld\n", global_profile->stats_reg2reg[STATS_SET]);
+    fprintf(fp, "reg2mem clears\t\t%ld\n", global_profile->stats_reg2mem[STATS_CLEAR]);
+    fprintf(fp, "reg2mem sets\t\t%ld\n", global_profile->stats_reg2mem[STATS_SET]);
+    fprintf(fp, "add_mem2reg clears\t\t%ld\n", global_profile->stats_add_mem2reg[STATS_CLEAR]);
+    fprintf(fp, "add_mem2reg sets\t\t%ld\n", global_profile->stats_add_mem2reg[STATS_SET]);
+    fprintf(fp, "add_reg2reg clears\t\t%ld\n", global_profile->stats_add_reg2reg[STATS_CLEAR]);
+    fprintf(fp, "add_reg2reg sets\t\t%ld\n", global_profile->stats_add_reg2reg[STATS_SET]);
+    fprintf(fp, "add_reg2mem clears\t\t%ld\n", global_profile->stats_add_reg2mem[STATS_CLEAR]);
+    fprintf(fp, "add_reg2mem sets\t\t%ld\n", global_profile->stats_add_reg2mem[STATS_SET]);
+    fflush(fp);
+}
+#endif
 
 void instrument_syscall(ADDRINT syscall_num, ADDRINT syscallarg1, ADDRINT syscallarg1_ref, ADDRINT syscallarg2, ADDRINT syscallarg3, ADDRINT syscallarg4, ADDRINT syscallarg5)
 {
@@ -6857,6 +6866,7 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT syscallarg1, ADDRINT syscal
                 mmi = (struct mmap_info*) malloc(sizeof(struct mmap_info));
                 mmi->addr = (u_long) syscallarg1;
                 mmi->length = (int) syscallarg2;
+                mmi->prot = (int) syscallarg3;
                 mmi->fd = (int) syscallarg5;
 
                 ptdata->save_syscall_info = (void *) mmi;
@@ -6964,7 +6974,9 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
                             create_options_from_buffer (TOK_READ, global_syscall_cnt, (void *) mmi->addr, mmi->length, 0, read_fileno);
                         }
 #else
-                        create_options_from_buffer (TOK_READ, global_syscall_cnt, (void *) mmi->addr, mmi->length, 0, read_fileno);
+                        if (!(mmi->prot | PROT_EXEC)) {
+                            create_options_from_buffer (TOK_READ, global_syscall_cnt, (void *) mmi->addr, mmi->length, 0, read_fileno);
+                        }
 #endif // FILTER_INPUTS
                     }
 #endif // CONFAID
@@ -7019,7 +7031,17 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
         break;
     }
     }
-// Increment on syscall return for consistency with the log
+
+#ifdef TAINT_PROFILE
+#ifdef TAINT_IMPL_INDEX
+    // mark_and_sweep_unused_taints();
+    char header[256];
+    snprintf(header, 256, "At syscall %d", global_syscall_cnt);
+    print_summary_stats(stderr, header);
+#endif
+#endif
+    
+    // Increment on syscall return for consistency with the log
     increment_syscall_cnt (ptdata, (int)SYSNUM);
 }
 
@@ -7960,181 +7982,176 @@ void instrument_ret(ADDRINT address, ADDRINT target)
     struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
     if (ptdata == NULL) return;
 
-        GRAB_GLOBAL_LOCK (ptdata);
+    GRAB_GLOBAL_LOCK (ptdata);
 
-        if (!CALLING_BBLOCK_HEAD) {
+    if (!CALLING_BBLOCK_HEAD) {
 #ifdef CTRL_FLOW
-            while (MERGE_ON_NEXT_RET > 0) {
-                reached_merge_point(ptdata);
-                MERGE_ON_NEXT_RET--;
-            }
+        while (MERGE_ON_NEXT_RET > 0) {
+            reached_merge_point(ptdata);
+            MERGE_ON_NEXT_RET--;
+        }
 #endif // CTRL_FLOW
-            RELEASE_GLOBAL_LOCK (ptdata);
-            return;
-        }
-        if (CALLING_BBLOCK_HEAD->next_address != target) {
-            RELEASE_GLOBAL_LOCK (ptdata);
-            return;
-        }
+        RELEASE_GLOBAL_LOCK (ptdata);
+        return;
+    }
+    if (CALLING_BBLOCK_HEAD->next_address != target) {
+        RELEASE_GLOBAL_LOCK (ptdata);
+        return;
+    }
 #ifdef FUNC_TIME
-        struct timeval new_time;
-        gettimeofday(&new_time, NULL);
-        add_stat_to_function(&new_time, total_inst_count, address);
-        current_time = new_time;
-        current_num_inst = total_inst_count;
+    struct timeval new_time;
+    gettimeofday(&new_time, NULL);
+    add_stat_to_function(&new_time, total_inst_count, address);
+    current_time = new_time;
+    current_num_inst = total_inst_count;
 #endif    
 #ifdef CTRL_FLOW
-        if ((CALLING_BBLOCK_HEAD->status & MERGE_POINT) != 0) {
-            while (CALLING_BBLOCK_HEAD->is_merge_point > 0) {
-                reached_merge_point(ptdata);
-                CALLING_BBLOCK_HEAD->is_merge_point--;
-            }
+    if ((CALLING_BBLOCK_HEAD->status & MERGE_POINT) != 0) {
+        while (CALLING_BBLOCK_HEAD->is_merge_point > 0) {
+            reached_merge_point(ptdata);
+            CALLING_BBLOCK_HEAD->is_merge_point--;
         }
+    }
 #endif
-        BBL_OVER = 0;
-        CURRENT_BBL = 0;
+    BBL_OVER = 0;
+    CURRENT_BBL = 0;
 
-        //if ctrflow_taint is 0, we don't want current_bbl
-        //if (CTRFLOW_TAINT_STACK->prev) {
-        instbbl tmp_key;
-        instbbl* tmp = 0;
-        tmp_key.inst_addr = target;
-        tmp = (instbbl*)(g_hash_table_lookup(hashtable, &tmp_key));
-        if (tmp) {
-            CURRENT_BBL = tmp->bblock;
-        } else {
-            if (CALLING_BBLOCK_HEAD) {
-                CURRENT_BBL = CALLING_BBLOCK_HEAD->bblock;
-                if (CURRENT_BBL) {
-                    SPEC_PRINT(log_f, "instrument_ret: the bblock is set to %#x\n", CURRENT_BBL->first_inst->inst_addr);
+    //if ctrflow_taint is 0, we don't want current_bbl
+    //if (CTRFLOW_TAINT_STACK->prev) {
+    instbbl tmp_key;
+    instbbl* tmp = 0;
+    tmp_key.inst_addr = target;
+    tmp = (instbbl*)(g_hash_table_lookup(hashtable, &tmp_key));
+    if (tmp) {
+        CURRENT_BBL = tmp->bblock;
+    } else {
+        if (CALLING_BBLOCK_HEAD) {
+            CURRENT_BBL = CALLING_BBLOCK_HEAD->bblock;
+            if (CURRENT_BBL) {
+                SPEC_PRINT(log_f, "instrument_ret: the bblock is set to %#x\n", CURRENT_BBL->first_inst->inst_addr);
                 }
             }
         }
-        //}
+    //}
 
 #ifdef CTRL_FLOW
-        //There are crazy cases where it's not possible to correctly
-        //identify the pdoms of a branch (compile_branch in apache for instance)
-        //and therefore, we can't automatically eliminate the taint added to 
-        //CTRFLOW_TAINT_STACK.
-        while (CTRFLOW_TAINT_STACK_SIZE != CALLING_BBLOCK_HEAD->ctrflow_taint_stack_size) {
+    //There are crazy cases where it's not possible to correctly
+    //identify the pdoms of a branch (compile_branch in apache for instance)
+    //and therefore, we can't automatically eliminate the taint added to 
+    //CTRFLOW_TAINT_STACK.
+    while (CTRFLOW_TAINT_STACK_SIZE != CALLING_BBLOCK_HEAD->ctrflow_taint_stack_size) {
 #ifdef PRINT_WARNINGS
-            fprintf(stderr, "WARNING: the size of ctrflow stack at the end of function %d and at the begining %d "
-                    "are not matching, address is %#x, target is %#x\n", CTRFLOW_TAINT_STACK_SIZE, CALLING_BBLOCK_HEAD->ctrflow_taint_stack_size, address, target);
+        fprintf(stderr, "WARNING: the size of ctrflow stack at the end of function %d and at the begining %d "
+                "are not matching, address is %#x, target is %#x\n", CTRFLOW_TAINT_STACK_SIZE, CALLING_BBLOCK_HEAD->ctrflow_taint_stack_size, address, target);
 #endif
-            fix_taints_and_remove_from_ctrflow (ptdata, SUCCESS);
-        }
+        fix_taints_and_remove_from_ctrflow (ptdata, SUCCESS);
+    }
 #endif // CTRL_FLOW
 
-        // remove calling bblock head
-        struct calling_bblock* tmp_head = CALLING_BBLOCK_HEAD;
+    // remove calling bblock head
+    struct calling_bblock* tmp_head = CALLING_BBLOCK_HEAD;
 
-        if (tmp_head == NULL) {
-            goto close;
-        }
+    if (tmp_head == NULL) {
+        goto close;
+    }
 
 #ifdef TRACE_TAINTS
-        for (int spaces = 0; spaces < (CALLING_BBLOCK_SIZE-1); spaces++) {
-            fprintf(TRACE_F, "\t");
-            fflush(TRACE_F);
-        }
-        fprintf(TRACE_F, "ret %#x (%#x) (return of %#x (%#x)) CTRFLOW_STACK_SIZE %d CALLING_BBLOCK_HEAD size %d\n",
-                address, (unsigned int) get_static_address(img_list, address), tmp_head->call_address,
-                (unsigned int) get_static_address(img_list, tmp_head->call_address),
-                CTRFLOW_TAINT_STACK_SIZE, CALLING_BBLOCK_SIZE);
+    for (int spaces = 0; spaces < (CALLING_BBLOCK_SIZE-1); spaces++) {
+        fprintf(TRACE_F, "\t");
+        fflush(TRACE_F);
+    }
+    fprintf(TRACE_F, "ret %#x (%#x) (return of %#x (%#x)) CTRFLOW_STACK_SIZE %d CALLING_BBLOCK_HEAD size %d\n",
+            address, (unsigned int) get_static_address(img_list, address), tmp_head->call_address,
+            (unsigned int) get_static_address(img_list, tmp_head->call_address),
+            CTRFLOW_TAINT_STACK_SIZE, CALLING_BBLOCK_SIZE);
 #endif
-        CALLING_BBLOCK_HEAD = tmp_head->prev;
-        free (tmp_head);
+    CALLING_BBLOCK_HEAD = tmp_head->prev;
+    free (tmp_head);
 #ifdef MEM
-        mems[8] -= sizeof(struct calling_bblock);
+    mems[8] -= sizeof(struct calling_bblock);
 #endif
-        CALLING_BBLOCK_SIZE--;
+    CALLING_BBLOCK_SIZE--;
 
 close:
-        RELEASE_GLOBAL_LOCK (ptdata);
-    }
+    RELEASE_GLOBAL_LOCK (ptdata);
+}
 
-    ADDRINT find_static_address(ADDRINT ip)
-    {
-        PIN_LockClient();
-        IMG img = IMG_FindByAddress(ip);
-        if (!IMG_Valid(img)) return ip;
-        ADDRINT offset = IMG_LoadOffset(img);
-        PIN_UnlockClient();
-        return ip - offset;
+ADDRINT find_static_address(ADDRINT ip)
+{
+    PIN_LockClient();
+    IMG img = IMG_FindByAddress(ip);
+    if (!IMG_Valid(img)) return ip;
+    ADDRINT offset = IMG_LoadOffset(img);
+    PIN_UnlockClient();
+    return ip - offset;
+}
+
+void print_static_instruction(FILE* fp, ADDRINT inst_ptr)
+{
+    PIN_LockClient();
+    fprintf(fp, "[INST] Pid %d (tid: %d) (record %d) - %ld: %#x\n", 
+            PIN_GetPid(), PIN_GetTid(), get_record_pid(), inst_count, inst_ptr);
+    if (IMG_Valid(IMG_FindByAddress(inst_ptr))) {
+        fprintf(fp, "%s -- img %s static %#x\n", RTN_FindNameByAddress(inst_ptr).c_str(), IMG_Name(IMG_FindByAddress(inst_ptr)).c_str(), find_static_address(inst_ptr));
     }
+    PIN_UnlockClient();
+}
 
 #ifdef LOGGING_ON
-    void instrument_inst(ADDRINT inst_ptr, ADDRINT next_addr, ADDRINT target, ADDRINT sp, ADDRINT opcode)
-    {
-        struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-        GRAB_GLOBAL_LOCK (ptdata);
+void instrument_inst(ADDRINT inst_ptr, ADDRINT next_addr, ADDRINT target, ADDRINT sp, ADDRINT opcode)
+{
+    struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+    GRAB_GLOBAL_LOCK (ptdata);
 
-        if (print_first_inst) {
-            LOG_PRINT ("first inst: %#x, sp %#x\n", inst_ptr, sp);
-            print_first_inst = 0;
+    if (print_first_inst) {
+        LOG_PRINT ("first inst: %#x, sp %#x\n", inst_ptr, sp);
+        print_first_inst = 0;
 
 #ifdef TRACK_MEMORY_AREAS
-            if (add_memory_area (ma_list, sp, sp + STACK_SIZE)) {
-                MEM_PRINT (MEM_F, "Could not add stack [%#x, %#x)\n", sp, sp + STACK_SIZE);
-            }
-            LOG_PRINT ("Added stack [%#x, %#x)\n", sp, sp+STACK_SIZE);
-#endif
+        if (add_memory_area (ma_list, sp, sp + STACK_SIZE)) {
+            MEM_PRINT (MEM_F, "Could not add stack [%#x, %#x)\n", sp, sp + STACK_SIZE);
         }
+        LOG_PRINT ("Added stack [%#x, %#x)\n", sp, sp+STACK_SIZE);
+#endif
+    }
 
-        if (global_syscall_cnt >= 434 && global_syscall_cnt < 470){
-            //#if 0
-            PIN_LockClient();
-            fprintf(LOG_F, "[INST] Pid %d (tid: %d) (record %d) - %#x\n", PIN_GetPid(), PIN_GetTid(), get_record_pid(), inst_ptr);
-            if (IMG_Valid(IMG_FindByAddress(inst_ptr))) {
-                fprintf(LOG_F, "%s -- img %s static %#x\n", RTN_FindNameByAddress(inst_ptr).c_str(), IMG_Name(IMG_FindByAddress(inst_ptr)).c_str(), find_static_address(inst_ptr));
-                PIN_UnlockClient();
-            } else {
-                PIN_UnlockClient();
-            }
-            //#endif
-        }
-
-        // Count instructios
-        inst_count++;
-#ifdef LOGGING_ON
-        if ((inst_count % INST_COUNT_INCREMENT) == 0) {
-            LOG_PRINT ("inst count is %lu, inst_ptr is %#x\n", inst_count, inst_ptr);
-            LOG_PRINT ("num options is %d\n", option_cnt);
-        }
-#endif
-
-#if 0
-        if (opcode == XED_ICLASS_RET_NEAR || opcode == XED_ICLASS_RET_FAR) {
-#ifndef CTRL_FLOW
-            if (CALLING_BBLOCK_SIZE != 0) {
-#endif
-                instrument_ret(inst_ptr, target);
-#ifndef CTRL_FLOW
-            }
-#endif
-        }
-#endif
-        /*
-           if (CALLING_BBLOCK_HEAD && (CALLING_BBLOCK_HEAD->status == HANDLED || ((CALLING_BBLOCK_HEAD->status & CONSERVATIVE) != 0))) {
-           if (opcode == XED_ICLASS_RET_NEAR || opcode == XED_ICLASS_RET_FAR) {
-//LOG_PRINT ("Inst %#x ret (handled)\n", inst_ptr);
-//#ifdef CTRL_FLOW
-instrument_ret(inst_ptr, target);
-//#endif
-} else {
-        //LOG_PRINT("Inst %#x (handled)\n", inst_ptr);
-        }
+    #if 0
+    if (TAINT_CONDITION) {
+        PIN_LockClient();
+        fprintf(LOG_F, "[INST] Pid %d (tid: %d) (record %d) - %#x\n", PIN_GetPid(), PIN_GetTid(), get_record_pid(), inst_ptr);
+        if (IMG_Valid(IMG_FindByAddress(inst_ptr))) {
+            fprintf(LOG_F, "%s -- img %s static %#x\n", RTN_FindNameByAddress(inst_ptr).c_str(), IMG_Name(IMG_FindByAddress(inst_ptr)).c_str(), find_static_address(inst_ptr));
+            PIN_UnlockClient();
         } else {
-        if (opcode == XED_ICLASS_RET_NEAR || opcode == XED_ICLASS_RET_FAR) {
-//LOG_PRINT("Inst %#x ret\n", inst_ptr);
-//instrument_ret(inst_ptr, target);
-} else {
-        //LOG_PRINT("Inst %#x\n", inst_ptr);
+            PIN_UnlockClient();
         }
-        }
-         */
-RELEASE_GLOBAL_LOCK (ptdata);
+    }
+    #endif
+
+    // Count instructios
+    inst_count++;
+#ifdef LOGGING_ON
+    if ((inst_count % INST_COUNT_INCREMENT) == 0) {
+        LOG_PRINT ("inst count is %lu, inst_ptr is %#x\n", inst_count, inst_ptr);
+        LOG_PRINT ("num options is %d\n", option_cnt);
+        print_static_instruction(log_f, inst_ptr);
+
+    }
+    /*
+#ifdef TAINT_IMPL_INDEX
+    if (inst_count > 90358000 && inst_count <= 903600000) {
+        print_static_instruction(log_f, inst_ptr);
+        mark_and_sweep_unused_taints();
+    } 
+    if (inst_count == 90360000 || inst_count == 90355000 || inst_count == 90357000 || inst_count == 90358000) {
+        LOG_PRINT("inst count is %lu\n", inst_count);
+        mark_and_sweep_unused_taints();
+    }
+#endif
+*/
+#endif
+
+    RELEASE_GLOBAL_LOCK (ptdata);
 }
 #endif // LOGGING_ON
 
@@ -8266,6 +8283,12 @@ void track_file(INS ins, void *v)
                 IARG_CONTEXT, IARG_PTR, xor_op, IARG_UINT32, ZF_MASK, IARG_END);
             break;
 
+            /*
+        case XED_ICLASS_JECXZ:
+            ERROR_PRINT(log_f, "[NOOP] ERROR: instruction %s is not instrumented, address: %#x\n", INS_Disassemble(ins).c_str(), (unsigned)INS_Address(ins));
+            break;
+            */
+
     } // end switch(opcode)
 #else
     switch(opcode) {
@@ -8323,14 +8346,14 @@ void track_file(INS ins, void *v)
     }
 
     if(INS_IsMov(ins)) {
-#ifdef LINKAGE_COPY
+#ifdef LINKAGE_DATA
         INSTRUMENT_PRINT(log_f, "%#x: about to instrument %s\n", INS_Address(ins), INS_Mnemonic(ins).c_str());
         //flag affected: none
         instrument_mov(ins);
 #endif
 
     } else if(category == XED_CATEGORY_CMOV) {
-#ifdef LINKAGE_COPY
+#ifdef LINKAGE_DATA
         //flag affected: none, propagated flags
         INSTRUMENT_PRINT(log_f, "%#x: about to instrument %s\n", INS_Address(ins), INS_Mnemonic(ins).c_str());
         instrument_cmov(ins, opcode);
@@ -8363,7 +8386,7 @@ void track_file(INS ins, void *v)
             case XED_ICLASS_MOVQ:
             case XED_ICLASS_MOVDQU:
             case XED_ICLASS_MOVDQA:
-#ifdef LINKAGE_COPY
+#ifdef LINKAGE_DATA
                 INSTRUMENT_PRINT(log_f, "%#x: about to instrument %s\n", INS_Address(ins), INS_Mnemonic(ins).c_str());
                 //flag affected: none
                 instrument_movx(ins);
@@ -8468,7 +8491,7 @@ void track_file(INS ins, void *v)
             case XED_ICLASS_MOVSW:
             case XED_ICLASS_MOVSD:
             case XED_ICLASS_MOVSQ:
-#ifdef LINKAGE_COPY
+#ifdef LINKAGE_DATA
                 //flags affected: none
                 INSTRUMENT_PRINT(log_f, "%#x: about to instrument move string\n", INS_Address(ins));
                 instrument_move_string(ins, opcode);
@@ -8479,8 +8502,7 @@ void track_file(INS ins, void *v)
             case XED_ICLASS_STOSW:
             case XED_ICLASS_STOSD:
             case XED_ICLASS_STOSQ:
-                // XXX Is this a copy or a data linkage?
-#ifdef LINKAGE_COPY
+#ifdef LINKAGE_DATA
                 //flags affected: none
                 INSTRUMENT_PRINT(log_f, "%#x: about to instrument store string\n", INS_Address(ins));
                 instrument_store_string(ins, opcode);
@@ -8509,7 +8531,7 @@ void track_file(INS ins, void *v)
 
             case XED_ICLASS_CVTSD2SS:
             case XED_ICLASS_CVTTSD2SI:
-#ifdef LINKAGE_COPY
+#ifdef LINKAGE_DATA
                 //flags affected: none
                 INSTRUMENT_PRINT(log_f, "%#x: about to instrument CVTSD2SS\n", INS_Address(ins));
                 instrument_mov(ins);
@@ -8526,6 +8548,8 @@ void track_file(INS ins, void *v)
             case XED_ICLASS_FSUBRP:
             case XED_ICLASS_FISUBR:
 #ifdef LINKAGE_DATA
+                // TODO
+                ERROR_PRINT(log_f, "[ERROR]: This instruction %s is mostly likely broken\n", INS_Disassemble(ins).c_str());
                 //flags affected: FPU flags are affected. not considered now
                 INSTRUMENT_PRINT(log_f, "%#x: about to instrument FADD/FSUB\n", INS_Address(ins));
                 old_instrument_addorsub(ins);
@@ -8535,6 +8559,8 @@ void track_file(INS ins, void *v)
             case XED_ICLASS_FXCH:
 #ifdef LINKAGE_DATA
                 //flags affected: FPU flags
+                // TODO
+                ERROR_PRINT(log_f, "[ERROR]: This instruction %s is mostly likely broken\n", INS_Disassemble(ins).c_str());
                 INSTRUMENT_PRINT(log_f, "%#x: about to instrument FXCH\n", INS_Address(ins));
                 instrument_xchg(ins);
 #endif
@@ -8544,18 +8570,26 @@ void track_file(INS ins, void *v)
             case XED_ICLASS_FYL2XP1:
 #ifdef LINKAGE_DATA
                 //flags affected: FPU flags
+                // TODO
+                ERROR_PRINT(log_f, "[ERROR]: This instruction %s is mostly likely broken\n", INS_Disassemble(ins).c_str());
                 INSTRUMENT_PRINT(log_f, "%#x: about to instrument FYL2X\n", INS_Address(ins));
                 old_instrument_addorsub(ins);
 #endif
                 break;
 
-                /*case XED_ICLASS_PACKSSWB:
+                /*
+                case XED_ICLASS_PACKSSWB:
                 //flags affected: none
                 INSTRUMENT_PRINT(log_f, "%#x: about to instrument PACK\n", INS_Address(ins));
                 old_instrument_addorsub(ins);
                 break;
                  */
 
+            case XED_ICLASS_PTEST:
+#ifdef CTRL_FLOW
+            ERROR_PRINT(log_f, "[NOOP] ERROR: instruction %s is not instrumented, address: %#x\n", INS_Disassemble(ins).c_str(), (unsigned)INS_Address(ins));
+#endif
+                break;
 
             case XED_ICLASS_PADDB:
             case XED_ICLASS_PADDW:
@@ -8665,6 +8699,12 @@ void track_file(INS ins, void *v)
                 //flags affected: all for CMP, all but AF for TEST. we are being conservative for TEST
                 INSTRUMENT_PRINT(log_f, "%#x: about to instrument CMP\n", INS_Address(ins));
                 instrument_cmp(ins);
+#endif
+                break;
+
+            case XED_ICLASS_CMPSB:
+#ifdef CTRL_FLOW
+                ERROR_PRINT(log_f, "[NOOP] ERROR: instruction %s is not instrumented, address: %#x\n", INS_Disassemble(ins).c_str(), (unsigned)INS_Address(ins));
 #endif
                 break;
 
@@ -8817,7 +8857,7 @@ void track_file(INS ins, void *v)
             case XED_ICLASS_MOVAPS:
             case XED_ICLASS_MOVLPD:
             case XED_ICLASS_MOVHPD:
-#ifdef LINKAGE_COPY
+#ifdef LINKAGE_DATA
                 instrument_movaps(ins);
 #endif
                 break;
@@ -8854,7 +8894,7 @@ void track_file(INS ins, void *v)
                 break;
 
             case XED_ICLASS_FST:
-#ifdef LINKAGE_DATA
+#ifdef LINKAGE_FPU
                 //case XED_ICLASS_FSTP:
                 INSTRUMENT_PRINT (log_f, "[FST] about to instrument %s, address: %#x\n", INS_Disassemble(ins).c_str(), (unsigned)INS_Address(ins));
                 instrument_fst(ins, false);
@@ -8862,7 +8902,7 @@ void track_file(INS ins, void *v)
                 break;
 
             case XED_ICLASS_FSTP:
-#ifdef LINKAGE_DATA
+#ifdef LINKAGE_FPU
                 INSTRUMENT_PRINT (log_f, "[FST] about to instrument %s, address: %#x\n", INS_Disassemble(ins).c_str(), (unsigned)INS_Address(ins));
                 instrument_fst(ins, true);
 #endif
@@ -8885,6 +8925,7 @@ void track_file(INS ins, void *v)
                     }
                     if (INS_IsSysenter(ins)) {
                         INSTRUMENT_PRINT(log_f, "%#x: not instrument a sysenter\n", INS_Address(ins));
+                        break;
                     }
                     ERROR_PRINT(log_f, "[NOOP] ERROR: instruction %s is not instrumented, address: %#x\n", INS_Disassemble(ins).c_str(), (unsigned)INS_Address(ins));
                     INSTRUMENT_PRINT(log_f, " instruction category %d, %s, opcode: %d, %s\n", category, CATEGORY_StringShort(category).c_str(), opcode, INS_Mnemonic(ins).c_str());
@@ -9869,8 +9910,6 @@ void mmap_stop(ADDRINT result) {
  * */
 void create_options_from_buffer (int type, long id, void* buf, int size, int offset, int fileno)
 {
-    int rc;
-    char c;
     struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
 
     if (size <= 0) return;
@@ -9884,34 +9923,25 @@ void create_options_from_buffer (int type, long id, void* buf, int size, int off
     GRAB_GLOBAL_LOCK (ptdata);
 
     if (option_byte) {
-
-        char* bufcpy;
-        bufcpy = (char *) malloc(sizeof(char) * (size + 1));
-        strncpy(bufcpy, (char *) buf, size);
-        bufcpy[size] = '\0';
-
+        LOG_PRINT ("Creating options for buffer starting at %#lx, size %d)\n", (unsigned long) buf, size);
         for (int i = 0; i < size; i++) {
            ADDRINT mem_location = ((ADDRINT) buf) + i;
-            //fprintf(log_f, "[ajyl_test]: %c\n", bufcpy[i]);
-            rc = PIN_SafeCopy((void*)&c, (void *) mem_location, sizeof(char));
-            if (rc) {
-                struct taint vector;
-		struct token* tok;
+           struct taint vector;
+           struct token* tok;
 
-                if (option_cnt >= NUM_OPTIONS) {
-                    fprintf(stderr, "[ERROR]Not enough options\n");
-                    exit(-1);
-                }
-                new_taint(&vector);
-                set_taint_value(&vector, option_cnt, get_max_taint_value());
+           if (option_cnt >= NUM_OPTIONS) {
+               fprintf(stderr, "[ERROR]Not enough options\n");
+               exit(-1);
+           }
+           new_taint(&vector);
+           set_taint_value(&vector, option_cnt, get_max_taint_value());
 
-                tok = create_new_token (type, option_cnt, global_syscall_cnt, i + offset, ptdata->rg_id, ptdata->record_pid, fileno);
-                write_token_to_file(tokens_f, tok);
-                free(tok);
+           tok = create_new_token (type, option_cnt, global_syscall_cnt, i + offset, ptdata->rg_id, ptdata->record_pid, fileno);
+           write_token_to_file(tokens_f, tok);
+           free(tok);
 
-                option_cnt++;    
-                mem_mod_dependency(ptdata, mem_location, &vector, SET, 1);
-            }
+           option_cnt++;    
+           mem_mod_dependency(ptdata, mem_location, &vector, SET, 1);
         }
     } else {
         char* bufcpy;
@@ -12488,7 +12518,6 @@ gboolean functions_cmp(gconstpointer arg1, gconstpointer arg2)
     return FALSE;
 }
 
-#ifdef DUMP_TAINTS
 /* Dump the state of the taints at the end of the analysis
  * Warning, this could be big
  * */
@@ -12520,8 +12549,115 @@ void dump_taints(FILE* out_file)
     }
     RELEASE_GLOBAL_LOCK (ptdata);
 }
-#endif
 
+long count_tainted_addresses(void)
+{
+    long count = 0;
+    struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+    GRAB_GLOBAL_LOCK (ptdata);
+
+    struct taint** first_t;
+    struct taint* second_t;
+
+    for (int i = 0; i < FIRST_TABLE_SIZE; i++) {
+        first_t = (struct taint**) mem_loc_high[i];
+        if (first_t) {
+            for (int j = 0; j < SECOND_TABLE_SIZE; j++) {
+                second_t = first_t[j];
+                if (second_t) {
+                    for (int k = 0; k < THIRD_TABLE_SIZE; k++) {
+                        if (!is_taint_zero(&second_t[k])) {
+                            count++;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    RELEASE_GLOBAL_LOCK (ptdata);
+    return count;
+}
+
+#ifdef TAINT_IMPL_INDEX
+/*
+void mark_and_sweep_unused_taints()
+{
+    struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+    GRAB_GLOBAL_LOCK (ptdata);
+
+    int num_indices = idx_cnt;
+    char flags[num_indices];
+    char* new_cleaned;
+    memset(flags, 0, num_indices);
+    new_cleaned = (char *) malloc(num_indices);
+    memset(new_cleaned, 0, num_indices);
+
+    // regs
+    for (int i = 0; i < NUM_REGS; i++) {
+        struct taint *t;
+        t = &reg_table[i];
+        flags[t->id] = 1;
+    }
+
+    // flags
+    for (int i = 0; i < NUM_FLAGS + 1; i++) {
+        struct taint *t;
+        t = &flag_table[i];
+        flags[t->id] = 1;
+    }
+
+    // fpu regs
+    for (int i = 0; i < FPU_NUM_REGS * FPU_REG_SIZE; i++) {
+        struct taint *t;
+        t = &FPU_reg_table[i];
+        flags[t->id] = 1;
+    }
+
+    // go through address space
+    struct taint** first_t;
+    struct taint* second_t;
+    for (int i = 0; i < FIRST_TABLE_SIZE; i++) {
+        first_t = (struct taint**) mem_loc_high[i];
+        if (first_t) {
+            for (int j = 0; j < SECOND_TABLE_SIZE; j++) {
+                second_t = first_t[j];
+                if (second_t) {
+                    for (int k = 0; k < THIRD_TABLE_SIZE; k++) {
+                        if (!is_taint_zero(&second_t[k])) {
+                            struct taint* t;
+                            t = &second_t[k];
+                            flags[t->id] = 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for (int i = 0; i < num_indices; i++) {
+        if (!flags[i]) { // not being used
+            if (i >= cleaned_idx_size) {
+                LOG_PRINT ("clean idx %d\n", i);
+                remove_index(i);
+            } else {
+                if (!cleaned_idx[i]) {
+                    // hasn't been cleaned before
+                    LOG_PRINT ("clean idx %d\n", i);
+                    remove_index(i);
+                }
+            }
+            new_cleaned[i] = 1;
+        }
+    }
+
+    // set the new cleaned list
+    free(cleaned_idx);
+    cleaned_idx = new_cleaned;
+    cleaned_idx_size = num_indices;
+    RELEASE_GLOBAL_LOCK (ptdata);
+}
+*/
+#endif
 
 void __print_taint_string_buffer(FILE* file, char* buf, int size)
 {
@@ -12553,14 +12689,29 @@ void fini(INT32 code, void* v) {
     struct tm* tm = localtime(&t);
     fprintf(stderr, "process %d in fini\n", PIN_GetPid());
     fprintf(stderr, "time is: %d:%d:%d\n", tm->tm_hour, tm->tm_min, tm->tm_sec);
+
+#ifdef TAINT_IMPL_INDEX
+    fprintf(stderr, "option cnt is %d\n", option_cnt);
+#ifdef MERGE_STATS
+    print_taint_profile_op(stderr, &merge_profile);
+#endif
+#ifdef TAINT_PROFILE
+    print_summary_stats(stderr, (char *) "fini");
+#endif
+#ifdef MERGE_PREDICTOR
+    fprintf(stderr, "merge predictions %ld\n", merge_predict_count);
+#endif
+#endif
+
 #ifdef TAINT_STATS
     fprintf(stderr, "option cnt is %d\n", option_cnt);
-#ifdef TAINT_IMPL_INDEX
-    fprintf(stderr, "index cnt is %ld\n", idx_cnt);
-#endif
     fprintf(stderr, "Instrument insts: %ld\n", instrumented_insts);
     // print_input_data (stderr);
 #endif // TAINT_STATS
+
+#ifdef TAINT_PROFILE
+    print_taint_profile_count_op(stderr, global_profile);
+#endif
 
 #ifdef DUMP_TAINTS
     FILE* dtaint;
@@ -12861,8 +13012,12 @@ int main(int argc, char** argv)
     /* Create a directory for logs etc for this replay group*/
     snprintf(group_directory, 256, "/tmp/%d", PIN_GetPid());
     if (mkdir(group_directory, 0755)) {
-        fprintf(stderr, "could not make directory %s\n", group_directory);
-        exit(-1);
+        if (errno == EEXIST) {
+            fprintf(stderr, "directory already exists, using it: %s\n", group_directory);
+        } else {
+            fprintf(stderr, "could not make directory %s\n", group_directory);
+            exit(-1);
+        }
     }
 
     /*Initialization*/
@@ -12889,8 +13044,15 @@ int main(int argc, char** argv)
 
     // Open in "w+" mode because an exec will wipe out this file, if in "w"
     char output_file_name[256];
-    snprintf(output_file_name, 256, "%s/%s", group_directory, KnobOutputFile.Value().c_str());
-    output_f = fopen(output_file_name, "w+");
+    // snprintf(output_file_name, 256, "%s/%s", group_directory, KnobOutputFile.Value().c_str());
+    snprintf(output_file_name, 256, "%s", KnobOutputFile.Value().c_str());
+    output_fd = open(output_file_name, O_CREAT | O_TRUNC | O_LARGEFILE | O_RDWR, 0644);
+    if (output_fd <= 0) {
+        fprintf(stderr, "could not open output, file, %d\n", output_fd);
+        exit(-1);
+    }
+    output_f = fdopen(output_fd, "w");
+    // output_f = fopen(output_file_name, "w");
     if (output_f == 0) {
         fprintf(stderr, "no output file is specified, exiting.., errno is %d\n", errno);
         fprintf(stderr, "output_file_name is %s\n", output_file_name);
@@ -12996,6 +13158,10 @@ int main(int argc, char** argv)
     cla = (struct cmd_line_args *) malloc(sizeof(struct cmd_line_args));
     cla->argc = argc;
     cla->argv = follow_argv;
+
+#ifdef TAINT_PROFILE
+    global_profile = new_taints_profile();
+#endif
 
     PIN_AddFollowChildProcessFunction(follow_child, cla);
 

@@ -107,6 +107,7 @@ libpthread {
     pthread_kill_other_threads_np;
 
     # Special sync op logging for replay
+    pthread_log__sync_read;
     pthread_log__sync_add_and_fetch;
     pthread_log__sync_bool_compare_and_swap;
     pthread_log__sync_fetch_and_add;

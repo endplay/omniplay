@@ -27,7 +27,7 @@ libc {
     # m*
     mallinfo; malloc; malloc_get_state; malloc_set_state; malloc_stats;
     malloc_trim; malloc_usable_size; mallopt; memalign; mprobe; mtrace;
-    muntrace; malloc_setup;
+    muntrace; malloc_setup; replay_ext_mutex_lock; replay_ext_mutex_unlock;
 
     # o*
     obstack_free;

@@ -12,30 +12,36 @@ class OpInfo(object):
         self.channel = channel
 
     def __hash__(self):
-        s = ''.join([str(self.group_id), str(self.pid), str(self.syscall), str(self.offset), str(self.channel)])
-        return s.__hash__()
+        return hash((self.group_id, self.pid, self.syscall, self.offset))
 
     def __eq__(self, other):
-        return self.group_id == other.group_id and \
-                self.pid == other.pid and \
-                self.syscall == other.syscall and \
-                self.offset == other.offset and \
-                self.channel == other.channel
+        return (self.group_id, self.pid, self.syscall, self.offset) == \
+                (other.group_id, other.pid, other.syscall, other.offset)
 
 class WriteInfo(OpInfo):
     def __init__(self, group_id, pid, syscall, offset, size=1, channel=""):
         OpInfo.__init__(self, group_id, pid, syscall, offset, size, channel)
 
     def __str__(self):
-        return "WriteInfo: group %d, pid %d, syscall %d, offset %d, size %d" % \
-                (self.group_id, self.pid, self.syscall, self.offset, self.size)
+        return "WriteInfo - group %d, pid %d, syscall %d, offset %d, size %d, channel %s" % \
+                (self.group_id, self.pid, self.syscall, self.offset, self.size, self.channel)
+
+    def __hash__(self):
+        return hash((self.group_id, self.pid, self.syscall, self.offset))
+
+    def __eq__(self, other):
+        return (self.group_id, self.pid, self.syscall, self.offset) == \
+                (other.group_id, other.pid, other.syscall, other.offset)
 
 class ReadInfo(OpInfo):
     def __init__(self, group_id, pid, syscall, offset, size=1, channel=""):
         OpInfo.__init__(self, group_id, pid, syscall, offset, size, channel)
 
+    def __hash__(self):
+        return hash((self.group_id, self.pid, self.syscall, self.offset))
+
     def __str__(self):
-        return "ReadInfo: group %d, pid %d, syscall %d, offset %d, size %d" % \
+        return "ReadInfo - group %d, pid %d, syscall %d, offset %d, size %d" % \
                 (self.group_id, self.pid, self.syscall, self.offset, self.size)
 
 class ExecInfo(OpInfo):
@@ -43,8 +49,11 @@ class ExecInfo(OpInfo):
         OpInfo.__init__(self, group_id, pid, syscall, offset, size, channel)
 
     def __str__(self):
-        return "ExecInfo: group %d, pid %d, syscall %d, offset %d, size %d" % \
+        return "ExecInfo - group %d, pid %d, syscall %d, offset %d, size %d" % \
                 (self.group_id, self.pid, self.syscall, self.offset, self.size)
+
+    def __hash__(self):
+        return hash((self.group_id, self.pid, self.syscall, self.offset))
 
 def group_infos(infos):
     '''
@@ -59,7 +68,6 @@ def group_infos(infos):
     map_groups = collections.defaultdict(list)
     for info in sorted_infos:
         t = (info.group_id, info.pid, info.syscall)
-        print("sorted info: %s" % str(info))
         map_groups[t].append(info)
 
     collasped_groups = collections.defaultdict(list)
@@ -118,4 +126,3 @@ def compare_lists(list1, list2):
 
 def sort_list(l):
     return sorted(l, key=attrgetter('group_id', 'pid', 'syscall', 'offset'))
-
