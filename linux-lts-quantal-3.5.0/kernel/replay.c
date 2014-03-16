@@ -654,6 +654,7 @@ struct record_group {
 	atomic_t rg_record_threads; // Number of active record threads
 	int rg_save_mmap_flag;		// If on, records list of mmap regions during record
 	ds_list_t* rg_reserved_mem_list; // List of addresses that are mmaped, kept on the fly as they occur
+	u_long rg_prev_brk;		// the previous maximum brk, for recording memory maps
 	char rg_mismatch_flag;      // Set when an error has occurred and we want to abandon ship
 	char* rg_libpath;           // For glibc hack
 };
@@ -1567,6 +1568,7 @@ new_record_group (char* logdir)
 	atomic_set(&prg->rg_record_threads, 0);
 	prg->rg_save_mmap_flag = 0;
 	prg->rg_reserved_mem_list = ds_list_create (rm_cmp, 0, 1);
+	prg->rg_prev_brk = 0;
 
 	MPRINT ("Pid %d new_record_group %lld: exited\n", current->pid, prg->rg_id);
 	return prg;
@@ -2088,7 +2090,8 @@ reserve_memory (u_long addr, u_long len)
 			// Check if subsequent regions need to be merged
 			while ((nmapping = ds_list_iter_next (iter)) != NULL) {
 				MPRINT ("Next mapping: %08lx-%08lx\n", nmapping->m_begin, nmapping->m_end);
-				if (nmapping->m_begin <= pmapping->m_end) {
+				if (nmapping->m_begin <= pmapping->m_end &&
+						nmapping->m_begin >= pmapping->m_begin) {
 					MPRINT ("Subsumed - join it\n");
 					if (nmapping->m_end > pmapping->m_end) pmapping->m_end = nmapping->m_end;
 					ds_list_remove (reserved_mem_list, nmapping);
@@ -2113,6 +2116,7 @@ reserve_memory (u_long addr, u_long len)
 	}
 	pmapping->m_begin = addr;
 	pmapping->m_end = addr + len;
+	MPRINT ("Added mapping %lx-%lx\n", addr, addr + len);
 	ds_list_insert (reserved_mem_list, pmapping);
 }
 
@@ -2816,7 +2820,7 @@ int fork_replay (char __user* logdir, const char __user *const __user *args, con
 	}
 
 	// Save reduced-size checkpoint with info needed for exec
-	retval = replay_checkpoint_to_disk (ckpt, filename, argbuf, argbuflen);
+	retval = replay_checkpoint_to_disk (ckpt, filename, argbuf, argbuflen, 0);
 	if (retval) {
 		printk ("replay_checkpoint_to_disk returns %ld\n", retval);
 		return retval;
@@ -3550,7 +3554,7 @@ read_user_log (struct record_thread* prect)
 	copyed = vfs_read (file, (char *) &num_bytes, sizeof(int), &prect->rp_read_ulog_pos);
 	set_fs(old_fs);
 	if (copyed != sizeof(int)) {
-		printk ("read_user_log: tried to read num entries %d, got rc %ld\n", sizeof(int), copyed);
+		if (copyed) printk ("read_user_log: tried to read num entries %d, got rc %ld\n", sizeof(int), copyed);
 		rc = -EINVAL;
 		goto close_out;
 	}
@@ -3691,7 +3695,7 @@ read_user_extra_log (struct record_thread* prect)
 	// the number of entries in this segment
 	int num_bytes;
 
-	printk ("Pid %d: read_user_extra_log %p\n", current->pid, phead);
+	DPRINT ("Pid %d: read_user_extra_log %p\n", current->pid, phead);
 	if (phead == 0) return -EINVAL; // Nothing to do
 
 	start = (char __user *) phead + sizeof (struct pthread_extra_log_head);
@@ -6563,7 +6567,8 @@ record_open (const char __user * filename, int flags, int mode)
 			inode = file->f_dentry->d_inode;
 			DPRINT ("i_rdev is %x\n", inode->i_rdev);
 			DPRINT ("i_sb->s_dev is %x\n", inode->i_sb->s_dev);
-			if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0) {
+			DPRINT ("writecount is %d\n", atomic_read(&inode->i_writecount));
+			if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0 && atomic_read(&inode->i_writecount) == 0) {
 				MPRINT ("This is an open that we can cache\n");
 				recbuf = ARGSKMALLOC(sizeof(struct open_retvals), GFP_KERNEL);
 				rg_lock (current->record_thrd->rp_group);
@@ -6759,7 +6764,7 @@ record_execve(const char *filename, const char __user *const __user *__argv, con
 		// Our rule is that we record a split if there is an exec with more than one thread in the group.   Not sure this is best
 		// but I don't know what is better
 		if (prt->rp_next_thread != prt) {
-
+			__u64 parent_rg_id = prt->rp_group->rg_id;
 			DPRINT ("New record group\n");
 
 			// First setup new record group
@@ -6831,7 +6836,7 @@ record_execve(const char *filename, const char __user *const __user *__argv, con
 
 			// Write out checkpoint for the new group
 			sprintf (ckpt, "%s/ckpt", precg->rg_logdir);
-			retval = replay_checkpoint_to_disk (ckpt, (char *) filename, argbuf, argbuflen);
+			retval = replay_checkpoint_to_disk (ckpt, (char *) filename, argbuf, argbuflen, parent_rg_id);
 			if (retval) {
 				printk ("record_execve: replay_checkpoint_to_disk returns %ld\n", retval);
 				VFREE (slab);
@@ -7153,6 +7158,29 @@ record_brk (unsigned long brk)
 	rc = sys_brk (brk);
 	new_syscall_done (45, rc);
 	new_syscall_exit (45, NULL);
+
+	if (current->record_thrd->rp_group->rg_save_mmap_flag) {
+		struct record_thread* prt;
+		prt = current->record_thrd;
+
+		MPRINT ("Pid %d prev_brk %lx brk to %lx\n", current->pid, prt->rp_group->rg_prev_brk, rc);
+		if (!prt->rp_group->rg_prev_brk) {
+			prt->rp_group->rg_prev_brk = rc;
+		} else {
+			if (rc > prt->rp_group->rg_prev_brk) {
+				u_long size;
+				size = rc - prt->rp_group->rg_prev_brk;
+				if (size) {
+					MPRINT("Pid %d brk increased size by %lu, reserve %lx to %lx\n", current->pid, size, prt->rp_group->rg_prev_brk, rc);
+					reserve_memory(prt->rp_group->rg_prev_brk, size);
+					prt->rp_group->rg_prev_brk = rc;
+				}
+			} else {
+				// else it was a deallocation do nothing
+			}
+		}
+	}
+
 	rg_unlock(current->record_thrd->rp_group);
 
 	return rc;
@@ -7161,11 +7189,63 @@ record_brk (unsigned long brk)
 static asmlinkage unsigned long 
 replay_brk (unsigned long brk)
 {
-	u_long retval, rc = get_next_syscall (45, NULL);
+	struct replay_thread* prt;
+	u_long old_brk;
+	u_long retval;
+	u_long rc;
+       
+	prt = current->replay_thrd;
+	if (is_pin_attached()) {
+		rc = prt->rp_saved_rc;
+		(*(int*)(prt->app_syscall_addr)) = 999;
+	} else {
+		rc = get_next_syscall (45, NULL);
+	}
+
+	if (is_pin_attached()) {
+		struct mm_struct *mm = current->mm;
+		down_write(&mm->mmap_sem);
+		// since we actually do the brk we can just grab the old one
+		old_brk = PAGE_ALIGN(mm->brk);
+		up_write(&mm->mmap_sem);
+		MPRINT("Pid %d, old brk is %lx, will return brk %lx\n", current->pid, old_brk, rc);
+		if (rc > old_brk) {
+			MPRINT ("unmap old preallocation %lx, len %lx\n", old_brk, rc - old_brk);
+			MPRINT ("  let do_brk do the munmap for us\n");
+			// We need to unmap preallocations
+			if (do_munmap(mm, old_brk, (rc - old_brk) + 4096)) {
+				printk("Pid %d -- problem deallocating preallocation %lx-%lx before brk\n", current->pid, old_brk, rc);
+				return syscall_mismatch();
+			}
+		} else if (rc < old_brk) {
+			MPRINT("brk shrinks, map back preallocation at %lx, len %lx\n", rc, old_brk - rc);
+			// we need to map back preallocations
+			preallocate_after_munmap (rc, old_brk - rc);
+		}
+	}
+
 	retval = sys_brk(brk);
 	if (rc != retval) {
 		printk ("Replay brk returns different value %lx than %lx\n", retval, rc);
 		syscall_mismatch();
+	}
+	// Save the regions for preallocation for replay+pin
+	if (prt->rp_record_thread->rp_group->rg_save_mmap_flag) {
+		if (!prt->rp_record_thread->rp_group->rg_prev_brk) {
+			prt->rp_record_thread->rp_group->rg_prev_brk = retval;
+		} else {
+			if (retval > prt->rp_record_thread->rp_group->rg_prev_brk) {
+				u_long size;
+				size = retval - prt->rp_record_thread->rp_group->rg_prev_brk;
+				if (size) {
+					MPRINT("Pid %d brk increased size by %lx, reserve %lx to %lx\n", current->pid, size, prt->rp_record_thread->rp_group->rg_prev_brk, retval);
+					reserve_memory(prt->rp_record_thread->rp_group->rg_prev_brk, size);
+					prt->rp_record_thread->rp_group->rg_prev_brk = retval;
+				} else {
+					// else it was a deallocation, do nothing
+				}
+			}
+		}
 	}
 	return rc;
 }
@@ -11199,6 +11279,18 @@ record_fcntl64 (unsigned int fd, unsigned int cmd, unsigned long arg)
 	new_syscall_done (221, rc);
 	if (rc >= 0) {
 		if (cmd == F_GETLK) {
+			recbuf = ARGSKMALLOC(sizeof(u_long) + sizeof(struct flock), GFP_KERNEL);
+			if (!recbuf) {
+				printk ("record_fcntl: can't allocate return buffer\n");
+				return -ENOMEM;
+			}
+			*(u_long *) recbuf = sizeof(struct flock);
+			if (copy_from_user(recbuf + sizeof(u_long), (struct flock __user *)arg, sizeof(struct flock))) {
+				printk("record_fcntl64: faulted on readback\n");
+				KFREE(recbuf);
+				return -EFAULT;
+			}
+		} else if (cmd == F_GETLK64) {
 			recbuf = ARGSKMALLOC(sizeof(u_long) + sizeof(struct flock64), GFP_KERNEL);
 			if (!recbuf) {
 				printk ("record_fcntl64: can't allocate return buffer\n");

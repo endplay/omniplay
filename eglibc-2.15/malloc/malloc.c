@@ -5293,6 +5293,8 @@ void mutex_unlock(__libc_lock_t *m)
 		__libc_lock_unlock(*m);
 }
 strong_alias (__libc_malloc_setup, __malloc_setup) strong_alias (__libc_malloc_setup, malloc_setup)
+strong_alias (mutex_lock, __replay_ext_mutex_lock) strong_alias (mutex_lock, replay_ext_mutex_lock)
+strong_alias (mutex_unlock, __replay_ext_mutex_unlock) strong_alias (mutex_unlock, replay_ext_mutex_unlock)
 
 /* End REPLAY */
 

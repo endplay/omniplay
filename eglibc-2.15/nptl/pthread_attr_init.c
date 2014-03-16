@@ -46,6 +46,9 @@ __pthread_attr_init_2_1 (attr)
     p++;
     return pthread_log_msg (p, len);
   }
+#else
+  u_long* p = attr;
+  if (*p == 0xb8c8d8f8) return 0;
 #endif
   /* Many elements are initialized to zero so let us do it all at
      once.  This also takes care of clearing the bytes which are not

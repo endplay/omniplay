@@ -6,7 +6,6 @@
 #include <sys/types.h>
 #include <syscall.h>
 #include "util.h"
-
 #include <sys/wait.h>
 
 long print_limit = 10;
@@ -50,13 +49,13 @@ void inst_syscall_end(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD std, V
     } else {
 	fprintf (stderr, "inst_syscall_end: NULL tdata\n");
     }	
-    
+
     // reset the syscall number after returning from system call
     tdata->sysnum = 0;
 }
 
 // called before every application system call
-void set_address_one(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscallarg0)
+void set_address_one(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscallarg0, ADDRINT syscallarg1, ADDRINT syscallarg2)
 {   
     struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
     if (tdata) {
@@ -67,12 +66,12 @@ void set_address_one(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscallarg0
         tdata->syscall_cnt++;
 	global_syscall_cnt++;
 
-	if (sysnum == 91 || sysnum == 120 || sysnum == 125 || sysnum == 174 || sysnum == 175 || sysnum == 190 || sysnum == 192) {
+	if (sysnum == 45 || sysnum == 91 || sysnum == 120 || sysnum == 125 || sysnum == 174 || sysnum == 175 || sysnum == 190 || sysnum == 192) {
+	//if (sysnum == 91 || sysnum == 120 || sysnum == 125 || sysnum == 175 || sysnum == 190 || sysnum == 192) {
 	    check_clock_before_syscall (fd, (int) syscall_num);
 	}
 	tdata->app_syscall = syscall_num;
 	tdata->sysnum = syscall_num;
-
     } else {
 	fprintf (stderr, "set_address_one: NULL tdata\n");
     }
@@ -123,7 +122,10 @@ void track_inst(INS ins, void* data)
     if(INS_IsSyscall(ins)) {
 	    INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(set_address_one), IARG_SYSCALL_NUMBER, 
                     IARG_REG_VALUE, LEVEL_BASE::REG_EBX, 
-		    IARG_SYSARG_VALUE, 0, IARG_END);
+		    IARG_SYSARG_VALUE, 0, 
+		    IARG_SYSARG_VALUE, 1,
+		    IARG_SYSARG_VALUE, 2,
+		    IARG_END);
     }
 }
 
@@ -184,7 +186,6 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
     struct thread_data* ptdata;
 
     fprintf (stderr, "Start of threadid %d\n", (int) threadid);
-		sleep(10000);
 
     ptdata = (struct thread_data *) malloc (sizeof(struct thread_data));
     assert (ptdata);
