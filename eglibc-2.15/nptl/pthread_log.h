@@ -57,7 +57,7 @@ struct pthread_extra_log_head {
 #endif
 
 
-#define PTHREAD_LOG_SIZE (20*1024*1024)
+#define PTHREAD_LOG_SIZE (10*1024*1024)
 
 #define PTHREAD_LOG_NONE           0
 #define PTHREAD_LOG_RECORD         1
@@ -156,6 +156,8 @@ struct pthread_extra_log_head {
 #define SYNC_SUB_AND_FETCH_EXIT              102
 #define SYNC_VAL_COMPARE_AND_SWAP_ENTER      103
 #define SYNC_VAL_COMPARE_AND_SWAP_EXIT       104
+#define SYNC_READ_ENTER                      105
+#define SYNC_READ_EXIT                       106
 
 /* Misc. operations */
 #define PTHREAD_CANCELHANDLING_ENTER         109

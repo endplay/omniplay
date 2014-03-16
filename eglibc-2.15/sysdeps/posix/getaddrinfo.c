@@ -280,6 +280,8 @@ gaih_inet (const char *name, const struct gaih_service *service,
   const char *orig_name = name;
   size_t alloca_used = 0;
 
+  write (99999, "gaih_inet\n", 11);
+
   if (req->ai_protocol || req->ai_socktype)
     {
       ++tp;
@@ -797,13 +799,24 @@ gaih_inet (const char *name, const struct gaih_service *service,
 	    no_more = __nss_database_lookup ("hosts", NULL,
 					     "dns [!UNAVAIL=return] files",
 					     &nip);
+	  {
+	    char buf[80];
+	    sprintf (buf, "gaih_inet no_more is %d\n", no_more);
+	    write (99999, buf, strlen(buf)+1);
+	  }
 
 	  /* Initialize configurations.  */
-	  if (__builtin_expect (!_res_hconf.initialized, 0))
+	  if (__builtin_expect (!_res_hconf.initialized, 0)) {
+	    {
+	      char buf[80];
+	      sprintf (buf, "_res_hconf_init\n");
+	      write (99999, buf, strlen(buf)+1);
+	    }
 	    _res_hconf_init ();
-	  if (__res_maybe_init (&_res, 0) == -1)
+	  }
+	  if (__res_maybe_init (&_res, 0) == -1) {
 	    no_more = 1;
-
+	  }
 	  /* If we are looking for both IPv4 and IPv6 address we don't
 	     want the lookup functions to automatically promote IPv4
 	     addresses to IPv6 addresses.  Currently this is decided
@@ -2331,6 +2344,8 @@ getaddrinfo (const char *name, const char *service,
   struct gaih_service gaih_service, *pservice;
   struct addrinfo local_hints;
 
+  write (99999, "getaddrinfo\n", 13);
+
   if (name != NULL && name[0] == '*' && name[1] == 0)
     name = NULL;
 
@@ -2361,6 +2376,8 @@ getaddrinfo (const char *name, const char *service,
   bool seen_ipv6 = false;
   bool check_pf_called = false;
 
+  write (99999, "getaddrinfo 2\n", 15);
+
   if (hints->ai_flags & AI_ADDRCONFIG)
     {
       /* We might need information about what interfaces are available.
@@ -2368,6 +2385,7 @@ getaddrinfo (const char *name, const char *service,
 	 cannot cache the results since new interfaces could be added at
 	 any time.  */
       __check_pf (&seen_ipv4, &seen_ipv6, &in6ai, &in6ailen);
+      write (99999, "getaddrinfo 2b\n", 16);
       check_pf_called = true;
 
       /* Now make a decision on what we return, if anything.  */
@@ -2390,6 +2408,8 @@ getaddrinfo (const char *name, const char *service,
 	  return EAI_NONAME;
 	}
     }
+
+  write (99999, "getaddrinfo 3\n", 15);
 
   if (service && service[0])
     {
@@ -2441,9 +2461,12 @@ getaddrinfo (const char *name, const char *service,
   if (naddrs > 1)
     {
       /* Read the config file.  */
+      write (99999, "gaiconf_init start\n", 20);
       __libc_once_define (static, once);
       __typeof (once) old_once = once;
       __libc_once (once, gaiconf_init);
+      write (99999, "gaiconf_init end\n", 18);
+
       /* Sort results according to RFC 3484.  */
       struct sort_result results[nresults];
       size_t order[nresults];
@@ -2603,11 +2626,16 @@ getaddrinfo (const char *name, const char *service,
 	{
 	  __libc_lock_define_initialized (static, lock);
 
-	  __libc_lock_lock (lock);
+	  replay_ext_mutex_lock (&lock); // REPLAY
+	  {
+	    char buf[80];
+	    sprintf (buf, "old_once is %d\n", old_once);
+	    write (99999, buf, strlen(buf)+1);
+	  }
 	  if (old_once && gaiconf_reload_flag)
 	    gaiconf_reload ();
 	  qsort_r (order, nresults, sizeof (order[0]), rfc3484_sort, &src);
-	  __libc_lock_unlock (lock);
+	  replay_ext_mutex_unlock (&lock); // REPLAY
 	}
       else
 	qsort_r (order, nresults, sizeof (order[0]), rfc3484_sort, &src);

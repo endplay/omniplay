@@ -3747,7 +3747,7 @@ read_user_log (struct record_thread* prect)
 	copyed = vfs_read (file, (char *) &num_bytes, sizeof(int), &prect->rp_read_ulog_pos);
 	set_fs(old_fs);
 	if (copyed != sizeof(int)) {
-		printk ("read_user_log: tried to read num entries %d, got rc %ld\n", sizeof(int), copyed);
+		if (copyed) printk ("read_user_log: tried to read num entries %d, got rc %ld\n", sizeof(int), copyed);
 		rc = -EINVAL;
 		goto close_out;
 	}
@@ -3888,7 +3888,7 @@ read_user_extra_log (struct record_thread* prect)
 	// the number of entries in this segment
 	int num_bytes;
 
-	printk ("Pid %d: read_user_extra_log %p\n", current->pid, phead);
+	DPRINT ("Pid %d: read_user_extra_log %p\n", current->pid, phead);
 	if (phead == 0) return -EINVAL; // Nothing to do
 
 	start = (char __user *) phead + sizeof (struct pthread_extra_log_head);
@@ -6842,7 +6842,8 @@ record_open (const char __user * filename, int flags, int mode)
 			inode = file->f_dentry->d_inode;
 			DPRINT ("i_rdev is %x\n", inode->i_rdev);
 			DPRINT ("i_sb->s_dev is %x\n", inode->i_sb->s_dev);
-			if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0) {
+			DPRINT ("writecount is %d\n", atomic_read(&inode->i_writecount));
+			if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0 && atomic_read(&inode->i_writecount) == 0) {
 				MPRINT ("This is an open that we can cache\n");
 				recbuf = ARGSKMALLOC(sizeof(struct open_retvals), GFP_KERNEL);
 				rg_lock (current->record_thrd->rp_group);
@@ -11557,6 +11558,18 @@ record_fcntl64 (unsigned int fd, unsigned int cmd, unsigned long arg)
 	new_syscall_done (221, rc);
 	if (rc >= 0) {
 		if (cmd == F_GETLK) {
+			recbuf = ARGSKMALLOC(sizeof(u_long) + sizeof(struct flock), GFP_KERNEL);
+			if (!recbuf) {
+				printk ("record_fcntl: can't allocate return buffer\n");
+				return -ENOMEM;
+			}
+			*(u_long *) recbuf = sizeof(struct flock);
+			if (copy_from_user(recbuf + sizeof(u_long), (struct flock __user *)arg, sizeof(struct flock))) {
+				printk("record_fcntl64: faulted on readback\n");
+				KFREE(recbuf);
+				return -EFAULT;
+			}
+		} else if (cmd == F_GETLK64) {
 			recbuf = ARGSKMALLOC(sizeof(u_long) + sizeof(struct flock64), GFP_KERNEL);
 			if (!recbuf) {
 				printk ("record_fcntl64: can't allocate return buffer\n");
