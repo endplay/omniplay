@@ -315,7 +315,8 @@ int replayfs_filemap_init(struct replayfs_filemap *map,
 				disk_pos->id);
 		ret = replayfs_btree_init(&map->entries, alloc, id);
 	} else {
-		debugk("%s %d: ----Creating btree\n", __func__, __LINE__);
+		debugk("%s %d: ----Creating btree for file %.*s\n", __func__, __LINE__,
+				filp->f_dentry->d_name.len, filp->f_dentry->d_name.name);
 		/* Save the location of the btree entry metadata in the meta btree */
 		ret = replayfs_filemap_create(map, alloc, &key, NULL);
 		debugk("%s %d: ----Btree created at %lld\n", __func__, __LINE__,
@@ -385,6 +386,8 @@ int replayfs_filemap_write(struct replayfs_filemap *map, loff_t unique_id,
 	mutex_lock(&map->lock);
 	lock_debugk("%s %d - %p: Locked %p\n", __func__, __LINE__, current,
 			&map->lock);
+	debugk("%s %d: Filemap writing to %lld, %p\n", __func__, __LINE__,
+			map->entries.meta_loc, map->entries.node_page);
 	ret = replayfs_btree_insert_update(&map->entries, &key, &value, GFP_NOFS);
 	lock_debugk("%s %d - %p: Unlocking %p\n", __func__, __LINE__, current,
 			&map->lock);
@@ -440,8 +443,8 @@ struct replayfs_filemap_entry *replayfs_filemap_read(struct replayfs_filemap *ma
 		struct replayfs_btree_value *val;
 		struct page *btree_page;
 
-		//printk("%s %d: In loop, looking up %lld from btree with loc %lld!\n", __func__,
-				//__LINE__, cur_addr, map->entries.meta_loc);
+		debugk("%s %d: Filemap reading from %lld, %p\n", __func__, __LINE__,
+				map->entries.meta_loc, map->entries.node_page);
 		val = replayfs_btree_lookup(&map->entries,
 				cur_addr, &key, &btree_page);
 
@@ -507,8 +510,10 @@ struct replayfs_filemap_entry *replayfs_filemap_read(struct replayfs_filemap *ma
 			debugk("%s %d: here!\n", __func__, __LINE__);
 			kfree(old_vals);
 		}
-		debugk("%s %d: Adding val with buff_offs %d!\n", __func__, __LINE__,
+		/*
+		printk("%s %d: Adding val with buff_offs %u!\n", __func__, __LINE__,
 				val->buff_offs);
+				*/
 		memcpy(&vals[vals_index].bval, val, sizeof(struct replayfs_btree_value));
 		vals[vals_index].offset = key.offset;
 		vals[vals_index].size = size;
