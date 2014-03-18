@@ -317,7 +317,7 @@ int read_byte_result_from_file(int fd, struct byte_result* result)
     int rc;
     rc = read(fd, result, sizeof(struct byte_result));
     if (rc != sizeof(struct byte_result)) {
-        fprintf(stderr, "[ERROR] Could not read byte result from file, got %d\n", rc);
+	fprintf(stderr, "[ERROR] Could not read byte result from file, got %d, errno=%d\n", rc, errno);
         return -1;
     }
     return 0;

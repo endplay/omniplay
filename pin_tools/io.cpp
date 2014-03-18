@@ -238,19 +238,20 @@ void read_stop(int rc) {
 
     // successful read
     if (rc > 0) {
-        char* channel_name = (char *) "--";
 #ifdef ONLY_X
         struct read_info* ri = (struct read_info *) tdata->syscall_info;
         if (monitor_has_fd(open_socks, ri->fd)) {
             struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, ri->fd);
             if (si->is_x) {
-                fprintf(meta_fp, "READ from X socket, size: %d, %s\n", rc, channel_name);
-                fflush(meta_fp);
+		fprintf (stderr, "is_x\n");
+                //fprintf(meta_fp, "READ from X socket, size: %d, %s\n", rc, channel_name);
+                //fflush(meta_fp);
                 tdata->bytes_read += rc;
                 bytes_read += rc;
             }
         }
 #else
+        char* channel_name = (char *) "--";
         int rcc;
         struct read_info* ri = (struct read_info *) tdata->syscall_info;
         assert (ri);
@@ -645,18 +646,32 @@ void connect_start(int sockfd, struct sockaddr* addr, socklen_t addrlen)
         ci->fd = sockfd;
         if (si->domain == AF_UNIX) {
             struct sockaddr_un* sun = (struct sockaddr_un*) addr;
-            assert(addr->sa_family == AF_UNIX);
-            memcpy(ci->path, sun->sun_path, 108); // apparently 108 is the magic number
+	    if (addr->sa_family == AF_UNIX) {
+		memcpy(ci->path, sun->sun_path, 108); // apparently 108 is the magic number
+	    } else {
+		fprintf (stderr, "unknown sa_family %d is not AF_UNIX len is %d vs %d\n", addr->sa_family, addrlen, sizeof(struct sockaddr_un));
+		memcpy(ci->path, "UNK", 4);
+	    }
         } else if (si->domain == AF_INET) {
-            struct sockaddr_in* sin = (struct sockaddr_in*) addr;
-            assert(addr->sa_family == AF_INET);
-            ci->port = htons(sin->sin_port);
-            memcpy(&ci->sin_addr, &sin->sin_addr, sizeof(struct in_addr));
+	    if (addr->sa_family == AF_INET) {
+		struct sockaddr_in* sin = (struct sockaddr_in*) addr;
+		ci->port = htons(sin->sin_port);
+		memcpy(&ci->sin_addr, &sin->sin_addr, sizeof(struct in_addr));
+	    } else {
+		fprintf (stderr, "unknown sa_family %d is not AF_INET len is %d vs %d\n", addr->sa_family, addrlen, sizeof(struct sockaddr_in));
+		ci->port = 0;
+		memcpy(&ci->sin_addr, "UNK", 4);
+	    }
         } else if (si->domain == AF_INET6) {
-            struct sockaddr_in6* sin6 = (struct sockaddr_in6*) addr;
-            assert(addr->sa_family == AF_INET6);
-            ci->port = htons(sin6->sin6_port);
-            memcpy(&ci->sin_addr6, &sin6->sin6_addr, sizeof(struct in6_addr));
+	    if (addr->sa_family == AF_INET6) {
+		struct sockaddr_in6* sin6 = (struct sockaddr_in6*) addr;
+		ci->port = htons(sin6->sin6_port);
+		memcpy(&ci->sin_addr6, &sin6->sin6_addr, sizeof(struct in6_addr));
+	    } else {
+		fprintf (stderr, "unknown sa_family %d is not AF_INET6 len is %d vs %d\n", addr->sa_family, addrlen, sizeof(struct sockaddr_in6));
+		ci->port = 0;
+		memcpy(&ci->sin_addr6, "UNK", 4);
+	    }
         } else {
             fprintf(stderr, "unsupport socket family %d\n", si->domain);
             tdata->syscall_info = 0;
@@ -895,12 +910,11 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
                     connect_stop((int) ret_value);
                     break;
                 case SYS_SEND:
-                    write_stop((int) ret_value);
-                    break;
                 case SYS_SENDTO:
                     write_stop((int) ret_value);
                     break;
                 case SYS_RECV:
+	        case SYS_RECVFROM:
                     read_stop((int) ret_value);
                     break;
                 case SYS_BIND:

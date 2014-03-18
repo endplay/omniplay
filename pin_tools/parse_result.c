@@ -34,7 +34,7 @@ int main(int argc, char** argv)
         struct byte_result* result;
         result = (struct byte_result *) malloc(sizeof(struct byte_result));
         assert(result);
-        if (read_byte_result_from_file(fdopen(fd, "r"), result)) {
+        if (read_byte_result_from_file(fd, result)) {
             fprintf(stderr, "could not read byte_result, count is %lu\n", count);
         }
         fprintf(stdout, "%d %d %llu %d %d %d %d\n",
