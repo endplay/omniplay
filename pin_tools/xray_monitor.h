@@ -78,7 +78,7 @@ struct xray_monitor* new_xray_monitor(int data_len) {
 }
 
 int monitor_has_fd(struct xray_monitor* monitor, int fd) {
-    struct fd_struct* fds;
+    struct fd_struct* fds; 
     list_for_each_entry (fds, &monitor->fds, list) {
         if (fds->fd == fd) {
             return 1;
@@ -102,7 +102,6 @@ int monitor_foreach(struct xray_monitor* monitor, void (*iter_func)(void* data))
  */
 int monitor_add_fd(struct xray_monitor* monitor, int fd, int cloexec, void* data) {
     struct fd_struct* fds;
-
     // if it's already in here, remove it
     if (monitor_has_fd(monitor, fd)) {
         monitor_remove_fd(monitor, fd);

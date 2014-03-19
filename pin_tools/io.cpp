@@ -31,6 +31,7 @@ long global_syscall_cnt = 1;    // set to 1 to account for first exec that we mi
 
 /* Files opened by this replay group */
 FILE* filenames = NULL;
+FILE* stream_fp = NULL; // description of all the reads/writes going on
 char stream_directory[256];
 char stream_write_directory[256];
 char stream_read_directory[256];
@@ -45,7 +46,6 @@ struct thread_data {
     u_long ignore_flag;
     void* syscall_info;
 
-    FILE* stream_fp; // description of all the reads/writes going on
     long bytes_read;
     long bytes_written;
 };
@@ -86,6 +86,18 @@ struct read_info {
     int fd;
     void* buf;
     int read_size;
+};
+
+struct readv_info {
+    int fd;
+    struct iovec* iov;
+    int count;
+};
+
+struct recvmsg_info {
+    int fd;
+    struct msghdr* msg;
+    int flags;
 };
 
 struct write_info {
@@ -243,9 +255,8 @@ void read_stop(int rc) {
         if (monitor_has_fd(open_socks, ri->fd)) {
             struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, ri->fd);
             if (si->is_x) {
-		fprintf (stderr, "is_x\n");
-                //fprintf(meta_fp, "READ from X socket, size: %d, %s\n", rc, channel_name);
-                //fflush(meta_fp);
+                fprintf(stream_fp, "READ from X socket, size: %d\n", rc);
+                fflush(stream_fp);
                 tdata->bytes_read += rc;
                 bytes_read += rc;
             }
@@ -258,15 +269,14 @@ void read_stop(int rc) {
         if (monitor_has_fd(open_fds, ri->fd)) {
             struct open_info* oi = (struct open_info *) monitor_get_fd_data(open_fds, ri->fd);
             assert (oi);
-            fprintf(stderr, "read from file %s\n", oi->filename);
             channel_name = oi->filename;
-            fprintf(tdata->stream_fp, "READ %ld size: %d from %s\n", global_syscall_cnt, rc, oi->filename);
-            fflush(tdata->stream_fp);
+            fprintf(stream_fp, "READ %ld size: %d from %s\n", global_syscall_cnt, rc, oi->filename);
+            fflush(stream_fp);
         } else if (monitor_has_fd(open_socks, ri->fd)) {
             struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, ri->fd);
             assert (si);
-            fprintf(tdata->stream_fp, "READ from socket %ld size: %d\n", global_syscall_cnt, rc);
-            fflush(tdata->stream_fp);
+            fprintf(stream_fp, "READ from socket %ld size: %d\n", global_syscall_cnt, rc);
+            fflush(stream_fp);
             channel_name = (char *) "socket";
         } else {
             fprintf(stderr, "untracked read\n");
@@ -294,8 +304,199 @@ void read_stop(int rc) {
         bytes_read += rc;
 #endif
     }
+}
 
-    free(tdata->syscall_info);
+void readv_start(int fd, struct iovec* iov, int count)
+{
+    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+    struct readv_info* rvi;
+    rvi = (struct readv_info *) malloc(sizeof(struct readv_info));
+    rvi->fd = fd;
+    rvi->iov = iov;
+    rvi->count = count;
+
+    tdata->syscall_info = (void *) rvi;
+}
+
+void readv_stop(int rc)
+{
+    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+    struct readv_info* rvi = (struct readv_info *) tdata->syscall_info;
+    int i;
+
+    if (rc > 0) {
+#ifdef ONLY_X
+        if (monitor_has_fd(open_socks, rvi->fd)) {
+            struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, rvi->fd);
+            if (si->is_x) {
+                for (i = 0; i < rvi->count; i++) {
+                    struct iovec* vi = (rvi->iov + i);
+                    fprintf(stream_fp, "READV %ld count %d size: %d to X\n", global_syscall_cnt, i, vi->iov_len);
+                    fflush(stream_fp);
+                }
+            }
+        }
+        tdata->bytes_read += rc;
+        bytes_read += rc;
+#else
+        if ((monitor_has_fd(open_fds, rvi->fd))) {
+            FILE* fp = NULL;
+            struct open_info* oi = (struct open_info *) monitor_get_fd_data(open_fds, rvi->fd);
+            assert (oi);
+            for (i = 0; i < rvi->count; i++) {
+                struct iovec* vi = (rvi->iov + i);
+                fprintf(stream_fp, "READV %ld count %d size: %d to %s\n", global_syscall_cnt, i, vi->iov_len, oi->filename);
+                if (copy_data && fp) {
+                    unsigned int rcc;
+                    rcc = write(fileno(fp), vi->iov_base, vi->iov_len);
+                    if (rcc != vi->iov_len) {
+                        fprintf(stderr, "could not write mirror stream %d bytes\n", rcc);
+                    }
+                    fflush(fp);
+                }
+            }
+        } else if (monitor_has_fd(open_socks, rvi->fd)) {
+            FILE* fp = NULL;
+            struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, rvi->fd);
+            assert (si);
+
+            for (i = 0; i < rvi->count; i++) {
+                struct iovec* vi = (rvi->iov + i);
+                fprintf(stream_fp, "READV %ld count %d size: %d to socket\n", global_syscall_cnt, i, vi->iov_len);
+                if (copy_data && fp) {
+                    unsigned int rcc;
+                    rcc = write(fileno(fp), vi->iov_base, vi->iov_len);
+                    if (rcc != vi->iov_len) {
+                        fprintf(stderr, "could not write mirror stream %d bytes\n", rcc);
+                    }
+                    fflush(fp);
+                }
+            }
+            fflush(stream_fp);
+        } else {
+            fprintf(stderr, "readv to untracked fd\n");
+        }
+        tdata->bytes_written += rc;
+        bytes_written += rc;
+#endif
+
+        if (copy_data) {
+            int rcc;
+            int offset = 0;
+            int out_fd = create_out_file(stream_directory, tdata->rg_id, tdata->record_pid, global_syscall_cnt, 0, rc);
+            assert (out_fd > 0);
+            for (i = 0; i < rvi->count; i++) {
+                struct iovec* vi = (rvi->iov + i);
+                // write a header
+                fprintf(fdopen(out_fd, "w"), "%llu %d %ld %d %d\n",
+                    tdata->rg_id, tdata->record_pid, global_syscall_cnt, offset, vi->iov_len);
+                rcc = write(out_fd, vi->iov_base, vi->iov_len);
+                if (rcc != rc) {
+                    fprintf(stderr, "readv could not write to mirror file, expected %d got %d\n", rc, rcc);
+                }
+                offset += vi->iov_len;
+            }
+            fsync(out_fd);
+            close(out_fd);
+        }
+    }
+}
+
+void recvmsg_start(int fd, struct msghdr* msg, int flags) {
+    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+
+    struct recvmsg_info* rmi;
+    rmi = (struct recvmsg_info *) malloc(sizeof(struct recvmsg_info));
+
+    rmi->fd = fd;
+    rmi->msg = msg;
+    rmi->flags = flags;
+
+    tdata->syscall_info = (void *) rmi;
+}
+
+void recvmsg_stop(int rc)
+{
+    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+    struct recvmsg_info* rmi = (struct recvmsg_info *) tdata->syscall_info;
+    u_int i;
+
+    if (rc > 0) {
+#ifdef ONLY_X
+        if (monitor_has_fd(open_socks, rmi->fd)) {
+            struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, rmi->fd);
+            if (si->is_x) {
+                for (i = 0; i < rmi->msg->msg_iovlen; i++) {
+                    struct iovec* vi = (rmi->msg->msg_iov + i);
+                    fprintf(stream_fp, "RECVMSG %ld count %d size: %d to X\n", global_syscall_cnt, i, vi->iov_len);
+                    fflush(stream_fp);
+                }
+            }
+        }
+        tdata->bytes_read += rc;
+        bytes_read += rc;
+#else
+        if ((monitor_has_fd(open_fds, rmi->fd))) {
+            FILE* fp = NULL;
+            struct open_info* oi = (struct open_info *) monitor_get_fd_data(open_fds, rmi->fd);
+            assert (oi);
+            for (i = 0; i < rmi->msg->msg_iovlen; i++) {
+                struct iovec* vi = (rmi->msg->msg_iov + i);
+                fprintf(stream_fp, "RECVMSG %ld count %d size: %d to %s\n", global_syscall_cnt, i, vi->iov_len, oi->filename);
+                if (copy_data && fp) {
+                    unsigned int rcc;
+                    rcc = write(fileno(fp), vi->iov_base, vi->iov_len);
+                    if (rcc != vi->iov_len) {
+                        fprintf(stderr, "could not write mirror stream %d bytes\n", rcc);
+                    }
+                    fflush(fp);
+                }
+            }
+        } else if (monitor_has_fd(open_socks, rmi->fd)) {
+            FILE* fp = NULL;
+            struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, rmi->fd);
+            assert (si);
+
+            for (i = 0; i < rmi->msg->msg_iovlen; i++) {
+                struct iovec* vi = (rmi->msg->msg_iov + i);
+                fprintf(stream_fp, "RECVMSG %ld count %d size: %d to socket\n", global_syscall_cnt, i, vi->iov_len);
+                if (copy_data && fp) {
+                    unsigned int rcc;
+                    rcc = write(fileno(fp), vi->iov_base, vi->iov_len);
+                    if (rcc != vi->iov_len) {
+                        fprintf(stderr, "could not write mirror stream %d bytes\n", rcc);
+                    }
+                    fflush(fp);
+                }
+            }
+            fflush(stream_fp);
+        } else {
+            fprintf(stderr, "rcvmsg to untracked fd\n");
+        }
+        tdata->bytes_written += rc;
+        bytes_written += rc;
+#endif
+
+        if (copy_data) {
+            int rcc;
+            int offset = 0;
+            int out_fd = create_out_file(stream_directory, tdata->rg_id, tdata->record_pid, global_syscall_cnt, 0, rc);
+            assert (out_fd > 0);
+            for (i = 0; i < rmi->msg->msg_iovlen; i++) {
+                struct iovec* vi = (rmi->msg->msg_iov + i);
+                // write a header
+                fprintf(fdopen(out_fd, "w"), "%llu %d %ld %d %d\n",
+                    tdata->rg_id, tdata->record_pid, global_syscall_cnt, offset, vi->iov_len);
+                rcc = write(out_fd, vi->iov_base, vi->iov_len);
+                if (rcc != rc) {
+                    fprintf(stderr, "readv could not write to mirror file, expected %d got %d\n", rc, rcc);
+                }
+                offset += vi->iov_len;
+            }
+            fsync(out_fd);
+            close(out_fd);
+        }
+    }
 }
 
 void write_start(int fd, void* buf, int write_size) {
@@ -320,8 +521,8 @@ void write_stop(int rc) {
         if (monitor_has_fd(open_socks, wi->fd)) {
             struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, wi->fd);
             if (si->is_x) {
-                fprintf(tdata->stream_fp, "WRITE TO X socket, size: %d, %s\n", rc, channel_name);
-                fflush(tdata->stream_fp);
+                fprintf(stream_fp, "WRITE TO X socket, size: %d, %s\n", rc, channel_name);
+                fflush(stream_fp);
                 tdata->bytes_written += rc;
                 bytes_written += rc;
             }
@@ -333,15 +534,13 @@ void write_stop(int rc) {
             struct open_info* oi = (struct open_info *) monitor_get_fd_data(open_fds, wi->fd);
             assert(oi);
             channel_name = oi->filename;
-            fprintf(stderr, "write to file %s\n", oi->filename);
-            fprintf(tdata->stream_fp, "WRITE %ld size: %d to %s\n", global_syscall_cnt, rc, oi->filename);
-            fflush(tdata->stream_fp);
+            fprintf(stream_fp, "WRITE %ld size: %d to %s\n", global_syscall_cnt, rc, oi->filename);
+            fflush(stream_fp);
         } else if (monitor_has_fd(open_socks, wi->fd)) {
             struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, wi->fd);
             assert(si);
-            fprintf(stderr, "write to socket %d\n", wi->fd);
             if (si->accept_info) {
-                fprintf(tdata->stream_fp, "WRITE to socket %ld size: %d (accepted socket)\n", global_syscall_cnt, rc);
+                fprintf(stream_fp, "WRITE to socket %ld size: %d (accepted socket)\n", global_syscall_cnt, rc);
                 channel_name = (char *) "accepted_socket";
                 if (si->domain == AF_UNIX) {
                     channel_name = si->accept_info->path;
@@ -349,7 +548,7 @@ void write_stop(int rc) {
                 } else if (si->domain == AF_INET6) {
                 }
             } else {
-                fprintf(tdata->stream_fp, "WRITE to socket %ld size: %d\n", global_syscall_cnt, rc);
+                fprintf(stream_fp, "WRITE to socket %ld size: %d\n", global_syscall_cnt, rc);
                 if (si->domain == AF_UNIX) {
                     channel_name = si->ci->path;
                 } else if (si->domain == AF_INET) {
@@ -358,7 +557,7 @@ void write_stop(int rc) {
                     // TODO
                 }
             }
-            fflush(tdata->stream_fp);
+            fflush(stream_fp);
         } else {
             fprintf(stderr, "write to untracked fd\n");
         }
@@ -385,8 +584,6 @@ void write_stop(int rc) {
         bytes_written += rc;
 #endif
     }
-
-    free(tdata->syscall_info);
 }
 
 void writev_start(int fd, struct iovec* iov, int count)
@@ -414,8 +611,8 @@ void writev_stop(int rc)
             if (si->is_x) {
                 for (i = 0; i < wvi->count; i++) {
                     struct iovec* vi = (wvi->iov + i);
-                    fprintf(tdata->stream_fp, "WRITEV %ld count %d size: %d to X\n", global_syscall_cnt, i, vi->iov_len);
-                    fflush(tdata->stream_fp);
+                    fprintf(stream_fp, "WRITEV %ld count %d size: %d to X\n", global_syscall_cnt, i, vi->iov_len);
+                    fflush(stream_fp);
                 }
             }
         }
@@ -428,7 +625,7 @@ void writev_stop(int rc)
             assert (oi);
             for (i = 0; i < wvi->count; i++) {
                 struct iovec* vi = (wvi->iov + i);
-                fprintf(tdata->stream_fp, "WRITEV %ld count %d size: %d to %s\n", global_syscall_cnt, i, vi->iov_len, oi->filename);
+                fprintf(stream_fp, "WRITEV %ld count %d size: %d to %s\n", global_syscall_cnt, i, vi->iov_len, oi->filename);
                 if (copy_data && fp) {
                     unsigned int rcc;
                     rcc = write(fileno(fp), vi->iov_base, vi->iov_len);
@@ -445,7 +642,7 @@ void writev_stop(int rc)
 
             for (i = 0; i < wvi->count; i++) {
                 struct iovec* vi = (wvi->iov + i);
-                fprintf(tdata->stream_fp, "WRITEV %ld count %d size: %d to socket\n", global_syscall_cnt, i, vi->iov_len);
+                fprintf(stream_fp, "WRITEV %ld count %d size: %d to socket\n", global_syscall_cnt, i, vi->iov_len);
                 if (copy_data && fp) {
                     unsigned int rcc;
                     rcc = write(fileno(fp), vi->iov_base, vi->iov_len);
@@ -455,7 +652,7 @@ void writev_stop(int rc)
                     fflush(fp);
                 }
             }
-            fflush(tdata->stream_fp);
+            fflush(stream_fp);
         } else {
             fprintf(stderr, "writev to untracked fd\n");
         }
@@ -483,8 +680,6 @@ void writev_stop(int rc)
             close(out_fd);
         }
     }
-
-    free((void *) tdata->syscall_info);
 }
 
 void open_start(char* filename, int flags) {
@@ -514,14 +709,10 @@ void open_stop(int rc) {
         cloexec = oi->flags | O_CLOEXEC;
         fprintf(stderr, "Open add fd %d, cloexec %d\n", rc, cloexec);
         monitor_add_fd(open_fds, rc, cloexec, oi);
-        tdata->syscall_info = 0;
+        tdata->syscall_info = NULL; // monitor owns oi now
 
         fprintf(filenames, "%ld %s\n", global_syscall_cnt, oi->filename);
         fflush(filenames);
-    }
-
-    if (tdata->syscall_info) {
-        free(tdata->syscall_info);
     }
 }
 
@@ -559,7 +750,6 @@ void close_stop(int rc) {
             monitor_remove_fd(open_socks, ci->fd);
         }
     }
-    free(tdata->syscall_info);
 }
 
 void mmap_start(void* addr, int length, int prot, int flags, int fd, off_t offset) {
@@ -589,8 +779,8 @@ void mmap_stop(void* rc) {
             struct open_info* oi = (struct open_info *) monitor_get_fd_data(open_fds, mi->fd);
             assert (oi);
             fprintf(stderr, "mmaped file %s\n", oi->filename);
-            fprintf(tdata->stream_fp, "MMAP %ld size: %d from %s\n", global_syscall_cnt, mi->length, oi->filename);
-            fflush(tdata->stream_fp);
+            fprintf(stream_fp, "MMAP %ld size: %d from %s\n", global_syscall_cnt, mi->length, oi->filename);
+            fflush(stream_fp);
         } else if (mi->fd != -1) {
             fprintf(stderr, "untracked mmap\n");
         }
@@ -605,8 +795,6 @@ void mmap_stop(void* rc) {
         tdata->bytes_read += mi->length;
         bytes_read += mi->length;
     }
-
-    free(tdata->syscall_info);
 }
 
 void socket_start(int domain, int type, int protocol) {
@@ -628,9 +816,8 @@ void socket_stop(int rc) {
     if (rc > 0) {
         struct socket_info* si = (struct socket_info *) tdata->syscall_info;
         monitor_add_fd(open_socks, rc, 0, si);
+	tdata->syscall_info = NULL; // Giving si to the monitor
     }
-
-    free(tdata->syscall_info);
 }
 
 void connect_start(int sockfd, struct sockaddr* addr, socklen_t addrlen)
@@ -653,10 +840,11 @@ void connect_start(int sockfd, struct sockaddr* addr, socklen_t addrlen)
 		memcpy(ci->path, "UNK", 4);
 	    }
         } else if (si->domain == AF_INET) {
-	    if (addr->sa_family == AF_INET) {
+	    if (addr->sa_family == AF_INET || addrlen == sizeof(struct sockaddr_in)) {
 		struct sockaddr_in* sin = (struct sockaddr_in*) addr;
 		ci->port = htons(sin->sin_port);
 		memcpy(&ci->sin_addr, &sin->sin_addr, sizeof(struct in_addr));
+		fprintf (stderr, "connect AF_INET port %d addr %x\n", ci->port, ci->sin_addr.s_addr);
 	    } else {
 		fprintf (stderr, "unknown sa_family %d is not AF_INET len is %d vs %d\n", addr->sa_family, addrlen, sizeof(struct sockaddr_in));
 		ci->port = 0;
@@ -674,7 +862,6 @@ void connect_start(int sockfd, struct sockaddr* addr, socklen_t addrlen)
 	    }
         } else {
             fprintf(stderr, "unsupport socket family %d\n", si->domain);
-            tdata->syscall_info = 0;
             free(ci);
             return;
         }
@@ -693,7 +880,7 @@ void connect_stop(int rc)
         assert(si);
 
         si->ci = ci;
-        tdata->syscall_info = 0;
+        tdata->syscall_info = NULL; // Socket_info owns this now
 #ifdef ONLY_X
         if (si->domain == AF_UNIX) {
             char* c;
@@ -720,8 +907,8 @@ void connect_stop(int rc)
         if (si->domain == AF_UNIX) {
             char read_stream_name[256];
             char write_stream_name[256];
-            fprintf(tdata->stream_fp, "CONNECT %ld AF_UNIX path %s\n", global_syscall_cnt, ci->path);
-            fflush(tdata->stream_fp);
+            fprintf(stream_fp, "CONNECT %ld AF_UNIX path %s\n", global_syscall_cnt, ci->path);
+            fflush(stream_fp);
 
             if (copy_data) {
                 snprintf(read_stream_name, 256, "/tmp/%ld_%s_read", global_syscall_cnt, ci->path);
@@ -732,8 +919,8 @@ void connect_stop(int rc)
             char write_stream_name[256];
             char straddr[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &ci->sin_addr, straddr, INET_ADDRSTRLEN);
-            fprintf(tdata->stream_fp, "CONNECT %ld AF_INET addr: %s port %d\n", global_syscall_cnt, straddr, ci->port);
-            fflush(tdata->stream_fp);
+            fprintf(stream_fp, "CONNECT %ld AF_INET addr: %s port %d\n", global_syscall_cnt, straddr, ci->port);
+            fflush(stream_fp);
 
             if (copy_data) {
                 snprintf(read_stream_name, 256, "/tmp/%ld_%s_%d_read", global_syscall_cnt, straddr, ci->port);
@@ -744,8 +931,8 @@ void connect_stop(int rc)
             char write_stream_name[256];
             char straddr[INET6_ADDRSTRLEN];
             inet_ntop(AF_INET6, &ci->sin_addr6, straddr, INET6_ADDRSTRLEN);
-            fprintf(tdata->stream_fp, "CONNECT %ld AF_INET6 addr: %s port %d\n", global_syscall_cnt, straddr, ci->port);
-            fflush(tdata->stream_fp);
+            fprintf(stream_fp, "CONNECT %ld AF_INET6 addr: %s port %d\n", global_syscall_cnt, straddr, ci->port);
+            fflush(stream_fp);
 
             if (copy_data) {
                 snprintf(read_stream_name, 256, "/tmp/%ld_%s_%d_read", global_syscall_cnt, straddr, ci->port);
@@ -787,7 +974,6 @@ void accept_start(int sockfd, struct sockaddr* addr, socklen_t size)
             memcpy(&connect_info->sin_addr6, &sin6->sin6_addr, sizeof(struct in6_addr));
         } else {
             fprintf(stderr, "accept on unsupported socket family %d\n", si->domain);
-            tdata->syscall_info = 0;
             free(accept_info);
             free(connect_info);
             free(ai);
@@ -821,8 +1007,6 @@ void accept_stop(int rc)
         si->accept_info = ai->accept_info;
 
         monitor_add_fd(open_socks, rc, 0, si);
-
-        free (tdata->syscall_info);
     }
 }
 
@@ -853,7 +1037,6 @@ void dup_stop(int rc)
         if (monitor_has_fd(open_fds, di->oldfd)) {
         }
     }
-    free((void *) tdata->syscall_info);
 }
 
 void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD std, VOID* v)
@@ -864,6 +1047,7 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
     } else {
         fprintf (stderr, "instrument_syscall_ret: NULL tdata\n");
     }
+    fprintf (stderr, "%ld Pid %d, tid %d, (record pid %d), %d: syscall ret is %d\n", global_syscall_cnt, PIN_GetPid(), PIN_GetTid(), tdata->record_pid, tdata->syscall_cnt, tdata->sysnum);
     ADDRINT ret_value = PIN_GetSyscallReturn(ctxt, std);
 
     switch (tdata->sysnum) {
@@ -882,6 +1066,7 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
             close_stop((int) ret_value);
             break;
         case SYS_readv:
+            readv_stop((int) ret_value);
             break;
         case SYS_writev:
             writev_stop((int) ret_value);
@@ -917,6 +1102,9 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
 	        case SYS_RECVFROM:
                     read_stop((int) ret_value);
                     break;
+	        case SYS_RECVMSG:
+                    recvmsg_stop((int) ret_value);
+                    break;
                 case SYS_BIND:
                     // TODO
                     connect_stop((int) ret_value);
@@ -933,6 +1121,7 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
 
     increment_syscall_cnt(tdata, tdata->sysnum);
     // reset the syscall number after returning from system call
+    if (tdata->syscall_info) free (tdata->syscall_info);
     tdata->sysnum = 0;
     tdata->socketcall = 0;
 }
@@ -950,6 +1139,7 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscalla
             check_clock_before_syscall (dev_fd, (int) syscall_num);
         }
         tdata->sysnum = syscall_num;
+	tdata->syscall_info = NULL;
 
         switch(sysnum) {
         case 31:
@@ -963,6 +1153,9 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscalla
         }
         case SYS_read:
             read_start((int)syscallarg0, (void *)syscallarg1, (int)syscallarg2);
+            break;
+        case SYS_readv:
+            readv_start((int)syscallarg0, (struct iovec*)syscallarg1, (int)syscallarg2);
             break;
         case SYS_write:
             write_start((int)syscallarg0, (void *)syscallarg1, (int)syscallarg2);
@@ -1017,6 +1210,9 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscalla
                 case SYS_RECVFROM:
                     read_start((int)args[0], (void *) args[1], (int)args[2]);
                     break;
+	        case SYS_RECVMSG:
+		    recvmsg_start ((int)args[0], (struct msghdr *)args[1], (int)args[2]);
+		    break;
                 case SYS_SOCKETPAIR:
                     break;
                 case SYS_BIND:
@@ -1031,9 +1227,9 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscalla
                     fprintf(stderr, "Unknown socket call %d\n", call);
             };
             break;
-    }
+	}
 
-    tdata->app_syscall = syscall_num;
+	tdata->app_syscall = syscall_num;
 
     } else {
         fprintf (stderr, "instrumente_syscall: NULL tdata\n");
@@ -1157,7 +1353,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
         make_stream_directory(ptdata->rg_id);
 
         snprintf(stream_filename, 256, "%s/streams_info_%d", stream_directory, ptdata->record_pid);
-        ptdata->stream_fp = fopen(stream_filename, "w");
+        stream_fp = fopen(stream_filename, "w");
 
         if (!filenames) {
             char filename_file[256];
