@@ -339,11 +339,14 @@ void replayfs_filemap_destroy(struct replayfs_filemap *map) {
 	replayfs_btree_destroy(&map->entries);
 }
 
-void replayfs_filemap_delete(struct replayfs_filemap *map,
-		struct replayfs_btree128_key *key) {
+void replayfs_filemap_delete(struct replayfs_filemap *map, struct file *filp) {
 	struct page *page = NULL;
+	struct replayfs_btree128_key key;
 
 	mutex_destroy(&map->lock);
+
+	key.id1 = filp->f_dentry->d_inode->i_ino;
+	key.id2 = filp->f_dentry->d_inode->i_sb->s_dev;
 
 	debugk("%s %d: Deleting btree\n", __func__, __LINE__);
 	replayfs_btree_delete(&map->entries);
@@ -354,9 +357,9 @@ void replayfs_filemap_delete(struct replayfs_filemap *map,
 	mutex_lock(&meta_lock);
 	/*
 	printk("%s %d - %p: Removing key {%llu, %llu}\n", __func__, __LINE__, current,
-			key->id1, key->id2);
+			key.id1, key.id2);
 			*/
-	replayfs_btree128_remove(&filemap_meta_tree, key, &page);
+	replayfs_btree128_remove(&filemap_meta_tree, &key, &page);
 	replayfs_btree128_put_page(&filemap_meta_tree, page);
 	meta_lock_debugk("%s %d - %p: Unlocking %p\n", __func__, __LINE__, current,
 			&meta_lock);

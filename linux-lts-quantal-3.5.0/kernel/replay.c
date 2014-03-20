@@ -88,11 +88,18 @@
  * file is the expected data...
  */
 //#define VERIFY_COMPRESSED_DATA
+int verify_debug = 0;
+
+#ifdef VERIFY_COMPRESSED_DATA
+#define verify_debugk(...) if (verify_debug) {printk(__VA_ARGS__);}
+#else
+#define verify_debugk(...)
+#endif
 
 /* 
  * Enables replay-graph tracking for file, pipe, and socket IO respectively.
  */
-#define TRACE_READ_WRITE
+//#define TRACE_READ_WRITE
 //#define TRACE_PIPE_READ_WRITE
 //#define TRACE_SOCKET_READ_WRITE
 
@@ -144,7 +151,9 @@ static int is_recorded_filename(const char *filename) {
 		struct inode *inode = filp->f_dentry->d_inode;
 
 		/* If the inode has not been written */
-		if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0) {
+		if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0 &&
+				//!S_ISDIR(inode->i_flags) && !S_ISFIFO(inode->i_flags) && !S_ISSOCK(inode->i_flags)) {
+				S_ISREG(inode->i_mode)) {
 			if (i_size_read(filp->f_dentry->d_inode) == 0) {
 				//printk("%s %d: Empty file is record file! %lu\n", __func__, __LINE__, inode->i_ino);
 				ret = 1;
@@ -169,11 +178,13 @@ static int is_recorded_file(int fd) {
 	int ret = 0;
 	struct file *filp = fget(fd);
 
-	if (filp) {
+	if (filp && !IS_ERR(filp)) {
 		struct inode *inode = filp->f_dentry->d_inode;
 
 		/* If the inode has not been written */
-		if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0) {
+		if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0 &&
+				//!S_ISDIR(inode->i_flags) && !S_ISFIFO(inode->i_flags) && !S_ISSOCK(inode->i_flags)) {
+				S_ISREG(inode->i_mode)) {
 			if (i_size_read(filp->f_dentry->d_inode) == 0) {
 				//printk("%s %d: Empty file is record file! %p\n", __func__, __LINE__, filp);
 				ret = 1;
@@ -196,10 +207,39 @@ static int is_recorded_file(int fd) {
 	return ret;
 }
 
+static int is_recorded_filp(struct file *filp) {
+	int ret = 0;
+	if (filp && !IS_ERR(filp)) {
+		struct inode *inode = filp->f_dentry->d_inode;
+
+		/* If the inode has not been written */
+		if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0 &&
+				//!S_ISDIR(inode->i_flags) && !S_ISFIFO(inode->i_flags) && !S_ISSOCK(inode->i_flags)) {
+				S_ISREG(inode->i_mode)) {
+			if (i_size_read(filp->f_dentry->d_inode) == 0) {
+				//printk("%s %d: Empty file is record file! %p\n", __func__, __LINE__, filp);
+				ret = 1;
+			} else {
+				/* Do btree lookup */
+				ret = replayfs_filemap_exists(filp);
+				//if (ret) {
+					//printk("%s %d: Filemap exists for %p returns %d\n", __func__, __LINE__, filp, ret);
+				//}
+			}
+		} else {
+			//printk("%s %d: filp is for an untracked file.\n", __func__, __LINE__);
+		}
+	} else {
+		//printk("filp is NULL??\n");
+	}
+
+	return ret;
+}
+
 
 struct replay_recorded_file_meta {
 	struct replayfs_filemap map;
-	struct replayfs_diskalloc alloc;
+	struct replayfs_diskalloc *alloc;
 	loff_t meta_pos;
 };
 
@@ -208,14 +248,14 @@ loff_t meta_get_size(struct replay_recorded_file_meta *meta) {
 	struct replayfs_btree_meta *bmeta;
 	loff_t ret;
 
-	page = replayfs_diskalloc_get_page(&meta->alloc, meta->meta_pos);
+	page = replayfs_diskalloc_get_page(meta->alloc, meta->meta_pos);
 
 	bmeta = kmap(page);
 
 	ret = bmeta->i_size;
 
 	kunmap(page);
-	replayfs_diskalloc_put_page(&replayfs_alloc, page);
+	replayfs_diskalloc_put_page(meta->alloc, page);
 
 	return ret;
 }
@@ -224,7 +264,7 @@ void update_size(struct file *filp, struct replay_recorded_file_meta *met) {
 	struct page *page;
 	struct replayfs_btree_meta *meta;
 
-	page = replayfs_diskalloc_get_page(&met->alloc, met->meta_pos);
+	page = replayfs_diskalloc_get_page(met->alloc, met->meta_pos);
 
 	meta = kmap(page);
 
@@ -237,7 +277,7 @@ void update_size(struct file *filp, struct replay_recorded_file_meta *met) {
 	}
 
 	kunmap(page);
-	replayfs_diskalloc_put_page(&met->alloc, page);
+	replayfs_diskalloc_put_page(met->alloc, page);
 }
 
 static struct replay_recorded_file_meta *get_meta(struct file *filp) {
@@ -251,13 +291,13 @@ static struct replay_recorded_file_meta *get_meta(struct file *filp) {
 
 		if (replayfs_filemap_exists(filp)) {
 			//printk("%s %d: Doing load on filp %lu\n", __func__, __LINE__, filp->f_dentry->d_inode->i_ino);
-			replayfs_diskalloc_init(&meta->alloc, filp);
+			meta->alloc = replayfs_diskalloc_init(filp);
 		} else {
 			//printk("%s %d: Doing create on filp %lu\n", __func__, __LINE__, filp->f_dentry->d_inode->i_ino);
-			replayfs_diskalloc_create(&meta->alloc, filp);
+			meta->alloc = replayfs_diskalloc_create(filp);
 		}
 
-		replayfs_filemap_init_with_pos(&meta->map, &meta->alloc, filp, &meta->meta_pos);
+		replayfs_filemap_init_with_pos(&meta->map, meta->alloc, filp, &meta->meta_pos);
 		//printk("%s %d: Created filemap with metapos %lld\n", __func__, __LINE__, meta->meta_pos);
 
 		if (btree_insert32(&meta_tree, (u32)filp->f_dentry->d_inode, meta, GFP_KERNEL)) {
@@ -270,11 +310,24 @@ static struct replay_recorded_file_meta *get_meta(struct file *filp) {
 	return meta;
 }
 
+static void meta_delete(struct replay_recorded_file_meta *meta,
+		struct file *filp) {
+	replayfs_filemap_delete(&meta->map, filp);
+	replayfs_diskalloc_destroy(meta->alloc);
+
+	/* Free the metadata too... */
+	mutex_lock(&meta_tree_lock);
+	btree_remove32(&meta_tree, (u32)filp->f_dentry->d_inode);
+	mutex_unlock(&meta_tree_lock);
+
+	kfree(meta);
+}
+
 static struct replay_recorded_file_meta *replay_get_filename_meta(const char *filename) {
 	struct replay_recorded_file_meta *meta;
 	struct file *filp;
 
-	filp = filp_open(filename, O_RDWR, 0);
+	filp = filp_open(filename, O_RDWR|O_LARGEFILE, 0);
 
 	BUG_ON(!filp);
 
@@ -336,6 +389,12 @@ struct file_work_struct *get_work_struct(void) {
 	return entry;
 }
 
+static void replay_filp_delete(struct file *filp) {
+	struct replay_recorded_file_meta *meta = get_meta(filp);
+
+	meta_delete(meta, filp);
+}
+
 static void replay_filp_close_internal(u32 key) {
 	struct replay_recorded_file_meta *meta;
 	/* The filp is closed, free its meta */
@@ -346,7 +405,7 @@ static void replay_filp_close_internal(u32 key) {
 	if (meta != NULL) {
 		//printk("%s %d: Destroying filemap for %lld with key %u\n", __func__, __LINE__, meta->meta_pos, key);
 		replayfs_filemap_destroy(&meta->map);
-		replayfs_diskalloc_destroy(&meta->alloc);
+		replayfs_diskalloc_destroy(meta->alloc);
 		kfree(meta);
 	}
 
@@ -392,9 +451,9 @@ void replay_verify_write(struct file *filp, const void *buf, int size, loff_t po
 	old_fs = get_fs();
 	set_fs(KERNEL_DS);
 	/* Actually do write on cached file */
-	cache_filp = filp_open(filp_name, O_RDWR, 0);
+	cache_filp = filp_open(filp_name, O_RDWR|O_LARGEFILE, 0);
 	if (cache_filp == NULL || IS_ERR(cache_filp)) {
-		cache_filp = filp_open(filp_name, O_RDWR | O_CREAT, 0777);
+		cache_filp = filp_open(filp_name, O_RDWR | O_CREAT|O_LARGEFILE, 0777);
 		if (cache_filp == NULL || IS_ERR(cache_filp)) {
 			BUG();
 		}
@@ -402,10 +461,10 @@ void replay_verify_write(struct file *filp, const void *buf, int size, loff_t po
 
 	if (size > 0) {
 		/* Do actual write */
-		/*
-		printk("%s %d: Adding buffer to file %08lX_%08X: size %d, offs %lld\n",
+		verify_debugk("%s %d: Writing entry with first char %d\n", __func__, __LINE__,
+				(int)((char *)buf)[0]);
+		verify_debugk("%s %d: Adding buffer to file %08lX_%08X: size %d, offs %lld\n",
 				__func__, __LINE__, inode->i_ino, inode->i_sb->s_dev, size, pos);
-				*/
 		vfs_write(cache_filp, buf, size, &pos);
 	}
 
@@ -432,9 +491,9 @@ void replay_verify_read(struct file *filp, const char *buf, int size, loff_t pos
 	/* Actually do write on cached file */
 	old_fs = get_fs();
 	set_fs(KERNEL_DS);
-	cache_filp = filp_open(filp_name, O_RDWR, 0);
+	cache_filp = filp_open(filp_name, O_RDWR|O_LARGEFILE, 0);
 	if (cache_filp == NULL || IS_ERR(cache_filp)) {
-		cache_filp = filp_open(filp_name, O_RDWR | O_CREAT, 0777);
+		cache_filp = filp_open(filp_name, O_RDWR | O_CREAT|O_LARGEFILE, 0777);
 		if (cache_filp == NULL || IS_ERR(cache_filp)) {
 			BUG();
 		}
@@ -451,30 +510,26 @@ void replay_verify_read(struct file *filp, const char *buf, int size, loff_t pos
 		/* Do actual write */
 		rc = vfs_read(cache_filp, verify_buf, size, &new_pos);
 
-		/*
-		printk("%s %d: Read from file %08lX_%08X: size %d, offs %lld, rc %d\n",
+		verify_debugk("%s %d: Read from file %08lX_%08X: size %d, offs %lld, rc %d\n",
 				__func__, __LINE__, inode->i_ino, inode->i_sb->s_dev, size, pos, rc);
-				*/
 
 		//BUG_ON(rc < 0);
 
 		if (rc > 0) {
-			/*
 			if (!memcmp(verify_buf, zeros, rc)) {
-				printk("%s %d: verify_buf is zeros\n", __func__, __LINE__);
+				verify_debugk("%s %d: verify_buf is zeros\n", __func__, __LINE__);
 			}
 
 			if (!memcmp(buf, zeros, rc)) {
-				printk("%s %d: buf is zeros\n", __func__, __LINE__);
+				verify_debugk("%s %d: buf is zeros\n", __func__, __LINE__);
 			}
-			*/
 
 			do {
 				int i;
 
 				for (i = 0; i < rc; i++) {
 					if (buf[i] != verify_buf[i]) {
-						printk("%s %d: buffer mismatch at %d (pos %lld), buf %d verify_buf %d\n", __func__,
+						verify_debugk("%s %d: buffer mismatch at %d (pos %lld), buf %d verify_buf %d\n", __func__,
 								__LINE__, i, pos + i, (int)buf[i], (int)verify_buf[i]);
 						BUG();
 					}
@@ -533,7 +588,7 @@ void replayfs_file_opened(struct file *filp) {
 				if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0) {
 					struct replayfs_filemap *map = kmalloc(sizeof(struct replayfs_filemap),
 							GFP_KERNEL);
-					replayfs_filemap_init(map, &replayfs_alloc, filp);
+					replayfs_filemap_init(map, replayfs_alloc, filp);
 					filp->replayfs_filemap = map;
 				} else {
 					filp->replayfs_filemap = NULL;
@@ -600,7 +655,7 @@ void replay_free_pipe(void *pipe) {
 		mutex_unlock(&pipe_tree_mutex);
 
 		/* Get the map that needs to be freed */
-		ret = replayfs_filemap_init_key(&map, &replayfs_alloc, &key);
+		ret = replayfs_filemap_init_key(&map, replayfs_alloc, &key);
 		if (!ret) {
 			/* Free it */
 			replayfs_filemap_delete(&map, &key);
@@ -639,7 +694,7 @@ void replay_sock_put(struct sock *sk) {
 		mutex_unlock(&pipe_tree_mutex);
 
 		/* Get the map that needs to be freed */
-		ret = replayfs_filemap_init_key(&map, &replayfs_alloc, &key);
+		ret = replayfs_filemap_init_key(&map, replayfs_alloc, &key);
 		if (!ret) {
 			/* Free it */
 			replayfs_filemap_delete(&map, &key);
@@ -2664,7 +2719,7 @@ long get_num_filemap_entries(int fd, loff_t offset, int size) {
 	if (!filp) {
 		return -EBADF;
 	}
-	replayfs_filemap_init(&map, &replayfs_alloc, filp);
+	replayfs_filemap_init(&map, replayfs_alloc, filp);
 
 	//printk("get filemap entries for fd %d offset %lld, size %d\n", fd, offset, size);
 	entry = replayfs_filemap_read(&map, offset, size);
@@ -2700,7 +2755,7 @@ long get_filemap(int fd, loff_t offset, int size, void __user* entries, int num_
 	if (!filp) {
 		return -EBADF;
 	}
-	replayfs_filemap_init(&map, &replayfs_alloc, filp);
+	replayfs_filemap_init(&map, replayfs_alloc, filp);
 
 	entry = replayfs_filemap_read(&map, offset, size);
 	if (IS_ERR(entry) || entry == NULL) {
@@ -3475,7 +3530,7 @@ replay_signal_delivery (int* signr, siginfo_t* info)
 {
 	struct replay_thread* prt = current->replay_thrd;
 	struct repsignal* psignal;
-	
+
 	if (!prt->rp_signals) {
 		MPRINT ("pid %d replay_signal called but no signals, signr is %d\n", current->pid, *signr);
 		*signr = 0;
@@ -5590,7 +5645,7 @@ int track_usually_pt2pt_read(void *key, int size, struct file *filp) {
 				info->shared = 1;
 
 				/* Okay, we need to allocate a filemap for this file */
-				replayfs_filemap_init(&map, &replayfs_alloc, filp);
+				replayfs_filemap_init(&map, replayfs_alloc, filp);
 
 				/* Write a record of the old data, special case of 0 means held linearly in pipe */
 				replayfs_filemap_write(&map, info->owner_write_id, 0, info->id, 0, 0, info->owner_write_pos);
@@ -5602,7 +5657,7 @@ int track_usually_pt2pt_read(void *key, int size, struct file *filp) {
 			}
 		} else {
 			/* Okay, we need to allocate a filemap for this file */
-			replayfs_filemap_init(&map, &replayfs_alloc, filp);
+			replayfs_filemap_init(&map, replayfs_alloc, filp);
 
 			*is_cached |= READ_PIPE_WITH_DATA;
 
@@ -5787,7 +5842,7 @@ int track_usually_pt2pt_write(void *key, int size, struct file *filp, int do_sha
 				}
 
 				/* Okay, we need to allocate a filemap for this file */
-				replayfs_filemap_init(&map, &replayfs_alloc, filp);
+				replayfs_filemap_init(&map, replayfs_alloc, filp);
 
 				/* Write a record of the old data, special case of 0 means held linearly in pipe */
 				replayfs_filemap_write(&map, info->owner_write_id, 0, info->id, 0, 0, info->owner_write_pos);
@@ -5806,7 +5861,7 @@ int track_usually_pt2pt_write(void *key, int size, struct file *filp, int do_sha
 			}
 
 			/* Okay, we need to allocate a filemap for this file */
-			replayfs_filemap_init(&map, &replayfs_alloc, filp);
+			replayfs_filemap_init(&map, replayfs_alloc, filp);
 
 			/* Write a record of our data */
 			replayfs_filemap_write(&map, rg_id, current->record_thrd->rp_record_pid, current->record_thrd->rp_count, 0, info->owner_write_pos, size);
@@ -5935,7 +5990,7 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 				filp->f_pos += rc;
 			}
 
-			//printk("%s %d: entry->num_elms is %d\n", __func__, __LINE__, entry->num_elms);
+			verify_debugk("%s %d: entry->num_elms is %d\n", __func__, __LINE__, entry->num_elms);
 			for (i = 0; i < entry->num_elms; i++) {
 				struct replayfs_disk_alloc *alloc;
 				struct replayfs_filemap_value *val = &entry->elms[i];
@@ -5954,10 +6009,8 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 					loff_t end_pos;
 					loff_t pos_max;
 
-					/*
-					printk("%s %d: Got val with buff_offs of %d\n", __func__, __LINE__,
+					verify_debugk("%s %d: Got val with buff_offs of %d\n", __func__, __LINE__,
 							val->bval.buff_offs);
-							*/
 					BUG_ON(val->bval.buff_offs <= 0);
 
 					end_pos = val->offset + val->bval.buff_offs;
@@ -5970,12 +6023,10 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 					start_pos = filp->f_pos - rc + buff_offs;
 					size_max = pos_max - start_pos;
 
-					/*
-					printk("%s %d: rc %ld, buff_offs %d, val->bval.buff_offs %u\n", __func__,
+					verify_debugk("%s %d: rc %ld, buff_offs %d, val->bval.buff_offs %u\n", __func__,
 							__LINE__, rc, buff_offs, val->bval.buff_offs);
-					printk("%s %d: end_pos %lld, pos_max %lld, size_max %lld\n", __func__,
+					verify_debugk("%s %d: end_pos %lld, pos_max %lld, size_max %lld\n", __func__,
 							__LINE__, end_pos, pos_max, size_max);
-							*/
 
 					/* 
 					size_max = rc - buff_offs;
@@ -5986,10 +6037,8 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 					}
 					*/
 
-					/*
-					printk("%s %d: Setting %lld to %lld to zero\n", __func__, __LINE__,
+					verify_debugk("%s %d: Setting %lld to %lld to zero\n", __func__, __LINE__,
 							filp->f_pos - rc + buff_offs, filp->f_pos - rc + buff_offs+size_max);
-							*/
 					memset(buf+buff_offs, 0, size_max);
 					buff_offs += size_max;
 				} else {
@@ -5999,7 +6048,19 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 					BUG_ON(entry_pos < 0);
 
 					/* Get the disk_alloc referenced by entry */
-					alloc = replayfs_disk_alloc_get(&replayfs_alloc, entry_pos);
+					/*
+					verify_debugk("%s %d: REMOVE ME: Getting disk_alloc with allocator %p, allocator filp %p inode %p, ino %lu\n",
+							__func__, __LINE__, syscache.allocator,
+							syscache.allocator->filp,
+							syscache.allocator->filp->f_dentry->d_inode,
+							syscache.allocator->filp->f_dentry->d_inode->i_ino);
+					verify_debugk("%s %d: REMOVE ME: replayfs_alloc is: allocator %p, allocator filp %p inode %p, ino %lu\n", 
+							__func__, __LINE__, replayfs_alloc,
+							replayfs_alloc->filp,
+							replayfs_alloc->filp->f_dentry->d_inode,
+							replayfs_alloc->filp->f_dentry->d_inode->i_ino);
+							*/
+					alloc = replayfs_disk_alloc_get(syscache.allocator, entry_pos);
 
 					copy_offs = val->read_offset + val->bval.buff_offs;
 
@@ -6007,17 +6068,13 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 					if (size_max < val->size) {
 						size_max = val->size;
 					}
-					/*
-					printk("%s %d: Adjusting size_max to %d, rc %ld, buff_offs %d, val->size %d\n",
+					verify_debugk("%s %d: Adjusting size_max to %d, rc %ld, buff_offs %d, val->size %d\n",
 							__func__, __LINE__, size_max, rc, buff_offs, val->size);
-							*/
 
 					/* Copy the data into user space */
 					/* I've already checked access_ok, so I'm just doing a normal copy now */
-					/*
-					printk("%s %d: buf is %p, buff_offs is %d, size_max is %d, size is %lld\n",
+					verify_debugk("%s %d: buf is %p, buff_offs is %d, size_max is %d, size is %lld\n",
 							__func__, __LINE__, buf, buff_offs, size_max, size);
-							*/
 					if (replayfs_disk_alloc_read(alloc, buf + buff_offs, size_max, copy_offs +
 							sizeof(struct replayfs_syscache_entry), 1)) {
 						printk("%s %d: Failed to copy data to userpace???\n", __func__,
@@ -6026,6 +6083,9 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 						replayfs_disk_alloc_put(alloc);
 						break;
 					}
+
+					verify_debugk("%s %d: Got first char %d from alloc\n", __func__, __LINE__,
+							(int)((char *)buf)[buff_offs]);
 
 					buff_offs += val->size;
 
@@ -6123,7 +6183,7 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 				struct replayfs_filemap_entry *args;
 
 				map = filp->replayfs_filemap;
-				//replayfs_filemap_init(&map, &replayfs_alloc, filp);
+				//replayfs_filemap_init(&map, replayfs_alloc, filp);
 				
 				//printk("%s %d - %p: Reading %d\n", __func__, __LINE__, current, fd);
 				entry = replayfs_filemap_read(map, filp->f_pos - rc, rc);
@@ -6218,7 +6278,7 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 						info->shared = 1;
 
 						/* Okay, we need to allocate a filemap for this file */
-						replayfs_filemap_init(&map, &replayfs_alloc, filp);
+						replayfs_filemap_init(&map, replayfs_alloc, filp);
 
 						/* Write a record of the old data, special case of 0 means held linearly in pipe */
 						replayfs_filemap_write(&map, info->owner_write_id, 0, info->id, 0, 0, info->owner_write_pos);
@@ -6231,7 +6291,7 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 				} else {
 
 					/* Okay, we need to allocate a filemap for this file */
-					replayfs_filemap_init(&map, &replayfs_alloc, filp);
+					replayfs_filemap_init(&map, replayfs_alloc, filp);
 
 					*is_cached |= READ_PIPE_WITH_DATA;
 
@@ -6389,7 +6449,7 @@ replay_read (unsigned int fd, char __user * buf, size_t count)
 					BUG_ON(entry_pos < 0);
 
 					/* Get the disk_alloc referenced by entry */
-					alloc = replayfs_disk_alloc_get(&replayfs_alloc, entry_pos);
+					alloc = replayfs_disk_alloc_get(replayfs_alloc, entry_pos);
 
 					copy_offs = val->read_offset + val->bval.buff_offs;
 
@@ -6628,7 +6688,7 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 			}
 
 			BUG_ON(map == NULL);
-			//replayfs_filemap_init(&map, &replayfs_alloc, filp);
+			//replayfs_filemap_init(&map, replayfs_alloc, filp);
 
 			fpos = filp->f_pos - size;
 			if (fpos >= 0) { 
@@ -6705,7 +6765,7 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 						info->shared = 1;
 
 						/* Okay, we need to allocate a filemap for this file */
-						replayfs_filemap_init(&map, &replayfs_alloc, filp);
+						replayfs_filemap_init(&map, replayfs_alloc, filp);
 
 						/* Write a record of the old data, special case of 0 means held linearly in pipe */
 						replayfs_filemap_write(&map, info->owner_write_id, 0, info->id, 0, 0, info->owner_write_pos);
@@ -6721,7 +6781,7 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 					struct replayfs_filemap map;
 
 					/* Okay, we need to allocate a filemap for this file */
-					replayfs_filemap_init(&map, &replayfs_alloc, filp);
+					replayfs_filemap_init(&map, replayfs_alloc, filp);
 
 					/* Write a record of our data */
 					replayfs_filemap_write(&map, rg_id, current->record_thrd->rp_record_pid, current->record_thrd->rp_count, 0, info->owner_write_pos, size);
@@ -6933,7 +6993,51 @@ SIMPLE_SHIM1(close, 6, int, fd);
 RET1_SHIM3(waitpid, 7, int, stat_addr, pid_t, pid, int __user *, stat_addr, int, options);
 SIMPLE_SHIM2(creat, 8, const char __user *, pathname, int, mode);
 SIMPLE_SHIM2(link, 9, const char __user *, oldname, const char __user *, newname);
+#ifdef REPLAY_COMPRESS_READS
+static asmlinkage long
+record_unlink(const char __user *pathname)
+{
+	long rc;
+	struct file *filp;
+
+	filp = filp_open(pathname, O_RDWR, 0777);
+
+	/* 
+	 * If we're about to delete the file, and it is a replayfs file, then remove
+	 * it from our replayfs knowledge base
+	 */
+	if (is_recorded_filp(filp)) {
+		struct inode *inode = filp->f_dentry->d_inode;
+		if (inode->i_nlink == 1) {
+			/* Inode is about to be removed, delete it entirely */
+			replay_filp_delete(filp);
+		}
+	}
+	if (filp != NULL && !IS_ERR(filp)) {
+		filp_close(filp, NULL);
+	}
+
+	new_syscall_enter(10);
+	rc = sys_unlink(pathname);
+	new_syscall_done(10, rc);
+
+	new_syscall_exit(10, NULL);
+
+	return rc;
+}
+
+static asmlinkage long
+replay_unlink(const char __user *pathname)
+{
+	long rc;
+	rc = get_next_syscall(10, NULL);
+	return rc;
+}
+
+asmlinkage long shim_unlink (const char __user * pathname) SHIM_CALL(unlink, 10, pathname);
+#else
 SIMPLE_SHIM1(unlink, 10, const char __user *, pathname);
+#endif
 
 // This should be called with the record group lock
 static int
@@ -12093,7 +12197,57 @@ SIMPLE_SHIM4(mknodat, 297, int, dfd, const char __user *, filename, int, mode, u
 SIMPLE_SHIM5(fchownat, 298, int, dfd, const char __user *, filename, uid_t, user, gid_t, group, int, flag);
 SIMPLE_SHIM3(futimesat, 299, int, dfd, char __user *, filename, struct timeval __user *,utimes);
 RET1_SHIM4(fstatat64, 300, struct stat64, statbuf, int, dfd, char __user *, filename, struct stat64 __user *, statbuf, int, flag);
+
+#ifdef REPLAY_COMPRESS_READS
+static asmlinkage long
+record_unlinkat(int dfd, const char __user *pathname, int flag)
+{
+	long rc;
+	struct file *filp;
+	int fd;
+
+	fd = do_sys_open(dfd, pathname, O_RDWR, 0777);
+	filp = fget(fd);
+
+	/* 
+	 * If we're about to delete the file, and it is a replayfs file, then remove
+	 * it from our replayfs knowledge base
+	 */
+	if (is_recorded_file(fd)) {
+		struct inode *inode = filp->f_dentry->d_inode;
+		if (inode->i_nlink == 1) {
+			/* Inode is about to be removed, delete it entirely */
+			replay_filp_delete(filp);
+		}
+	}
+	if (filp != NULL && !IS_ERR(filp)) {
+		fput(filp);
+	}
+
+	sys_close(fd);
+
+	new_syscall_enter(301);
+	rc = sys_unlink(pathname);
+	new_syscall_done(301, rc);
+
+	new_syscall_exit(301, NULL);
+
+	return rc;
+}
+
+static asmlinkage long
+replay_unlinkat(int dfd, const char __user *pathname, int flag)
+{
+	long rc;
+	rc = get_next_syscall(301, NULL);
+	return rc;
+}
+
+asmlinkage long shim_unlinkat (int dfd, const char __user *pathname, int flag) SHIM_CALL(unlinkat, 301, dfd, pathname, flag);
+#else
 SIMPLE_SHIM3(unlinkat, 301, int, dfd, const char __user *, pathname, int, flag);
+#endif
+
 SIMPLE_SHIM4(renameat, 302, int, olddfd, const char __user *, oldname, int, newdfd, const char __user *, newname);
 SIMPLE_SHIM5(linkat, 303, int, olddfd, const char __user *, oldname, int, newdfd, const char __user *, newname, int, flags);
 SIMPLE_SHIM3(symlinkat, 304, const char __user *, oldname, int, newdfd, const char __user *, newname);
@@ -13215,8 +13369,66 @@ int read_mmap_log (struct record_group* precg)
 	return rc;
 }
 
+int btree_print = 0;
+int replayfs_diskalloc_debug = 0;
+int replayfs_diskalloc_debug_full = 0;
+int replayfs_diskalloc_debug_cache = 0;
+int replayfs_diskalloc_debug_allocref = 0;
+int replayfs_diskalloc_debug_lock = 0;
 #ifdef CONFIG_SYSCTL
 extern atomic_t diskalloc_num_blocks;
+static struct ctl_table print_ctl[] = {
+	{
+		.procname	= "replayfs_btree_print",
+		.data		= &btree_print,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "replayfs_diskalloc_print_lock",
+		.data		= &replayfs_diskalloc_debug_lock,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "replayfs_diskalloc_print",
+		.data		= &replayfs_diskalloc_debug,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "replayfs_diskalloc_print_cache",
+		.data		= &replayfs_diskalloc_debug_cache,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "replayfs_diskalloc_print_allocref",
+		.data		= &replayfs_diskalloc_debug_allocref,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "replayfs_diskalloc_print_full",
+		.data		= &replayfs_diskalloc_debug_full,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "data_verify_print",
+		.data		= &verify_debug,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{0, },
+};
 static struct ctl_table replay_ctl[] = {
 	{
 		.procname	= "syslog_recs",
@@ -13259,6 +13471,11 @@ static struct ctl_table replay_ctl[] = {
 		.maxlen		= sizeof(unsigned long),
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "replayfs_prints",
+		.mode		= 0555,
+		.child		= print_ctl,
 	},
 	{0, },
 };
