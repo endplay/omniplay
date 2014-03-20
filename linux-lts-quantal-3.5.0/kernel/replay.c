@@ -83,7 +83,7 @@
  */
 //#define REPLAY_COMPRESS_READS
 
-//#define TRACE_READ_WRITE
+#define TRACE_READ_WRITE
 //#define TRACE_PIPE_READ_WRITE
 //#define TRACE_SOCKET_READ_WRITE
 
@@ -830,6 +830,7 @@ struct replay_thread {
 	int argc;			// Save the number of program args
 	u_long envp;			// Save the location of the env. vars
 	int envc;			// Save the number of environment vars
+	int is_pin_vfork;		// Set 1 when Pin calls clone instead of vfork
 #ifdef CACHE_READS
 	struct replay_cache_files* rp_cache_files; // Info about open cache files
 #endif
@@ -1705,6 +1706,8 @@ new_replay_thread (struct replay_group* prg, struct record_thread* prec_thrd, u_
 	prp->rp_start_clock_save = 0;
 	prp->rp_replay_hook = 0;
 
+	prp->is_pin_vfork = 0;
+
 #ifdef CACHE_READS
 	if (pfiles) {
 		prp->rp_cache_files = pfiles;
@@ -2405,11 +2408,12 @@ long get_num_filemap_entries(int fd, loff_t offset, int size) {
 
 	filp = fget(fd);
 	if (!filp) {
+		printk("Pid %d got bad filp for fd %d\n", current->pid, fd);
 		return -EBADF;
 	}
 	replayfs_filemap_init(&map, &replayfs_alloc, filp);
 
-	//printk("get filemap entries for fd %d offset %lld, size %d\n", fd, offset, size);
+	MPRINT("get filemap entries for fd %d offset %lld, size %d\n", fd, offset, size);
 	entry = replayfs_filemap_read(&map, offset, size);
 	if (IS_ERR(entry) || entry == NULL) {
 		printk("get filemap can't find entry %p\n", entry);
@@ -2424,7 +2428,7 @@ long get_num_filemap_entries(int fd, loff_t offset, int size) {
 	replayfs_filemap_destroy(&map);
 	fput(filp);
 	num_entries = entry->num_elms;
-	//printk("get_num_filemap_entries is %d\n", num_entries);
+	MPRINT("get_num_filemap_entries is %d\n", num_entries);
 	kfree(entry);
 
 	return num_entries;
@@ -4186,6 +4190,12 @@ long check_clock_before_syscall (int syscall)
 	}
 	if (!ignore_flag) {						
 		prt->rp_saved_rc = get_next_syscall_enter (prt, prt->rp_group, syscall, &prt->rp_saved_retparams, &prt->rp_saved_psr);
+		// Pin calls clone instead of vfork and enforces the vfork semantics at
+		// the Pin layer, we need to know this so that we can call replay_clone
+		// in place of the vfork
+		if (syscall == 190) {
+			prt->is_pin_vfork = 1;
+		}
 	}
 
 	return 0;
@@ -6459,7 +6469,7 @@ replay_open (const char __user * filename, int flags, int mode)
 	long rc, fd;
 
 	rc = get_next_syscall (5, (char **) &pretvals);	
-	DPRINT ("replay_open: trying to open %s\n", filename);
+	DPRINT ("replay_open: trying to open %s, rc %ld\n", filename, rc);
 	if (pretvals) {
 		fd = open_cache_file (pretvals->dev, pretvals->ino, pretvals->mtime, flags);
 		DPRINT ("replay_open: opened cache file %s flags %x fd is %ld rc is %ld\n", filename, flags, fd, rc);
@@ -9325,6 +9335,14 @@ shim_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_regs 
 	if (current->record_thrd) return record_clone(clone_flags, stack_start, regs, stack_size, parent_tidptr, child_tidptr);
 	if (current->replay_thrd) {
 		if (test_app_syscall(120)) return replay_clone(clone_flags, stack_start, regs, stack_size, parent_tidptr, child_tidptr);
+		// Pin calls clone instead of vfork and enforces the vfork semantics at the Pin layer.
+		// Allow Pin to do so, by calling replay_clone
+		if (is_pin_attached() && current->replay_thrd->is_pin_vfork) {
+			int child_pid;
+			child_pid = replay_clone(clone_flags, stack_start, regs, stack_size, parent_tidptr, child_tidptr);
+			current->replay_thrd->is_pin_vfork = 0;
+			return child_pid;
+		}
 		// This is a Pin fork
 		child_pid = do_fork(clone_flags, stack_start, regs, stack_size, parent_tidptr, child_tidptr);
 		tsk = pid_task (find_vpid(child_pid), PIDTYPE_PID);
@@ -9838,6 +9856,27 @@ record_mremap (unsigned long addr, unsigned long old_len, unsigned long new_len,
 	rc = sys_mremap (addr, old_len, new_len, flags, new_addr);
 	new_syscall_done (163, rc);
 	new_syscall_exit (163, NULL);
+
+	/* Save the regions to pre-allocate later for replay,
+	 * Needed for Pin support	
+	 */
+	if (current->record_thrd->rp_group->rg_save_mmap_flag) {
+		if (rc != -1) {
+			if (new_len > old_len) {
+				MPRINT ("Pid %d record_mremap, growing the mapping, reserve memory addr %lx len %lx\n", current->pid, rc, new_len);
+				reserve_memory(rc, new_len);
+			}
+			else if (old_len < new_len) {
+				if (rc != addr) {
+					MPRINT ("Pid %d record_mremap, shrinking the mapping, moving it to addr %lx len %lx\n", current->pid, rc, new_len);
+					reserve_memory(rc, new_len);
+				}
+			}
+			// Don't need to do anything if we shrink the mapping in-place,
+			// since we'll allocate this anyways (from the original mmap)
+		}
+	}
+
 	rg_unlock(current->record_thrd->rp_group);
 	
 	return rc;
@@ -9854,6 +9893,42 @@ replay_mremap (unsigned long addr, unsigned long old_len, unsigned long new_len,
 		printk ("Replay mremap returns different value %lu than %lu\n", retval, rc);
 		return syscall_mismatch();
 	}
+	
+	// Save the regions for preallocation for replay+pin
+	if (current->replay_thrd->rp_record_thread->rp_group->rg_save_mmap_flag) {
+		if (rc != ((u_long) -1)) {
+			if (new_len > old_len) {
+				MPRINT ("Pid %d replay_mremap, growing the mapping, reserve memory addr %lx len %lx\n", current->pid, rc, new_len);
+				reserve_memory(rc, new_len);
+			}
+			else if (old_len < new_len) {
+				if (rc != addr) {
+					MPRINT ("Pid %d replay_mremap, shrinking the mapping, moving it to addr %lx len %lx\n", current->pid, rc, new_len);
+					reserve_memory(rc, new_len);
+				}
+				// Don't need to do anything if we shrink the mapping in-place,
+				// since we'll allocate this anyways (from the original mmap)
+			}
+		}
+	}
+
+	// If we've moved the mmap or shrunk it, we have to preallocate that mmaping again
+	if (is_pin_attached() && rc != ((u_long) -1)) {
+		// move and no overlap between mappings
+		if (!(rc >= addr && rc < addr + old_len)) {
+			preallocate_after_munmap(addr, old_len);
+		}
+		// shrink from the back of the mapping
+		else if (addr == rc && old_len > new_len) {
+			preallocate_after_munmap(rc + new_len, (old_len - new_len));
+		}
+		// shrink from beginning of mapping
+		else if ((rc + new_len >= addr + old_len) && (rc > addr)) {
+			preallocate_after_munmap(addr, (rc - addr));
+		}
+		// else, we didn't shrink or move it. Do nothing.
+	}
+
 	return rc;
 }
 
@@ -10638,8 +10713,25 @@ replay_vfork (unsigned long clone_flags, unsigned long stack_start, struct pt_re
 long 
 shim_vfork(unsigned long clone_flags, unsigned long stack_start, struct pt_regs *regs, unsigned long stack_size, int __user *parent_tidptr, int __user *child_tidptr)
 {
-	if (current->record_thrd) return record_vfork(clone_flags, stack_start, regs, stack_size, parent_tidptr, child_tidptr);		
-	if (current->replay_thrd) return replay_vfork(clone_flags, stack_start, regs, stack_size, parent_tidptr, child_tidptr);		
+	if (current->record_thrd) return record_vfork(clone_flags, stack_start, regs, stack_size, parent_tidptr, child_tidptr);
+	if (current->replay_thrd) {
+		int child_pid;
+		struct task_struct* tsk;
+		if (test_app_syscall(190)) {
+			return replay_vfork(clone_flags, stack_start, regs, stack_size, parent_tidptr, child_tidptr);
+		} 
+		// This is Pin
+		// mcc: I'm not sure what it means for Pin to vfork,
+		// but this seems to be the right thing to do:
+		// actually execute the vfork, remove the replay_thrd, and let it run.
+		printk("Pid %d - WARN - Pin is actually running a vfork! -- is this bad?\n", current->pid);
+		child_pid = do_fork(clone_flags, stack_start, regs, stack_size, parent_tidptr, child_tidptr);
+		tsk = pid_task (find_vpid(child_pid), PIDTYPE_PID);
+		tsk->replay_thrd = NULL;
+		wake_up_new_task(tsk);
+		MPRINT("Pid %d - Pin vforks a child %d\n", current->pid, child_pid);
+		return child_pid;
+	}
 	return do_fork(clone_flags, stack_start, regs, stack_size, parent_tidptr, child_tidptr);
 }
 
