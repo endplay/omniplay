@@ -237,7 +237,7 @@ static void bval_put(struct replayfs_btree128_head *head, struct page *page) {
 			replayfs_diskalloc_put_page(head->allocator, page);
 			atomic_inc(&puts);
 		} else {
-			replayfs_diskalloc_sync_page(head->allocator, page);
+			//replayfs_diskalloc_sync_page(head->allocator, page);
 		}
 	}
 }

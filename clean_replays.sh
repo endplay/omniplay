@@ -11,18 +11,15 @@
 pushd /replay_logdb/ &> /dev/null || {
 	exit 0
 }
-sudo rm -rf *
+ls | xargs sudo rm -rf
 popd  &> /dev/null
 
-pushd /replay_cache/ &> /dev/null || {
-	exit 0
-}
-sudo rm -rf *
-popd  &> /dev/null
+find /replay_cache/ -type f | xargs sudo rm -f 
 
-sudo rm -rf /replay_logdb/* /replay_cache/* /replay_cache/replaymap.disk
+cache_size=$(ls /replay_cache/ | wc -l)
 
-ls /replay_cache/ | grep replaymap.disk && {
-	echo "Failed to remove replaymap.disk!";
+if [[ "$cache_size" -ne "0" ]]; then
+	echo "Failed to clean replay_cache!";
 	exit 1
-}
+fi
+

@@ -34,6 +34,8 @@ struct replayfs_diskalloc {
 	loff_t extent_pos;
 
 	loff_t num_allocated_extents;
+
+	atomic_t refcnt;
 };
 
 /* 
@@ -76,9 +78,8 @@ static inline void replayfs_diskalloc_page_dirty(struct page *page) {
 }
 
 int glbl_diskalloc_init(void);
-int replayfs_diskalloc_create(struct replayfs_diskalloc *alloc,
-		struct file *filp);
-int replayfs_diskalloc_init(struct replayfs_diskalloc *alloc, struct file *filp);
+struct replayfs_diskalloc *replayfs_diskalloc_create(struct file *filp);
+struct replayfs_diskalloc *replayfs_diskalloc_init(struct file *filp);
 void replayfs_diskalloc_destroy(struct replayfs_diskalloc *alloc);
 
 struct replayfs_disk_alloc *replayfs_diskalloc_alloc(
