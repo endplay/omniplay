@@ -76,6 +76,10 @@ void *replayfs_btree_alloc(gfp_t gfp_mask, void *pool_data);
  */
 void replayfs_btree_free(void *element, void *pool_data);
 
+static inline int syscache_id_is_zero(struct replayfs_syscache_id *id) {
+	return (id->unique_id == -1 && id->sysnum == -1 && id->pid == 0);
+}
+
 /**
  * btree_init_mempool - initialise a btree with given mempool
  *
@@ -156,8 +160,8 @@ int __must_check replayfs_btree_insert_update(struct replayfs_btree_head *head,
  * This function returns the removed entry, or %NULL if the key
  * could not be found.
  */
-struct replayfs_btree_value *replayfs_btree_remove(struct replayfs_btree_head *head,
-		   struct replayfs_btree_key *key, struct page **page);
+int replayfs_btree_remove(struct replayfs_btree_head *head,
+		   struct replayfs_btree_key *key, struct replayfs_btree_value *val);
 
 /**
  * btree_merge - merge two btrees

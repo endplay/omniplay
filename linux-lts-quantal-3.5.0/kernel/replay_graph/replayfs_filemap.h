@@ -33,7 +33,7 @@ struct replayfs_filemap {
 	struct replayfs_btree_head entries;
 };
 
-extern struct replayfs_diskalloc replayfs_alloc;
+extern struct replayfs_diskalloc *replayfs_alloc;
 
 int replayfs_filemap_init_key (struct replayfs_filemap *map,
 		struct replayfs_diskalloc *alloc, struct replayfs_btree128_key *key);
@@ -55,7 +55,7 @@ int replayfs_filemap_create(struct replayfs_filemap *map,
 void replayfs_filemap_destroy(struct replayfs_filemap *map);
 
 void replayfs_filemap_delete(struct replayfs_filemap *map,
-		struct replayfs_btree128_key *key);
+		struct file *filp);
 
 /* Add a write to the filemap... */
 int replayfs_filemap_write(struct replayfs_filemap *map, loff_t unique_id,

@@ -72,6 +72,7 @@ int replayfs_syscache_init(struct replayfs_syscall_cache *cache,
 	debugk("%s %d: Initializing cache %p\n", __func__, __LINE__, cache);
 
 	cache->allocator = allocator;
+	printk("%s %d: set allocator to %p\n", __func__, __LINE__, cache->allocator);
 
 	if (needs_init) {
 		debugk("%s %d: REPLAYFS_BTREE128 CREATE BEING CALLED!!!\n", __func__,
@@ -121,8 +122,8 @@ int replayfs_syscache_add(struct replayfs_syscall_cache *cache,
 	debugk("%s %d: In %s\n", __func__, __LINE__, __func__);
 	mutex_lock(&cache->lock);
 	/* Try to lookup first... to make sure the entry doesn't exist */
-	debugk("%s %d: Looking up id {%lld, %d, %lld, %d}\n", __func__, __LINE__,
-			(loff_t)id->unique_id, id->pid, (loff_t)id->sysnum, id->mod);
+	debugk("%s %d: Looking up id {%lld, %d, %lld}\n", __func__, __LINE__,
+			(loff_t)id->unique_id, id->pid, (loff_t)id->sysnum);
 	value = replayfs_btree128_lookup(&cache->entries, k(id), &ret_page);
 	debugk("%s %d: got valid entry %p\n", __func__, __LINE__, value);
 	if (value == NULL) {
@@ -143,12 +144,16 @@ int replayfs_syscache_add(struct replayfs_syscall_cache *cache,
 
 		/* Record the entry state */
 		debugk("%s %d: diskalloc, write\n", __func__, __LINE__);
-		replayfs_disk_alloc_write(alloc, &entry,
-				sizeof(struct replayfs_syscache_entry), 0);
+		if (replayfs_disk_alloc_write(alloc, &entry,
+				sizeof(struct replayfs_syscache_entry), 0, 0)) {
+			BUG();
+		}
 		debugk("%s %d: diskalloc, write2\n", __func__, __LINE__);
 		/* Record the entry data */
-		replayfs_disk_alloc_write(alloc, (void *)data, size,
-				sizeof(struct replayfs_syscache_entry));
+		if (replayfs_disk_alloc_write(alloc, (void *)data, size,
+				sizeof(struct replayfs_syscache_entry), 0)) {
+			BUG();
+		}
 		debugk("%s %d: diskalloc, write2 return\n", __func__, __LINE__);
 		val.id = replayfs_disk_alloc_pos(alloc);
 

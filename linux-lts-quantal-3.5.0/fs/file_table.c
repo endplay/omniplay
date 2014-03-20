@@ -222,6 +222,9 @@ static void drop_file_write_access(struct file *file)
 
 /* the real guts of fput() - releasing the last reference to file
  */
+/* BEGIN replay */
+extern void replay_filp_close(struct file *filp);
+/* END replay */
 static void __fput(struct file *file)
 {
 	struct dentry *dentry = file->f_path.dentry;
@@ -229,6 +232,10 @@ static void __fput(struct file *file)
 	struct inode *inode = dentry->d_inode;
 
 	might_sleep();
+
+	/* BEGIN replay */
+	replay_filp_close(file);
+	/* END replay */
 
 	fsnotify_close(file);
 	/*

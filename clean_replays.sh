@@ -11,14 +11,15 @@
 pushd /replay_logdb/ &> /dev/null || {
 	exit 0
 }
-sudo rm -rf *
+ls | xargs sudo rm -rf
 popd  &> /dev/null
 
-pushd /replay_cache/ &> /dev/null || {
-	exit 0
-}
-sudo rm -rf *
-popd  &> /dev/null
+find /replay_cache/ -type f | xargs sudo rm -f 
 
-sudo rm -rf /replay_logdb/* /replay_cache/*
+cache_size=$(ls /replay_cache/ | wc -l)
+
+if [[ "$cache_size" -ne "0" ]]; then
+	echo "Failed to clean replay_cache!";
+	exit 1
+fi
 

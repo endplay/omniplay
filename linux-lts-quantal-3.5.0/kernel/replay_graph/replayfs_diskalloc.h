@@ -34,6 +34,8 @@ struct replayfs_diskalloc {
 	loff_t extent_pos;
 
 	loff_t num_allocated_extents;
+
+	atomic_t refcnt;
 };
 
 /* 
@@ -76,19 +78,18 @@ static inline void replayfs_diskalloc_page_dirty(struct page *page) {
 }
 
 int glbl_diskalloc_init(void);
-int replayfs_diskalloc_create(struct replayfs_diskalloc *alloc,
-		struct file *filp);
-int replayfs_diskalloc_init(struct replayfs_diskalloc *alloc, struct file *filp);
+struct replayfs_diskalloc *replayfs_diskalloc_create(struct file *filp);
+struct replayfs_diskalloc *replayfs_diskalloc_init(struct file *filp);
 void replayfs_diskalloc_destroy(struct replayfs_diskalloc *alloc);
 
 struct replayfs_disk_alloc *replayfs_diskalloc_alloc(
 		struct replayfs_diskalloc *alloc, int size);
 void replayfs_diskalloc_free(struct replayfs_disk_alloc *alloc);
 
-void replayfs_disk_alloc_write(struct replayfs_disk_alloc *alloc, void *data,
-		size_t size, loff_t offset);
-void replayfs_disk_alloc_read(struct replayfs_disk_alloc *alloc, void *data,
-		size_t size, loff_t offset);
+__must_check int replayfs_disk_alloc_write(struct replayfs_disk_alloc *alloc, void *data,
+		size_t size, loff_t offset, int user);
+__must_check int replayfs_disk_alloc_read(struct replayfs_disk_alloc *alloc, void *data,
+		size_t size, loff_t offset, int user);
 void replayfs_disk_alloc_put(struct replayfs_disk_alloc *alloc);
 
 struct replayfs_disk_alloc *replayfs_disk_alloc_get(struct replayfs_diskalloc *alloc, loff_t pos);
