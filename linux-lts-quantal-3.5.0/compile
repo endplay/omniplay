@@ -1,13 +1,22 @@
 #!/bin/bash
 
-ret=0
-pushd ..
-rsync -avz --exclude "*.cmd" --exclude "*.mod.c" --exclude "*.ko" --exclude ".git" --exclude '*.o' --exclude '.tmp*' --exclude '..tmp*' --exclude '*.order' ddevec@volta.eecs.umich.edu:/home/ddevec/share/omniplay/linux-lts-quantal-3.5.0 ~/deps/
-popd
+sudo /usr/bin/lspci | grep VMware &> /dev/null
+is_vm=$?
 
-pushd ~/deps/linux-lts-quantal-3.5.0
-rm -f scripts/basic/fixdep
-make -j5
+ret=0
+
+if [ $is_vm -eq 0 ]; then
+	pushd ..
+	rsync -avz --exclude "*.cmd" --exclude "*.mod.c" --exclude "*.ko" --exclude ".git" --exclude '*.o' --exclude '.tmp*' --exclude '..tmp*' --exclude '*.order' ddevec@volta.eecs.umich.edu:/home/ddevec/share/omniplay/linux-lts-quantal-3.5.0 ~/deps/
+	popd
+
+	pushd ~/deps/linux-lts-quantal-3.5.0
+	rm -f scripts/basic/fixdep
+fi
+
+num_cores=`cat /proc/cpuinfo | grep processor | wc -l`
+build_parallel=$(($num_cores+1))
+make -j$build_parallel
 
 rc=$?
 
@@ -18,10 +27,15 @@ else
 	ret=1
 fi
 
-pushd ..
-rsync -avz --exclude "*.cmd" --exclude ".git" --exclude "*.mod.c" --exclude "*.ko" --exclude '*.o' --exclude '.tmp*' --exclude '..tmp*' --exclude '*.order' linux-lts-quantal-3.5.0 ddevec@volta.eecs.umich.edu:/home/ddevec/share/omniplay/
-popd
-popd
+if [ $is_vm -eq 0 ]; then
+	pushd ..
+	rsync -avz --exclude "*.cmd" --exclude ".git" --exclude "*.mod.c" --exclude "*.ko" --exclude '*.o' --exclude '.tmp*' --exclude '..tmp*' --exclude '*.order' linux-lts-quantal-3.5.0 ddevec@volta.eecs.umich.edu:/home/ddevec/share/omniplay/
+	popd
+	popd
+fi
+
+# Beep!
+echo -e "\a"
 
 exit $ret
 

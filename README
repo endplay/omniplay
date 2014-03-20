@@ -29,6 +29,7 @@ $ sudo reboot
 After rebooting, you should be running the Omniplay kernel.
 
 3.2) Build glibc
+Dependencies: (ubuntu 12.04) - gawk texinfo (for makeinfo) autoconf gettext (for msgfmt)
 $ cd <omniplay>/eglibc-2.15/
 $ mkdir build
 $ mkdir prefix

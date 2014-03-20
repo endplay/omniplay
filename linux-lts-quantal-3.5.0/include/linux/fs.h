@@ -1044,6 +1044,10 @@ struct file {
 	const struct cred	*f_cred;
 	struct file_ra_state	f_ra;
 
+	/* BEGIN REPLAY */
+	void *replayfs_filemap; // Void * to avoid pulling dependencies...
+	/* END REPLAY */
+
 	u64			f_version;
 #ifdef CONFIG_SECURITY
 	void			*f_security;
