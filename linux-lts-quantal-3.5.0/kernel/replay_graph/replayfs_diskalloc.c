@@ -1613,7 +1613,7 @@ struct page *replayfs_diskalloc_alloc_page(struct replayfs_diskalloc *alloc) {
 			alloc);
 
 	page = ERR_PTR(-ENOMEM);
-	
+
 	debugk("%s %d: Locking %p\n", __func__, __LINE__, &alloc->lock);
 	/* Lock the diskalloc */
 	mutex_lock(&alloc->lock);

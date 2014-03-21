@@ -220,11 +220,12 @@ static void drop_file_write_access(struct file *file)
 	file_release_write(file);
 }
 
-/* the real guts of fput() - releasing the last reference to file
- */
 /* BEGIN replay */
 extern void replay_filp_close(struct file *filp);
 /* END replay */
+
+/* the real guts of fput() - releasing the last reference to file
+ */
 static void __fput(struct file *file)
 {
 	struct dentry *dentry = file->f_path.dentry;
@@ -233,10 +234,6 @@ static void __fput(struct file *file)
 
 	might_sleep();
 
-	/* BEGIN replay */
-	replay_filp_close(file);
-	/* END replay */
-
 	fsnotify_close(file);
 	/*
 	 * The function eventpoll_release() should be the first called
@@ -244,6 +241,11 @@ static void __fput(struct file *file)
 	 */
 	eventpoll_release(file);
 	locks_remove_flock(file);
+
+	/* BEGIN replay */
+	replay_filp_close(file);
+	/* END replay */
+
 
 	if (unlikely(file->f_flags & FASYNC)) {
 		if (file->f_op && file->f_op->fasync)

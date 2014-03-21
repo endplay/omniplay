@@ -2526,12 +2526,13 @@ struct file *do_filp_open(int dfd, const char *pathname,
 	if (unlikely(filp == ERR_PTR(-ESTALE)))
 		filp = path_openat(dfd, pathname, &nd, op, flags | LOOKUP_REVAL);
 
-/* Begin REPLAY */
+ /* Begin REPLAY */
 	do {
-		extern void replayfs_file_opened(struct file *filp);
-		replayfs_file_opened(filp);
-	} while (0);
-/* End REPLAY */
+ 		extern void replayfs_file_opened(struct file *filp);
+ 		replayfs_file_opened(filp);
+ 	} while (0);
+ /* End REPLAY */
+
 	return filp;
 }
 

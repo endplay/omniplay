@@ -588,6 +588,9 @@ void replayfs_file_opened(struct file *filp) {
 				if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0) {
 					struct replayfs_filemap *map = kmalloc(sizeof(struct replayfs_filemap),
 							GFP_KERNEL);
+
+					glbl_diskalloc_init();
+
 					replayfs_filemap_init(map, replayfs_alloc, filp);
 					filp->replayfs_filemap = map;
 				} else {
@@ -5946,11 +5949,6 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 		is_cache_file = IS_RECORDED_FILE;
 
 		filp = fget(fd);
-		/*
-		printk("%s %d: doing read on %p (%08lX_%08X), %p, %d, %lld\n", __func__,
-				__LINE__, filp, filp->f_dentry->d_inode->i_ino,
-				filp->f_dentry->d_inode->i_sb->s_dev, buf, count, filp->f_pos);
-				*/
 
 		//printk("%s %d: Have recorded file! (%p)\n", __func__, __LINE__, filp);
 
@@ -5978,10 +5976,7 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 				 */
 				count -= (size_t)(max_pos - (loff_t)size);
 			}
-			/*
-			printk("%s %d: Count adjusted to %u (size: %lld, max_pos %lld, max_pos-size: %lld)\n",
-					__func__, __LINE__, count, size, max_pos, max_pos - size);
-					*/
+			//printk("%s %d: Count adjusted to %u\n", __func__, __LINE__, count);
 			rc = count;
 			/* Now do a lookup */
 
@@ -6618,12 +6613,6 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 
 		filp = fget(fd);
 		BUG_ON(filp == NULL);
-		
-		/*
-		printk("%s %d: doing write on %p (%08lX_%08X), %p, %d, %lld\n", __func__,
-				__LINE__, filp, filp->f_dentry->d_inode->i_ino,
-				filp->f_dentry->d_inode->i_sb->s_dev, buf, count, filp->f_pos);
-				*/
 		/* 
 		 * We hack to use a bit in the pretparams to tell the replay that this write 
 		 * should be saved in the syscache on replay...
@@ -6651,19 +6640,10 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 		id.unique_id = current->record_thrd->rp_group->rg_id;
 		id.pid = current->record_thrd->rp_record_pid;
 
-		/*
-		printk("%s %d: Adding syscache with id {%lld, %lld, %lld}\n", __func__,
-				__LINE__, (loff_t)id.sysnum, (loff_t)id.unique_id, (loff_t)id.pid);
-				*/
 		replayfs_syscache_add(&syscache, &id, size, buf);
 
 		update_size(filp, meta);
 
-		/*
-		printk("%s %d: Calling verify_write with %p (%08lX_%08X), %p, %d, %lld\n",
-				__func__, __LINE__, filp, filp->f_dentry->d_inode->i_ino,
-				filp->f_dentry->d_inode->i_sb->s_dev, buf, count, filp->f_pos - count);
-				*/
 		replay_verify_write(filp, buf, count, filp->f_pos - count);
 
 		fput(filp);
