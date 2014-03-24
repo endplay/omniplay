@@ -1830,10 +1830,12 @@ static int rebalance(struct replayfs_btree_head *head, struct btree_geo *geo,
 					right, right_data, no_right,
 					parent, parent_data, i);
 			debugk("%s %d: Done right_merge!\n", __func__, __LINE__);
-			bval_put(head, right);
+			/* Don't put after a right merge... we do a free on it! */
+			//bval_put(head, right);
 			return 0;
+		} else {
+			bval_put(head, right);
 		}
-		bval_put(head, right);
 	}
 	/*
 	 * We could also try to steal one entry from the left or right
