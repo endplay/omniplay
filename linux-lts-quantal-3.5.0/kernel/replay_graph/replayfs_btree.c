@@ -834,7 +834,7 @@ retry:
 			goto miss;
 		}
 
-		bval_put(head, node);
+		//bval_put(head, node);
 
 		if (retry_page) {
 			bval_put(head, retry_page);
@@ -962,11 +962,16 @@ static void check_tree_internal(struct replayfs_btree_head *head, struct page *n
 
 		for (i = 0; i < replayfs_geo.no_pairs; i++) {
 			struct replayfs_btree_key *k;
+
 			k = bkey(&replayfs_geo, node_data, i);
 
 			debugk("%s %d: Level %d Scanning {%lld, %lld}\n", __func__, __LINE__,
 					level, k->offset, k->size);
 
+			if (pk != NULL && k->size != 0) {
+				debugk("%s %d: Checking %lld != %lld\n", __func__, __LINE__,
+						k->size + k->offset, pk->offset);
+			}
 			BUG_ON(pk != NULL && k->size != 0 && k->offset + k->size != pk->offset);
 
 			if (keyzero(geo, k)) {
@@ -1361,15 +1366,19 @@ retry:
 		unsigned long *new_data;
 
 		new = btree_node_alloc(head, gfp);
-		new_data = replayfs_kmap(new);
-		debugk("%s %d: past node_alloc!\n", __func__, __LINE__);
-
 		if (!new)
 			return -ENOMEM;
 
+		debugk("%s %d: Allocated new (%p), %lu!\n", __func__, __LINE__, new, new->index);
+
+		new_data = replayfs_kmap(new);
+
+
+		debugk("%s %d: Still have new (%p), %lu!\n", __func__, __LINE__, new, new->index);
 		err = btree_insert_inner_level(head, geo,
 				bkey(geo, node_data, fill / 2 - 1),
 				new, new_data, level + 1, gfp);
+		debugk("%s %d: Still have new (%p), %lu!\n", __func__, __LINE__, new, new->index);
 		if (err) {
 			//mempool_free(new, head->mempool);
 			replayfs_kunmap(new);
@@ -1377,8 +1386,9 @@ retry:
 			return err;
 		}
 
-		debugk("%s %d: Adjusting pages (new) %lu and (node) %lu\n", __func__,
-				__LINE__, new->index, node->index);
+		debugk("%s %d: Adjusting pages (new %p) %lu and (node %p) %lu\n", __func__,
+				__LINE__, new, new->index, new, node->index);
+		BUG_ON(new->index == node->index);
 		for (i = 0; i < fill / 2; i++) {
 			struct replayfs_btree_value *tmp;
 			setkey(geo, new, i, bkey(geo, node_data, i));

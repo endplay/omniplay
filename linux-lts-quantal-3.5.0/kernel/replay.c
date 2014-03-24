@@ -99,7 +99,7 @@ int verify_debug = 0;
 /* 
  * Enables replay-graph tracking for file, pipe, and socket IO respectively.
  */
-//#define TRACE_READ_WRITE
+#define TRACE_READ_WRITE
 //#define TRACE_PIPE_READ_WRITE
 //#define TRACE_SOCKET_READ_WRITE
 
@@ -588,6 +588,9 @@ void replayfs_file_opened(struct file *filp) {
 				if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0) {
 					struct replayfs_filemap *map = kmalloc(sizeof(struct replayfs_filemap),
 							GFP_KERNEL);
+
+					glbl_diskalloc_init();
+
 					replayfs_filemap_init(map, replayfs_alloc, filp);
 					filp->replayfs_filemap = map;
 				} else {
