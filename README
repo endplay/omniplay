@@ -17,24 +17,40 @@ for omniplay.
 
 Assuming that <omniplay> is the root directory where you installed the source:
 
+3.0) One-time setup
+
+$ cd <omniplay>/scripts
+$ ./setup.sh
+$ source $HOME/.omniplay_setup
+
 3.1) Build the Omniplay kernel 
 
-$ cd <omniplay>/linux-lts-quantal-3.5.0
+Two method:
+Option 1:
+$ cd $OMNIPLAY_DIR/linux-lts-quantal-3.5.0
+$ # The following two setps need be done only once
+$ wget http://web.eecs.umich.edu/~ddevec/omniplay.config
+$ mv omniplay.config .config
+$ # End once only steps
+$ ./compile
+$ sudo reboot
+
+$ cd $OMNIPLAY_DIR/linux-lts-quantal-3.5.0
 $ make menuconfig
-$ make
 $ sudo make modules_install
 $ sudo make install
+$ sudo make headers_install INSTALL_HDR_PATH=$OMNIPLAY_DIR/test/replay_headers
 $ sudo reboot
 
 After rebooting, you should be running the Omniplay kernel.
-
+j        
 3.2) Build glibc
 Dependencies: (ubuntu 12.04) - gawk texinfo (for makeinfo) autoconf gettext (for msgfmt)
-$ cd <omniplay>/eglibc-2.15/
+$ cd $OMNIPLAY_DIR/eglibc-2.15/
 $ mkdir build
 $ mkdir prefix
 $ cd build
-$ ../configure -prefix=<tree>/eglibc-2.15/prefix --disable-profile --enable-add-on --without-gd --without-selinux --without-cvs --enable-kernel=3.2.0
+$ ../configure -prefix=$OMNIPLAY_DIR/eglibc-2.15/prefix --disable-profile --enable-add-on --without-gd --without-selinux --without-cvs --enable-kernel=3.2.0
 $ make
 $ mkdir /var/db
 $ chown <user> /var/db
@@ -46,12 +62,12 @@ of a kludge that allows us to develop code with the standard glibc and
 test with the Omniplay glibc.  There are a few complications, though,
 that we need to fix:
 
-$ cd <omniplay>/eglibc-2.15/prefix
+$ cd $OMNIPLAY_DIR/eglibc-2.15/prefix
 $ ln -s /usr/lib/locale
 
 3.3) Build the tools
 
-$ cd <omniplay>/test/dev
+$ cd $OMNIPLAY_DIR/test/dev
 $ make
 $ cd ..
 $ make
@@ -60,7 +76,12 @@ $ make
 
 After each reboot, you need to load the Omniplay kernel module and do some setup work:
 
-$ cd <omniplay>/test
+Two methods:
+Preferred:
+$ $OMNIPLAY_DIR/scripts/insert_spec.sh
+
+Basic
+$ cd $OMNIPLAY_DIR/test
 $ ./setup.sh
 
 Now you can record programs.  You will need to know your dynamic link path.  You can

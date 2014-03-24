@@ -29,6 +29,8 @@
 #include <fcntl.h>
 #include <sys/resource.h>
 
+#include "replay_headers/include/linux/replay_configs.h"
+
 #define REPLAY_MAX_THREADS 16
 //#define USE_HPC
 #define USE_ARGSALLOC

@@ -22,6 +22,17 @@ rc=$?
 
 if [ $rc -eq 0 ]; then
 	sudo make install
+
+	if [[ ! -z $OMNIPLAY_DIR ]]; then
+		sudo make headers_install INSTALL_HDR_PATH=$OMNIPLAY_DIR/test/replay_headers
+		echo "Building files depending on kernel headers"
+		pushd $OMNIPLAY_DIR/test &> /dev/null
+		make
+		popd &> /dev/null
+	else
+		echo "WARNING: OMNIPLAY_DIR environment variable not set (run scripts/setup.sh)"
+		echo "    Headers not installed, tests not rebuilt!"
+	fi
 else
 	echo "Make Failure!"
 	ret=1
