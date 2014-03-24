@@ -17,6 +17,7 @@
 
 #include "replayfs_kmap.h"
 
+/*
 #define REPLAYFS_DISKALLOC_DEBUG_ALLOCREF
 
 #define REPLAYFS_DISKALLOC_DEBUG
@@ -28,10 +29,11 @@
 #define REPLAYFS_DISKALLOC_DEBUG_LOCK
 
 #define REPLAYFS_DISKALLOC_DEBUG_CACHE
+*/
 
 //#define REPLAYFS_DISKALLOC_ALLOC_DEBUG
 
-#define REPLAYFS_DISKALLOC_MONITOR_LISTS
+//#define REPLAYFS_DISKALLOC_MONITOR_LISTS
 
 #if defined(REPLAYFS_DISKALLOC_DEBUG) && !defined(REPLAYFS_DISKALLOC_DEBUG_MIN)
 #  define REPLAYFS_DISKALLOC_DEBUG_MIN
@@ -210,9 +212,9 @@ static void remove_from_list(struct page_data *data, struct list_head *head,
 	btree_remove32(verify_tree, key);
 }
 #else
-#define init monitor_lists()
+#define init_monitor_lists()
 #define add_to_list(_U, X, Y, _O) list_add(X, Y)
-#define remove_from_list(_U, X, _P, _O) list_dell(X)
+#define remove_from_list(_U, X, _P, _O) list_del(X)
 #endif
 
 int glbl_diskalloc_init(void) {
@@ -561,9 +563,11 @@ static int alloc_free_page_nolock(struct page_data *data, struct replayfs_diskal
 	data->count--;
 	cache_debugk("%s %d - %p: Dec'd page %lu to count of %d\n", __func__,
 			__LINE__, current, data->page->index, data->count);
+	/*
 	if(data->page->index == 4231) {
-		//dump_stack();
+		dump_stack();
 	}
+	*/
 	if (data->count == 0) {
 		alloc_free_page_internal(data, alloc);
 

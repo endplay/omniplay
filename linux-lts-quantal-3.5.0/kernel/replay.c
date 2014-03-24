@@ -59,6 +59,8 @@
 #include "../ipc/util.h" // For shm utility functions
 #include <asm/user_32.h>
 
+#include <linux/replay_configs.h>
+
 /* FIXME: I should move this to include... */
 #include "../kernel/replay_graph/replayfs_btree128.h"
 #include "../kernel/replay_graph/replayfs_filemap.h"
@@ -72,36 +74,14 @@
 // If defined, use file cache for reads of read-only files
 #define CACHE_READS
 
-/*
- * Enables read compression, sourcing reads of a file from another uncompressed file.
- * This will have potential data size and performance implications on both recorded/replayed files
- * AND non-record/replay reads from files whose creations were recorded.
- *
- * It may (however) drastically reduce the size of recorded reads by recording the origin of data, instead of its contents.
- *
- * This automatically disables TRACE_*
- */
-//#define REPLAY_COMPRESS_READS
 
-/* 
- * Double checks to make sure the data that comes out of a REPLAY_COMPRESS_READS
- * file is the expected data...
- */
-//#define VERIFY_COMPRESSED_DATA
+/* These #defines can be found in replay_config.h */
 int verify_debug = 0;
-
 #ifdef VERIFY_COMPRESSED_DATA
 #define verify_debugk(...) if (verify_debug) {printk(__VA_ARGS__);}
 #else
 #define verify_debugk(...)
 #endif
-
-/* 
- * Enables replay-graph tracking for file, pipe, and socket IO respectively.
- */
-//#define TRACE_READ_WRITE
-//#define TRACE_PIPE_READ_WRITE
-//#define TRACE_SOCKET_READ_WRITE
 
 #ifdef REPLAY_COMPRESS_READS
 #  undef TRACE_READ_WRITE

@@ -323,6 +323,7 @@ header-y += rds.h
 header-y += reboot.h
 header-y += reiserfs_fs.h
 header-y += reiserfs_xattr.h
+header-y += replay_configs.h
 header-y += resource.h
 header-y += rfkill.h
 header-y += romfs_fs.h
