@@ -561,8 +561,8 @@ static int alloc_free_page_nolock(struct page_data *data, struct replayfs_diskal
 	data->count--;
 	cache_debugk("%s %d - %p: Dec'd page %lu to count of %d\n", __func__,
 			__LINE__, current, data->page->index, data->count);
-	if(data->page->index == 360) {
-		dump_stack();
+	if(data->page->index == 4231) {
+		//dump_stack();
 	}
 	if (data->count == 0) {
 		alloc_free_page_internal(data, alloc);
