@@ -1,12 +1,14 @@
 #!/bin/bash
 
+if [[ -z $OMNIPLAY_DIR ]]; then
+	echo "OMNIPLAY_DIR not set, please run <omniplay_dir>/scripts/setup.sh"
+	exit 0
+fi
+
+source $OMNIPLAY_DIR/scripts/common.sh
+
 # Make sure spec is inserted
-/sbin/lsmod | grep spec &> /dev/null || {
-	  echo "Spec not detected, starting up devspec"
-		pushd ~/omniplay/test/ &> /dev/null
-		sudo ./setup.sh
-		popd &> /dev/null
-}
+setup_spec
 
 pushd /replay_logdb/ &> /dev/null || {
 	exit 0

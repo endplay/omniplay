@@ -137,7 +137,7 @@ int main (int argc, char* argv[])
 	}
 	if (link_debug) setenv("LD_DEBUG", "libs", 1);
 
-	//printf("linkpath: %s, ldpath: %s\n", linkpath, ldpath);
+	printf("linkpath: %s, ldpath: %s\n", linkpath, ldpath);
 	rc = replay_fork (fd, (const char**) &argv[base], (const char **) environ, linkpath, logdir, save_mmap);
 
 	// replay_fork should never return if it succeeds

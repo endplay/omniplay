@@ -99,7 +99,7 @@ int verify_debug = 0;
 /* 
  * Enables replay-graph tracking for file, pipe, and socket IO respectively.
  */
-//#define TRACE_READ_WRITE
+#define TRACE_READ_WRITE
 //#define TRACE_PIPE_READ_WRITE
 //#define TRACE_SOCKET_READ_WRITE
 
