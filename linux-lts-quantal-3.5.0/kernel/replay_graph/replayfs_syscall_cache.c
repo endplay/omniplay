@@ -72,13 +72,14 @@ int replayfs_syscache_init(struct replayfs_syscall_cache *cache,
 	debugk("%s %d: Initializing cache %p\n", __func__, __LINE__, cache);
 
 	cache->allocator = allocator;
-	printk("%s %d: set allocator to %p\n", __func__, __LINE__, cache->allocator);
+	debugk("%s %d: set allocator to %p\n", __func__, __LINE__, cache->allocator);
 
 	if (needs_init) {
 		debugk("%s %d: REPLAYFS_BTREE128 CREATE BEING CALLED!!!\n", __func__,
 				__LINE__);
 		rc = replayfs_btree128_create(&cache->entries, allocator, meta_pos);
 	} else {
+		debugk("%s %d: Doing btree128 init\n", __func__, __LINE__);
 		rc = replayfs_btree128_init(&cache->entries, allocator, meta_pos);
 	}
 
