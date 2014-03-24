@@ -12,7 +12,10 @@ then
     chmod a+rwx /replay_logdb
 fi
 
-/sbin/insmod dev/spec.ko
+/sbin/insmod dev/spec.ko || {
+	echo "Unable to insert spec!"
+	exit 1
+}
 
 if [ ! -e /dev/spec0 ]
 then

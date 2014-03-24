@@ -2532,6 +2532,7 @@ struct file *do_filp_open(int dfd, const char *pathname,
 		replayfs_file_opened(filp);
 	} while (0);
 /* End REPLAY */
+
 	return filp;
 }
 
