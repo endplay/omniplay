@@ -1,9 +1,11 @@
 CFLAGS := -Wall -Werror -g 
 LDFLAGS := -Wall -Werror -g 
 
+KERN_CONFIG := replay_headers/include/linux/replay_configs.h
+
 all: libutil.a parseklog parseulog parsemlog launcher resume parseckpt getstats filemap # parseelog
 
-parseklog: parseklog.c
+parseklog: parseklog.c $(KERN_COFNIG)
 	gcc parseklog.c -o parseklog -Wall -Werror -g
 
 parseulog: parseulog.c
