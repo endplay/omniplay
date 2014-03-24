@@ -7,12 +7,13 @@ newlen=$(($length-8))
 substr=${omniplay_dir:0:$newlen}
 omniplay_dir=$substr
 
-TEMP=$(getopt -o :d:h --long help,uninstall,spec,dir: -n 'get_data' -- $@)
+TEMP=$(getopt -o :d:h --long help,uninstall,spec,path,dir: -n 'setup.sh' -- $@)
 
 eval set -- "$TEMP"
 
 uninstall=0
 do_spec=0
+do_path=0
 
 function print_usage() {
 	echo "Usage: $1 [options]" 
@@ -21,6 +22,7 @@ function print_usage() {
 	echo "    --uninstall - Uninstall the testmachinecontrol environment"
 	echo "    --dir=<omniplay_dir> -d <omniplay_dir> - Install with OMNIPLAY_DIR different than $omniplay_dir"
 	echo "    --spec      - Insert the spec.ko module by default when you log in."
+	echo "    --path      - Add OMNIPLAY_DIR/test to your path"
 }
 
 while true; do
@@ -29,6 +31,7 @@ while true; do
 		--dir | -d ) omniplay_dir="$2"; custom_omniplay=1; shift 2 ;;
 		--uninstall ) uninstall=1; shift ;;
 		--spec ) do_spec=1; shift ;;
+		--path ) do_path=1; shift ;;
 		-- ) shift; break ;;
 		* ) break ;;
 	esac
@@ -65,6 +68,10 @@ echo "export OMNIPLAY_DIR=$omniplay_dir" > $setupfile
 
 if [[ "$do_spec" -eq "1" ]]; then
 	echo "$omniplay_dir/scripts/insert_spec.sh" >> $setupfile
+fi
+
+if [[ "$do_path" -eq "1" ]]; then
+	echo "$PATH=$PATH:$omniplay_dir/test" >> $setupfile
 fi
 
 cat $HOME/.bashrc | grep "source $setupfile" || {
