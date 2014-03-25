@@ -91,17 +91,21 @@ void replayfs_kmap_destroy(void) {
 static struct allocation_entry *cur_entry;
 void print_address(unsigned long address, int reliable,
 		struct allocation_entry *entry) {
-	char addr[200];
+	char *addr = kmalloc(1024, GFP_USE);
 	addr[0] = '\0';
 	snprintf(addr, 200, " [<%p>] %s %pB\n", (void *)address, reliable ? "" : "? ",
 			(void *)address);
 	strncat(entry->prev_stack_frame, addr, 200);
+
+	kfree(addr);
 }
 
 static int print_trace_stack(void *data, char *name) {
-	char addr[200];
+	char *addr = kmalloc(1024, GFP_USE);
 	snprintf(addr, 200, "%s <%s> ", (char *)data, name);
 	strncat(cur_entry->prev_stack_frame, addr, 200);
+
+	kfree(addr);
 	return 0;
 }
 

@@ -13428,12 +13428,22 @@ int replayfs_diskalloc_debug_full = 0;
 int replayfs_diskalloc_debug_cache = 0;
 int replayfs_diskalloc_debug_allocref = 0;
 int replayfs_diskalloc_debug_lock = 0;
+
+int replayfs_report_leaks = 0;
+unsigned long replayfs_debug_page_index = 0xFFFFFFFF;
 #ifdef CONFIG_SYSCTL
 extern atomic_t diskalloc_num_blocks;
 static struct ctl_table print_ctl[] = {
 	{
 		.procname	= "replayfs_btree_print",
 		.data		= &btree_print,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "replayfs_report_leaks",
+		.data		= &replayfs_report_leaks,
 		.maxlen		= sizeof(unsigned int),
 		.mode		= 0666,
 		.proc_handler	= &proc_dointvec,
@@ -13456,6 +13466,13 @@ static struct ctl_table print_ctl[] = {
 		.procname	= "replayfs_diskalloc_print_cache",
 		.data		= &replayfs_diskalloc_debug_cache,
 		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "replayfs_debug_page_index",
+		.data		= &replayfs_debug_page_index,
+		.maxlen		= sizeof(unsigned long),
 		.mode		= 0666,
 		.proc_handler	= &proc_dointvec,
 	},
