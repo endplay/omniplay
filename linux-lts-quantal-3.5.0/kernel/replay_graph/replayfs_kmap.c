@@ -18,11 +18,15 @@
 
 #define MAPPING_TRACING
 
+/* Ugh... */
+#define GFP_USE GFP_NOFS
+//#define GFP_USE GFP_KERNEL
+
 #define PRINT_ENTRIES_ONCE
 
 //#define DOUBLE_ALLOC_CHECK
 #define DO_TIMING_PRINTS
-#define DO_TIMING_PRINTS_ON_USE
+//#define DO_TIMING_PRINTS_ON_USE
 
 /* Maximum allocation lifetime allowed in seconds before warnings */
 #define MAX_ALLOCATION_LIFETIME 5
@@ -127,7 +131,7 @@ static void get_stack_info(struct allocation_entry *entry) {
 
 		size = strlen(entry->prev_stack_frame);
 
-		entry->first_stack_frame = kmalloc(size+1, GFP_KERNEL);
+		entry->first_stack_frame = kmalloc(size+1, GFP_USE);
 		BUG_ON(entry->first_stack_frame == NULL);
 
 		strcpy(entry->first_stack_frame, entry->prev_stack_frame);
@@ -136,7 +140,7 @@ static void get_stack_info(struct allocation_entry *entry) {
 
 		size = strlen(entry->prev_stack_frame);
 
-		entry->second_stack_frame = kmalloc(size+1, GFP_KERNEL);
+		entry->second_stack_frame = kmalloc(size+1, GFP_USE);
 		BUG_ON(entry->second_stack_frame == NULL);
 
 		strcpy(entry->second_stack_frame, entry->prev_stack_frame);
@@ -269,7 +273,7 @@ static void update_entry(struct page *page, const char *func, int line,
 	entry = btree_lookup64(tree, key(page));
 	if (entry == NULL) {
 		int err;
-		entry = kmalloc(sizeof(struct allocation_entry), GFP_KERNEL);
+		entry = kmalloc(sizeof(struct allocation_entry), GFP_USE);
 		/* I don't deal with this... */
 		if (entry == NULL) {
 			BUG();
@@ -288,9 +292,16 @@ static void update_entry(struct page *page, const char *func, int line,
 		entry->first_stack_frame = NULL;
 		entry->second_stack_frame = NULL;
 		
-		err = btree_insert64(tree, key(page), entry, GFP_KERNEL);
+		err = btree_insert64(tree, key(page), entry, GFP_USE);
 		BUG_ON(err);
 	}
+
+	/*
+	if (page->index == 671) {
+		debugk("%s %d: Have entry %lu\n", __func__, __LINE__, page->index);
+		dump_stack();
+	}
+	*/
 
 	if (type == IS_KMAP) {
 		entry->nallocs++;
@@ -316,7 +327,7 @@ static void update_entry(struct page *page, const char *func, int line,
 #endif
 
 
-	record = kmalloc(sizeof(struct allocation_record), GFP_KERNEL);
+	record = kmalloc(sizeof(struct allocation_record), GFP_USE);
 	BUG_ON(record == NULL);
 
 	record->next = NULL;
@@ -373,22 +384,28 @@ void __pagealloc_get(struct page *page, const char *function, int line) {
 	debugk("%s %d: Pagealloc_get on (%lu) {%llX}\n", __func__, __LINE__,
 			page->index, key(page));
 
+	/*
 	if (page->index == 217) {
 		dump_stack();
 	}
+	*/
 
-	update_entry(page, function, line, IS_KMAP, &alloc_table, 0);
+	//update_entry(page, function, line, IS_KMAP, &alloc_table, 0);
+	update_entry(page, function, line, IS_KMAP, &alloc_table, 1);
 }
 
 void __pagealloc_put(struct page *page, const char *function, int line) {
 	debugk("%s %d: Pagealloc_put on (%lu) {%llX}\n", __func__, __LINE__,
 			page->index, key(page));
 
+	/*
 	if (page->index == 217) {
 		dump_stack();
 	}
+	*/
 
-	update_entry(page, function, line, IS_KUNMAP, &alloc_table, 0);
+	//update_entry(page, function, line, IS_KUNMAP, &alloc_table, 0);
+	update_entry(page, function, line, IS_KUNMAP, &alloc_table, 1);
 }
 
 void pagealloc_print_status(struct page *page) {
