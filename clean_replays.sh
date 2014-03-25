@@ -17,6 +17,7 @@ ls | xargs sudo rm -rf
 popd  &> /dev/null
 
 find /replay_cache/ -type f | xargs sudo rm -f 
+sudo rm -f /replay_cache/*
 
 cache_size=$(ls /replay_cache/ | wc -l)
 
