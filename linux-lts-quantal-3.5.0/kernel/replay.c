@@ -551,6 +551,7 @@ void replay_filp_close(struct file *filp) {
 	if (current->record_thrd != NULL) {
 		if (filp != NULL) {
 			if (filp->replayfs_filemap) {
+				//printk("%s %d: destroy\n", __func__, __LINE__);
 				replayfs_filemap_destroy(filp->replayfs_filemap);
 				kfree(filp->replayfs_filemap);
 			}

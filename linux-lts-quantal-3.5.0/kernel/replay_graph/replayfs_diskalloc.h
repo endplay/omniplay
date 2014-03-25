@@ -101,6 +101,8 @@ static inline loff_t replayfs_disk_alloc_pos(struct replayfs_disk_alloc *alloc) 
 struct page *replayfs_diskalloc_alloc_page(struct replayfs_diskalloc *alloc);
 void replayfs_diskalloc_free_page(struct replayfs_diskalloc *alloc,
 		struct page *page);
+void replayfs_diskalloc_free_page_noput(struct replayfs_diskalloc *alloc,
+		struct page *page);
 struct page *replayfs_diskalloc_get_page(struct replayfs_diskalloc *alloc, loff_t page);
 void replayfs_diskalloc_sync_page(struct replayfs_diskalloc *alloc,
 		struct page *page);
