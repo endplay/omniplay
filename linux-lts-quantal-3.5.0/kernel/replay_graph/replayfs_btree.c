@@ -55,7 +55,7 @@
 //#include "replayfs_fs.h"
 //#include "replayfs_inode.h"
 
-//#define REPLAYFS_BTREE_DEBUG
+#define REPLAYFS_BTREE_DEBUG
 
 //#define REPLAYFS_BTREE_ALLOC_DEBUG
 
@@ -1947,8 +1947,9 @@ static int btree_remove_level(struct replayfs_btree_head *head, struct btree_geo
 		} else if (
 				(head->height > 1 && fill - 1 == 1) ||
 				(head->height == 1 && fill -1 == 0)) {
-			debugk("%s %d: here\n", __func__, __LINE__);
+
 			btree_shrink(head, geo);
+
 		}
 	}
 

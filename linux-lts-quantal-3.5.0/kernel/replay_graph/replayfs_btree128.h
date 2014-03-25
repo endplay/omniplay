@@ -8,6 +8,8 @@
 
 #include "replayfs_diskalloc.h"
 
+#include <linux/btree.h>
+
 /**
  * DOC: B+Tree basics
  *
@@ -62,6 +64,8 @@ struct replayfs_btree128_head {
 	//mempool_t *mempool;
 	struct replayfs_diskalloc *allocator;
 	int height;
+
+	struct btree_head128 verify_btree;
 };
 
 /**
@@ -154,8 +158,8 @@ int replayfs_btree128_insert(struct replayfs_btree128_head *head,
  * This function returns the removed entry, or %NULL if the key
  * could not be found.
  */
-struct replayfs_btree128_value *replayfs_btree128_remove(struct replayfs_btree128_head *head,
-		   struct replayfs_btree128_key *key, struct page **page);
+int replayfs_btree128_remove(struct replayfs_btree128_head *head,
+		   struct replayfs_btree128_key *key);
 
 /**
  * btree_merge - merge two btrees

@@ -17,7 +17,6 @@
 
 #include "replayfs_kmap.h"
 
-/*
 #define REPLAYFS_DISKALLOC_DEBUG_ALLOCREF
 
 #define REPLAYFS_DISKALLOC_DEBUG
@@ -29,11 +28,10 @@
 #define REPLAYFS_DISKALLOC_DEBUG_LOCK
 
 #define REPLAYFS_DISKALLOC_DEBUG_CACHE
-*/
 
 //#define REPLAYFS_DISKALLOC_ALLOC_DEBUG
 
-//#define REPLAYFS_DISKALLOC_MONITOR_LISTS
+#define REPLAYFS_DISKALLOC_MONITOR_LISTS
 
 #if defined(REPLAYFS_DISKALLOC_DEBUG) && !defined(REPLAYFS_DISKALLOC_DEBUG_MIN)
 #  define REPLAYFS_DISKALLOC_DEBUG_MIN
@@ -1723,6 +1721,20 @@ struct page *replayfs_diskalloc_alloc_page(struct replayfs_diskalloc *alloc) {
 
 	mutex_unlock(&alloc->lock);
 	return page;
+}
+
+void replayfs_diskalloc_free_page_noput(struct replayfs_diskalloc *alloc,
+		struct page *page) {
+
+	mutex_lock(&alloc->lock);
+
+	/* Undo the magic */
+	atomic_dec(&diskalloc_num_blocks);
+	mark_free(alloc, (loff_t)page->index);
+	alloc_debugk("%s %d: Freed page: %lu\n", __func__, __LINE__, page->index);
+	alloc_dump_stack();
+
+	mutex_unlock(&alloc->lock);
 }
 
 void replayfs_diskalloc_free_page(struct replayfs_diskalloc *alloc,

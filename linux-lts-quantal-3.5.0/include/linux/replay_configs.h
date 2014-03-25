@@ -10,7 +10,7 @@
  *
  * This automatically disables TRACE_*
  */
-#define REPLAY_COMPRESS_READS
+//#define REPLAY_COMPRESS_READS
 
 /* 
  * Double checks to make sure the data that comes out of a REPLAY_COMPRESS_READS
@@ -21,7 +21,7 @@
 /* 
  * Enables replay-graph tracking for file, pipe, and socket IO respectively.
  */
-//#define TRACE_READ_WRITE
+#define TRACE_READ_WRITE
 //#define TRACE_PIPE_READ_WRITE
 //#define TRACE_SOCKET_READ_WRITE
 
