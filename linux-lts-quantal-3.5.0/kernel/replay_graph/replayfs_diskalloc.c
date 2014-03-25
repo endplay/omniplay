@@ -37,6 +37,10 @@
 #  define REPLAYFS_DISKALLOC_DEBUG_MIN
 #endif
 
+extern unsigned long replayfs_debug_page_index;
+
+extern int replayfs_report_leaks;
+
 extern int replayfs_diskalloc_debug;
 extern int replayfs_diskalloc_debug_cache;
 extern int replayfs_diskalloc_debug_full;
@@ -206,7 +210,8 @@ static void remove_from_list(struct page_data *data, struct list_head *head,
 	BUG_ON(verify_data == NULL || IS_ERR(verify_data));
 
 	list_del(head);
-	
+	INIT_LIST_HEAD(head);
+
 	btree_remove32(verify_tree, key);
 }
 #else
@@ -635,13 +640,32 @@ static struct page *alloc_get_page(struct replayfs_diskalloc *alloc, loff_t offs
 
 	atomic_inc(&gets);
 
-	do {
+	if (replayfs_report_leaks) {
 		struct timespec tv = CURRENT_TIME_SEC;
 		if (tv.tv_sec - last_print_time.tv_sec > 30) {
+			u32 key;
+			struct page_data *btree_data;
 			printk("%s %d: Alloc leak check, currently out %d pages\n", __func__, __LINE__, atomic_read(&gets) - atomic_read(&puts));
 			last_print_time = tv;
+
+			mutex_lock(&crappy_pagecache_lock);
+			printk("%s %d: Now listing all alloc'ed pages!\n", __func__, __LINE__);
+			btree_for_each_safe32(&crappy_pagecache, key, btree_data) {
+				if ((btree_data->count > 1 && !list_empty(&btree_data->lru)) || 
+						(btree_data->count >= 1 && list_empty(&btree_data->lru))) {
+					printk("\tPage %lu is allocated (data %p, page addr %p)\n",
+							btree_data->page->index, btree_data, btree_data->page);
+				}
+			}
+			mutex_unlock(&crappy_pagecache_lock);
 		}
-	} while(0);
+	}
+
+	if (data->page->index == replayfs_debug_page_index) {
+		printk("%s %d: Have allocation for page %lu, dumping stack:\n", __func__,
+				__LINE__, data->page->index);
+		dump_stack();
+	}
 
 	replayfs_pagealloc_get(data->page);
 
@@ -692,6 +716,12 @@ static void alloc_put_page(struct replayfs_diskalloc *alloc, struct page *page) 
 	lock_debugk("%s %d - %p: Locked %p\n", __func__, __LINE__, current, &crappy_pagecache_lock);
 
 	data = btree_lookup32(&crappy_pagecache, page->index);
+
+	if (data->page->index == replayfs_debug_page_index) {
+		printk("%s %d: Have allocation for page %lu, dumping stack:\n", __func__,
+				__LINE__, data->page->index);
+		dump_stack();
+	}
 
 	if (data != NULL) {
 		cache_debugk("%s %d: Got page %p\n", __func__, __LINE__, page);
