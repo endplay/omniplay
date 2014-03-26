@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
+#include <unistd.h>
 #include <glib.h>
 
 #define FILENO_STDIN        0
@@ -23,6 +24,7 @@
 #define TOK_WRITE 2
 #define TOK_EXEC 3
 #define TOK_WRITEV 4
+#define TOK_RECV 5
 struct token {
     int type;
     unsigned int token_num;
@@ -101,7 +103,11 @@ const char* get_token_type_string(int token_type)
         return "WRITE";
     } else if (token_type == TOK_EXEC) {
         return "EXEC";
-    } else {
+    } else if (token_type == TOK_WRITEV) {
+       return "WRITEV";
+    } else if (token_type == TOK_RECV) {
+        return "RECV";
+    } else { 
         return "UNK";
     }
 }
@@ -292,6 +298,16 @@ struct byte_result* create_new_byte_result(int output_type, int output_fileno, u
     byte_result->token_num = token_num;
 
     return byte_result;
+}
+
+void new_byte_result(struct byte_result* result, int output_type, int output_fileno, uint64_t rg_id, int record_pid, int syscall_cnt, int offset, unsigned int token_num) {
+    result->output_type = output_type;
+    result->output_fileno = output_fileno;
+    result->rg_id = rg_id;
+    result->record_pid = record_pid;
+    result->syscall_cnt = syscall_cnt;
+    result->offset = offset;
+    result->token_num = token_num;
 }
 
 void write_byte_result_to_file(int fd, struct byte_result* byte_result)

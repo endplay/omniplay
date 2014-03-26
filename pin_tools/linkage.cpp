@@ -26,6 +26,7 @@
 #include <sys/mman.h>
 #include <string>
 #include <sys/socket.h>
+#include <linux/net.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <linux/unistd.h>
@@ -63,10 +64,10 @@
 // #define HAVE_REPLAY
 
 // debug options
-// #define FILTER_INPUTS
+#define FILTER_INPUTS
 // #define DUMP_TAINTS
 // #define TAINT_STATS
-// #define TAINT_PROFILE
+#define TAINT_PROFILE
 
 // #define TRACK_MEMORY_AREAS
 #ifdef TRACK_MEMORY_AREAS
@@ -81,7 +82,7 @@ struct image_infos* img_list;
 #define STACK_SIZE 8388608
 
 // Logging
-#define LOGGING_ON
+//#define LOGGING_ON
 #define LOG_F log_f
 #define MEM_F log_f
 #define TRACE_F trace_f
@@ -114,7 +115,7 @@ struct image_infos* img_list;
     fprintf(LOG_F, args);       \
     fflush(LOG_F);              \
 }
-// #define INSTRUMENT_PRINT fflush(log_f); fprintf
+//#define INSTRUMENT_PRINT fflush(log_f); fprintf
 #define INSTRUMENT_PRINT(x,...);
 #else
 #define WARN_PRINT(args...)
@@ -126,22 +127,23 @@ struct image_infos* img_list;
 
 // produce a trace of calls and rets
 // #define TRACE_TAINTS
-// Used for debugging taints
-// #define DEBUG_TAINT
-// #define FOLLOW_TAINT 
-#ifdef FOLLOW_TAINT
-int print_functions_read = 0;
-int print_functions_write = 1;
-int print_function_comp = 0;
-#endif
 
-#define CURRENT_INSTRUCTION 0x80a136c
-#define CURRENT_FUNCTION 0x806c481
-#define TAINT_LOCATION 0x98b3655
-#define TAINT_TRACK
+//#define TAINT_LOCATION 0x98b3655
+//#define TAINT_TRACK
 
-//#define TAINT_CONDITION (ptdata->current_function == CURRENT_FUNCTION)
-#define TAINT_CONDITION (global_syscall_cnt >= 2056 && global_syscall_cnt < 2057)
+/* TRACK_OPTION: Print whenever we're moving taint assocation with option INTERESTED_OPTION */
+// LOG_PRINT needs to be on
+//#define TRACK_OPTION
+//#define INTERESTED_OPTION 22
+
+#define TRACK_FUNC_ARGS
+#define TRACK_FUNC_COND global_syscall_cnt >= 70585 && global_syscall_cnt < 73000
+
+/* DEBUG_TAINT: Prints out all taint operations when TAINT_CONDITION is met */
+// LOG_PRINT needs to be on
+//#define DEBUG_TAINT
+//#define TAINT_CONDITION (0)
+#define TAINT_CONDITION (global_syscall_cnt >= 5027 && global_syscall_cnt < 5042)
 #ifdef DEBUG_TAINT
 #define TAINT_PRINT(args...) \
 {                           \
@@ -419,6 +421,7 @@ struct thread_data {
 #endif
     struct handled_function syscall_taint_info; // saved info for propagating taint across syscall
     void* save_syscall_info;        // info to be saved across syscalls
+    int socketcall;
     int syscall_handled;            // flag to indicate if a syscall is handled at the glibc wrapper instead
     uint64_t rg_id;                 // record group id
 #ifdef HAVE_REPLAY
@@ -531,7 +534,7 @@ KNOB<string> KnobStaticAnalysisPath(KNOB_MODE_WRITEONCE, "pintool", "s", "/tmp/s
 KNOB<string> KnobTurnOffReplay(KNOB_MODE_WRITEONCE, "pintool", "n", "0", "standalone, no replay when compiled with replay support");
 KNOB<string> KnobErrorRegex(KNOB_MODE_WRITEONCE, "pintool", "e", "blahblabhablahbalh", "error regex to match against");
 #ifdef FILTER_INPUTS
-KNOB<string> KnobInputFileFilter(KNOB_MODE_WRITEONCE, "pintool", "f", "poster.bib", "input file to only create taints from");
+KNOB<string> KnobInputFileFilter(KNOB_MODE_WRITEONCE, "pintool", "f", "papers/example_paper/poster.dvi", "input file to only create taints from");
 #endif
 
 #ifdef CONFAID
@@ -1036,7 +1039,7 @@ inline void increment_syscall_cnt (struct thread_data* ptdata, int syscall_num)
         global_syscall_cnt++;
     } else {
         // ignore pthread syscalls, or deterministic system calls that we don't log (e.g. 243, 244)
-        if (!(syscall_num == 17 || syscall_num == 31 || syscall_num == 32 || syscall_num == 35 || syscall_num == 44 || syscall_num == 53 || syscall_num == 56 || syscall_num == 98 || syscall_num == 243 || syscall_num == 244)) {
+        if (!(syscall_num == 17 || syscall_num == 31 || syscall_num == 32 || syscall_num == 35 || syscall_num == 44 || syscall_num == 53 || syscall_num == 56 || syscall_num == 98 || syscall_num == 119 || syscall_num == 243 || syscall_num == 244)) {
             if (ptdata->ignore_flag) {
                 if (!(*(int *)(ptdata->ignore_flag))) {
                     global_syscall_cnt++;
@@ -1497,6 +1500,13 @@ inline void taint_track_locations(const char* name, ADDRINT loc, int size)
 }
 #endif // TAINT_TRACK
 
+#ifdef TRACK_OPTION
+int check_track_option(struct taint* vector) {
+    if (!vector) return 0;
+    return get_taint_value(vector, INTERESTED_OPTION);
+}
+#endif
+
 inline int content_non_pointer(ADDRINT reg_value)
 {
     if ((unsigned)reg_value >= 1000) {
@@ -1537,9 +1547,14 @@ void taint_mem2reg (ADDRINT mem_loc, UINT32 size, REG reg)
 #ifdef TAINT_PROFILE
             global_profile->stats_mem2reg[STATS_SET]++;
 #endif
+#ifdef TRACK_OPTION
+            if (check_track_option(vector)) {
+                LOG_PRINT("[TRACK] mem %#x to reg %d\n", mem_loc + i, reg);
+            }
+#endif
         }
     }
-    TAINT_PRINT ("taint_mem2reg: reg is: ");
+    TAINT_PRINT ("taint_mem2reg: reg %s is: ", REG_StringShort(reg).c_str());
     TAINT_PRINT_DEP_VECTOR (get_reg_taint(reg));
 
 #ifdef TAINT_TRACK
@@ -1673,6 +1688,9 @@ void taint_whole_reg2mem (ADDRINT mem_loc, ADDRINT eflags, ADDRINT reg_value, UI
 #ifdef TAINT_TRACK
     taint_track_locations("taint_whole_reg2mem", mem_loc, size);
 #endif
+#ifdef TAINT_PROFILE
+    increment_taint_count(global_profile, STATS_TAINT_WHOLEREG2MEM);
+#endif
     RELEASE_GLOBAL_LOCK (ptdata);
 }
 
@@ -1742,6 +1760,11 @@ void taint_whole_mem2mem(ADDRINT src_mem_loc, ADDRINT dst_mem_loc, ADDRINT eflag
         if(vector) {
             tainted++;
             mem_mod_dependency(ptdata, dst_mem_loc + i*dir, vector, SET, 1);    
+#ifdef TRACK_OPTION
+            if (check_track_option(vector)) {
+                LOG_PRINT("[TRACK] mem %#x to mem %#x\n", src_mem_loc + i*dir, dst_mem_loc + i*dir);
+            }
+#endif
         } else {
             mem_clear_dependency(ptdata, dst_mem_loc + i*dir);
         }
@@ -1806,6 +1829,11 @@ void taint_reg2mem (ADDRINT mem_loc, UINT32 size, REG reg)
             TAINT_PRINT_DEP_VECTOR (get_mem_taint(mem_loc + i));
 #ifdef TAINT_PROFILE
             global_profile->stats_reg2mem[STATS_SET]++;
+#endif
+#ifdef TRACK_OPTION
+            if (check_track_option(vector)) {
+                LOG_PRINT("[TRACK] reg %d to mem %#x\n", reg, mem_loc + i);
+            }
 #endif
         }
     } else {
@@ -2016,6 +2044,11 @@ void taint_reg2reg (REG dst_reg, REG src_reg)
 #ifdef TAINT_PROFILE
         global_profile->stats_reg2reg[STATS_SET]++;
 #endif
+#ifdef TRACK_OPTION
+        if (check_track_option(vector)) {
+            LOG_PRINT("[TRACK] reg %d to reg %d\n", src_reg, dst_reg);
+        }
+#endif
     } else {
         reg_clear_dependency(ptdata, dst_reg);
 #ifdef TAINT_PROFILE
@@ -2070,6 +2103,8 @@ void taint_immval2mem (ADDRINT mem_loc, UINT32 size, int mode)
             mem_clear_dependency(ptdata, mem_loc + i);
         }
     }
+
+    TAINT_PRINT ("taint_immval2mem: mem %#x, size %u\n", mem_loc, size);
 #ifdef TAINT_PROFILE
     increment_taint_count(global_profile, STATS_TAINT_IMMVAL2MEM);
 #endif
@@ -2091,6 +2126,11 @@ void taint_add_reg2mem (ADDRINT mem_loc, UINT32 size, REG reg)
             mem_mod_dependency(ptdata, mem_loc + i, vector, MERGE, 1);    
 #ifdef TAINT_PROFILE
             global_profile->stats_add_reg2mem[STATS_SET]++;
+#endif
+#ifdef TRACK_OPTION
+            if (check_track_option(vector)) {
+                LOG_PRINT("[TRACK] add reg %d to mem %#x\n", reg, mem_loc +i);
+            }
 #endif
         }
         TAINT_PRINT_DEP_VECTOR(vector);
@@ -2130,6 +2170,11 @@ void taint_add_mem2reg (ADDRINT mem_loc, UINT32 size, REG reg)
 #ifdef TAINT_TRACK
             taint_track_locations("taint_add_mem2reg", mem_loc, (int)size);
 #endif
+#ifdef TRACK_OPTION
+            if (check_track_option(vector)) {
+                LOG_PRINT("[TRACK] add mem %#x to reg %d\n", mem_loc + i, reg);
+            }
+#endif
 #ifdef TAINT_PROFILE
             global_profile->stats_add_mem2reg[STATS_SET]++;
 #endif
@@ -2156,6 +2201,11 @@ void taint_add_reg2reg (REG dst_reg, REG src_reg)
 #ifdef TAINT_PROFILE
         global_profile->stats_add_reg2reg[STATS_SET]++;
 #endif
+#ifdef TRACK_OPTION
+        if (check_track_option(vector)) {
+            LOG_PRINT("[TRACK] add reg %d to reg %d\n", src_reg, dst_reg);
+        }
+#endif
     }
 #ifdef CTRL_FLOW
     else if (CTRFLOW_TAINT_STACK->prev != 0) {
@@ -2174,6 +2224,7 @@ void taint_mem_reg_mov(ADDRINT mem_loc, UINT32 size, REG addr_reg, REG dst_reg, 
 
     GRAB_GLOBAL_LOCK (ptdata);
 
+    TAINT_PRINT("addr_val is %#x\n", addr_val);
     if (content_non_pointer(addr_val)) {
         taint_reg2reg(dst_reg, addr_reg);
         taint_add_mem2reg(mem_loc, size, dst_reg);
@@ -3989,7 +4040,7 @@ void instrument_movaps(INS ins)
         MYASSERT (INS_IsMemoryWrite(ins));
         REG src_reg = INS_OperandReg(ins, 1);
         addrsize = INS_MemoryWriteSize(ins);
-        INSTRUMENT_PRINT (log_f, "instrument movaps src reg %d, mem write size %u\n", dst_reg, addrsize);
+        INSTRUMENT_PRINT (log_f, "instrument movaps src reg %d, mem write size %u\n", src_reg, addrsize);
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(taint_reg2mem), IARG_MEMORYWRITE_EA, IARG_UINT32, addrsize, IARG_UINT32, src_reg, IARG_END);
     } else if (op1mem && op2mem) {
         MYASSERT (INS_IsMemoryRead(ins));
@@ -6610,6 +6661,7 @@ inline void __sys_read_stop(struct thread_data* ptdata, int rc) {
         oi = (struct open_info *)monitor_get_fd_data(open_fds, ri->fd);
         read_fileno = oi->fileno;
         LOG_PRINT ("read into %#lx, size %d, file is %s, option cnt is %d\n", (unsigned long) ri->buf, rc, oi->name, option_cnt);
+        fprintf (stderr, "read into %#lx, size %d, file is %s, option cnt is %d\n", (unsigned long) ri->buf, rc, oi->name, option_cnt);
 #ifdef TAINT_IMPL_INDEX
         LOG_PRINT ("  index cnt is %lu\n", get_unique_taint_count());
 #endif
@@ -6617,7 +6669,9 @@ inline void __sys_read_stop(struct thread_data* ptdata, int rc) {
         read_fileno = 0;
     }
 #ifdef FILTER_INPUTS
-    if (oi && !strncmp(input_file_name, oi->name, 256)) {
+    fprintf(stderr, "read is number %d\n", global_syscall_cnt);
+    //if (oi && !strncmp(input_file_name, oi->name, 256)) {
+    if (global_syscall_cnt == 70585) {
         create_options_from_buffer (TOK_READ, global_syscall_cnt, (void *) ri->buf, rc, 0, read_fileno);
     }
 #else
@@ -6674,6 +6728,35 @@ inline void __sys_read_stop(struct thread_data* ptdata, int rc) {
         }
     }
 #endif
+    free(ri);
+    ptdata->save_syscall_info = 0;
+}
+
+inline void __sys_recv_start(struct thread_data* ptdata, int fd, char* buf, int size) {
+    // recv and read are similar so they can share the same info struct
+    struct read_info* ri = (struct read_info *) malloc(sizeof(struct read_info));
+    ri->fd = fd;
+    ri->buf = buf;
+    ptdata->save_syscall_info = (void *) ri;
+    LOG_PRINT ("recv on fd %d\n", fd);
+}
+
+inline void __sys_recv_stop(struct thread_data* ptdata, int rc) {
+    struct read_info* ri = (struct read_info *) ptdata->save_syscall_info;
+    LOG_PRINT ("Pid %d syscall recv returns %d\n", PIN_GetPid(), rc);
+    // new tokens created here
+    int read_fileno = -1;
+    if(ri->fd == fileno(stdin)) {
+        read_fileno = 0;
+    }
+#ifdef FILTER_INPUTS
+    // TODO support filtering on certain sockets
+    if (global_syscall_cnt == 70585) {
+    create_options_from_buffer (TOK_RECV, global_syscall_cnt, (void *) ri->buf, rc, 0, read_fileno);
+    }
+#else
+    create_options_from_buffer (TOK_RECV, global_syscall_cnt, (void *) ri->buf, rc, 0, read_fileno);
+#endif // FILTER_INPUTS
     free(ri);
     ptdata->save_syscall_info = 0;
 }
@@ -6859,6 +6942,19 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT syscallarg1, ADDRINT syscal
         case SYS_writev:
             __sys_writev_start(ptdata, (int)syscallarg1, (struct iovec *)syscallarg2, (int) syscallarg3);
             break;
+        case SYS_socketcall:
+            {
+                int call = (int)syscallarg1;
+                unsigned long *args = (unsigned long *)syscallarg2;
+                ptdata->socketcall = call;
+                switch (call) {
+                    case SYS_RECV:
+                    case SYS_RECVFROM:
+                        __sys_recv_start(ptdata, (int)args[0], (char *)args[1], (int)args[2]);
+                        break;
+                }
+                break;
+            }
         case SYS_mmap:
         case SYS_mmap2:
             {
@@ -6940,6 +7036,18 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
         case SYS_writev:
             __sys_writev_stop(ptdata, (int) ret_value);
             break;
+        case SYS_socketcall:
+            {
+                int call = ptdata->socketcall;
+                switch (call) {
+                    case SYS_RECV:
+                    case SYS_RECVFROM:
+                        __sys_recv_stop(ptdata, (int) ret_value);
+                        break;
+                }
+                ptdata->socketcall = 0;
+                break;    
+            }
         case SYS_mmap:
         case SYS_mmap2:
             {
@@ -7034,10 +7142,12 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
 
 #ifdef TAINT_PROFILE
 #ifdef TAINT_IMPL_INDEX
-    // mark_and_sweep_unused_taints();
-    char header[256];
-    snprintf(header, 256, "At syscall %d", global_syscall_cnt);
-    print_summary_stats(stderr, header);
+    if (TAINT_CONDITION) {
+        //mark_and_sweep_unused_taints();
+    }
+    //char header[256];
+    //snprintf(header, 256, "At syscall %d", global_syscall_cnt);
+    //print_summary_stats(stderr, header);
 #endif
 #endif
     
@@ -8115,7 +8225,7 @@ void instrument_inst(ADDRINT inst_ptr, ADDRINT next_addr, ADDRINT target, ADDRIN
 #endif
     }
 
-    #if 0
+#ifdef DEBUG_TAINT
     if (TAINT_CONDITION) {
         PIN_LockClient();
         fprintf(LOG_F, "[INST] Pid %d (tid: %d) (record %d) - %#x\n", PIN_GetPid(), PIN_GetTid(), get_record_pid(), inst_ptr);
@@ -8126,7 +8236,7 @@ void instrument_inst(ADDRINT inst_ptr, ADDRINT next_addr, ADDRINT target, ADDRIN
             PIN_UnlockClient();
         }
     }
-    #endif
+#endif
 
     // Count instructios
     inst_count++;
@@ -8137,18 +8247,6 @@ void instrument_inst(ADDRINT inst_ptr, ADDRINT next_addr, ADDRINT target, ADDRIN
         print_static_instruction(log_f, inst_ptr);
 
     }
-    /*
-#ifdef TAINT_IMPL_INDEX
-    if (inst_count > 90358000 && inst_count <= 903600000) {
-        print_static_instruction(log_f, inst_ptr);
-        mark_and_sweep_unused_taints();
-    } 
-    if (inst_count == 90360000 || inst_count == 90355000 || inst_count == 90357000 || inst_count == 90358000) {
-        LOG_PRINT("inst count is %lu\n", inst_count);
-        mark_and_sweep_unused_taints();
-    }
-#endif
-*/
 #endif
 
     RELEASE_GLOBAL_LOCK (ptdata);
@@ -8636,26 +8734,26 @@ void track_file(INS ins, void *v)
             case XED_ICLASS_PCMPEQD:
             case XED_ICLASS_PCMPGTB:
 #ifdef LINKAGE_DATA
-                INSTRUMENT_PRINT(log_f, "%#x: about to instrument PCMPEQB\n", INS_address(ins));
+                INSTRUMENT_PRINT(log_f, "%#x: about to instrument PCMPEQB\n", INS_Address(ins));
                 instrument_pcmpeqx(ins);
 #endif
                 break;
             case XED_ICLASS_PSHUFD:
 #ifdef LINKAGE_DATA
-                INSTRUMENT_PRINT(log_f, "%#x: about to instrument PSHUFD\n", INS_address(ins));
+                INSTRUMENT_PRINT(log_f, "%#x: about to instrument PSHUFD\n", INS_Address(ins));
                 instrument_set_src2dst(ins);
 #endif
                 break;
             case XED_ICLASS_PMOVMSKB:
 #ifdef LINKAGE_DATA
-                INSTRUMENT_PRINT(log_f, "%#x: about to instrument PMOVMSKB\n", INS_address(ins));
+                INSTRUMENT_PRINT(log_f, "%#x: about to instrument PMOVMSKB\n", INS_Address(ins));
                 instrument_set_src2dst(ins);
 #endif
                 break;
 
             case XED_ICLASS_PALIGNR:
 #ifdef LINKAGE_DATA
-                INSTRUMENT_PRINT(log_f, "%#x: about to instrument PALIGNR\n", INS_address(ins));
+                INSTRUMENT_PRINT(log_f, "%#x: about to instrument PALIGNR\n", INS_Address(ins));
                 instrument_palign(ins);
 #endif
                 break;
@@ -8665,7 +8763,7 @@ void track_file(INS ins, void *v)
             case XED_ICLASS_PSLLQ:
             case XED_ICLASS_PSLLDQ:
 #ifdef LINKAGE_DATA
-                INSTRUMENT_PRINT(log_f, "%#x: about to instrument PSLLX\n", INS_address(ins));
+                INSTRUMENT_PRINT(log_f, "%#x: about to instrument PSLLX\n", INS_Address(ins));
                 instrument_psllx(ins);
 #endif
                 break;
@@ -8673,7 +8771,7 @@ void track_file(INS ins, void *v)
             case XED_ICLASS_PSRAD:
             case XED_ICLASS_PSRAW:
 #ifdef LINKAGE_DATA
-                INSTRUMENT_PRINT(log_f, "%#x: about to instrument PSRAD:\n", INS_address(ins));
+                INSTRUMENT_PRINT(log_f, "%#x: about to instrument PSRAD:\n", INS_Address(ins));
                 instrument_psllx(ins);
 #endif
                 break;
@@ -8681,7 +8779,7 @@ void track_file(INS ins, void *v)
             case XED_ICLASS_PACKSSDW:
 #ifdef LINKAGE_DATA
 
-                INSTRUMENT_PRINT(log_f, "%#x: about to instrument PACKSSDW:\n", INS_address(ins));
+                INSTRUMENT_PRINT(log_f, "%#x: about to instrument PACKSSDW:\n", INS_Address(ins));
                 instrument_paddx_or_psubx(ins);
 #endif
                 break;
@@ -8857,6 +8955,8 @@ void track_file(INS ins, void *v)
             case XED_ICLASS_MOVAPS:
             case XED_ICLASS_MOVLPD:
             case XED_ICLASS_MOVHPD:
+            case XED_ICLASS_MOVNTDQA:
+            case XED_ICLASS_MOVNTDQ:
 #ifdef LINKAGE_DATA
                 instrument_movaps(ins);
 #endif
@@ -8883,15 +8983,14 @@ void track_file(INS ins, void *v)
 #endif
                 break;
 
-            case XED_ICLASS_CPUID:
-                INSTRUMENT_PRINT(log_f, "%#x: not instrument cpuid\n", INS_Address(ins));
-                break;
 
+#ifdef LINKAGE_FPU
             case XED_ICLASS_FLD:
             case XED_ICLASS_FILD:
                 INSTRUMENT_PRINT(log_f, "%#x: about to instrument %s, address: %#x\n", INS_Disassemble(ins).c_str(), (unsigned)INS_Address(ins));
                 instrument_fld(ins);
                 break;
+#endif
 
             case XED_ICLASS_FST:
 #ifdef LINKAGE_FPU
@@ -8908,6 +9007,13 @@ void track_file(INS ins, void *v)
 #endif
                 break;
 
+            case XED_ICLASS_CPUID:
+                INSTRUMENT_PRINT(log_f, "%#x: not instrument cpuid\n", INS_Address(ins));
+                break;
+            case XED_ICLASS_LFENCE:
+            case XED_ICLASS_SFENCE:
+                INSTRUMENT_PRINT(log_f, "%#x: sfence/lfence not instrument\n", INS_Address(ins));
+                break;
             default:
                 {
                     // these types of instructions are purposefully left uninstrumented
@@ -11835,15 +11941,73 @@ void inspect_function_args_stop(ADDRINT name, ADDRINT res)
 #endif
 }
 
+
+#ifdef PRINT_FUNCTION_CALLS
+void print_function_calls_before(ADDRINT name, ADDRINT address) {
+    if (PRINT_FUNCTION_COND) {
+        fprintf(stderr, "call %s %#x\n", (char *) name, address);
+    }
+}
+void print_function_calls_after(ADDRINT name, ADDRINT address) {
+    if (PRINT_FUNCTION_COND) {
+        fprintf(stderr, "ret %s %#x\n", (char *) name, address);
+    }
+}
+#endif
+#ifdef TRACK_FUNC_ARGS
+void track_function_args_before(ADDRINT name, ADDRINT address, ADDRINT arg0, ADDRINT arg1, ADDRINT arg2) {
+    //struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+    if (TRACK_FUNC_COND) {
+        char* funcname = (char *) name;
+        struct taint* vector;
+        vector = get_mem_taint(arg0);
+        if (vector && !is_taint_zero(vector)) {
+            fprintf(stderr, "func %s arg0 has taint\n", funcname);
+        }
+        vector = get_mem_taint(arg1);
+        if (vector && !is_taint_zero(vector)) {
+            fprintf(stderr, "func %s arg1 has taint\n", funcname);
+        }
+        vector = get_mem_taint(arg2);
+        if (vector && !is_taint_zero(vector)) {
+            fprintf(stderr, "func %s arg2 has taint\n", funcname);
+        }
+    }
+}
+#endif
+
 void track_function(RTN rtn, void* v) 
 {
     RTN_Open(rtn);
-#ifdef LINKAGE_SYSCALL
+#if defined(LINKAGE_SYSCALL) || defined(DEBUG_TAINT) || defined(TRACK_FUNC_ARGS) || defined(PRINT_FUNCTION_CALLS)
     const char* name = RTN_Name(rtn).c_str();
 #endif
 #ifdef DEBUG_TAINT
-    const char* name = RTN_Name(rtn).c_str();
     RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)instrument_current_function, IARG_PTR, name, IARG_PTR, RTN_Address(rtn), IARG_END);
+#endif
+#ifdef TRACK_FUNC_ARGS
+    RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)track_function_args_before,
+            IARG_PTR, name,
+            IARG_PTR, RTN_Address(rtn),
+            IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
+            IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
+            IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
+            IARG_END);
+    /*
+    RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)track_function_args_after,
+            IARG_PTR, RTN_Address(rtn),
+            IARG_END);
+            */
+#endif
+#ifdef PRINT_FUNCTION_CALLS
+    RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)print_function_calls_before,
+            IARG_PTR, name,
+            IARG_PTR, RTN_Address(rtn),
+	    IARG_END);
+    RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)print_function_calls_after,
+            IARG_PTR, name,
+            IARG_PTR, RTN_Address(rtn),
+	    IARG_END);
 #endif
 
 #ifdef CONFAID
@@ -12456,8 +12620,30 @@ void track_trace(TRACE trace, void* data)
 
 BOOL follow_child(CHILD_PROCESS child, void* data)
 {
-    // FIXME
-    fprintf(stderr, "ERROR: following exec NEEDS to be FIXED\n");
+    char** argv;
+    char** prev_argv = (char**)data;
+    int index = 0;
+
+    fprintf(stderr, "following child...\n");
+
+    /* the format of pin command would be:
+     * pin_binary -follow_execv -t pin_tool new_addr*/
+    int new_argc = 5;
+    argv = (char**) malloc(sizeof(char*) * new_argc);
+
+    argv[0] = prev_argv[index++];                   // pin
+    argv[1] = (char *) "-follow_execv";
+    while(strcmp(prev_argv[index], "-t")) index++;
+    argv[2] = prev_argv[index++];
+    argv[3] = prev_argv[index++];
+    argv[4] = (char *) "--";
+
+    for(int i = 0; i < new_argc; i++) {
+        fprintf(stderr, "argv[%d] %s\n", i, argv[i]);
+    }
+
+    CHILD_PROCESS_SetPinCommandLine(child, new_argc, argv);
+
     return TRUE;
 }
 
@@ -12585,7 +12771,7 @@ void mark_and_sweep_unused_taints()
     struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
     GRAB_GLOBAL_LOCK (ptdata);
 
-    int num_indices = idx_cnt;
+    int num_indices = option_cnt;
     char flags[num_indices];
     char* new_cleaned;
     memset(flags, 0, num_indices);
@@ -12638,12 +12824,12 @@ void mark_and_sweep_unused_taints()
         if (!flags[i]) { // not being used
             if (i >= cleaned_idx_size) {
                 LOG_PRINT ("clean idx %d\n", i);
-                remove_index(i);
+                //remove_index(i);
             } else {
                 if (!cleaned_idx[i]) {
                     // hasn't been cleaned before
                     LOG_PRINT ("clean idx %d\n", i);
-                    remove_index(i);
+                    //remove_index(i);
                 }
             }
             new_cleaned[i] = 1;
@@ -12689,6 +12875,9 @@ void fini(INT32 code, void* v) {
     struct tm* tm = localtime(&t);
     fprintf(stderr, "process %d in fini\n", PIN_GetPid());
     fprintf(stderr, "time is: %d:%d:%d\n", tm->tm_hour, tm->tm_min, tm->tm_sec);
+    long count;
+    count = count_tainted_addresses();
+    fprintf(stderr, "Tainted addresses: %ld\n", count);
 
 #ifdef TAINT_IMPL_INDEX
     fprintf(stderr, "option cnt is %d\n", option_cnt);

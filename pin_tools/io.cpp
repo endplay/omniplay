@@ -10,7 +10,6 @@
 #include <arpa/inet.h>
 #include <syscall.h>
 #include "util.h"
-#include <sys/socket.h>
 #include <linux/net.h>
 #include <sys/mman.h>
 #include <errno.h>
@@ -256,7 +255,7 @@ inline
 void increment_syscall_cnt (struct thread_data* ptdata, int syscall_num)
 {
     // ignore pthread syscalls, or deterministic system calls that we don't log (e.g. 243, 244)
-    if (!(syscall_num == 17 || syscall_num == 31 || syscall_num == 32 || syscall_num == 35 || syscall_num == 44 || syscall_num == 53 || syscall_num == 56 || syscall_num == 98 || syscall_num == 243 || syscall_num == 244)) {
+    if (!(syscall_num == 17 || syscall_num == 31 || syscall_num == 32 || syscall_num == 35 || syscall_num == 44 || syscall_num == 53 || syscall_num == 56 || syscall_num == 98 || syscall_num == 119 || syscall_num == 243 || syscall_num == 244)) {
         if (ptdata->ignore_flag) {
             if (!(*(int *)(ptdata->ignore_flag))) {
                 ptdata->syscall_cnt++;

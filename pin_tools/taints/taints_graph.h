@@ -127,6 +127,7 @@ inline TAINT_TYPE get_max_taint_value(void) {
 
 inline TAINT_TYPE get_taint_value(struct taint* t, OPTION_TYPE option) {
     GQueue* queue = g_queue_new();
+    GHashTable* seen_indices = g_hash_table_new(g_direct_hash, g_direct_equal);
     struct node* n = t->id;
     g_queue_push_tail(queue, n);
     TAINT_TYPE found = 0;
@@ -140,11 +141,20 @@ inline TAINT_TYPE get_taint_value(struct taint* t, OPTION_TYPE option) {
                 break;
             }
         } else {
+            if (g_hash_table_lookup(seen_indices, GUINT_TO_POINTER(n->parent1))) {
+                continue;
+            }
+            if (g_hash_table_lookup(seen_indices, GUINT_TO_POINTER(n->parent2))) {
+                continue;
+            }
+            g_hash_table_insert(seen_indices, GUINT_TO_POINTER(n->parent1), GINT_TO_POINTER(1));
+            g_hash_table_insert(seen_indices, GUINT_TO_POINTER(n->parent2), GINT_TO_POINTER(1));
             g_queue_push_tail(queue, n->parent1);
             g_queue_push_tail(queue, n->parent2);
         }
     }
     g_queue_free(queue);
+    g_hash_table_destroy(seen_indices);
     return found;
 }
 
@@ -201,8 +211,10 @@ inline void merge_taints(struct taint* dst, struct taint* src) {
         dst->id = src->id;
         return;
     }
+    if (src->id == 0) {
+        return;
+    }
     if (!src->id) {
-        dst->id = 0;
         return;
     }
     if (dst->id == src->id) {
@@ -242,8 +254,8 @@ inline void merge_taints(struct taint* dst, struct taint* src) {
     dst->id->prev_merged_with = src->id;
     dst->id->prev_merged_result = n;
 #endif
+    //fprintf(stderr, "merge (%lu, %lu) result: %lu\n", (unsigned long) dst->id, (unsigned long) src->id, (unsigned long) n);
     dst->id = n;
-
 }
 
 void shift_taints(struct taint* dst, struct taint* src, int level) {
@@ -264,6 +276,7 @@ void print_taint(FILE* fp, struct taint* src) {
         fprintf(fp, "id {0}\n");
     } else {
         GQueue* queue = g_queue_new();
+        GHashTable* seen_indices = g_hash_table_new(g_direct_hash, g_direct_equal);
         struct node* n = src->id;
 
         fprintf(fp, "id {");
@@ -273,35 +286,67 @@ void print_taint(FILE* fp, struct taint* src) {
 
             if (!n->parent1 && !n->parent2) { // leaf node
                 struct leafnode* ln = (struct leafnode *) n;
+                if (g_hash_table_lookup(seen_indices, GUINT_TO_POINTER(n))) {
+                    continue;
+                }
+                g_hash_table_insert(seen_indices, GUINT_TO_POINTER(n), GINT_TO_POINTER(1));
                 fprintf(fp, "%lu,", (unsigned long) ln->option);
             } else {
+                if (g_hash_table_lookup(seen_indices, GUINT_TO_POINTER(n->parent1))) {
+                    continue;
+                }
+                if (g_hash_table_lookup(seen_indices, GUINT_TO_POINTER(n->parent2))) {
+                    continue;
+                }
+                g_hash_table_insert(seen_indices, GUINT_TO_POINTER(n->parent1), GINT_TO_POINTER(1));
+                g_hash_table_insert(seen_indices, GUINT_TO_POINTER(n->parent2), GINT_TO_POINTER(1));
                 g_queue_push_tail(queue, n->parent1);
                 g_queue_push_tail(queue, n->parent2);
             }
         }
         g_queue_free(queue);
+        g_hash_table_destroy(seen_indices);
         fprintf(fp, "}\n");
     }
 }
 
 /* Compute the taints in the index */
 GList* get_non_zero_taints(struct taint* t) {
+    int queue_len = 0;
+    GHashTable* seen_indices = g_hash_table_new(g_direct_hash, g_direct_equal);
     GList* list = NULL;
     GQueue* queue = g_queue_new();
     struct node* n = t->id;
+
     g_queue_push_tail(queue, n);
     while(!g_queue_is_empty(queue)) {
         n = (struct node *) g_queue_pop_head(queue);
 
         if (!n->parent1 && !n->parent2) { // leaf node
             struct leafnode* ln = (struct leafnode *) n;
+            if (g_hash_table_lookup(seen_indices, GUINT_TO_POINTER(n))) {
+                continue;
+            }
             list = g_list_prepend(list, GUINT_TO_POINTER(ln->option));
+            g_hash_table_insert(seen_indices, GUINT_TO_POINTER(n), GINT_TO_POINTER(1));
         } else {
+            if (g_hash_table_lookup(seen_indices, GUINT_TO_POINTER(n->parent1))) {
+                continue;
+            }
+            if (g_hash_table_lookup(seen_indices, GUINT_TO_POINTER(n->parent2))) {
+                continue;
+            }
+            g_hash_table_insert(seen_indices, GUINT_TO_POINTER(n->parent1), GINT_TO_POINTER(1));
+            g_hash_table_insert(seen_indices, GUINT_TO_POINTER(n->parent2), GINT_TO_POINTER(1));
             g_queue_push_tail(queue, n->parent1);
             g_queue_push_tail(queue, n->parent2);
+
+            queue_len += 2;
         }
     }
+
     g_queue_free(queue);
+    g_hash_table_destroy(seen_indices);
     return list;
 }
 
