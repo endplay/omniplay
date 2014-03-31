@@ -34,7 +34,11 @@ void destroy_taint(struct taint* vector) {
     free(vector);
 }
 
-#define get_taint_value(vector, option) { ((vector)->id == option); }
+//#define get_taint_value(vector, option) { ((vector)->id == option); }
+inline int get_taint_value(struct taint* t, OPTION_TYPE option)
+{
+    return t->id == option;
+}
 #define set_taint_value(vector, option, value) { (vector)->id = option; }
 
 inline int is_taint_equal(struct taint* first, struct taint* second) {
@@ -68,13 +72,15 @@ inline int get_num_taint_values(struct taint* src) {
 #define clear_taint(dst) { (dst)->id = 0; }
 #define set_taint(dst, src) { (dst)->id = (src)->id; }
 #define __merge_taints(dst, src) { \
-	if ((dst)->id != (src)->id && (src)->id != 0) { \
-		(dst)->id = 0; \
-	} \
+    if ((dst)->id != (src)->id && (src)->id != 0) { \
+        (dst)->id = 0; \
+    } \
 }
 inline void merge_taints(struct taint* dst, struct taint* src) {
-    if (!dst || !src) return;    
-    __merge_taints (dst, src);
+    //if (!dst || !src) return;    
+    //__merge_taints (dst, src);
+    if (!dst) return;
+    dst->id = 0;
 }
 
 void copy_taint(struct taint* dst, struct taint* src) {
@@ -103,6 +109,11 @@ GList* get_non_zero_taints(struct taint* src) {
         taint_list = g_list_append(taint_list, GINT_TO_POINTER(src->id));
     }
     return taint_list;
+}
+
+inline unsigned long get_unique_taint_count(void) {
+    // XXX need to implement
+    return 0;
 }
 
 #ifdef __cplusplus
