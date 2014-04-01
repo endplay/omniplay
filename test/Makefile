@@ -3,7 +3,10 @@ LDFLAGS := -Wall -Werror -g
 
 KERN_CONFIG := replay_headers/include/linux/replay_configs.h
 
-all: libutil.a parseklog parseulog parsemlog launcher resume parseckpt getstats filemap # parseelog
+TARGETS=libutil.a parseklog parseulog parsemlog launcher resume parseckpt getstats filemap
+ # parseelog
+
+all: $(TARGETS)
 
 parseklog: parseklog.c $(KERN_COFNIG)
 	gcc parseklog.c -o parseklog -Wall -Werror -g
@@ -37,4 +40,4 @@ libutil.a: util.o
 	ranlib libutil.a
 
 clean:
-	rm *.a *.o
+	rm -f *.a *.o $(TARGETS)
