@@ -91,8 +91,10 @@ void replayfs_btree128_free(void *element, void *pool_data);
  * When this function is used, there is no need to destroy
  * the mempool.
  */
+/*
 void replayfs_btree128_init_allocator(struct replayfs_btree128_head *head, struct
 		replayfs_diskalloc *allocator);
+*/
 
 /**
  * btree_init - initialise a btree
