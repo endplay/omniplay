@@ -77,6 +77,8 @@ int replayfs_syscache_init(struct replayfs_syscall_cache *cache,
 	if (needs_init) {
 		debugk("%s %d: REPLAYFS_BTREE128 CREATE BEING CALLED!!!\n", __func__,
 				__LINE__);
+		printk("%s %d: Doing btree128 create on %p, %lld\n", __func__, __LINE__,
+				&cache->entries, meta_pos);
 		rc = replayfs_btree128_create(&cache->entries, allocator, meta_pos);
 	} else {
 		debugk("%s %d: Doing btree128 init\n", __func__, __LINE__);

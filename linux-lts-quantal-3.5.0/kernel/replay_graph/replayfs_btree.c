@@ -78,6 +78,10 @@ extern int btree_print;
 /* #define NODESIZE MAX(L1_CACHE_BYTES, 128) */
 #define NODESIZE MAX(L1_CACHE_BYTES, PAGE_SIZE)
 
+static struct replayfs_btree_value *replayfs_btree_lookup_internal(
+		struct replayfs_btree_head *head, loff_t pos,
+		struct replayfs_btree_key *key, struct page **ret_page);
+
 struct replayfs_btree_value replayfs_zero_value = {
 	.id = {
 		.unique_id = -1,
@@ -101,10 +105,17 @@ struct btree_geo replayfs_geo = {
 	.no_longs = 2 * LONG_PER_U64 * (NODESIZE / sizeof(long) / (VALSIZELONGS + 2 * LONG_PER_U64)),
 };
 
+extern struct replayfs_diskalloc *replayfs_alloc;
 static struct page *btree_node_alloc(struct replayfs_btree_head *head, gfp_t gfp)
 {
 	struct page *page = NULL;
 
+	/*
+	if (head->allocator != replayfs_alloc) {
+		printk("%s %d: Requesting page from alloc %p\n", __func__, __LINE__,
+				head->allocator);
+	}
+	*/
 	page = replayfs_diskalloc_alloc_page(head->allocator);
 	if (likely(!IS_ERR(page))) {
 		void *addr = replayfs_kmap(page);
@@ -276,7 +287,23 @@ static void bval_put(struct replayfs_btree_head *head, struct page *page) {
 			replayfs_diskalloc_put_page(head->allocator, page);
 			atomic_inc(&puts);
 		} else {
-			//replayfs_diskalloc_sync_page(head->allocator, page);
+#ifdef REPLAYFS_BTREE_DEBUG
+		if (btree_print) {
+			struct replayfs_btree_key *key;
+			void *data = replayfs_kmap(page);
+
+			key = bkey(&replayfs_geo, data, 0);
+
+			/* If this file is over TB.. problem */
+			if (key->offset > 1LL<<43) {
+				printk("%s %d: BAD btree offset for page %lu, entry: {%lld, %lld}\n", __func__,
+						__LINE__, page->index, key->offset, key->size);
+				BUG();
+			}
+
+			replayfs_kunmap(page);
+		}
+#endif
 		}
 
 		alloc_debugk("%s %d: Put on page %lu (%p)\n", __func__, __LINE__,
@@ -535,8 +562,51 @@ void replayfs_btree_delete(struct replayfs_btree_head *head)
 	/* Done */
 }
 
+extern int replayfs_debug_allocnum;
+extern int replayfs_debug_page;
+static DEFINE_MUTEX(glbl_debug_lock);
+static struct replayfs_diskalloc *glbl_debug_alloc = NULL;
+
 void replayfs_btree_put_page(struct replayfs_btree_head *head, struct page *page) {
+#ifdef REPLAYFS_BTREE_DEBUG
+	mutex_lock(&glbl_debug_lock);
+	if (unlikely(glbl_debug_alloc == NULL &&
+				replayfs_debug_allocnum == head->allocator->allocnum)) {
+		atomic_inc(&head->allocator->refcnt);
+		glbl_debug_alloc = head->allocator;
+	}
+	mutex_unlock(&glbl_debug_lock);
+#endif
 	bval_put(head, page);
+}
+
+void btree_debug_check(void) {
+	mutex_lock(&glbl_debug_lock);
+	if (glbl_debug_alloc != NULL && replayfs_debug_page >= 0) {
+		struct page *page;
+		struct replayfs_btree_key *key;
+		void *page_data;
+
+		page = replayfs_diskalloc_get_page(glbl_debug_alloc,
+				(loff_t)replayfs_debug_page * PAGE_SIZE);
+		BUG_ON(page == NULL);
+
+		page_data = replayfs_kmap(page);
+
+		key = bkey(&replayfs_geo, page_data, 0);
+
+		/* If this file is over TB.. problem */
+		if (key->offset > 1LL<<43) {
+			printk("%s %d: BAD btree offset for page %lu, allocnum %d, entry: {%lld, %lld}\n", __func__,
+					__LINE__, page->index, glbl_debug_alloc->allocnum, key->offset, key->size);
+			BUG();
+		}
+
+		replayfs_kunmap(page);
+
+		replayfs_diskalloc_put_page(glbl_debug_alloc, page);
+	}
+	mutex_unlock(&glbl_debug_lock);
 }
 
 static struct page *get_head_page(struct replayfs_btree_head *head,
@@ -551,9 +621,37 @@ static struct page *get_head_page(struct replayfs_btree_head *head,
 
 		alloc_debugk("%s %d: Headpage map on page %lu (%p)\n", __func__, __LINE__,
 				ret->index, ret);
+
+		/* If the first key of the page is insane... bad times */
+#ifdef REPLAYFS_BTREE_DEBUG
+		if (btree_print) {
+			struct replayfs_btree_key *key;
+
+			key = bkey(&replayfs_geo, *data, 0);
+
+			/* If this file is over TB.. problem */
+			if (key->offset > 1LL<<43) {
+				printk("%s %d: BAD btree offset for page %lu, allocnum %d, entry: {%lld, %lld}\n", __func__,
+						__LINE__, ret->index, head->allocator->allocnum, key->offset, key->size);
+				printk("%s %d: debug_allocnum is %d, debug_alloc is %p, debug_page is %d\n",
+						__func__, __LINE__, replayfs_debug_allocnum, glbl_debug_alloc,
+						replayfs_debug_page);
+				BUG();
+			}
+		}
+#endif
 	} else {
 		*data = NULL;
 	}
+#ifdef REPLAYFS_BTREE_DEBUG
+	mutex_lock(&glbl_debug_lock);
+	if (unlikely(glbl_debug_alloc == NULL &&
+				replayfs_debug_allocnum == head->allocator->allocnum)) {
+		atomic_inc(&head->allocator->refcnt);
+		glbl_debug_alloc = head->allocator;
+	}
+	mutex_unlock(&glbl_debug_lock);
+#endif
 	return ret;
 }
 
@@ -604,99 +702,6 @@ static int keyzero(struct btree_geo *geo, struct replayfs_btree_key *key)
 	}
 
 	return 0;
-}
-
-struct replayfs_btree_value *replayfs_btree_lookup(
-		struct replayfs_btree_head *head, loff_t pos,
-		struct replayfs_btree_key *key, struct page **ret_page)
-{
-	int i, height = head->height;
-	struct page *node;
-	struct replayfs_btree_key *pk = NULL;
-	unsigned long *node_data;
-	node = get_head_page(head, &node_data);
-
-
-	if (height == 0) {
-		debugk("%s %d: Empty tree!\n", __func__, __LINE__);
-		return NULL;
-	}
-
-	debugk("%s %d: In %s with tree %p (Head page %lu height %d)\n", __func__, __LINE__,
-			__func__, head, node->index, head->height);
-
-	for ( ; height > 1; height--) {
-		struct page *tmppage;
-		debugk("%s %d: On non-leaf node!\n", __func__, __LINE__);
-		for (i = 0; i < replayfs_geo.no_pairs; i++) {
-			struct replayfs_btree_key *k = bkey(&replayfs_geo, node_data, i);
-
-			/* We can come to a situation where the bottom key rangeis not in the tree 
-			 * (aka its removed) and we're trying to find it.  This resolves a null
-			 * exception, and points to the lowest range set in the tree
-			 */
-			if (k->size == 0) {
-				i--;
-				debugk("%s %d: Size is zero, returning i of %d\n", __func__, __LINE__,
-						i);
-				break;
-			}
-
-			if (valkeycmp(&replayfs_geo, node_data, i, pos) <= 0) {
-				break;
-			}
-		}
-
-		if (i == replayfs_geo.no_pairs) {
-			debugk("%s %d: Val not present?\n", __func__, __LINE__);
-			bval_put(head, node);
-			return NULL;
-		}
-
-		tmppage = node;
-
-		debugk("%s %d: Reading node at index %d\n", __func__, __LINE__, i);
-		node = bval(head->allocator, &replayfs_geo, node_data, &node_data, i);
-		if (!node) {
-			debugk("%s %d: Node NULL??\n", __func__, __LINE__);
-			bval_put(head, tmppage);
-			return NULL;
-		}
-		debugk("%s %d: Got node %lu\n", __func__, __LINE__, node->index);
-
-		bval_put(head, tmppage);
-	}
-
-	if (!node) {
-		debugk("%s %d: Node still NULL??\n", __func__, __LINE__);
-		return NULL;
-	}
-
-	debugk("%s %d: Scanning page %lu for entry\n", __func__, __LINE__,
-			node->index);
-	for (i = 0; i < replayfs_geo.no_pairs; i++) {
-		struct replayfs_btree_key *k;
-		k = bkey(&replayfs_geo, node_data, i);
-		debugk("%s %d: Comparing %llu and {%lld, %lld}\n", __func__, __LINE__, pos,
-				k->offset, k->size);
-		BUG_ON(pk != NULL && k->size != 0 && k->offset + k->size != pk->offset);
-
-		if (keyzero(&replayfs_geo, k)) {
-			break;
-		}
-
-		if (valkeycmp(&replayfs_geo, node_data, i, pos) == 0) {
-			debugk("%s %d: Found key at %d\n", __func__, __LINE__, i);
-			keycpy(key, bkey(&replayfs_geo, node_data, i));
-			*ret_page = node;
-			return (void *)bval_at(head->allocator, &replayfs_geo, node_data, i);
-		}
-
-		pk = k;
-	}
-
-	bval_put(head, node);
-	return NULL;
 }
 
 int replayfs_btree_update(struct replayfs_btree_head *head,
@@ -994,6 +999,8 @@ static void check_tree_internal(struct replayfs_btree_head *head, struct page *n
 	}
 }
 
+static DEFINE_MUTEX(btree_check_mutex);
+
 static void check_tree(struct replayfs_btree_head *head) {
 	struct page *node;
 	unsigned long *node_data;
@@ -1002,15 +1009,120 @@ static void check_tree(struct replayfs_btree_head *head) {
 		return;
 	}
 
+	mutex_lock(&btree_check_mutex);
+
 	node = get_head_page(head, &node_data);
 
 	check_tree_internal(head, node, node_data, head->height, NULL);
 
 	bval_put(head, node);
+
+	mutex_unlock(&btree_check_mutex);
 }
 #else
 #define check_tree(...)
 #endif
+
+static struct replayfs_btree_value *replayfs_btree_lookup_internal(
+		struct replayfs_btree_head *head, loff_t pos,
+		struct replayfs_btree_key *key, struct page **ret_page)
+{
+	int i, height = head->height;
+	struct page *node;
+	struct replayfs_btree_key *pk = NULL;
+	unsigned long *node_data;
+	node = get_head_page(head, &node_data);
+
+
+	if (height == 0) {
+		debugk("%s %d: Empty tree!\n", __func__, __LINE__);
+		return NULL;
+	}
+
+	debugk("%s %d: In %s with tree %p (Head page %lu height %d)\n", __func__, __LINE__,
+			__func__, head, node->index, head->height);
+
+	for ( ; height > 1; height--) {
+		struct page *tmppage;
+		debugk("%s %d: On non-leaf node!\n", __func__, __LINE__);
+		for (i = 0; i < replayfs_geo.no_pairs; i++) {
+			struct replayfs_btree_key *k = bkey(&replayfs_geo, node_data, i);
+
+			/* We can come to a situation where the bottom key rangeis not in the tree 
+			 * (aka its removed) and we're trying to find it.  This resolves a null
+			 * exception, and points to the lowest range set in the tree
+			 */
+			if (k->size == 0) {
+				i--;
+				debugk("%s %d: Size is zero, returning i of %d\n", __func__, __LINE__,
+						i);
+				break;
+			}
+
+			if (valkeycmp(&replayfs_geo, node_data, i, pos) <= 0) {
+				break;
+			}
+		}
+
+		if (i == replayfs_geo.no_pairs) {
+			debugk("%s %d: Val not present?\n", __func__, __LINE__);
+			bval_put(head, node);
+			return NULL;
+		}
+
+		tmppage = node;
+
+		debugk("%s %d: Reading node at index %d\n", __func__, __LINE__, i);
+		node = bval(head->allocator, &replayfs_geo, node_data, &node_data, i);
+		if (!node) {
+			debugk("%s %d: Node NULL??\n", __func__, __LINE__);
+			bval_put(head, tmppage);
+			return NULL;
+		}
+		debugk("%s %d: Got node %lu\n", __func__, __LINE__, node->index);
+
+		bval_put(head, tmppage);
+	}
+
+	if (!node) {
+		debugk("%s %d: Node still NULL??\n", __func__, __LINE__);
+		return NULL;
+	}
+
+	debugk("%s %d: Scanning page %lu for entry\n", __func__, __LINE__,
+			node->index);
+	for (i = 0; i < replayfs_geo.no_pairs; i++) {
+		struct replayfs_btree_key *k;
+		k = bkey(&replayfs_geo, node_data, i);
+		debugk("%s %d: Comparing %llu and {%lld, %lld}\n", __func__, __LINE__, pos,
+				k->offset, k->size);
+		BUG_ON(pk != NULL && k->size != 0 && k->offset + k->size != pk->offset);
+
+		if (keyzero(&replayfs_geo, k)) {
+			break;
+		}
+
+		if (valkeycmp(&replayfs_geo, node_data, i, pos) == 0) {
+			debugk("%s %d: Found key at %d\n", __func__, __LINE__, i);
+			keycpy(key, bkey(&replayfs_geo, node_data, i));
+			*ret_page = node;
+			return (void *)bval_at(head->allocator, &replayfs_geo, node_data, i);
+		}
+
+		pk = k;
+	}
+
+	bval_put(head, node);
+	return NULL;
+}
+
+
+struct replayfs_btree_value *replayfs_btree_lookup(
+		struct replayfs_btree_head *head, loff_t pos,
+		struct replayfs_btree_key *key, struct page **ret_page) {
+	check_tree(head);
+	return replayfs_btree_lookup_internal(head, pos, key, ret_page);
+}
 
 /*
  * locate the correct leaf node in the btree
@@ -1470,7 +1582,7 @@ int __must_check replayfs_btree_insert_update(struct replayfs_btree_head *head,
 	/* First, check to see if an entry containing key exists */
 	/* This could be tricky... This key could consume multiple others:
 	 * I need to scan backwards from the last key? */
-	in_val = replayfs_btree_lookup(head, key->offset + key->size-1, &in_key, &page);
+	in_val = replayfs_btree_lookup_internal(head, key->offset + key->size-1, &in_key, &page);
 	debugk("%s %d: in_val is {%lld, %lld}!\n", __func__, __LINE__, in_key.offset,
 			in_key.size);
 	if (in_val == NULL) {
@@ -1959,6 +2071,8 @@ static int btree_remove_level(struct replayfs_btree_head *head, struct btree_geo
 		replace_key(head, geo, &k1, &k2,
 				level+1);
 	}
+
+	bval_put(head, node);
 
 	return ret;
 }

@@ -10,7 +10,7 @@
  *
  * This automatically disables TRACE_*
  */
-//#define REPLAY_COMPRESS_READS
+#define REPLAY_COMPRESS_READS
 
 /* 
  * Double checks to make sure the data that comes out of a REPLAY_COMPRESS_READS

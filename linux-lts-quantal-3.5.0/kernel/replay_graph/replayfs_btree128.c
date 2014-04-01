@@ -50,14 +50,17 @@
 #include "replayfs_diskalloc.h"
 #include "replayfs_kmap.h"
 
-//#define REPLAYFS_BTREE128_DEBUG
+#define REPLAYFS_BTREE128_DEBUG
 
 #define REPLAYFS_BTREE128_VERIFY
 
 #ifdef REPLAYFS_BTREE128_DEBUG
-#define debugk(...) printk(__VA_ARGS__)
+extern int replayfs_btree128_debug;
+#define debugk(...) if (replayfs_btree128_debug) { printk(__VA_ARGS__); }
+#define debug_dump_stack() if (replayfs_btree128_debug) { dump_stack(); }
 #else
 #define debugk(...)
+#define debug_dump_stack() 
 #endif
 
 #define LONG_PER_U64 (64 / BITS_PER_LONG)
@@ -229,6 +232,12 @@ static struct replayfs_btree128_key *keycpy(struct replayfs_btree128_key *dest,
 	debugk("%s %d: KEYCPY: {%lld, %lld} <- {%lld, %lld}\n", __func__, __LINE__,
 			dest->offset, dest->size, src->offset, src->size);
 			*/
+
+#ifdef REPLAYFS_BTREE128_DEBUG
+	/* Invalid key bug, not zero key, with invalid id2... */
+	BUG_ON (src->id2 == 0 && src->id1 != 0);
+#endif
+
 	dest->id1 = src->id1;
 	dest->id2 = src->id2;
 
@@ -278,6 +287,17 @@ static struct page *bval(struct replayfs_diskalloc *allocator,
 
 	if (pageoffs == 0) {
 		return NULL;
+	}
+
+
+	if ((pageoffs % PAGE_SIZE) != 0) {
+		printk("%s %d: Have invalid pgoffs: %lld\n", __func__, __LINE__, pageoffs);
+		BUG();
+	}
+
+	if (pageoffs >= PAGE_ALLOC_SIZE) {
+		printk("%s %d: Have invalid pgoffs: %lld\n", __func__, __LINE__, pageoffs);
+		BUG();
 	}
 
 	/*
@@ -440,12 +460,14 @@ static inline void __btree_init(struct replayfs_btree128_head *head)
 	replayfs_btree128_verify_init(head);
 }
 
+/*
 void replayfs_btree128_init_allocator(struct replayfs_btree128_head *head,
 		struct replayfs_diskalloc *allocator)
 {
 	__btree_init(head);
 	head->allocator = allocator;
 }
+*/
 
 static void update_meta128(struct replayfs_btree128_head *head) {
 	struct page *page;
@@ -460,7 +482,8 @@ static void update_meta128(struct replayfs_btree128_head *head) {
 		meta->node_page = 0;
 	}
 
-	debugk("%s %d: Saved meta_height to %d\n", __func__, __LINE__, head->height);
+	debugk("%s %d: Saved meta_height to %d for meta_loc %lld\n", __func__,
+			__LINE__, head->height, head->meta_loc);
 	meta->height = head->height;
 
 	//SetPageDirty(page);
@@ -482,6 +505,9 @@ int replayfs_btree128_init(struct replayfs_btree128_head *head,
 
 	head->meta_loc = meta_loc;
 
+	debugk("%s %d: Init called for head %p with meta_loc of %lld\n", __func__,
+			__LINE__, head, head->meta_loc);
+
 	page = replayfs_diskalloc_get_page(alloc, meta_loc);
 	meta = replayfs_kmap(page);
 
@@ -491,7 +517,11 @@ int replayfs_btree128_init(struct replayfs_btree128_head *head,
 		head->node_page = NULL;
 	}
 	head->height = meta->height;
-	debugk("%s %d: Loaded head->height to %d!!!\n", __func__, __LINE__, head->height);
+
+	debugk("%s %d: Loaded head %p head->height to %d and node->page to %p!!!\n", __func__,
+			__LINE__, head, head->height, head->node_page);
+
+	BUG_ON(head->height != 0 && head->node_page == 0);
 
 	replayfs_kunmap(page);
 	replayfs_diskalloc_put_page(alloc, page);
@@ -506,7 +536,8 @@ int replayfs_btree128_create(struct replayfs_btree128_head *head,
 	head->allocator = alloc;
 	update_meta128(head);
 	//mempool_create(0, btree_alloc, btree_free, NULL);
-	debugk("%s %d: INIT'd head->height to %d!!!\n", __func__, __LINE__, head->height);
+	debugk("%s %d: INIT'd head %p head->height to %d!!!\n", __func__, __LINE__,
+			head, head->height);
 	return 0;
 }
 
@@ -581,6 +612,103 @@ static int keyzero(struct btree_geo *geo, struct replayfs_btree128_key *key)
 	return 0;
 }
 
+#ifdef REPLAYFS_BTREE128_DEBUG
+static void check_tree_internal(struct replayfs_btree128_head *head, struct page *node,
+		unsigned long *node_data, int level, struct replayfs_btree128_key *last_key) {
+	struct btree_geo *geo = &replayfs128_geo;
+	int i;
+
+	struct replayfs_btree128_key *fill_key = NULL;
+
+	debugk("%s %d: Have node of %lu, level is %d, height is %d\n", __func__, __LINE__,
+			node->index, level, head->height);
+
+	if (level > 1) {
+		for (i = 0; i < geo->no_pairs; i++) {
+			struct page *new_node;
+			unsigned long *new_node_data;
+			struct replayfs_btree128_key *key;
+
+			key = bkey(geo, node_data, i);
+
+			debugk("%s %d: Level %d Scanning {%llu, %llu}\n", __func__, __LINE__,
+					level, key->id1, key->id2);
+
+			if (!keyzero(geo, key)) {
+				new_node = bval(head->allocator, geo, node_data, &new_node_data, i);
+
+				BUG_ON(new_node == NULL);
+
+				debugk("%s %d: Checking node at page %lu\n", __func__, __LINE__, new_node->index);
+				check_tree_internal(head, new_node, new_node_data, level-1, key);
+
+				bval_put(head, new_node);
+			} else {
+				BUG_ON(i == 0);
+				fill_key = key;
+				break;
+			}
+		}
+	} else {
+		struct replayfs_btree128_key *pk = NULL;
+
+		for (i = 0; i < geo->no_pairs; i++) {
+			struct replayfs_btree128_key *k;
+
+			k = bkey(geo, node_data, i);
+
+			debugk("%s %d: Level %d Scanning {%lld, %lld}\n", __func__, __LINE__,
+					level, k->id1, k->id2);
+
+			if (pk != NULL) {
+				BUG_ON(rpkeycmp(k, pk) >= 0);
+			}
+
+			if (keyzero(geo, k)) {
+				break;
+			}
+
+			/* Specific to filemap... */
+			/* If the key is not zero, the sdev cannot be == 0!!! */
+			BUG_ON(k->id2 == 0);
+
+			pk = k;
+		}
+
+		fill_key = pk;
+	}
+
+	if (last_key != NULL && fill_key != NULL) {
+		debugk("%s %d: Level %d fill_key {%llu, %llu}, last_key {%llu, %llu}\n",
+				__func__, __LINE__, level, fill_key->id1, fill_key->id2,
+				last_key->id1, last_key->id2);
+
+		BUG_ON(rpkeycmp(fill_key, last_key) < 0);
+	}
+}
+
+static void check_tree(struct replayfs_btree128_head *head) {
+	struct page *node;
+	unsigned long *node_data;
+
+	if (head->height < 1) {
+		return;
+	}
+
+	node = get_head_page(head, &node_data);
+
+	debugk("%s %d: Scanning tree %p\n", __func__, __LINE__, head);
+	debug_dump_stack();
+
+	check_tree_internal(head, node, node_data, head->height, NULL);
+
+	bval_put(head, node);
+}
+#else
+#define check_tree(...)
+#endif
+
+
 struct replayfs_btree128_value *replayfs_btree128_lookup(
 		struct replayfs_btree128_head *head, struct replayfs_btree128_key *pos,
 		struct page **ret_page)
@@ -590,6 +718,8 @@ struct replayfs_btree128_value *replayfs_btree128_lookup(
 	unsigned long *node_data;
 
 	struct replayfs_btree128_value *ret;
+
+	check_tree(head);
 
 	node = get_head_page(head, &node_data);
 
@@ -831,6 +961,7 @@ static int getfill(struct replayfs_diskalloc *alloc, struct btree_geo *geo,
 	return i;
 }
 
+
 /*
  * locate the correct leaf node in the btree
  */
@@ -922,7 +1053,8 @@ static int btree_grow(struct replayfs_btree128_head *head, struct btree_geo *geo
 	if (head->node_page) {
 		unsigned long *headpage_data;
 		struct page *headpage;
-		debugk("%s %d: Manipulating node page\n", __func__, __LINE__);
+		debugk("%s %d: Manipulating node page for tree %p\n", __func__, __LINE__,
+				head);
 
 		headpage = get_head_page(head, &headpage_data);
 
@@ -938,6 +1070,8 @@ static int btree_grow(struct replayfs_btree128_head *head, struct btree_geo *geo
 	}
 	debugk("%s %d: Updating metadata\n", __func__, __LINE__);
 	head->node_page = node;
+	debugk("%s %d: Incing head->height from %d to %d\n", __func__, __LINE__,
+			head->height, head->height+1);
 	head->height++;
 	update_meta128(head);
 
@@ -1064,6 +1198,8 @@ retry:
 		bval_put(head, tmp);
 	}
 
+	debugk("%s %d: Inserting node %lu into pos %d with key {%llu, %llu}\n", __func__, __LINE__,
+			node->index, pos, key->id1, key->id2);
 	setkey(geo, node, pos, key);
 	setval_node(geo, node, pos, val);
 
@@ -1080,7 +1216,8 @@ static int btree_insert_level(struct replayfs_btree128_head *head, struct btree_
 	struct page *node;
 	int i, pos, fill, err;
 
-	debugk("%s %d: In btree_insert_level!\n", __func__, __LINE__);
+	debugk("%s %d: In btree_insert_level with head %p!\n", __func__, __LINE__,
+			head);
 	debugk("%s %d: Inserting key {%llu, %llu}!\n", __func__, __LINE__,
 			key->id1, key->id2);
 	BUG_ON(level != 1);
@@ -1202,6 +1339,8 @@ int replayfs_btree128_insert(struct replayfs_btree128_head *head,
 {
 	int ret;
 	BUG_ON(!val);
+	check_tree(head);
+
 	ret =  btree_insert_level(head, &replayfs128_geo, key, val, 1, gfp);
 
 	replayfs_btree128_verify_insert(head, key, val, gfp);
@@ -1209,6 +1348,8 @@ int replayfs_btree128_insert(struct replayfs_btree128_head *head,
 	if (head->node_page != NULL) {
 		replayfs_diskalloc_sync_page(head->allocator, head->node_page);
 	}
+
+	check_tree(head);
 
 	return ret;
 }
@@ -1233,15 +1374,17 @@ static void merge(struct replayfs_btree128_head *head, struct btree_geo *geo, in
 			bval_put(head, tmp);
 		}
 		/* Exchange left and right child in parent */
+		debugk("%s %d: Moving page %lu to %d\n", __func__, __LINE__, right->index,
+				lpos);
 		setval_node(geo, parent, lpos, right);
+		debugk("%s %d: Moving page %lu to %d\n", __func__, __LINE__, left->index,
+				lpos+1);
 		setval_node(geo, parent, lpos + 1, left);
 		/* Remove left (formerly right) child from parent */
+		debugk("%s %d: Deleting key {%llu, %llu} (pos %d)\n", __func__, __LINE__,
+				bkey(geo, parent_data, lpos)->id1, bkey(geo, parent_data,
+					lpos)->id2, lpos);
 		btree_remove_level(head, geo, bkey(geo, parent_data, lpos), level + 1);
-
-		/* Must unmap before free */
-		replayfs_kunmap(right);
-		//replayfs_diskalloc_free_page_noput(head->allocator, right);
-		replayfs_diskalloc_free_page(head->allocator, right);
 	} else {
 		for (i = 0; i < rfill; i++) {
 			struct replayfs_btree128_value *tmp;
@@ -1251,11 +1394,22 @@ static void merge(struct replayfs_btree128_head *head, struct btree_geo *geo, in
 			setval(geo, left, lfill + i, tmp);
 		}
 		/* Exchange left and right child in parent */
-		setval(geo, parent, lpos, (void *)right);
-		setval(geo, parent, lpos + 1, (void *)left);
+		debugk("%s %d: Moving page %lu to %d\n", __func__, __LINE__, right->index,
+				lpos);
+		setval_node(geo, parent, lpos, right);
+		debugk("%s %d: Moving page %lu to %d\n", __func__, __LINE__, left->index,
+				lpos+1);
+		setval_node(geo, parent, lpos + 1, left);
 		/* Remove left (formerly right) child from parent */
+		debugk("%s %d: Deleting key {%llu, %llu} (pos %d)\n", __func__, __LINE__,
+				bkey(geo, parent_data, lpos)->id1, bkey(geo, parent_data,
+					lpos)->id2, lpos);
 		btree_remove_level(head, geo, bkey(geo, parent_data, lpos), level + 1);
 	}
+
+	/* Got to free the right node */
+	replayfs_kunmap(right);
+	replayfs_diskalloc_free_page(head->allocator, right);
 }
 
 static void rebalance(struct replayfs_btree128_head *head, struct btree_geo *geo,
@@ -1347,12 +1501,13 @@ static int btree_remove_level(struct replayfs_btree128_head *head, struct btree_
 	debugk("%s %d: fill is %d, pos is %d no_pars is %d!\n", __func__, __LINE__,
 			fill, pos, geo->no_pairs);
 	if ((level == 1) && (keycmp(geo, node_data, pos, key) != 0)) {
+		bval_put(head, node);
 		debugk("%s %d: returning NULL?\n", __func__, __LINE__);
 		return 0;
 	}
 
-	debugk("%s %d: Removing key: {%llu, %llu}\n", __func__, __LINE__,
-			bkey(geo, node_data, pos)->id1, bkey(geo, node_data, pos)->id2);
+	debugk("%s %d: Removing key from head %p: {%llu, %llu}\n", __func__, __LINE__,
+			head, bkey(geo, node_data, pos)->id1, bkey(geo, node_data, pos)->id2);
 
 	/* remove and shift */
 	if (level != 1) {
@@ -1382,6 +1537,7 @@ static int btree_remove_level(struct replayfs_btree128_head *head, struct btree_
 		}
 	}
 
+	bval_put(head, node);
 	return 1;
 }
 
@@ -1390,12 +1546,16 @@ int replayfs_btree128_remove(struct replayfs_btree128_head *head,
 {
 	int ret;
 
+	check_tree(head);
+
 	if (head->height == 0)
 		return 0;
 
 	ret = btree_remove_level(head, &replayfs128_geo, key, 1);
 
 	replayfs_btree128_verify_remove(head, key, ret);
+
+	check_tree(head);
 
 	return ret;
 }
