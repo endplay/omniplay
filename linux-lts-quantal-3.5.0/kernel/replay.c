@@ -123,6 +123,32 @@ extern struct replayfs_syscall_cache syscache;
 static struct btree_head32 meta_tree;
 DEFINE_MUTEX(meta_tree_lock);
 
+static int is_recorded_filename_strict(const char *filename) {
+	int ret = 0;
+	struct file *filp = filp_open(filename, O_RDWR, 0);
+
+	if (!IS_ERR(filp) && filp != NULL) {
+		struct inode *inode = filp->f_dentry->d_inode;
+
+		/* If the inode has not been written */
+		if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0 &&
+				//!S_ISDIR(inode->i_flags) && !S_ISFIFO(inode->i_flags) && !S_ISSOCK(inode->i_flags)) {
+				S_ISREG(inode->i_mode)) {
+
+			ret = replayfs_filemap_exists(filp);
+
+		} else {
+			//printk("%s %d: filp is for an untracked file.\n", __func__, __LINE__);
+		}
+
+		filp_close(filp, NULL);
+	} else {
+		//printk("filp is NULL??\n");
+	}
+
+	return ret;
+}
+
 static int is_recorded_filename(const char *filename) {
 	int ret = 0;
 	struct file *filp = filp_open(filename, O_RDWR, 0);
@@ -147,6 +173,32 @@ static int is_recorded_filename(const char *filename) {
 		}
 
 		filp_close(filp, NULL);
+	} else {
+		//printk("filp is NULL??\n");
+	}
+
+	return ret;
+}
+
+static int is_recorded_file_strict(int fd) {
+	int ret = 0;
+	struct file *filp = fget(fd);
+
+	if (filp && !IS_ERR(filp)) {
+		struct inode *inode = filp->f_dentry->d_inode;
+
+		/* If the inode has not been written */
+		if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0 &&
+				//!S_ISDIR(inode->i_flags) && !S_ISFIFO(inode->i_flags) && !S_ISSOCK(inode->i_flags)) {
+				S_ISREG(inode->i_mode)) {
+
+			ret = replayfs_filemap_exists(filp);
+
+		} else {
+			//printk("%s %d: filp is for an untracked file.\n", __func__, __LINE__);
+		}
+
+		fput(filp);
 	} else {
 		//printk("filp is NULL??\n");
 	}
@@ -206,6 +258,27 @@ static int is_recorded_filp(struct file *filp) {
 					//printk("%s %d: Filemap exists for %p returns %d\n", __func__, __LINE__, filp, ret);
 				//}
 			}
+		} else {
+			//printk("%s %d: filp is for an untracked file.\n", __func__, __LINE__);
+		}
+	} else {
+		//printk("filp is NULL??\n");
+	}
+
+	return ret;
+}
+
+
+static int is_recorded_filp_strict(struct file *filp) {
+	int ret = 0;
+	if (filp && !IS_ERR(filp)) {
+		struct inode *inode = filp->f_dentry->d_inode;
+
+		/* If the inode has not been written */
+		if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0 &&
+				S_ISREG(inode->i_mode)) {
+
+			ret = replayfs_filemap_exists(filp);
 		} else {
 			//printk("%s %d: filp is for an untracked file.\n", __func__, __LINE__);
 		}
@@ -6995,7 +7068,7 @@ record_unlink(const char __user *pathname)
 	 * If we're about to delete the file, and it is a replayfs file, then remove
 	 * it from our replayfs knowledge base
 	 */
-	if (is_recorded_filp(filp)) {
+	if (is_recorded_filp_strict(filp)) {
 		struct inode *inode = filp->f_dentry->d_inode;
 		if (inode->i_nlink == 1) {
 			/* Inode is about to be removed, delete it entirely */
@@ -12284,7 +12357,7 @@ record_unlinkat(int dfd, const char __user *pathname, int flag)
 	 * If we're about to delete the file, and it is a replayfs file, then remove
 	 * it from our replayfs knowledge base
 	 */
-	if (is_recorded_file(fd)) {
+	if (is_recorded_file_strict(fd)) {
 		struct inode *inode = filp->f_dentry->d_inode;
 		if (inode->i_nlink == 1) {
 			/* Inode is about to be removed, delete it entirely */
@@ -13442,6 +13515,7 @@ int read_mmap_log (struct record_group* precg)
 
 int btree_print = 0;
 int replayfs_btree128_debug = 0;
+int replayfs_btree128_debug_verbose = 0;
 int replayfs_filemap_debug = 0;
 int replayfs_diskalloc_debug = 0;
 int replayfs_diskalloc_debug_full = 0;
@@ -13482,6 +13556,13 @@ static struct ctl_table print_ctl[] = {
 	{
 		.procname	= "replayfs_btree128_print",
 		.data		= &replayfs_btree128_debug,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "replayfs_btree128_print_verbose",
+		.data		= &replayfs_btree128_debug_verbose,
 		.maxlen		= sizeof(unsigned int),
 		.mode		= 0666,
 		.proc_handler	= &proc_dointvec,

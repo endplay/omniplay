@@ -564,7 +564,7 @@ void replayfs_btree_delete(struct replayfs_btree_head *head)
 
 extern int replayfs_debug_allocnum;
 extern int replayfs_debug_page;
-static DEFINE_MUTEX(glbl_debug_lock);
+DEFINE_MUTEX(glbl_debug_lock);
 static struct replayfs_diskalloc *glbl_debug_alloc = NULL;
 
 void replayfs_btree_put_page(struct replayfs_btree_head *head, struct page *page) {
@@ -580,8 +580,10 @@ void replayfs_btree_put_page(struct replayfs_btree_head *head, struct page *page
 	bval_put(head, page);
 }
 
-void btree_debug_check(void) {
+extern void btree128_debug_check(void);
+void __btree_debug_check(void) {
 	mutex_lock(&glbl_debug_lock);
+	btree128_debug_check();
 	if (glbl_debug_alloc != NULL && replayfs_debug_page >= 0) {
 		struct page *page;
 		struct replayfs_btree_key *key;
@@ -1541,8 +1543,8 @@ retry:
 		setkey(geo, node, i, bkey(geo, node_data, i - 1));
 		setval(geo, node, i, bval_at(head->allocator, geo, node_data, i - 1));
 	}
-	debugk("%s %d: Inserting key {%lld %lld} to node %lu!\n", __func__, __LINE__,
-			key->offset, key->size, node->index);
+	debugk("%s %d: Inserting key {%lld %lld} to node {%lu, %d} (%p)!\n", __func__, __LINE__,
+			key->offset, key->size, node->index, head->allocator->allocnum, node);
 	setkey(geo, node, pos, key);
 	setval(geo, node, pos, val);
 
@@ -1969,6 +1971,7 @@ static int btree_remove_level(struct replayfs_btree_head *head, struct btree_geo
 
 	struct replayfs_btree_key k1, k2;
 	int do_replace = 0;
+	int needs_shrink = 0;
 
 	int ret = 0;
 
@@ -2060,8 +2063,7 @@ static int btree_remove_level(struct replayfs_btree_head *head, struct btree_geo
 				(head->height > 1 && fill - 1 == 1) ||
 				(head->height == 1 && fill -1 == 0)) {
 
-			btree_shrink(head, geo);
-
+			needs_shrink = 1;
 		}
 	}
 
@@ -2073,6 +2075,10 @@ static int btree_remove_level(struct replayfs_btree_head *head, struct btree_geo
 	}
 
 	bval_put(head, node);
+
+	if (needs_shrink) {
+		btree_shrink(head, geo);
+	}
 
 	return ret;
 }
