@@ -526,6 +526,9 @@ void replayfs_btree_destroy(struct replayfs_btree_head *head)
 	if (head->node_page != NULL) {
 		replayfs_diskalloc_put_page(head->allocator, head->node_page);
 	}
+
+	replayfs_diskalloc_sync(head->allocator);
+
 	/* Sync all of the nodes in the tree */
 	head->allocator = NULL;
 }

@@ -44,7 +44,7 @@ int glbl_allocnum = 0;
 
 extern unsigned long replayfs_debug_page_index;
 
-extern int replayfs_report_leaks;
+extern int replayfs_print_leaks;
 
 extern int replayfs_diskalloc_debug;
 extern int replayfs_diskalloc_debug_alloc;
@@ -680,7 +680,7 @@ static struct page_data *alloc_make_page(pgoff_t pg_offset, struct replayfs_disk
 }
 
 static int alloc_free_page_nolock(struct page_data *data, struct replayfs_diskalloc *alloc) {
-	if (data->count > 7) {
+	if (replayfs_print_leaks && data->count > 7) {
 		printk("%s %d: Warning it appears page %lu is leaking, doing stack dump\n",
 				__func__, __LINE__, data->page->index);
 		dump_stack();
@@ -780,7 +780,7 @@ static struct page *alloc_get_page(struct replayfs_diskalloc *alloc, loff_t offs
 
 	atomic_inc(&gets);
 
-	if (replayfs_report_leaks) {
+	if (replayfs_print_leaks) {
 		struct timespec tv = CURRENT_TIME_SEC;
 		if (tv.tv_sec - last_print_time.tv_sec > 30) {
 			u64 key;
