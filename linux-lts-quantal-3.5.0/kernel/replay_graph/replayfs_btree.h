@@ -62,6 +62,12 @@ struct replayfs_btree_head {
 	int height;
 };
 
+/* FIXME: #define out to nothing after debugging */
+#define btree_check() btree_debug_check()
+//#define btree_debug_check() __btree_debug_check()
+#define btree_debug_check(...)
+void __btree_debug_check(void);
+
 /**
  * btree_alloc - allocate function for the mempool
  * @gfp_mask: gfp mask for the allocation

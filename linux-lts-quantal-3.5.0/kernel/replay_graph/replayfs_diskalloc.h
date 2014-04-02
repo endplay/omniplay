@@ -12,7 +12,7 @@
 /* The number of free'd bytes in an extent before its scheduled to merge */
 #define EXTENT_FREE_SIZE (EXTENT_SIZE >> 1)
 
-/* 4GB pagealloc? */
+/* 1GB pagealloc? */
 #define PAGE_ALLOC_SIZE (1LL<<30)
 #define PAGE_ALLOC_PAGES (PAGE_ALLOC_SIZE / PAGE_SIZE)
 
@@ -34,6 +34,12 @@ struct replayfs_diskalloc {
 	loff_t extent_pos;
 
 	loff_t num_allocated_extents;
+
+	struct list_head alloced_pages;
+	struct list_head dirty_pages;
+
+	/* For debugging (on deterministic test cases)... */
+	int allocnum;
 
 	atomic_t refcnt;
 };
@@ -81,6 +87,12 @@ int glbl_diskalloc_init(void);
 struct replayfs_diskalloc *replayfs_diskalloc_create(struct file *filp);
 struct replayfs_diskalloc *replayfs_diskalloc_init(struct file *filp);
 void replayfs_diskalloc_destroy(struct replayfs_diskalloc *alloc);
+
+/* 
+ * Syncs all dirty pages in alloc to fs, must still fsync afterwards... for
+ * on-disk consistency
+ */
+void replayfs_diskalloc_sync(struct replayfs_diskalloc *alloc);
 
 struct replayfs_disk_alloc *replayfs_diskalloc_alloc(
 		struct replayfs_diskalloc *alloc, int size);
