@@ -17,6 +17,7 @@
 
 #include "replayfs_kmap.h"
 
+/*
 #define REPLAYFS_DISKALLOC_DEBUG_ALLOCREF
 
 #define REPLAYFS_DISKALLOC_DEBUG
@@ -32,6 +33,7 @@
 #define REPLAYFS_DISKALLOC_ALLOC_DEBUG
 
 #define REPLAYFS_DISKALLOC_MONITOR_LISTS
+*/
 
 #if defined(REPLAYFS_DISKALLOC_DEBUG) && !defined(REPLAYFS_DISKALLOC_DEBUG_MIN)
 #  define REPLAYFS_DISKALLOC_DEBUG_MIN
@@ -296,7 +298,7 @@ static void remove_from_free_list(struct page_data *data, struct list_head *head
 #define remove_from_free_list(_U, X, _P, _O) list_del(X)
 #define add_to_lru_list(_U, X, Y, _O) list_add(X, Y)
 #define remove_from_lru_list(_U, X, _P, _O) list_del(X)
-#define cherck_not_in_lru(X)
+#define check_not_in_lru(X)
 #endif
 
 int glbl_diskalloc_init(void) {
@@ -1127,12 +1129,12 @@ void replayfs_diskalloc_destroy(struct replayfs_diskalloc *alloc) {
 	list_for_each_entry_safe(data, _t, &alloc->alloced_pages, alloc_list) {
 		BUG_ON(data->alloc != alloc);
 		if (data->count == 1) {
-			printk("%s %d: Deleting page %lu from alloc %d!\n", __func__, __LINE__,
+			debugk("%s %d: Deleting page %lu from alloc %d!\n", __func__, __LINE__,
 					data->page->index, alloc->allocnum);
 			delete_from_cache(data, alloc);
 			list_del_init(&data->alloc_list);
 		} else if (data->count == 0) {
-			printk("%s %d: Got data %p page %lu (%p) with count 0???\n", __func__,
+			debugk("%s %d: Got data %p page %lu (%p) with count 0???\n", __func__,
 					__LINE__, data, data->page->index, data->page);
 		} else {
 			printk("%s %d: Got data %p page %lu (%p) with count %d???\n", __func__,
