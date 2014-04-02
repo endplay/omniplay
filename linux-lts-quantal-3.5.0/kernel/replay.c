@@ -123,6 +123,32 @@ extern struct replayfs_syscall_cache syscache;
 static struct btree_head32 meta_tree;
 DEFINE_MUTEX(meta_tree_lock);
 
+static int is_recorded_filename_strict(const char *filename) {
+	int ret = 0;
+	struct file *filp = filp_open(filename, O_RDWR, 0);
+
+	if (!IS_ERR(filp) && filp != NULL) {
+		struct inode *inode = filp->f_dentry->d_inode;
+
+		/* If the inode has not been written */
+		if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0 &&
+				//!S_ISDIR(inode->i_flags) && !S_ISFIFO(inode->i_flags) && !S_ISSOCK(inode->i_flags)) {
+				S_ISREG(inode->i_mode)) {
+
+			ret = replayfs_filemap_exists(filp);
+
+		} else {
+			//printk("%s %d: filp is for an untracked file.\n", __func__, __LINE__);
+		}
+
+		filp_close(filp, NULL);
+	} else {
+		//printk("filp is NULL??\n");
+	}
+
+	return ret;
+}
+
 static int is_recorded_filename(const char *filename) {
 	int ret = 0;
 	struct file *filp = filp_open(filename, O_RDWR, 0);
@@ -147,6 +173,32 @@ static int is_recorded_filename(const char *filename) {
 		}
 
 		filp_close(filp, NULL);
+	} else {
+		//printk("filp is NULL??\n");
+	}
+
+	return ret;
+}
+
+static int is_recorded_file_strict(int fd) {
+	int ret = 0;
+	struct file *filp = fget(fd);
+
+	if (filp && !IS_ERR(filp)) {
+		struct inode *inode = filp->f_dentry->d_inode;
+
+		/* If the inode has not been written */
+		if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0 &&
+				//!S_ISDIR(inode->i_flags) && !S_ISFIFO(inode->i_flags) && !S_ISSOCK(inode->i_flags)) {
+				S_ISREG(inode->i_mode)) {
+
+			ret = replayfs_filemap_exists(filp);
+
+		} else {
+			//printk("%s %d: filp is for an untracked file.\n", __func__, __LINE__);
+		}
+
+		fput(filp);
 	} else {
 		//printk("filp is NULL??\n");
 	}
@@ -206,6 +258,27 @@ static int is_recorded_filp(struct file *filp) {
 					//printk("%s %d: Filemap exists for %p returns %d\n", __func__, __LINE__, filp, ret);
 				//}
 			}
+		} else {
+			//printk("%s %d: filp is for an untracked file.\n", __func__, __LINE__);
+		}
+	} else {
+		//printk("filp is NULL??\n");
+	}
+
+	return ret;
+}
+
+
+static int is_recorded_filp_strict(struct file *filp) {
+	int ret = 0;
+	if (filp && !IS_ERR(filp)) {
+		struct inode *inode = filp->f_dentry->d_inode;
+
+		/* If the inode has not been written */
+		if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0 &&
+				S_ISREG(inode->i_mode)) {
+
+			ret = replayfs_filemap_exists(filp);
 		} else {
 			//printk("%s %d: filp is for an untracked file.\n", __func__, __LINE__);
 		}
@@ -387,6 +460,7 @@ static void replay_filp_close_internal(u32 key) {
 		replayfs_filemap_destroy(&meta->map);
 		replayfs_diskalloc_destroy(meta->alloc);
 		kfree(meta);
+		//printk("%s %d: Done destroying filemap!\n", __func__, __LINE__);
 	}
 
 	mutex_unlock(&meta_tree_lock);
@@ -6587,10 +6661,14 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 		struct replayfs_filemap *map;
 		struct file *filp;
 
+		btree_debug_check();
+
 		meta = replay_get_file_meta(fd);
 
 		map = &meta->map;
 		new_syscall_enter (4);
+
+		btree_debug_check();
 
 		filp = fget(fd);
 		BUG_ON(filp == NULL);
@@ -6602,6 +6680,8 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 			pretparams = (void *)1;
 		}
 
+		btree_debug_check();
+
 		/* 
 		 * All right, our btree is recording straight into this file, so
 		 * all we have to do is tweak our btree (and for performand update the syscache)
@@ -6609,11 +6689,13 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 
 		fpos = filp->f_pos;
 
+		btree_debug_check();
 		//printk("%s %d: Doing filemap write for data\n", __func__, __LINE__);
 		size = count;
 		replayfs_filemap_write(map, current->record_thrd->rp_group->rg_id,
 				current->record_thrd->rp_record_pid, current->record_thrd->rp_count, 0, fpos, size);
 
+		btree_debug_check();
 		filp->f_pos += count;
 
 		/* SYSCACHE!!! */
@@ -6621,13 +6703,21 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 		id.unique_id = current->record_thrd->rp_group->rg_id;
 		id.pid = current->record_thrd->rp_record_pid;
 
+		btree_debug_check();
 		replayfs_syscache_add(&syscache, &id, size, buf);
 
+		btree_debug_check();
 		update_size(filp, meta);
 
+		btree_debug_check();
 		replay_verify_write(filp, buf, count, filp->f_pos - count);
 
+		btree_debug_check();
 		fput(filp);
+
+		btree_debug_check();
+		replayfs_diskalloc_sync(meta->alloc);
+		btree_debug_check();
 
 		new_syscall_done (4, size);			       
 	} else {
@@ -6859,8 +6949,8 @@ record_open (const char __user * filename, int flags, int mode)
 		do {
 			file = fget(rc);
 			inode = file->f_dentry->d_inode;
-			printk("%s %d: Opened %s to fd %ld with ino %08lX\n", __func__, __LINE__,
-					filename, rc, inode->i_ino);
+			printk("%s %d: Opened %s to fd %ld with filp %p, inode %p, ino %lu, flags are %X\n", __func__, __LINE__,
+					filename, rc, file, inode, inode->i_ino, (unsigned)flags);
 			fput(file);
 		} while (0);
 		*/
@@ -6868,6 +6958,7 @@ record_open (const char __user * filename, int flags, int mode)
 		if ((flags&O_ACCMODE) == O_RDONLY && !(flags&(O_CREAT|O_DIRECTORY))) {
 #ifdef REPLAY_COMPRESS_READS
 			if (!is_recorded_file(rc)) {
+				//printk("%s %d: fd %ld is recorded_file!\n", __func__, __LINE__, rc);
 #endif
 			file = fget (rc);
 			inode = file->f_dentry->d_inode;
@@ -6977,7 +7068,7 @@ record_unlink(const char __user *pathname)
 	 * If we're about to delete the file, and it is a replayfs file, then remove
 	 * it from our replayfs knowledge base
 	 */
-	if (is_recorded_filp(filp)) {
+	if (is_recorded_filp_strict(filp)) {
 		struct inode *inode = filp->f_dentry->d_inode;
 		if (inode->i_nlink == 1) {
 			/* Inode is about to be removed, delete it entirely */
@@ -12266,7 +12357,7 @@ record_unlinkat(int dfd, const char __user *pathname, int flag)
 	 * If we're about to delete the file, and it is a replayfs file, then remove
 	 * it from our replayfs knowledge base
 	 */
-	if (is_recorded_file(fd)) {
+	if (is_recorded_file_strict(fd)) {
 		struct inode *inode = filp->f_dentry->d_inode;
 		if (inode->i_nlink == 1) {
 			/* Inode is about to be removed, delete it entirely */
@@ -13423,11 +13514,18 @@ int read_mmap_log (struct record_group* precg)
 }
 
 int btree_print = 0;
+int replayfs_btree128_debug = 0;
+int replayfs_btree128_debug_verbose = 0;
+int replayfs_filemap_debug = 0;
 int replayfs_diskalloc_debug = 0;
 int replayfs_diskalloc_debug_full = 0;
 int replayfs_diskalloc_debug_cache = 0;
 int replayfs_diskalloc_debug_allocref = 0;
 int replayfs_diskalloc_debug_lock = 0;
+int replayfs_diskalloc_debug_alloc = 0;
+
+int replayfs_debug_allocnum = -1;
+int replayfs_debug_page = -1;
 
 int replayfs_report_leaks = 0;
 unsigned long replayfs_debug_page_index = 0xFFFFFFFF;
@@ -13437,6 +13535,41 @@ static struct ctl_table print_ctl[] = {
 	{
 		.procname	= "replayfs_btree_print",
 		.data		= &btree_print,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "replayfs_debug_btree_page",
+		.data		= &replayfs_debug_page,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "replayfs_debug_btree_allocnum",
+		.data		= &replayfs_debug_allocnum,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "replayfs_btree128_print",
+		.data		= &replayfs_btree128_debug,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "replayfs_btree128_print_verbose",
+		.data		= &replayfs_btree128_debug_verbose,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "replayfs_filemap_print",
+		.data		= &replayfs_filemap_debug,
 		.maxlen		= sizeof(unsigned int),
 		.mode		= 0666,
 		.proc_handler	= &proc_dointvec,
@@ -13479,6 +13612,13 @@ static struct ctl_table print_ctl[] = {
 	{
 		.procname	= "replayfs_diskalloc_print_allocref",
 		.data		= &replayfs_diskalloc_debug_allocref,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "replayfs_diskalloc_print_alloc",
+		.data		= &replayfs_diskalloc_debug_alloc,
 		.maxlen		= sizeof(unsigned int),
 		.mode		= 0666,
 		.proc_handler	= &proc_dointvec,
