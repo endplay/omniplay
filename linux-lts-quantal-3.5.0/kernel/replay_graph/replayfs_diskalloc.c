@@ -17,6 +17,7 @@
 
 #include "replayfs_kmap.h"
 
+/*
 #define REPLAYFS_DISKALLOC_DEBUG_ALLOCREF
 
 #define REPLAYFS_DISKALLOC_DEBUG
@@ -29,19 +30,24 @@
 
 #define REPLAYFS_DISKALLOC_DEBUG_CACHE
 
-//#define REPLAYFS_DISKALLOC_ALLOC_DEBUG
+#define REPLAYFS_DISKALLOC_ALLOC_DEBUG
 
 #define REPLAYFS_DISKALLOC_MONITOR_LISTS
+*/
 
 #if defined(REPLAYFS_DISKALLOC_DEBUG) && !defined(REPLAYFS_DISKALLOC_DEBUG_MIN)
 #  define REPLAYFS_DISKALLOC_DEBUG_MIN
 #endif
+
+DEFINE_MUTEX(glbl_allocnum_lock);
+int glbl_allocnum = 0;
 
 extern unsigned long replayfs_debug_page_index;
 
 extern int replayfs_report_leaks;
 
 extern int replayfs_diskalloc_debug;
+extern int replayfs_diskalloc_debug_alloc;
 extern int replayfs_diskalloc_debug_cache;
 extern int replayfs_diskalloc_debug_full;
 extern int replayfs_diskalloc_debug_allocref;
@@ -85,8 +91,8 @@ extern int replayfs_diskalloc_debug_lock;
 #endif
 
 #ifdef REPLAYFS_DISKALLOC_ALLOC_DEBUG
-#define alloc_debugk(...) if (replayfs_diskalloc_debug) {printk(__VA_ARGS__);}
-#define alloc_dump_stack() if (replayfs_diskalloc_debug) {dump_stack();}
+#define alloc_debugk(...) if (replayfs_diskalloc_debug_alloc) {printk(__VA_ARGS__);}
+#define alloc_dump_stack() if (replayfs_diskalloc_debug_alloc) {dump_stack();}
 #else
 #define alloc_debugk(...)
 #define alloc_dump_stack()
@@ -96,6 +102,20 @@ extern int replayfs_diskalloc_debug_lock;
 #define MAPPINGS_PER_PAGE (PAGE_SIZE * 8)
 #define PAGE_MASK_SIZE_IN_PAGES (PAGE_ALLOC_PAGES / MAPPINGS_PER_PAGE)
 
+
+/* Unique key is inode.index */
+//#define crappy_pagecache_key(X, Y) ((((u64)((X)->filp->f_dentry->d_inode->i_ino))<<32) | (u64)(Y))
+static inline u64 crappy_pagecache_key(struct replayfs_diskalloc *alloc,
+		unsigned long page) {
+	u64 ret = 0;
+
+	ret = alloc->filp->f_dentry->d_inode->i_ino;
+	ret <<= 32;
+	ret |= (u64)page;
+
+	return ret;
+}
+
 atomic_t initd = {0};
 atomic_t init_done = {0};
 struct replayfs_diskalloc *replayfs_alloc;
@@ -103,7 +123,7 @@ struct replayfs_btree128_head filemap_meta_tree;
 struct replayfs_syscall_cache syscache;
 static int crappy_pagecache_size;
 static int crappy_pagecache_allocated_pages;
-static struct btree_head32 crappy_pagecache;
+static struct btree_head64 crappy_pagecache;
 static struct list_head crappy_pagecache_lru_list;
 static struct list_head crappy_pagecache_free_list;
 static struct mutex crappy_pagecache_lock;
@@ -136,6 +156,10 @@ static void extent_put(struct replayfs_extent *extent);
 struct page_data {
 	struct list_head lru;
 	struct list_head free;
+
+	struct list_head alloc_list;
+	struct list_head alloc_dirty;
+
 	int referenced;
 	int count;
 	struct page *page;
@@ -172,39 +196,93 @@ struct alloc_header {
 
 #ifdef REPLAYFS_DISKALLOC_MONITOR_LISTS
 static struct btree_head32 free_list_verify_tree;
-static struct btree_head32 lru_list_verify_tree;
+static struct btree_head64 lru_list_verify_tree;
 
 static void init_monitor_lists(void) {
 	btree_init32(&free_list_verify_tree);
-	btree_init32(&lru_list_verify_tree);
+	btree_init64(&lru_list_verify_tree);
 }
 
-static void add_to_list(struct page_data *data, struct list_head *head,
+static void check_not_in_lru(struct page_data *data) {
+	u64 key;
+	struct page_data *verify_data = NULL;
+
+	key = crappy_pagecache_key(data->alloc, data->page->index);
+
+	cache_debugk("%s %d: Looking up key of 0x%016llX\n", __func__, __LINE__, key);
+	verify_data = btree_lookup64(&lru_list_verify_tree, key);
+	if (verify_data != NULL || IS_ERR(verify_data)) {
+		printk("%s %d: Lookup returns unexpected result for key of 0x%016llX, verify_data is %p\n",
+				__func__, __LINE__, key, verify_data);
+		BUG();
+	}
+}
+
+static void add_to_lru_list(struct page_data *data, struct list_head *head,
+		struct list_head *list, struct btree_head64 *verify_tree) {
+	u64 key;
+	struct page_data *verify_data = NULL;
+
+	key = crappy_pagecache_key(data->alloc, data->page->index);
+
+	cache_debugk("%s %d: Looking up key of 0x%016llX\n", __func__, __LINE__, key);
+	verify_data = btree_lookup64(verify_tree, key);
+	if (verify_data != NULL || IS_ERR(verify_data)) {
+		printk("%s %d: Lookup returns unexpected result for key of 0x%016llX, verify_data is %p\n",
+				__func__, __LINE__, key, verify_data);
+		BUG();
+	}
+
+	cache_debugk("%s %d: Inserting key of 0x%016llX\n", __func__, __LINE__, key);
+	btree_insert64(verify_tree, key, data, GFP_KERNEL);
+	list_add(head, list);
+}
+
+static void add_to_free_list(struct page_data *data, struct list_head *head,
 		struct list_head *list, struct btree_head32 *verify_tree) {
 	u32 key;
 	struct page_data *verify_data = NULL;
 
-	key = (u32)data->page;
+	key = (u32)data;
 
 	verify_data = btree_lookup32(verify_tree, key);
 	BUG_ON(verify_data != NULL || IS_ERR(verify_data));
 
 	/* If this is on the free list it cannot also be on the lru list */
+	/*
 	if (verify_tree == &free_list_verify_tree) {
 		verify_data = btree_lookup32(&lru_list_verify_tree, key);
 		BUG_ON(verify_data != NULL || IS_ERR(verify_data));
 	}
+	*/
 
 	btree_insert32(verify_tree, key, data, GFP_KERNEL);
 	list_add(head, list);
 }
 
-static void remove_from_list(struct page_data *data, struct list_head *head,
+static void remove_from_lru_list(struct page_data *data, struct list_head *head,
+		struct list_head *list, struct btree_head64 *verify_tree) {
+	u64 key;
+	struct page_data *verify_data = NULL;
+
+	key = crappy_pagecache_key(data->alloc, data->page->index);
+
+	verify_data = btree_lookup64(verify_tree, key);
+	BUG_ON(verify_data == NULL || IS_ERR(verify_data));
+
+	list_del(head);
+	INIT_LIST_HEAD(head);
+
+	cache_debugk("%s %d: Deleting key of 0x%016llX\n", __func__, __LINE__, key);
+	btree_remove64(verify_tree, key);
+}
+
+static void remove_from_free_list(struct page_data *data, struct list_head *head,
 		struct list_head *list, struct btree_head32 *verify_tree) {
 	u32 key;
 	struct page_data *verify_data = NULL;
 
-	key = (u32)data->page;
+	key = (u32)data;
 
 	verify_data = btree_lookup32(verify_tree, key);
 	BUG_ON(verify_data == NULL || IS_ERR(verify_data));
@@ -216,8 +294,11 @@ static void remove_from_list(struct page_data *data, struct list_head *head,
 }
 #else
 #define init_monitor_lists()
-#define add_to_list(_U, X, Y, _O) list_add(X, Y)
-#define remove_from_list(_U, X, _P, _O) list_del(X)
+#define add_to_free_list(_U, X, Y, _O) list_add(X, Y)
+#define remove_from_free_list(_U, X, _P, _O) list_del(X)
+#define add_to_lru_list(_U, X, Y, _O) list_add(X, Y)
+#define remove_from_lru_list(_U, X, _P, _O) list_del(X)
+#define check_not_in_lru(X)
 #endif
 
 int glbl_diskalloc_init(void) {
@@ -245,7 +326,7 @@ int glbl_diskalloc_init(void) {
 
 		crappy_pagecache_size = 0;
 		crappy_pagecache_allocated_pages = 0;
-		btree_init32(&crappy_pagecache);
+		btree_init64(&crappy_pagecache);
 		INIT_LIST_HEAD(&crappy_pagecache_lru_list);
 		INIT_LIST_HEAD(&crappy_pagecache_free_list);
 		mutex_init(&crappy_pagecache_lock);
@@ -291,7 +372,8 @@ int glbl_diskalloc_init(void) {
 			replayfs_diskalloc_put_page(replayfs_alloc, page);
 			replayfs_diskalloc_put_page(replayfs_alloc, syscache_page);
 
-			debugk("%s %d: Creating meta tree at %lld\n", __func__, __LINE__, index);
+			debugk("%s %d: Creating meta tree at %lld (tree is %p)\n", __func__,
+					__LINE__, index, &filemap_meta_tree);
 			replayfs_btree128_create(&filemap_meta_tree, replayfs_alloc, index);
 
 			replayfs_syscache_init(&syscache, replayfs_alloc, pos, 1);
@@ -404,22 +486,22 @@ int alloc_writepage(struct page *page,
 }
 
 static inline void add_to_free(struct page_data *data) {
-	add_to_list(data, &data->free, &crappy_pagecache_free_list,
+	add_to_free_list(data, &data->free, &crappy_pagecache_free_list,
 			&free_list_verify_tree);
 }
 
 static inline void add_to_lru(struct page_data *data) {
-	add_to_list(data, &data->lru, &crappy_pagecache_lru_list,
+	add_to_lru_list(data, &data->lru, &crappy_pagecache_lru_list,
 			&lru_list_verify_tree);
 }
 
 static inline void remove_from_free(struct page_data *data) {
-	remove_from_list(data, &data->free, &crappy_pagecache_free_list,
+	remove_from_free_list(data, &data->free, &crappy_pagecache_free_list,
 			&free_list_verify_tree);
 }
 
 static inline void remove_from_lru(struct page_data *data) {
-	remove_from_list(data, &data->lru, &crappy_pagecache_lru_list,
+	remove_from_lru_list(data, &data->lru, &crappy_pagecache_lru_list,
 			&lru_list_verify_tree);
 }
 
@@ -447,7 +529,8 @@ static void alloc_free_page_internal(struct page_data *data, struct replayfs_dis
 	 * after its count has been dec'd for the last time... otherwise it may be
 	 * allocated (and duplicated) twice
 	 */
-	btree_remove32(&crappy_pagecache, data->page->index);
+	btree_remove64(&crappy_pagecache,
+			crappy_pagecache_key(data->alloc, data->page->index));
 
 	/* I don't trust this... we're going to do some other stuffs */
 	//__free_page(page);
@@ -456,20 +539,52 @@ static void alloc_free_page_internal(struct page_data *data, struct replayfs_dis
 	//printk("%s %d: Adding list for page %p\n", __func__, __LINE__, page);
 	BUG_ON(!mutex_is_locked(&crappy_pagecache_lock));
 	add_to_free(data);
-	crappy_pagecache_size--;
+
+	/* Remove the element from the alloc list */
+	check_not_in_lru(data);
+	cache_debugk("%s %d: Removing {%lu, %lu} from alloc_list\n", __func__,
+			__LINE__, data->page->index, data->alloc->filp->f_dentry->d_inode->i_ino);
+	list_del_init(&data->alloc_list);
 
 	allocref_debugk("%s %d: About to put data->alloc %p\n", __func__, __LINE__,
 			data->alloc);
 	alloc_put(data->alloc);
 }
 
+static void delete_from_cache(struct page_data *data,
+		struct replayfs_diskalloc *alloc) {
+	if (PageDirty(data->page)) {
+		allocref_debugk("%s %d: About to write page %lu with alloc %p, filp %p\n", __func__,
+				__LINE__, data->page->index, data->alloc, data->alloc->filp);
+		alloc_writepage(data->page, NULL, data->alloc);
+		ClearPageDirty(data->page);
+	}
+
+	crappy_pagecache_size--;
+
+	cache_debugk("%s %d: Removing page %p from lru with key of {%lu, %lu}, ({%lu, %d})\n",
+			__func__, __LINE__, data->page, data->page->index,
+			data->alloc->filp->f_dentry->d_inode->i_ino, data->page->index,
+			data->alloc->allocnum);
+	remove_from_lru(data);
+	INIT_LIST_HEAD(&data->lru);
+
+	alloc_free_page_nolock(data, alloc);
+}
+
 static void alloc_evict_page(struct replayfs_diskalloc *alloc) {
 	struct page_data *data;
+	struct page_data *_t;
 	struct page_data *out = NULL;
 
 	/* FIXME: Start from last position... */
 	BUG_ON(!mutex_is_locked(&crappy_pagecache_lock));
-	list_for_each_entry(data, &crappy_pagecache_lru_list, lru) {
+	list_for_each_entry_safe(data, _t, &crappy_pagecache_lru_list, lru) {
+		/* Move to the tail, to keep the lru order correct for the next scan */
+		//list_move_tail(&data->lru, &crappy_pagecache_lru_list);
+		debugk("%s %d: Scanning entry %p\n", __func__, __LINE__, data);
+		list_del(&data->lru);
+		list_add_tail(&data->lru, &crappy_pagecache_lru_list);
 		if (data->referenced) {
 			data->referenced = 0;
 		} else {
@@ -480,9 +595,7 @@ static void alloc_evict_page(struct replayfs_diskalloc *alloc) {
 
 	if (out != NULL) {
 		cache_debugk("%s %d: Evicting page %lu\n", __func__, __LINE__, out->page->index);
-		remove_from_lru(out);
-		INIT_LIST_HEAD(&out->lru);
-		alloc_free_page_nolock(out, alloc);
+		delete_from_cache(out, alloc);
 	}
 }
 
@@ -493,8 +606,8 @@ static struct page_data *alloc_make_page(pgoff_t pg_offset, struct replayfs_disk
 	crappy_pagecache_size++;
 	while (crappy_pagecache_size > CRAPPY_PAGECACHE_MAX_SIZE) {
 		//cache_debugk("%s %d: Evicting page\n", __func__, __LINE__);
-		/* Technically possible... if there are more pages in-use than in-cache */
 		BUG_ON(!mutex_is_locked(&crappy_pagecache_lock));
+		/* Technically possible... if there are more pages in-use than in-cache */
 		BUG_ON(list_empty(&crappy_pagecache_lru_list));
 		alloc_evict_page(alloc);
 	}
@@ -548,29 +661,41 @@ static struct page_data *alloc_make_page(pgoff_t pg_offset, struct replayfs_disk
 	/* Make sure we read in the data... */
 	//page = read_mapping_page(buf_inode->i_mapping, pg_offset, NULL);
 
+	list_add(&data->alloc_list, &alloc->alloced_pages);
+
 	data->page->index = pg_offset;
 	ClearPageUptodate(data->page);
 
 	replayfs_diskalloc_page_access(data->page);
 
-	BUG_ON(!mutex_is_locked(&crappy_pagecache_lock));
+	cache_debugk("%s %d: Adding page %p to lru with key of {%lu, %lu}, ({%lu, %d}) output_key 0x%016llX\n",
+			__func__, __LINE__, data->page, data->page->index,
+			data->alloc->filp->f_dentry->d_inode->i_ino, data->page->index,
+			data->alloc->allocnum, crappy_pagecache_key(data->alloc, data->page->index));
 	add_to_lru(data);
 
-	btree_insert32(&crappy_pagecache, pg_offset, data, GFP_KERNEL);
-
+	btree_insert64(&crappy_pagecache, crappy_pagecache_key(data->alloc, pg_offset), data, GFP_KERNEL);
 
 	return data;
 }
 
 static int alloc_free_page_nolock(struct page_data *data, struct replayfs_diskalloc *alloc) {
+	if (data->count > 7) {
+		printk("%s %d: Warning it appears page %lu is leaking, doing stack dump\n",
+				__func__, __LINE__, data->page->index);
+		dump_stack();
+	}
+
 	data->count--;
 	cache_debugk("%s %d - %p: Dec'd page %lu to count of %d\n", __func__,
 			__LINE__, current, data->page->index, data->count);
+
 	/*
 	if(data->page->index == 4231) {
 		dump_stack();
 	}
 	*/
+
 	if (data->count == 0) {
 		alloc_free_page_internal(data, alloc);
 
@@ -603,14 +728,23 @@ static atomic_t gets = {0};
 static atomic_t puts = {0};
 static struct page *alloc_get_page(struct replayfs_diskalloc *alloc, loff_t offset) {
 	struct page_data *data;
+	u64 key;
 
 	//pgoff_t pg_offset = offset & ~(PAGE_SIZE-1);
 	pgoff_t pg_offset = offset >> PAGE_CACHE_SHIFT;
 
+	/*
+	printk("%s %d: About to get page from alloc %p", __func__, __LINE__, alloc);
+	printk(" alloc->filp: %p", alloc->filp);
+	printk(" alloc->filp->f_dentry->d_inode: %p", alloc->filp->f_dentry->d_inode);
+	printk(" ino: %lu\n", alloc->filp->f_dentry->d_inode->i_ino);
+	*/
+	key = crappy_pagecache_key(alloc, pg_offset);
+
 	lock_debugk("%s %d - %p: About to lock %p\n", __func__, __LINE__, current, &crappy_pagecache_lock);
 	mutex_lock(&crappy_pagecache_lock);
 	lock_debugk("%s %d - %p: Locked %p\n", __func__, __LINE__, current, &crappy_pagecache_lock);
-	data = btree_lookup32(&crappy_pagecache, pg_offset);
+	data = btree_lookup64(&crappy_pagecache, key);
 
 	if (data == NULL) {
 		data = alloc_make_page(pg_offset, alloc);
@@ -621,11 +755,17 @@ static struct page *alloc_get_page(struct replayfs_diskalloc *alloc, loff_t offs
 	/* Refcnt the page before you use it! */
 	data->count++;
 
+	if (data->count > 7) {
+		printk("%s %d: Warning it appears page %lu is leaking, doing stack dump\n",
+				__func__, __LINE__, data->page->index);
+		dump_stack();
+	}
+
 	cache_debugk("%s %d: Inc'd page %p to count of %d\n", __func__, __LINE__,
 			data->page, data->count);
 
-	debugk("%s %d: Loading Page: {%lu, %lu} offset %lld\n", __func__, __LINE__, 
-			data->page->index, data->alloc->filp->f_dentry->d_inode->i_ino, offset);
+	debugk("%s %d: Alloc: %p (%d) Loading Page: {%lu, %lu} offset %lld\n", __func__, __LINE__, 
+			alloc, alloc->allocnum, data->page->index, data->alloc->filp->f_dentry->d_inode->i_ino, offset);
 
 	if (!PageChecked(data->page) || !PageUptodate(data->page)) {
 		alloc_readpage(NULL, data->page, data->alloc);
@@ -636,21 +776,21 @@ static struct page *alloc_get_page(struct replayfs_diskalloc *alloc, loff_t offs
 	lock_debugk("%s %d - %p: Unlocking %p\n", __func__, __LINE__, current, &crappy_pagecache_lock);
 	mutex_unlock(&crappy_pagecache_lock);
 
-	debugk("%s %d: Returning page %p\n", __func__, __LINE__, data->page);
+	//debugk("%s %d: Returning page %p\n", __func__, __LINE__, data->page);
 
 	atomic_inc(&gets);
 
 	if (replayfs_report_leaks) {
 		struct timespec tv = CURRENT_TIME_SEC;
 		if (tv.tv_sec - last_print_time.tv_sec > 30) {
-			u32 key;
+			u64 key;
 			struct page_data *btree_data;
 			printk("%s %d: Alloc leak check, currently out %d pages\n", __func__, __LINE__, atomic_read(&gets) - atomic_read(&puts));
 			last_print_time = tv;
 
 			mutex_lock(&crappy_pagecache_lock);
 			printk("%s %d: Now listing all alloc'ed pages!\n", __func__, __LINE__);
-			btree_for_each_safe32(&crappy_pagecache, key, btree_data) {
+			btree_for_each_safe64(&crappy_pagecache, key, btree_data) {
 				if ((btree_data->count > 1 && !list_empty(&btree_data->lru)) || 
 						(btree_data->count >= 1 && list_empty(&btree_data->lru))) {
 					printk("\tPage %lu is allocated (data %p, page addr %p)\n",
@@ -672,7 +812,7 @@ static struct page *alloc_get_page(struct replayfs_diskalloc *alloc, loff_t offs
 	/* No locking this page! */
 	//lock_page(page);
 
-	debugk("%s %d: Returning page %p\n", __func__, __LINE__, data->page);
+	//debugk("%s %d: Returning page %p\n", __func__, __LINE__, data->page);
 	return data->page;
 }
 
@@ -715,16 +855,17 @@ static void alloc_put_page(struct replayfs_diskalloc *alloc, struct page *page) 
 	mutex_lock(&crappy_pagecache_lock);
 	lock_debugk("%s %d - %p: Locked %p\n", __func__, __LINE__, current, &crappy_pagecache_lock);
 
-	data = btree_lookup32(&crappy_pagecache, page->index);
-
-	if (data->page->index == replayfs_debug_page_index) {
-		printk("%s %d: Have allocation for page %lu, dumping stack:\n", __func__,
-				__LINE__, data->page->index);
-		dump_stack();
-	}
+	data = btree_lookup64(&crappy_pagecache,
+			crappy_pagecache_key(alloc, page->index));
 
 	if (data != NULL) {
 		cache_debugk("%s %d: Got page %p\n", __func__, __LINE__, page);
+
+		if (data->page->index == replayfs_debug_page_index) {
+			printk("%s %d: Have allocation for page %lu, dumping stack:\n", __func__,
+					__LINE__, data->page->index);
+			dump_stack();
+		}
 
 		atomic_inc(&puts);
 		/* OOps! */
@@ -849,6 +990,25 @@ static int read_diskalloc(struct replayfs_diskalloc *alloc) {
 	return ret;
 }
 
+static void do_init(struct replayfs_diskalloc *alloc, struct file *filp) {
+	mutex_init(&alloc->lock);
+
+	get_file(filp);
+	alloc->filp = filp;
+
+	alloc->cur_extent = NULL;
+
+	/* Gah... race.. */
+#ifdef REPLAYFS_DISKALLOC_DEBUG
+	mutex_lock(&glbl_allocnum_lock);
+	alloc->allocnum = ++glbl_allocnum;
+	mutex_unlock(&glbl_allocnum_lock);
+#endif
+
+	INIT_LIST_HEAD(&alloc->alloced_pages);
+	INIT_LIST_HEAD(&alloc->dirty_pages);
+}
+
 static struct replayfs_diskalloc *replayfs_diskalloc_create_with_extent(struct file *filp) {
 	int ret;
 	struct replayfs_diskalloc *alloc;
@@ -858,10 +1018,7 @@ static struct replayfs_diskalloc *replayfs_diskalloc_create_with_extent(struct f
 		return ERR_PTR(-ENOMEM);
 	}
 
-	mutex_init(&alloc->lock);
-
-	get_file(filp);
-	alloc->filp = filp;
+	do_init(alloc, filp);
 
 	ret = init_diskalloc(alloc, filp, 1);
 
@@ -882,10 +1039,7 @@ struct replayfs_diskalloc *replayfs_diskalloc_create(struct file *filp) {
 		return ERR_PTR(-ENOMEM);
 	}
 
-	mutex_init(&alloc->lock);
-
-	get_file(filp);
-	alloc->filp = filp;
+	do_init(alloc, filp);
 
 	ret = init_diskalloc(alloc, filp, 0);
 
@@ -907,10 +1061,7 @@ struct replayfs_diskalloc *replayfs_diskalloc_init(struct file *filp) {
 	}
 
 	debugk("%s %d: Initing %p\n", __func__, __LINE__, &alloc->lock);
-	mutex_init(&alloc->lock);
-
-	get_file(filp);
-	alloc->filp = filp;
+	do_init(alloc, filp);
 
 	ret = read_diskalloc(alloc);
 
@@ -927,11 +1078,14 @@ static void alloc_put(struct replayfs_diskalloc *alloc) {
 			alloc, atomic_read(&alloc->refcnt)-1);
 	if (atomic_dec_and_test(&alloc->refcnt)) {
 		allocref_debugk("%s %d: Putting alloc->filp %p\n", __func__, __LINE__, alloc->filp);
+		allocref_dump_stack();
+
 		fput(alloc->filp);
 
 		mutex_destroy(&alloc->lock);
 
 		kfree(alloc);
+		allocref_debugk("%s %d: Done putting alloc\n", __func__, __LINE__);
 	}
 }
 
@@ -944,9 +1098,53 @@ static struct replayfs_diskalloc *alloc_get(struct replayfs_diskalloc *alloc) {
 	return alloc;
 }
 
+void replayfs_diskalloc_sync(struct replayfs_diskalloc *alloc) {
+	struct page_data *data;
+	struct page_data *_t;
+
+	list_for_each_entry_safe(data, _t, &alloc->alloced_pages, alloc_list) {
+		BUG_ON(data->alloc != alloc);
+		if (PageDirty(data->page)) {
+			alloc_debugk("%s %d: About to write page %lu with alloc %p, filp %p\n", __func__,
+					__LINE__, data->page->index, data->alloc, data->alloc->filp);
+			alloc_writepage(data->page, NULL, data->alloc);
+			ClearPageDirty(data->page);
+		}
+	}
+}
+
 void replayfs_diskalloc_destroy(struct replayfs_diskalloc *alloc) {
+	struct page_data *data;
+	struct page_data *_t;
+
 	allocref_debugk("%s %d: About to put alloc %p\n", __func__, __LINE__,
 			alloc);
+
+	debugk("%s %d: Doing destroy on alloc %p (%lu) (%d)\n", __func__, __LINE__, alloc,
+			alloc->filp->f_dentry->d_inode->i_ino, alloc->allocnum);
+
+	/* Flush/delete all of the pages in alloc */
+	mutex_lock(&crappy_pagecache_lock);
+
+	list_for_each_entry_safe(data, _t, &alloc->alloced_pages, alloc_list) {
+		BUG_ON(data->alloc != alloc);
+		if (data->count == 1) {
+			debugk("%s %d: Deleting page %lu from alloc %d!\n", __func__, __LINE__,
+					data->page->index, alloc->allocnum);
+			delete_from_cache(data, alloc);
+			list_del_init(&data->alloc_list);
+		} else if (data->count == 0) {
+			debugk("%s %d: Got data %p page %lu (%p) with count 0???\n", __func__,
+					__LINE__, data, data->page->index, data->page);
+		} else {
+			printk("%s %d: Got data %p page %lu (%p) with count %d???\n", __func__,
+					__LINE__, data, data->page->index, data->page, data->count);
+			BUG();
+		}
+	}
+
+	mutex_unlock(&crappy_pagecache_lock);
+
 	alloc_put(alloc);
 }
 
@@ -1625,6 +1823,9 @@ static loff_t first_free_page(struct replayfs_diskalloc *alloc) {
 
 	used_page_map = replayfs_kmap(page);
 
+	/* If the map isn't properly initalized, there is a bug */
+	BUG_ON(page->index == 0 && used_page_map[0] == 0);
+
 	while ((loff_t)page->index < PAGE_ALLOC_SIZE / PAGE_SIZE) {
 		if (offset * sizeof(unsigned int) == PAGE_SIZE) {
 			struct page *old_page = page;
@@ -1677,6 +1878,13 @@ static loff_t first_free_page(struct replayfs_diskalloc *alloc) {
 	alloc_put_page(alloc, page);
 
 	alloc_debugk("%s %d: returning %lld\n", __func__, __LINE__, ret);
+
+	/*
+	if (alloc != replayfs_alloc) {
+		printk("%s %d: returning %lld\n", __func__, __LINE__, ret);
+	}
+	*/
+
 	return ret;
 }
 
@@ -1742,11 +1950,12 @@ struct page *replayfs_diskalloc_alloc_page(struct replayfs_diskalloc *alloc) {
 		debugk("%s %d: Alloc/Getting page: %lld\n", __func__, __LINE__, page_idx);
 		page = alloc_get_page(alloc, page_idx * PAGE_SIZE);
 		alloc_debugk("%s %d: Allocated page: %lu\n", __func__, __LINE__, page->index);
-		alloc_dump_stack();
+		//alloc_dump_stack();
 
 		SetPageUptodate(page);
 	} else {
 		printk("%s %d: WARNING: Ran out of allocator pages!!!\n", __func__, __LINE__);
+		BUG();
 	}
 
 	mutex_unlock(&alloc->lock);
@@ -1762,7 +1971,7 @@ void replayfs_diskalloc_free_page_noput(struct replayfs_diskalloc *alloc,
 	atomic_dec(&diskalloc_num_blocks);
 	mark_free(alloc, (loff_t)page->index);
 	alloc_debugk("%s %d: Freed page: %lu\n", __func__, __LINE__, page->index);
-	alloc_dump_stack();
+	//alloc_dump_stack();
 
 	mutex_unlock(&alloc->lock);
 }
@@ -1776,7 +1985,7 @@ void replayfs_diskalloc_free_page(struct replayfs_diskalloc *alloc,
 	atomic_dec(&diskalloc_num_blocks);
 	mark_free(alloc, (loff_t)page->index);
 	alloc_debugk("%s %d: Freed page: %lu\n", __func__, __LINE__, page->index);
-	alloc_dump_stack();
+	//alloc_dump_stack();
 
 	//mutex_lock(&crappy_pagecache_lock);
 	alloc_put_page(alloc, page);
@@ -1812,8 +2021,10 @@ void replayfs_diskalloc_read_page_location(struct replayfs_diskalloc *alloc,
 	old_fs = get_fs();
 	set_fs(KERNEL_DS);
 
+	/*
 	debugk("%s %d: Args to vfs_read are %p, %p, PAGE_SIZE and pos of %p (%lld)\n", 
 			__func__, __LINE__, filp, buffer, &pos, pos);
+			*/
 	min_debugk("%s %d: filp is %p, inode is %p, ino is %lu\n", __func__, __LINE__,
 			filp, filp->f_dentry->d_inode, filp->f_dentry->d_inode->i_ino);
 	//dump_stack();
@@ -1829,9 +2040,12 @@ void replayfs_diskalloc_read_page_location(struct replayfs_diskalloc *alloc,
 	if (nread < 0) {
 		printk("%s %d: nread is %d\n", __func__, __LINE__, nread);
 		BUG();
-	} else {
+	} 
+	/*
+	else {
 		debugk("%s %d: nread is %d\n", __func__, __LINE__, nread);
 	}
+	*/
 
 	if (nread < PAGE_SIZE) {
 		memset(buffer + nread, 0, PAGE_SIZE - nread);
@@ -1847,7 +2061,12 @@ void replayfs_diskalloc_write_page_location(struct replayfs_diskalloc *alloc,
 	int nwritten;
 	mm_segment_t old_fs;
 	loff_t pos;
+	loff_t expected_pos;
 	unsigned int fmode;
+	/*
+	char path[200];
+	char *real_path;
+	*/
 
 	filp = alloc->filp;
 	fmode = alloc->filp->f_mode;
@@ -1855,17 +2074,37 @@ void replayfs_diskalloc_write_page_location(struct replayfs_diskalloc *alloc,
 
 	/* Which page should we read from */
 	pos = page;
+	expected_pos = pos + PAGE_SIZE;
 
 	old_fs = get_fs();
 	set_fs(KERNEL_DS);
 
+	/*
+	real_path = d_path(&filp->f_path, path, 200);
+	if (IS_ERR(real_path)) {
+		BUG();
+	}
+	*/
+
+	BUG_ON(!S_ISREG(filp->f_dentry->d_inode->i_mode));
 	min_debugk("%s %d: filp is %p, inode is %p, ino is %lu\n", __func__, __LINE__,
 			filp, filp->f_dentry->d_inode, filp->f_dentry->d_inode->i_ino);
+	/*
+	printk("%s %d: Path is %s\n", __func__, __LINE__, real_path);
+	printk("%s %d: REMOVE_ME: i_flags are 0x%X i_mode is 0x%X, f_flags are 0x%lX\n", __func__,
+			__LINE__, filp->f_dentry->d_inode->i_flags,
+			(unsigned int)filp->f_dentry->d_inode->i_mode, (unsigned long)fmode);
+	printk("%s %d: REMOVE_ME: sb is %p are Dev is %d\n", __func__,
+			__LINE__, filp->f_dentry->d_inode->i_sb,
+			filp->f_dentry->d_inode->i_sb->s_dev);
+			*/
 	min_debugk("%s %d: Pageloc 0 contains %d, pos is %lld, i_size is %lld\n", __func__, __LINE__,
 			(int)((char *)buffer)[0], pos, i_size_read(filp->f_dentry->d_inode));
 	nwritten = vfs_write(filp, buffer, PAGE_SIZE, &pos);
 	min_debugk("%s %d: pos-Pageloc 0 contains %d, pos is %lld, nwritten is %d\n", __func__, __LINE__,
 			(int)((char *)buffer)[0], pos, nwritten);
+
+	BUG_ON(pos != expected_pos);
 
 	alloc->filp->f_mode = fmode;
 

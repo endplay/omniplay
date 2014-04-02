@@ -8,6 +8,7 @@
 
 #include "replayfs_diskalloc.h"
 
+#include <linux/list.h>
 #include <linux/btree.h>
 
 /**
@@ -65,6 +66,7 @@ struct replayfs_btree128_head {
 	struct replayfs_diskalloc *allocator;
 	int height;
 
+	struct list_head active_list;
 	struct btree_head128 verify_btree;
 };
 
@@ -91,8 +93,10 @@ void replayfs_btree128_free(void *element, void *pool_data);
  * When this function is used, there is no need to destroy
  * the mempool.
  */
+/*
 void replayfs_btree128_init_allocator(struct replayfs_btree128_head *head, struct
 		replayfs_diskalloc *allocator);
+*/
 
 /**
  * btree_init - initialise a btree
