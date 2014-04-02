@@ -2773,7 +2773,11 @@ long get_num_filemap_entries(int fd, loff_t offset, int size) {
 	int num_entries = 0;
 	struct file *filp;
 	struct replayfs_filemap map;
+	//struct replayfs_filemap *map;
 	struct replayfs_filemap_entry* entry;
+
+	/* Hacky... but needed... */
+	glbl_diskalloc_init();
 
 	filp = fget(fd);
 	if (!filp) {
@@ -2781,6 +2785,13 @@ long get_num_filemap_entries(int fd, loff_t offset, int size) {
 		return -EBADF;
 	}
 	replayfs_filemap_init(&map, replayfs_alloc, filp);
+	/*
+	map = filp->replayfs_filemap;
+	if (map == NULL) {
+		replayfs_file_opened(filp);
+		map = filp->replayfs_filemap;
+	}
+	*/
 
 	MPRINT("get filemap entries for fd %d offset %lld, size %d\n", fd, offset, size);
 	entry = replayfs_filemap_read(&map, offset, size);
@@ -2796,6 +2807,7 @@ long get_num_filemap_entries(int fd, loff_t offset, int size) {
 
 	replayfs_filemap_destroy(&map);
 	fput(filp);
+
 	num_entries = entry->num_elms;
 	MPRINT("get_num_filemap_entries is %d\n", num_entries);
 	kfree(entry);
@@ -2811,6 +2823,9 @@ long get_filemap(int fd, loff_t offset, int size, void __user* entries, int num_
 	struct file *filp;
 	struct replayfs_filemap map;
 	struct replayfs_filemap_entry* entry;
+
+	/* Hacky... but needed... */
+	glbl_diskalloc_init();
 
 	filp = fget(fd);
 	if (!filp) {
