@@ -42,4 +42,5 @@ int main(int argc, char** argv)
         free(filename);
         count += (sizeof(int) + 256);
     }
+    return 0;
 }
