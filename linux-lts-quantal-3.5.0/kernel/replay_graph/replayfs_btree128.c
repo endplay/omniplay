@@ -50,9 +50,11 @@
 #include "replayfs_diskalloc.h"
 #include "replayfs_kmap.h"
 
+/*
 #define REPLAYFS_BTREE128_DEBUG
 
 #define REPLAYFS_BTREE128_VERIFY
+*/
 
 #ifdef REPLAYFS_BTREE128_VERIFY
 extern struct mutex glbl_debug_lock;
@@ -85,10 +87,19 @@ static int keyzero(struct btree_geo *geo, struct replayfs_btree128_key *key);
 
 #ifdef REPLAYFS_BTREE_128_VERIFY
 static void replayfs_btree128_verify_init(struct replayfs_btree128_head *head) {
+
+	mutex_lock(&glbl_debug_lock);
+	list_add(&head->active_list, &active_trees);
+	mutex_unlock(&glbl_debug_lock);
+
 	btree_init128(&head->verify_btree);
 }
 
 static void replayfs_btree128_verify_destroy(struct replayfs_btree128_head *head) {
+	mutex_lock(&glbl_debug_lock);
+	list_del(&head->active_list);
+	mutex_unlock(&glbl_debug_lock);
+
 	btree_destroy128(&head->verify_btree);
 }
 
@@ -507,10 +518,6 @@ static inline void __btree_init(struct replayfs_btree128_head *head)
 	head->node_page = NULL;
 	head->height = 0;
 
-	mutex_lock(&glbl_debug_lock);
-	list_add(&head->active_list, &active_trees);
-	mutex_unlock(&glbl_debug_lock);
-
 	replayfs_btree128_verify_init(head);
 }
 
@@ -599,10 +606,6 @@ void replayfs_btree128_destroy(struct replayfs_btree128_head *head)
 {
 	/* Sync all of the nodes in the tree */
 	head->allocator = NULL;
-
-	mutex_lock(&glbl_debug_lock);
-	list_del(&head->active_list);
-	mutex_unlock(&glbl_debug_lock);
 
 	replayfs_btree128_verify_destroy(head);
 }
