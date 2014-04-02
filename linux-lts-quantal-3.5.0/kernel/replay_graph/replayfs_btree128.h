@@ -8,6 +8,7 @@
 
 #include "replayfs_diskalloc.h"
 
+#include <linux/list.h>
 #include <linux/btree.h>
 
 /**
@@ -65,6 +66,7 @@ struct replayfs_btree128_head {
 	struct replayfs_diskalloc *allocator;
 	int height;
 
+	struct list_head active_list;
 	struct btree_head128 verify_btree;
 };
 
