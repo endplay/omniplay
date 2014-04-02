@@ -604,6 +604,8 @@ int replayfs_btree128_create(struct replayfs_btree128_head *head,
 
 void replayfs_btree128_destroy(struct replayfs_btree128_head *head)
 {
+	replayfs_diskalloc_sync(head->allocator);
+
 	/* Sync all of the nodes in the tree */
 	head->allocator = NULL;
 
