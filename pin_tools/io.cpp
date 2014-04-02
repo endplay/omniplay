@@ -10,11 +10,12 @@
 #include <arpa/inet.h>
 #include <syscall.h>
 #include "util.h"
-#include <sys/socket.h>
 #include <linux/net.h>
 #include <sys/mman.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <dirent.h>
+#include <unistd.h>
 
 #include <sys/wait.h>
 #include <signal.h>
@@ -24,10 +25,14 @@
 // Defined in the makefile.rules
 // #define ONLY_X
 
+//#define DEBUG_PRINT fprintf
+#define DEBUG_PRINT(...)
+
 int copy_data = 1;
 long bytes_read = 0;
 long bytes_written = 0;
 long global_syscall_cnt = 1;    // set to 1 to account for first exec that we miss
+long include_mmap_exec = 0;
 
 /* Files opened by this replay group */
 FILE* filenames = NULL;
@@ -35,6 +40,10 @@ FILE* stream_fp = NULL; // description of all the reads/writes going on
 char stream_directory[256];
 char stream_write_directory[256];
 char stream_read_directory[256];
+KNOB<string> KnobDirectoryPrefix(KNOB_MODE_WRITEONCE, "pintool", "d", "/tmp",
+		"top-level directory to make the io directory");
+KNOB<BOOL> KnobIncludeExMmap(KNOB_MODE_WRITEONCE, "pintool", "x", "0",
+        "Include mmaps with PROT_EXEC as input");
 
 struct thread_data {
     u_long app_syscall; // Per thread address for specifying pin vs. non-pin system calls
@@ -50,11 +59,10 @@ struct thread_data {
     long bytes_written;
 };
 
-ADDRINT array[10000];
-
 int dev_fd; // File descriptor for the replay device
 TLS_KEY tls_key; // Key for accessing TLS. 
 int first_thread = 1;
+int child = 0;
 
 // mcc: the xray_monitor structure is just a wrapper around a 
 //   linked list of file decriptors. If it turns out that there
@@ -67,10 +75,85 @@ struct xray_monitor* open_fds = NULL;
 /* List of open sockets */
 struct xray_monitor* open_socks = NULL;
 
-/* Just contains information about reads and writes */
-FILE* meta_fp;
-
 int get_record_pid(void);
+
+// state to be saved and restored after an exec.
+// Saved in /tmp/saved_state.<replay_group_id>
+struct save_state {
+    uint64_t rg_id; // for verification purposes, ask the kernel for these!
+    int record_pid; // (see above)
+
+    long global_syscall_cnt;
+};
+
+int save_state_to_disk(struct thread_data* ptdata) {
+    int fd;
+    int rc;
+    char state_filename[256];
+    struct save_state state;
+
+    // record the state
+    memcpy(&state.rg_id, &ptdata->rg_id, sizeof(uint64_t));
+    state.record_pid = ptdata->record_pid;
+    state.global_syscall_cnt = global_syscall_cnt;
+
+    snprintf(state_filename, 256, "/tmp/%llu.state", ptdata->rg_id);
+    fd = open(state_filename, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    rc = write(fd, &state, sizeof(struct save_state));
+    if (rc != sizeof(struct save_state)) {
+        fprintf(stderr, "Could not write saved state to %s, errno %d\n", state_filename, errno);
+        return -1;
+    }
+    close(fd);
+    return 0;
+}
+
+int restore_state_from_disk(struct thread_data* ptdata) {
+    int fd;
+    int rc;
+    char state_filename[256];
+    struct save_state state;
+    
+    snprintf(state_filename, 256, "/tmp/%llu.state", ptdata->rg_id);
+
+    fprintf(stderr, "Restore state from %s\n", state_filename);
+    if (access(state_filename, F_OK)) {
+        fprintf(stderr, "State file does not exist, no state to restore\n");
+        return 0;
+    }
+
+    fd = open(state_filename, O_RDONLY);
+    rc = read(fd, &state, sizeof(struct save_state));
+    if (rc != sizeof(struct save_state)) {
+        fprintf(stderr, "Could not read in saved state from %s, errno %d\n", state_filename, errno);
+        close(fd);
+        return -1;
+    }
+    close(fd);
+
+    // now, restore the state
+    // but let's do some verification checks first.
+    if (ptdata->rg_id != state.rg_id) {
+        fprintf(stderr, "Record group is different?!\n");
+        return -1;
+    }
+    if (ptdata->record_pid != state.record_pid) {
+        fprintf(stderr, "Record pid is different?!\n");
+        return -1;
+    }
+    global_syscall_cnt = state.global_syscall_cnt;
+    if (global_syscall_cnt < 0) {
+        fprintf(stderr, "something went wrong here, global_syscall_cnt is %ld\n", global_syscall_cnt);
+        return -1;
+    }
+
+    /* We'll unlink before execing */
+    if (unlink(state_filename)) {
+        fprintf(stderr, "Couldn't unlink %s, errno %d\n", state_filename, errno);
+    }
+
+    return 0;
+}
 
 ADDRINT find_static_address(ADDRINT ip)
 {
@@ -172,8 +255,7 @@ inline
 void increment_syscall_cnt (struct thread_data* ptdata, int syscall_num)
 {
     // ignore pthread syscalls, or deterministic system calls that we don't log (e.g. 243, 244)
-    if (!(syscall_num == 17 || syscall_num == 31 || syscall_num == 32 || syscall_num == 35 || syscall_num == 44 || syscall_num == 53 || syscall_num == 56 || syscall_num == 98 || syscall_num == 243 || syscall_num == 244)) {
-        /*
+    if (!(syscall_num == 17 || syscall_num == 31 || syscall_num == 32 || syscall_num == 35 || syscall_num == 44 || syscall_num == 53 || syscall_num == 56 || syscall_num == 98 || syscall_num == 119 || syscall_num == 243 || syscall_num == 244)) {
         if (ptdata->ignore_flag) {
             if (!(*(int *)(ptdata->ignore_flag))) {
                 ptdata->syscall_cnt++;
@@ -183,14 +265,13 @@ void increment_syscall_cnt (struct thread_data* ptdata, int syscall_num)
             global_syscall_cnt++;
             ptdata->syscall_cnt++;
         }
-        */
-        global_syscall_cnt++;
+        //global_syscall_cnt++;
     }
 }
 
 void make_stream_directory(uint64_t rg_id) 
 {
-    snprintf(stream_directory, 256, "/tmp/io_%llu", rg_id);
+    snprintf(stream_directory, 256, "%s/io_%llu", KnobDirectoryPrefix.Value().c_str(), rg_id);
     snprintf(stream_write_directory, 256, "%s/writes", stream_directory);
     snprintf(stream_read_directory, 256, "%s/reads", stream_directory);
     if (mkdir(stream_directory, 0755)) {
@@ -224,6 +305,7 @@ int create_out_file(char* directory, uint64_t rg_id, int pid, int syscall, int o
     int fd;
     char filename[256];
     snprintf(filename, 256, "%s/%llu_%d_%d", directory, rg_id, pid, syscall);
+    fprintf(stderr, "Created out file %s\n", filename);
     fd = open(filename, O_CREAT | O_TRUNC | O_WRONLY, 0644);
     if (fd < 0) {
         fprintf(stderr, "could not open out file %d, errno %d\n", fd, errno);
@@ -264,6 +346,7 @@ void read_stop(int rc) {
 #else
         char* channel_name = (char *) "--";
         int rcc;
+        int has_fd = 0;
         struct read_info* ri = (struct read_info *) tdata->syscall_info;
         assert (ri);
         if (monitor_has_fd(open_fds, ri->fd)) {
@@ -272,17 +355,21 @@ void read_stop(int rc) {
             channel_name = oi->filename;
             fprintf(stream_fp, "READ %ld size: %d from %s\n", global_syscall_cnt, rc, oi->filename);
             fflush(stream_fp);
+
+            has_fd = 1;
         } else if (monitor_has_fd(open_socks, ri->fd)) {
             struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, ri->fd);
             assert (si);
             fprintf(stream_fp, "READ from socket %ld size: %d\n", global_syscall_cnt, rc);
             fflush(stream_fp);
             channel_name = (char *) "socket";
+
+            has_fd = 1;
         } else {
             fprintf(stderr, "untracked read\n");
         }
 
-        if (copy_data) {
+        if (copy_data && has_fd) {
             FILE* out_fp;
             int out_fd = create_out_file(stream_read_directory, tdata->rg_id, tdata->record_pid, global_syscall_cnt, 0, rc);
             assert (out_fd > 0);
@@ -325,6 +412,8 @@ void readv_stop(int rc)
     int i;
 
     if (rc > 0) {
+        int has_fd = 0;
+        const char* channel_name = (char *) "--";
 #ifdef ONLY_X
         if (monitor_has_fd(open_socks, rvi->fd)) {
             struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, rvi->fd);
@@ -340,39 +429,26 @@ void readv_stop(int rc)
         bytes_read += rc;
 #else
         if ((monitor_has_fd(open_fds, rvi->fd))) {
-            FILE* fp = NULL;
             struct open_info* oi = (struct open_info *) monitor_get_fd_data(open_fds, rvi->fd);
             assert (oi);
             for (i = 0; i < rvi->count; i++) {
                 struct iovec* vi = (rvi->iov + i);
                 fprintf(stream_fp, "READV %ld count %d size: %d to %s\n", global_syscall_cnt, i, vi->iov_len, oi->filename);
-                if (copy_data && fp) {
-                    unsigned int rcc;
-                    rcc = write(fileno(fp), vi->iov_base, vi->iov_len);
-                    if (rcc != vi->iov_len) {
-                        fprintf(stderr, "could not write mirror stream %d bytes\n", rcc);
-                    }
-                    fflush(fp);
-                }
             }
+            fflush(stream_fp);
+            has_fd = 1;
+            channel_name = oi->filename;
         } else if (monitor_has_fd(open_socks, rvi->fd)) {
-            FILE* fp = NULL;
             struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, rvi->fd);
             assert (si);
 
             for (i = 0; i < rvi->count; i++) {
                 struct iovec* vi = (rvi->iov + i);
                 fprintf(stream_fp, "READV %ld count %d size: %d to socket\n", global_syscall_cnt, i, vi->iov_len);
-                if (copy_data && fp) {
-                    unsigned int rcc;
-                    rcc = write(fileno(fp), vi->iov_base, vi->iov_len);
-                    if (rcc != vi->iov_len) {
-                        fprintf(stderr, "could not write mirror stream %d bytes\n", rcc);
-                    }
-                    fflush(fp);
-                }
             }
             fflush(stream_fp);
+            has_fd = 1;
+            channel_name = (char *) "SOCKET";
         } else {
             fprintf(stderr, "readv to untracked fd\n");
         }
@@ -380,21 +456,24 @@ void readv_stop(int rc)
         bytes_written += rc;
 #endif
 
-        if (copy_data) {
-            int rcc;
+        if (copy_data && has_fd) {
+            unsigned int rcc;
             int offset = 0;
-            int out_fd = create_out_file(stream_directory, tdata->rg_id, tdata->record_pid, global_syscall_cnt, 0, rc);
+            int out_fd = create_out_file(stream_read_directory, tdata->rg_id, tdata->record_pid, global_syscall_cnt, offset, rc);
+            FILE* out_fp = fdopen(out_fd, "w");
             assert (out_fd > 0);
             for (i = 0; i < rvi->count; i++) {
                 struct iovec* vi = (rvi->iov + i);
                 // write a header
-                fprintf(fdopen(out_fd, "w"), "%llu %d %ld %d %d\n",
-                    tdata->rg_id, tdata->record_pid, global_syscall_cnt, offset, vi->iov_len);
+                fprintf(out_fp, "%llu %d %ld %d %d %s\n",
+                    tdata->rg_id, tdata->record_pid, global_syscall_cnt, offset, vi->iov_len, channel_name);
+                fflush(out_fp);
                 rcc = write(out_fd, vi->iov_base, vi->iov_len);
-                if (rcc != rc) {
-                    fprintf(stderr, "readv could not write to mirror file, expected %d got %d\n", rc, rcc);
+                if (rcc != vi->iov_len) {
+                    fprintf(stderr, "readv could not write to mirror file, expected %d got %d, errno %d\n", vi->iov_len, rcc, errno);
                 }
                 offset += vi->iov_len;
+                fsync(out_fd);
             }
             fsync(out_fd);
             close(out_fd);
@@ -422,6 +501,8 @@ void recvmsg_stop(int rc)
     u_int i;
 
     if (rc > 0) {
+        int has_fd = 0;
+        const char* channel_name = "--";
 #ifdef ONLY_X
         if (monitor_has_fd(open_socks, rmi->fd)) {
             struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, rmi->fd);
@@ -437,39 +518,26 @@ void recvmsg_stop(int rc)
         bytes_read += rc;
 #else
         if ((monitor_has_fd(open_fds, rmi->fd))) {
-            FILE* fp = NULL;
             struct open_info* oi = (struct open_info *) monitor_get_fd_data(open_fds, rmi->fd);
             assert (oi);
             for (i = 0; i < rmi->msg->msg_iovlen; i++) {
                 struct iovec* vi = (rmi->msg->msg_iov + i);
                 fprintf(stream_fp, "RECVMSG %ld count %d size: %d to %s\n", global_syscall_cnt, i, vi->iov_len, oi->filename);
-                if (copy_data && fp) {
-                    unsigned int rcc;
-                    rcc = write(fileno(fp), vi->iov_base, vi->iov_len);
-                    if (rcc != vi->iov_len) {
-                        fprintf(stderr, "could not write mirror stream %d bytes\n", rcc);
-                    }
-                    fflush(fp);
-                }
             }
+            fflush(stream_fp);
+            has_fd = 1;
+            channel_name = oi->filename;
         } else if (monitor_has_fd(open_socks, rmi->fd)) {
-            FILE* fp = NULL;
             struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, rmi->fd);
             assert (si);
 
             for (i = 0; i < rmi->msg->msg_iovlen; i++) {
                 struct iovec* vi = (rmi->msg->msg_iov + i);
                 fprintf(stream_fp, "RECVMSG %ld count %d size: %d to socket\n", global_syscall_cnt, i, vi->iov_len);
-                if (copy_data && fp) {
-                    unsigned int rcc;
-                    rcc = write(fileno(fp), vi->iov_base, vi->iov_len);
-                    if (rcc != vi->iov_len) {
-                        fprintf(stderr, "could not write mirror stream %d bytes\n", rcc);
-                    }
-                    fflush(fp);
-                }
             }
             fflush(stream_fp);
+            has_fd = 1;
+            channel_name = (char *) "SOCKET";
         } else {
             fprintf(stderr, "rcvmsg to untracked fd\n");
         }
@@ -477,21 +545,24 @@ void recvmsg_stop(int rc)
         bytes_written += rc;
 #endif
 
-        if (copy_data) {
-            int rcc;
+        if (copy_data && has_fd) {
             int offset = 0;
-            int out_fd = create_out_file(stream_directory, tdata->rg_id, tdata->record_pid, global_syscall_cnt, 0, rc);
+            int out_fd = create_out_file(stream_read_directory, tdata->rg_id, tdata->record_pid, global_syscall_cnt, offset, rc);
+            FILE* out_fp = fdopen(out_fd, "w");
             assert (out_fd > 0);
             for (i = 0; i < rmi->msg->msg_iovlen; i++) {
+                unsigned int rcc;
                 struct iovec* vi = (rmi->msg->msg_iov + i);
                 // write a header
-                fprintf(fdopen(out_fd, "w"), "%llu %d %ld %d %d\n",
-                    tdata->rg_id, tdata->record_pid, global_syscall_cnt, offset, vi->iov_len);
+                fprintf(out_fp, "%llu %d %ld %d %d %s\n",
+                    tdata->rg_id, tdata->record_pid, global_syscall_cnt, offset, vi->iov_len, channel_name);
+                fflush(out_fp);
                 rcc = write(out_fd, vi->iov_base, vi->iov_len);
-                if (rcc != rc) {
-                    fprintf(stderr, "readv could not write to mirror file, expected %d got %d\n", rc, rcc);
+                if (rcc != vi->iov_len) {
+                    fprintf(stderr, "recvmsg could not write to mirror file, expected %d got %d\n", rc, rcc);
                 }
                 offset += vi->iov_len;
+                fsync(out_fd);
             }
             fsync(out_fd);
             close(out_fd);
@@ -528,6 +599,7 @@ void write_stop(int rc) {
             }
         }
 #else
+        int has_fd = 0;
         struct write_info* wi = (struct write_info *) tdata->syscall_info;
         int rcc;
         if (monitor_has_fd(open_fds, wi->fd)) {
@@ -536,6 +608,7 @@ void write_stop(int rc) {
             channel_name = oi->filename;
             fprintf(stream_fp, "WRITE %ld size: %d to %s\n", global_syscall_cnt, rc, oi->filename);
             fflush(stream_fp);
+            has_fd = 1;
         } else if (monitor_has_fd(open_socks, wi->fd)) {
             struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, wi->fd);
             assert(si);
@@ -558,11 +631,12 @@ void write_stop(int rc) {
                 }
             }
             fflush(stream_fp);
+            has_fd = 1;
         } else {
             fprintf(stderr, "write to untracked fd\n");
         }
 
-        if (copy_data) {
+        if (copy_data && has_fd) {
             FILE* out_fp;
             int out_fd = create_out_file(stream_write_directory, tdata->rg_id, tdata->record_pid, global_syscall_cnt, 0, rc);
             assert (out_fd > 0);
@@ -605,6 +679,8 @@ void writev_stop(int rc)
     int i;
 
     if (rc > 0) {
+        int has_fd = 0;
+        const char* channel_name = (char *) "--";
 #ifdef ONLY_X
         if (monitor_has_fd(open_socks, wvi->fd)) {
             struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, wvi->fd);
@@ -620,39 +696,25 @@ void writev_stop(int rc)
         bytes_written += rc;
 #else
         if ((monitor_has_fd(open_fds, wvi->fd))) {
-            FILE* fp = NULL;
             struct open_info* oi = (struct open_info *) monitor_get_fd_data(open_fds, wvi->fd);
             assert (oi);
             for (i = 0; i < wvi->count; i++) {
                 struct iovec* vi = (wvi->iov + i);
                 fprintf(stream_fp, "WRITEV %ld count %d size: %d to %s\n", global_syscall_cnt, i, vi->iov_len, oi->filename);
-                if (copy_data && fp) {
-                    unsigned int rcc;
-                    rcc = write(fileno(fp), vi->iov_base, vi->iov_len);
-                    if (rcc != vi->iov_len) {
-                        fprintf(stderr, "could not write mirror stream %d bytes\n", rcc);
-                    }
-                    fflush(fp);
-                }
             }
+            has_fd = 1;
+            channel_name = oi->filename;
         } else if (monitor_has_fd(open_socks, wvi->fd)) {
-            FILE* fp = NULL;
             struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, wvi->fd);
             assert (si);
 
             for (i = 0; i < wvi->count; i++) {
                 struct iovec* vi = (wvi->iov + i);
                 fprintf(stream_fp, "WRITEV %ld count %d size: %d to socket\n", global_syscall_cnt, i, vi->iov_len);
-                if (copy_data && fp) {
-                    unsigned int rcc;
-                    rcc = write(fileno(fp), vi->iov_base, vi->iov_len);
-                    if (rcc != vi->iov_len) {
-                        fprintf(stderr, "could not write mirror stream %d bytes\n", rcc);
-                    }
-                    fflush(fp);
-                }
             }
             fflush(stream_fp);
+            has_fd = 1;
+            channel_name = (char *) "SOCKET";
         } else {
             fprintf(stderr, "writev to untracked fd\n");
         }
@@ -660,21 +722,26 @@ void writev_stop(int rc)
         bytes_written += rc;
 #endif
 
-        if (copy_data) {
-            int rcc;
+        if (copy_data && has_fd) {
             int offset = 0;
-            int out_fd = create_out_file(stream_directory, tdata->rg_id, tdata->record_pid, global_syscall_cnt, 0, rc);
+            int out_fd = create_out_file(stream_write_directory, tdata->rg_id, tdata->record_pid, global_syscall_cnt, 0, rc);
+            FILE* out_fp = fdopen(out_fd, "w");
             assert (out_fd > 0);
             for (i = 0; i < wvi->count; i++) {
+                unsigned int rcc;
                 struct iovec* vi = (wvi->iov + i);
-                // write a header
-                fprintf(fdopen(out_fd, "w"), "%llu %d %ld %d %d\n",
-                    tdata->rg_id, tdata->record_pid, global_syscall_cnt, offset, vi->iov_len);
-                rcc = write(out_fd, vi->iov_base, vi->iov_len);
-                if (rcc != rc) {
-                    fprintf(stderr, "writev could not write to mirror file, expected %d got %d\n", rc, rcc);
+                if (vi->iov_len) {
+                    // write a header
+                    fprintf(out_fp, "%llu %d %ld %d %d %s\n",
+                            tdata->rg_id, tdata->record_pid, global_syscall_cnt, offset, vi->iov_len, channel_name);
+                    fflush(out_fp);
+                    rcc = write(out_fd, vi->iov_base, vi->iov_len);
+                    if (rcc != vi->iov_len) {
+                        fprintf(stderr, "writev could not write to mirror file, expected %d got %d\n", vi->iov_len, rcc);
+                    }
+                    offset += vi->iov_len;
                 }
-                offset += vi->iov_len;
+                fsync(out_fd);
             }
             fsync(out_fd);
             close(out_fd);
@@ -686,6 +753,8 @@ void open_start(char* filename, int flags) {
     struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
     struct open_info* oi;
     oi = (struct open_info *) malloc(sizeof(struct open_info));
+    memset(oi, 0, sizeof(struct open_info));
+    DEBUG_PRINT(stderr, "[OPEN] open_start, filename is %s, len %d\n", filename, strlen(filename));
     strncpy(oi->filename, filename, MAX_PATH_LEN);
     oi->flags = flags;
 
@@ -706,8 +775,9 @@ void open_stop(int rc) {
             snprintf(write_stream_name, 256, "/tmp/io/%ld_write", global_syscall_cnt);
         }
 
-        cloexec = oi->flags | O_CLOEXEC;
-        fprintf(stderr, "Open add fd %d, cloexec %d\n", rc, cloexec);
+        cloexec = oi->flags & O_CLOEXEC;
+        DEBUG_PRINT (stderr, "[OPEN] Successful open of %s, fd %d, cloexec 0x%x\n", oi->filename, rc, cloexec);
+        DEBUG_PRINT(stderr, "open_fds has %d fds\n", monitor_size(open_fds));
         monitor_add_fd(open_fds, rc, cloexec, oi);
         tdata->syscall_info = NULL; // monitor owns oi now
 
@@ -730,12 +800,14 @@ void close_stop(int rc) {
     struct close_info* ci = (struct close_info *) tdata->syscall_info;
     // sucessful close
     if (!rc) {
+        DEBUG_PRINT (stderr, "[CLOSE] Successful close of %d\n", ci->fd);
         if (monitor_has_fd(open_fds, ci->fd)) {
             struct open_info* oi = (struct open_info *) monitor_get_fd_data(open_fds, ci->fd);
             assert (oi);
-
+            DEBUG_PRINT(stderr, "[CLOSE] of file %s\n", oi->filename);
             free(oi);
             monitor_remove_fd(open_fds, ci->fd);
+            DEBUG_PRINT(stderr, "open_fds has %d fds\n", monitor_size(open_fds));
         } else if (monitor_has_fd(open_socks, ci->fd)) {
             struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, ci->fd);
             assert (si);
@@ -773,27 +845,46 @@ void mmap_stop(void* rc) {
     if (rc != MAP_FAILED) {
         int rcc;
         struct mmap_info* mi = (struct mmap_info *) tdata->syscall_info;
-        FILE* fp = NULL;
         assert (mi);
+
+        if (!include_mmap_exec && (mi->prot & PROT_EXEC)) {
+            // Before returning, count these are bytes read
+            tdata->bytes_read += mi->length;
+            bytes_read += mi->length;
+            // mi will be freed after syscall
+            return;
+        }
+
         if (monitor_has_fd(open_fds, mi->fd)) {
             struct open_info* oi = (struct open_info *) monitor_get_fd_data(open_fds, mi->fd);
             assert (oi);
-            fprintf(stderr, "mmaped file %s\n", oi->filename);
             fprintf(stream_fp, "MMAP %ld size: %d from %s\n", global_syscall_cnt, mi->length, oi->filename);
             fflush(stream_fp);
-        } else if (mi->fd != -1) {
-            fprintf(stderr, "untracked mmap\n");
-        }
 
-        if (copy_data && fp) {
-            rcc = write(fileno(fp), rc, mi->length);
-            if (rcc != mi->length) {
-                fprintf(stderr, "could not write %d bytes, shadowing mmap\n", rcc);
+            if (copy_data) {
+                FILE* out_fp;
+                int out_fd;
+                out_fd = create_out_file(stream_read_directory, tdata->rg_id, tdata->record_pid, global_syscall_cnt, 0, mi->length);
+                assert (out_fd > 0);
+                // write a header
+                out_fp = fdopen(out_fd, "w");
+                assert(out_fp);
+                fprintf(out_fp, "%llu %d %ld %d %d %s\n",
+                        tdata->rg_id, tdata->record_pid, global_syscall_cnt, 0, mi->length, oi->filename);
+                fflush(out_fp);
+                rcc = write(out_fd, rc, mi->length);
+                if (rcc != mi->length) {
+                    fprintf(stderr, "could not write to read mirror file, expected %d got %d\n", mi->length, rcc);
+                }
+                fsync(out_fd);
+                close(out_fd);
             }
-            fflush(fp);
+
+            tdata->bytes_read += mi->length;
+            bytes_read += mi->length;
+        } else if (mi->fd != -1) {
+            fprintf(stderr, "untracked mmap, fd %d\n", mi->fd);
         }
-        tdata->bytes_read += mi->length;
-        bytes_read += mi->length;
     }
 }
 
@@ -952,6 +1043,8 @@ void accept_start(int sockfd, struct sockaddr* addr, socklen_t size)
         struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, sockfd);
         struct connect_info* accept_info = (struct connect_info *) malloc(sizeof(struct connect_info));
         struct connect_info* connect_info = (struct connect_info *) malloc(sizeof(struct connect_info));
+	memset(accept_info, 0, sizeof(struct connect_info));
+	memset(connect_info, 0, sizeof(struct connect_info));
 
         assert (si);
 
@@ -1034,6 +1127,7 @@ void dup_stop(int rc)
     di = (struct dup_info *) tdata->syscall_info;
 
     if (rc > 0) { // successful dup
+        DEBUG_PRINT (stderr, "[DUP] dup returns %d, oldfd %d\n", rc, di->oldfd);
         if (monitor_has_fd(open_fds, di->oldfd)) {
         }
     }
@@ -1051,30 +1145,26 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
     ADDRINT ret_value = PIN_GetSyscallReturn(ctxt, std);
 
     switch (tdata->sysnum) {
+        case SYS_open:
+            open_stop((int) ret_value);
+            break;
+        case SYS_close:
+            close_stop((int) ret_value);
+            break;
+        case SYS_mmap2:
+            mmap_stop((void *) ret_value);
+            break;
         case SYS_read:
             read_stop((int) ret_value);
             break;
         case SYS_write:
             write_stop((int) ret_value);
             break;
-        case SYS_open:
-#ifndef ONLY_X
-            open_stop((int) ret_value);
-#endif
-            break;
-        case SYS_close:
-            close_stop((int) ret_value);
-            break;
         case SYS_readv:
             readv_stop((int) ret_value);
             break;
         case SYS_writev:
             writev_stop((int) ret_value);
-            break;
-        case SYS_mmap2:
-#ifndef ONLY_X
-            mmap_stop((void *) ret_value);
-#endif
             break;
         case SYS_dup:
             dup_stop((int) ret_value);
@@ -1099,7 +1189,7 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
                     write_stop((int) ret_value);
                     break;
                 case SYS_RECV:
-	        case SYS_RECVFROM:
+		case SYS_RECVFROM:
                     read_stop((int) ret_value);
                     break;
 	        case SYS_RECVMSG:
@@ -1143,7 +1233,7 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscalla
 
         switch(sysnum) {
         case 31:
-            tdata->ignore_flag = (u_long) syscallarg2;
+            tdata->ignore_flag = (u_long) syscallarg1;
             break;
         case SYS_execve:
         {
@@ -1151,6 +1241,16 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscalla
             fprintf(stderr, "Trying to exec %s\n", program_name);
             break;
         }
+        case SYS_open:
+            open_start((char *)syscallarg0, (int)syscallarg1);
+            break;
+        case SYS_close:
+            close_start((int)syscallarg0);
+            break;
+        case SYS_mmap2:
+            mmap_start((void*)syscallarg0, (int)syscallarg1, (int)syscallarg2, (int)syscallarg3,
+                    (int)syscallarg4, (off_t)syscallarg5);
+            break;
         case SYS_read:
             read_start((int)syscallarg0, (void *)syscallarg1, (int)syscallarg2);
             break;
@@ -1162,16 +1262,6 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscalla
             break;
         case SYS_writev:
             writev_start((int)syscallarg0, (struct iovec*)syscallarg1, (int)syscallarg2);
-            break;
-        case SYS_open:
-            open_start((char *)syscallarg0, (int)syscallarg1);
-            break;
-        case SYS_close:
-            close_start((int)syscallarg0);
-            break;
-        case SYS_mmap2:
-            mmap_start((void*)syscallarg0, (int)syscallarg1, (int)syscallarg2, (int)syscallarg3,
-                    (int)syscallarg4, (off_t)syscallarg5);
             break;
         case SYS_dup:
             dup_start(1, (int)syscallarg0, -1, -1);
@@ -1291,6 +1381,7 @@ BOOL follow_child(CHILD_PROCESS child, void* data)
     char** argv;
     char** prev_argv = (char**)data;
     int index = 0;
+    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
 
     fprintf(stderr, "following child...\n");
 
@@ -1310,8 +1401,9 @@ BOOL follow_child(CHILD_PROCESS child, void* data)
 
     fprintf(stderr, "returning from follow child\n");
     fprintf(stderr, "pin my pid is %d\n", PIN_GetPid());
-    fprintf(stderr, "%d is application thread\n", PIN_IsApplicationThread());
-    getppid();
+
+    fprintf(stderr, "Save state before exec-ing\n");
+    save_state_to_disk(tdata);
 
     return TRUE;
 }
@@ -1349,7 +1441,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
     ptdata->bytes_written = 0;
 
     if (first_thread) {
-	    char stream_filename[256];
+        char stream_filename[256];
         make_stream_directory(ptdata->rg_id);
 
         snprintf(stream_filename, 256, "%s/streams_info_%d", stream_directory, ptdata->record_pid);
@@ -1367,6 +1459,14 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 
         first_thread = 0;
     }
+
+    if (child) {
+        if (restore_state_from_disk(ptdata)) {
+            fprintf(stderr, "WARN -- problem restoring state after exec\n");
+        }
+        fprintf(stderr, "Restored state, global syscall cnt is %ld\n", global_syscall_cnt);
+    }
+
 
     PIN_SetThreadData (tls_key, ptdata, threadid);
 
@@ -1391,11 +1491,25 @@ int main(int argc, char** argv)
     int rc;
     fprintf(stderr, "Starting io tool\n");
 
+    if (!strcmp(argv[4], "--")) { // pin injected into forked process
+        child = 1;
+    } else { // pin attached to replay process
+        child = 0;
+    }
+
     PIN_InitSymbols();
     if (PIN_Init(argc, argv)) {
         fprintf(stderr, "ERROR: could not initialize Pin?\n");
         exit(-1);
     }
+
+    // check to make sure the directory you provided exists
+    DIR* dir_f = opendir(KnobDirectoryPrefix.Value().c_str());
+    if (!dir_f) {
+        fprintf(stderr, "Could not open directory %s, errno %d\n", KnobDirectoryPrefix.Value().c_str(), errno);
+        exit(-1);
+    }
+    closedir(dir_f);
 
     if (!open_fds) {
 #ifndef ONLY_X

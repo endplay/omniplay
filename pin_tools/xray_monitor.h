@@ -11,8 +11,6 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
-#define DEBUG_PRINT
-
 /* A monitor is a struct that keeps track of fds that we want to monitor */
 struct xray_monitor {
     // TODO(mcc): add fields for functions pointers to serialize and deserialize
