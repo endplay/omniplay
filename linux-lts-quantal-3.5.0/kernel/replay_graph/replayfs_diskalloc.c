@@ -17,7 +17,6 @@
 
 #include "replayfs_kmap.h"
 
-/*
 #define REPLAYFS_DISKALLOC_DEBUG_ALLOCREF
 
 #define REPLAYFS_DISKALLOC_DEBUG
@@ -33,7 +32,6 @@
 #define REPLAYFS_DISKALLOC_ALLOC_DEBUG
 
 #define REPLAYFS_DISKALLOC_MONITOR_LISTS
-*/
 
 #if defined(REPLAYFS_DISKALLOC_DEBUG) && !defined(REPLAYFS_DISKALLOC_DEBUG_MIN)
 #  define REPLAYFS_DISKALLOC_DEBUG_MIN
@@ -821,10 +819,8 @@ void replayfs_diskalloc_sync_page(struct replayfs_diskalloc *alloc,
 	/* Pages should be sync'd periodically... */
 
 	if (PageDirty(page)) {
-		/*
-		printk("%s %d: Writing back page %lld\n", __func__, __LINE__,
+		cache_debugk("%s %d: Writing back page %lld\n", __func__, __LINE__,
 				(loff_t)page->index * PAGE_SIZE);
-		*/
 		alloc_writepage(page, NULL, alloc);
 	}
 }
