@@ -8,7 +8,7 @@
 #include <linux/module.h>
 #include <linux/mm.h>
 
-#define REPLAYFS_FILEMAP_DEBUG
+//#define REPLAYFS_FILEMAP_DEBUG
 
 //#define REPLAYFS_FILEMAP_DEBUG_LOCK
 

@@ -1,6 +1,8 @@
 #include "replayfs_syscall_cache.h"
 #include "replay_data.h"
 
+#include "replayfs_btree.h"
+
 #include <linux/slab.h>
 
 //#define REPLAYFS_SYSCACHE_DEBUG
@@ -122,21 +124,25 @@ int replayfs_syscache_add(struct replayfs_syscall_cache *cache,
 	struct page *ret_page;
 	ret = 0;
 
+	btree_check();
 	debugk("%s %d: In %s\n", __func__, __LINE__, __func__);
 	mutex_lock(&cache->lock);
 	/* Try to lookup first... to make sure the entry doesn't exist */
 	debugk("%s %d: Looking up id {%lld, %d, %lld}\n", __func__, __LINE__,
 			(loff_t)id->unique_id, id->pid, (loff_t)id->sysnum);
+	btree_check();
 	value = replayfs_btree128_lookup(&cache->entries, k(id), &ret_page);
 	debugk("%s %d: got valid entry %p\n", __func__, __LINE__, value);
 	if (value == NULL) {
 		struct replayfs_disk_alloc *alloc;
+	btree_check();
 
 		debugk("%s %d: diskalloc, alloc\n", __func__, __LINE__);
 		alloc = replayfs_diskalloc_alloc(cache->allocator,
 				sizeof(struct replayfs_syscache_entry) + size);
 		debugk("%s %d: diskalloc, alloc return\n", __func__, __LINE__);
 		//entry = kmalloc(sizeof(struct replayfs_syscache_entry) + size, GFP_NOFS);
+	btree_check();
 
 		if (alloc == NULL) {
 			ret = -ENOMEM;
@@ -144,6 +150,7 @@ int replayfs_syscache_add(struct replayfs_syscall_cache *cache,
 		}
 
 		entry.clock = 0;
+	btree_check();
 
 		/* Record the entry state */
 		debugk("%s %d: diskalloc, write\n", __func__, __LINE__);
@@ -152,6 +159,7 @@ int replayfs_syscache_add(struct replayfs_syscall_cache *cache,
 			BUG();
 		}
 		debugk("%s %d: diskalloc, write2\n", __func__, __LINE__);
+	btree_check();
 		/* Record the entry data */
 		if (replayfs_disk_alloc_write(alloc, (void *)data, size,
 				sizeof(struct replayfs_syscache_entry), 0)) {
@@ -159,31 +167,39 @@ int replayfs_syscache_add(struct replayfs_syscall_cache *cache,
 		}
 		debugk("%s %d: diskalloc, write2 return\n", __func__, __LINE__);
 		val.id = replayfs_disk_alloc_pos(alloc);
+	btree_check();
 
 		debugk("%s %d: !!!!!!!!!!!!!!!!!!!!!!!Inserting new entry to syscall_cache {%lld, %d, %lld}\n", __func__,
 				__LINE__, (long long int)id->unique_id, id->pid, (long long int)id->sysnum);
 		ret = replayfs_btree128_insert(&cache->entries, k(id), &val, GFP_NOFS);
 
+	btree_check();
 		value = &val;
 
 		replayfs_disk_alloc_put(alloc);
 
 		/* Make sure the data is passed while we're at it */
+	btree_check();
 		if (is_replay()) {
 			replay_put_data(id->unique_id, id->sysnum, 0, value->id);
 		}
+	btree_check();
 	} else {
 		/* Make sure the data is passed while we're at it */
+	btree_check();
 		if (is_replay()) {
 			replay_put_data(id->unique_id, id->sysnum, 0, value->id);
 		}
 
+	btree_check();
 		replayfs_btree128_put_page(&cache->entries, ret_page);
+	btree_check();
 	}
 
 	debugk("%s %d: Checking if we need to update the record log for this data\n", __func__,
 			__LINE__);
 
+	btree_check();
 
 out:
 	mutex_unlock(&cache->lock);
