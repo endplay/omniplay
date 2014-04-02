@@ -460,7 +460,6 @@ static void replay_filp_close_internal(u32 key) {
 		replayfs_filemap_destroy(&meta->map);
 		replayfs_diskalloc_destroy(meta->alloc);
 		kfree(meta);
-		//printk("%s %d: Done destroying filemap!\n", __func__, __LINE__);
 	}
 
 	mutex_unlock(&meta_tree_lock);
@@ -6661,14 +6660,10 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 		struct replayfs_filemap *map;
 		struct file *filp;
 
-		btree_debug_check();
-
 		meta = replay_get_file_meta(fd);
 
 		map = &meta->map;
 		new_syscall_enter (4);
-
-		btree_debug_check();
 
 		filp = fget(fd);
 		BUG_ON(filp == NULL);
@@ -6680,8 +6675,6 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 			pretparams = (void *)1;
 		}
 
-		btree_debug_check();
-
 		/* 
 		 * All right, our btree is recording straight into this file, so
 		 * all we have to do is tweak our btree (and for performand update the syscache)
@@ -6689,13 +6682,11 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 
 		fpos = filp->f_pos;
 
-		btree_debug_check();
 		//printk("%s %d: Doing filemap write for data\n", __func__, __LINE__);
 		size = count;
 		replayfs_filemap_write(map, current->record_thrd->rp_group->rg_id,
 				current->record_thrd->rp_record_pid, current->record_thrd->rp_count, 0, fpos, size);
 
-		btree_debug_check();
 		filp->f_pos += count;
 
 		/* SYSCACHE!!! */
@@ -6703,22 +6694,15 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 		id.unique_id = current->record_thrd->rp_group->rg_id;
 		id.pid = current->record_thrd->rp_record_pid;
 
-		btree_debug_check();
 		replayfs_syscache_add(&syscache, &id, size, buf);
 
-		btree_debug_check();
 		update_size(filp, meta);
 
-		btree_debug_check();
 		replay_verify_write(filp, buf, count, filp->f_pos - count);
 
-		btree_debug_check();
 		fput(filp);
 
-		btree_debug_check();
 		replayfs_diskalloc_sync(meta->alloc);
-		btree_debug_check();
-
 		new_syscall_done (4, size);			       
 	} else {
 		new_syscall_enter (4);
@@ -6949,8 +6933,8 @@ record_open (const char __user * filename, int flags, int mode)
 		do {
 			file = fget(rc);
 			inode = file->f_dentry->d_inode;
-			printk("%s %d: Opened %s to fd %ld with filp %p, inode %p, ino %lu, flags are %X\n", __func__, __LINE__,
-					filename, rc, file, inode, inode->i_ino, (unsigned)flags);
+			printk("%s %d: Opened %s to fd %ld with ino %08lX\n", __func__, __LINE__,
+					filename, rc, inode->i_ino);
 			fput(file);
 		} while (0);
 		*/
@@ -6958,7 +6942,6 @@ record_open (const char __user * filename, int flags, int mode)
 		if ((flags&O_ACCMODE) == O_RDONLY && !(flags&(O_CREAT|O_DIRECTORY))) {
 #ifdef REPLAY_COMPRESS_READS
 			if (!is_recorded_file(rc)) {
-				//printk("%s %d: fd %ld is recorded_file!\n", __func__, __LINE__, rc);
 #endif
 			file = fget (rc);
 			inode = file->f_dentry->d_inode;
