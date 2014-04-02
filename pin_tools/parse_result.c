@@ -37,15 +37,17 @@ int main(int argc, char** argv)
         if (read_byte_result_from_file(fd, result)) {
             fprintf(stderr, "could not read byte_result, count is %lu\n", count);
         }
-        fprintf(stdout, "%d %d %llu %d %d %d %d\n",
+        fprintf(stdout, "%d %d %llu %d %d %d %d %c\n",
                 result->output_type,
                 result->output_fileno,
                 result->rg_id,
                 result->record_pid,
                 result->syscall_cnt,
                 result->offset,
-                result->token_num);
+                result->token_num,
+		result->value);
         free(result);
         count += sizeof(struct byte_result);
     }
+    return 0;
 }
