@@ -317,6 +317,9 @@ int glbl_diskalloc_init(void) {
 
 		loff_t pos;
 
+		/* Make sure the filemap is ready */
+		replayfs_filemap_glbl_init();
+
 		last_print_time = CURRENT_TIME_SEC;
 
 		/* Only does something if monitoring is turned on... */
@@ -753,7 +756,7 @@ static struct page *alloc_get_page(struct replayfs_diskalloc *alloc, loff_t offs
 	/* Refcnt the page before you use it! */
 	data->count++;
 
-	if (data->count > 7) {
+	if (replayfs_print_leaks && data->count > 7) {
 		printk("%s %d: Warning it appears page %lu is leaking, doing stack dump\n",
 				__func__, __LINE__, data->page->index);
 		dump_stack();

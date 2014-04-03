@@ -1,5 +1,7 @@
 #include "replayfs_perftimer.h"
 
+#ifdef DO_PERFTIMER
+
 #include <linux/proc_fs.h>
 #include <linux/time.h>
 #include <linux/unistd.h>
@@ -48,6 +50,16 @@ static struct group_header *get_group_header(const char *group) {
 	return header;
 }
 
+static void perftimer_reset(struct perftimer *tmr) {
+	tmr->started = 0;
+
+	tmr->count = 0;
+	tmr->start_val = 0;
+	tmr->total_elapsed = 0;
+	tmr->max = 0;
+}
+
+
 static struct perftimer *create_perf_timer(struct group_header *header,
 		const char *name) {
 	struct perftimer *tmr = kmalloc(sizeof(struct perftimer), GFP_KERNEL);
@@ -57,12 +69,10 @@ static struct perftimer *create_perf_timer(struct group_header *header,
 		return ERR_PTR(-ENOMEM);
 	}
 
-	tmr->started = 0;
-	list_add(&tmr->list, &header->tmr_list);
+	/* Add tail to make the ordering nicer... */
+	list_add_tail(&tmr->list, &header->tmr_list);
 
-	tmr->count = 0;
-	tmr->start_val = 0;
-	tmr->total_elapsed = 0;
+	perftimer_reset(tmr);
 
 	strncpy(tmr->name, name, 0x100);
 
@@ -104,6 +114,10 @@ int perftimer_stop(struct perftimer *tmr) {
 		getnstimeofday(&ts);
 		
 		elapsed = timespec_to_ns(&ts) - tmr->start_val;
+
+		if (elapsed > tmr->max) {
+			tmr->max = elapsed;
+		}
 
 		tmr->total_elapsed += (u64)elapsed;
 		tmr->count++;
@@ -231,8 +245,8 @@ static int perftimer_show(struct seq_file *m, void *v) {
 			}
 
 			tmr = holder->tmr;
-			seq_printf(m, "\t%s: Average time %lld, Num Triggers %lld, Total Time %lld\n",
-					tmr->name, avg, tmr->count, tmr->total_elapsed);
+			seq_printf(m, "\t%25s: Average time %10lld, Max time %12lld, Num Triggers %10lld, Total Time %15lld\n",
+					tmr->name, avg, tmr->max, tmr->count, tmr->total_elapsed);
 			break;
 		case STATE_GROUP:
 		  header = holder->group;
@@ -254,10 +268,26 @@ static int perftimer_open(struct inode *inode, struct file *file) {
 	return seq_open(file, &perftimer_seq_ops);
 }
 
+static int reset_perftimers(struct file *filp, const char __user *data,
+		size_t size, loff_t *ppos) {
+	struct group_header *header;
+
+	list_for_each_entry(header, &group_list, list) {
+		struct perftimer *tmr;
+
+		list_for_each_entry(tmr, &header->tmr_list, list) {
+			perftimer_reset(tmr);
+		}
+	}
+	
+	return 1;
+}
+
 struct file_operations proc_fops = {
 	.open = perftimer_open,
 	.release = seq_release,
 	.read = seq_read,
+	.write = reset_perftimers,
 	.llseek = seq_lseek,
 };
 
@@ -291,3 +321,4 @@ void perftimer_close(void) {
 	INIT_LIST_HEAD(&group_list);
 }
 
+#endif

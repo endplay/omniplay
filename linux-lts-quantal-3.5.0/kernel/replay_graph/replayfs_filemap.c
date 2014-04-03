@@ -1,6 +1,7 @@
 #include "replayfs_filemap.h"
 #include "replayfs_btree.h"
 #include "replayfs_btree128.h"
+#include "replayfs_perftimer.h"
 
 #include <linux/fs.h>
 #include <linux/kernel.h>
@@ -33,6 +34,14 @@ extern int replayfs_filemap_debug;
 
 static DEFINE_MUTEX(meta_lock);
 extern struct replayfs_btree128_head filemap_meta_tree;
+
+static struct perftimer *write_in_tmr;
+
+int replayfs_filemap_glbl_init(void) {
+	write_in_tmr = perftimer_create("Time in Write", "Filemap");
+
+	return 0;
+}
 
 static int replayfs_filemap_create(struct replayfs_filemap *map,
 		struct replayfs_diskalloc *alloc, struct replayfs_btree128_key *key, loff_t *pos) {
@@ -385,6 +394,8 @@ int replayfs_filemap_write(struct replayfs_filemap *map, loff_t unique_id,
 	struct replayfs_btree_key key;
 	struct replayfs_btree_value value;
 
+	perftimer_start(write_in_tmr);
+
 	value.id.unique_id = unique_id;
 	value.id.pid = pid;
 	value.id.sysnum = syscall_num;
@@ -416,6 +427,8 @@ int replayfs_filemap_write(struct replayfs_filemap *map, loff_t unique_id,
 			__func__, __LINE__, map->owner->i_ino,
 			replayfs_filemap_disk_pos(map));
 			*/
+
+	perftimer_stop(write_in_tmr);
 
 	return ret;
 }
