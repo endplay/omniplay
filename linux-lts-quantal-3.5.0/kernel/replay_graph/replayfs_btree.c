@@ -1524,7 +1524,7 @@ retry:
 			debugk("%s %d: Last shift and insert with key {%lld, %lld}\n", __func__,
 					__LINE__, key->offset, key->size);
 			debugk("%s %d: Inserting key into node at %d\n", __func__, __LINE__, i);
-			setkey(geo, node, i, bkey(geo, node_data, fill - 1));
+			setkey(geo, node, i, key);
 			tmp = bval_at(head->allocator, geo, node_data, fill - 1);
 			setval(geo, node, i, tmp);
 			debugk("%s %d: Clearing pair at %d\n", __func__, __LINE__, fill-1);
@@ -1859,7 +1859,8 @@ static void merge(struct replayfs_btree_head *head, struct btree_geo *geo, int l
 
 static int rebalance(struct replayfs_btree_head *head, struct btree_geo *geo,
 		struct replayfs_btree_key *key, int level, struct page *child,
-		unsigned long *child_data, int fill, struct replayfs_btree_key *oldkey)
+		unsigned long *child_data, int fill, struct replayfs_btree_key *oldkey,
+		int *needs_put)
 {
 	unsigned long *parent_data = NULL;
 	unsigned long *left_data = NULL;
@@ -1899,7 +1900,6 @@ static int rebalance(struct replayfs_btree_head *head, struct btree_geo *geo,
 	/*
 	 * I don't think this check is actually working... so I'm disabling it...
 	 * although it may really be a bug...
-	 */
 	do {
 		struct page *child2;
 		unsigned long *child2_data;
@@ -1912,6 +1912,7 @@ static int rebalance(struct replayfs_btree_head *head, struct btree_geo *geo,
 
 		bval_put(head, child2);
 	} while (0);
+	 */
 
 	if (i > 0) {
 		left = bval(head->allocator, geo, parent_data, &left_data, i - 1);
@@ -1933,6 +1934,7 @@ static int rebalance(struct replayfs_btree_head *head, struct btree_geo *geo,
 				replace_key(head, geo, oldkey, newkey, level+1);
 			}
 			bval_put(head, left);
+			*needs_put=0;
 			return 0;
 		}
 		bval_put(head, left);
@@ -1974,7 +1976,9 @@ static int btree_remove_level(struct replayfs_btree_head *head, struct btree_geo
 
 	struct replayfs_btree_key k1, k2;
 	int do_replace = 0;
+
 	int needs_shrink = 0;
+	int needs_put = 1;
 
 	int ret = 0;
 
@@ -2061,7 +2065,8 @@ static int btree_remove_level(struct replayfs_btree_head *head, struct btree_geo
 				(do_replace) ? &k1 : NULL;
 			debugk("%s %d: here\n", __func__, __LINE__);
 			do_replace &= 
-				rebalance(head, geo, key, level, node, node_data, fill - 1, oldkey);
+				rebalance(head, geo, key, level, node, node_data, fill - 1, oldkey,
+						&needs_put);
 		} else if (
 				(head->height > 1 && fill - 1 == 1) ||
 				(head->height == 1 && fill -1 == 0)) {
@@ -2077,7 +2082,9 @@ static int btree_remove_level(struct replayfs_btree_head *head, struct btree_geo
 				level+1);
 	}
 
-	bval_put(head, node);
+	if (needs_put) {
+		bval_put(head, node);
+	}
 
 	if (needs_shrink) {
 		btree_shrink(head, geo);
