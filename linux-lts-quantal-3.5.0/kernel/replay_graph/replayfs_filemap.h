@@ -35,6 +35,8 @@ struct replayfs_filemap {
 
 extern struct replayfs_diskalloc *replayfs_alloc;
 
+int replayfs_filemap_glbl_init(void);
+
 int replayfs_filemap_init_key (struct replayfs_filemap *map,
 		struct replayfs_diskalloc *alloc, struct replayfs_btree128_key *key);
 
