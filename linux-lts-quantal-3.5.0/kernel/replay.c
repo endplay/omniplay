@@ -2616,6 +2616,7 @@ argsconsume (struct record_thread* prect, u_long size)
 	}
 	if (unlikely (node->head + node->size - node->pos < size)) {
 		printk ("argsconsume: pid %d sanity check failed - head %p size %lu pos %p size %lu\n", current->pid, node->head, (u_long) node->size, node->pos, size);
+		dump_stack();
 		BUG();
 	}
 	node->pos += size;
@@ -3769,9 +3770,9 @@ write_user_log (struct record_thread* prect)
 			printk ("Pid %d - write_log_data, can't append stat of file %s failed\n", current->pid, filename);
 			return -EINVAL;
 		}
-		fd = sys_open(filename, O_RDWR|O_APPEND, 0777);
+		fd = sys_open(filename, O_RDWR|O_APPEND|O_LARGEFILE, 0777);
 	} else {
-		fd = sys_open(filename, O_RDWR|O_CREAT|O_TRUNC, 0777);
+		fd = sys_open(filename, O_RDWR|O_CREAT|O_TRUNC|O_LARGEFILE, 0777);
 		if (fd > 0) {
 			rc = sys_fchmod(fd, 0777);
 			if (rc == -1) {
@@ -3860,7 +3861,7 @@ read_user_log (struct record_thread* prect)
 		set_fs(old_fs);
 		return rc;
 	}
-	fd = sys_open(filename, O_RDONLY, 0644);
+	fd = sys_open(filename, O_RDONLY|O_LARGEFILE, 0644);
 	set_fs(old_fs);
 	if (fd < 0) {
 		printk ("Cannot open log file %s, rc =%d\n", filename, fd);
@@ -3946,9 +3947,9 @@ write_user_extra_log (struct record_thread* prect)
 			printk ("Pid %d - write_extra_log_data, can't append stat of file %s failed\n", current->pid, filename);
 			return -EINVAL;
 		}
-		fd = sys_open(filename, O_RDWR|O_APPEND, 0777);
+		fd = sys_open(filename, O_RDWR|O_APPEND|O_LARGEFILE, 0777);
 	} else {
-		fd = sys_open(filename, O_RDWR|O_CREAT|O_TRUNC, 0777);
+		fd = sys_open(filename, O_RDWR|O_CREAT|O_TRUNC|O_LARGEFILE, 0777);
 		if (fd > 0) {
 			rc = sys_fchmod(fd, 0777);
 			if (rc == -1) {
@@ -4034,7 +4035,7 @@ read_user_extra_log (struct record_thread* prect)
 		set_fs(old_fs);
 		return rc;
 	}
-	fd = sys_open(filename, O_RDONLY, 0644);
+	fd = sys_open(filename, O_RDONLY|O_LARGEFILE, 0644);
 	set_fs(old_fs);
 	if (fd < 0) {
 		printk ("Cannot open extra log file %s, rc =%d\n", filename, fd);
@@ -5428,7 +5429,7 @@ recplay_exit_start(void)
 				DPRINT("pid %d: munlock of ignore address %p failed, rc=%ld\n", current->pid, prt->rp_ignore_flag_addr, rc); 
 			}
 		} else {
-			//printk ("No ignore address for pid %d\n", current->pid);
+			MPRINT ("No ignore address for pid %d\n", current->pid);
 		}
 
 	} else if (current->replay_thrd) {
@@ -6599,7 +6600,7 @@ replay_read (unsigned int fd, char __user * buf, size_t count)
 		} else {
 			// uncached read
 			DPRINT ("uncached read of fd %u\n", fd);
-			if (copy_to_user (buf, retparams+sizeof(u_int), rc)) printk ("replay_read: pid %d cannot copy to user\n", current->pid);
+			if (copy_to_user (buf, retparams+sizeof(u_int), rc)) printk ("replay_read: pid %d cannot copy %ld bytes to user\n", current->pid, rc);
 			consume_size = sizeof(u_int)+rc;
 			argsconsume (current->replay_thrd->rp_record_thread, consume_size); 
 		}
@@ -13113,10 +13114,10 @@ struct file* init_log_write (struct record_thread* prect, loff_t* ppos, int* pfd
 			return NULL;
 		}
 		*ppos = st.st_size;
-		*pfd = sys_open(filename, O_WRONLY|O_APPEND, 0644);
+		*pfd = sys_open(filename, O_WRONLY|O_APPEND|O_LARGEFILE, 0644);
 		MPRINT ("Reopened log file %s, pos = %ld\n", filename, (long) *ppos);
 	} else {
-		*pfd = sys_open(filename, O_WRONLY|O_CREAT|O_TRUNC, 0644);
+		*pfd = sys_open(filename, O_WRONLY|O_CREAT|O_TRUNC|O_LARGEFILE, 0644);
 		MPRINT ("Opened log file %s\n", filename);
 		*ppos = 0;
 		prect->rp_klog_opened = 1;
@@ -13310,7 +13311,7 @@ int read_log_data_internal (struct record_thread* prect, struct syscall_result* 
 	MPRINT ("Reading logid %d starting at pos %lld\n", logid, (long long) *pos);
 	sprintf (filename, "%s/klog.id.%d", prect->rp_group->rg_logdir, logid);
 	MPRINT ("Opening %s\n", filename);
-	fd = sys_open(filename, O_RDONLY, 0644);
+	fd = sys_open(filename, O_RDONLY|O_LARGEFILE, 0644);
 	MPRINT ("Open returns %d\n", fd);
 	if (fd < 0) {
 		printk ("read_log_data: cannot open log file %s\n", filename);
