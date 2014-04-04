@@ -54,8 +54,11 @@ int replayfs_filemap_create(struct replayfs_filemap *map,
 /* Get rid of the filemap */
 void replayfs_filemap_destroy(struct replayfs_filemap *map);
 
+/* Remove the filemap from disk entirely */
 void replayfs_filemap_delete(struct replayfs_filemap *map,
 		struct file *filp);
+void replayfs_filemap_delete_key(struct replayfs_filemap *map,
+		struct replayfs_btree128_key *key);
 
 /* Add a write to the filemap... */
 int replayfs_filemap_write(struct replayfs_filemap *map, loff_t unique_id,
