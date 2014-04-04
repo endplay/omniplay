@@ -715,7 +715,7 @@ void replay_free_pipe(void *pipe) {
 		ret = replayfs_filemap_init_key(&map, replayfs_alloc, &key);
 		if (!ret) {
 			/* Free it */
-			replayfs_filemap_delete(&map, &key);
+			replayfs_filemap_delete_key(&map, &key);
 		}
 	} else {
 		mutex_unlock(&pipe_tree_mutex);
@@ -754,7 +754,7 @@ void replay_sock_put(struct sock *sk) {
 		ret = replayfs_filemap_init_key(&map, replayfs_alloc, &key);
 		if (!ret) {
 			/* Free it */
-			replayfs_filemap_delete(&map, &key);
+			replayfs_filemap_delete_key(&map, &key);
 		}
 	} else {
 		mutex_unlock(&pipe_tree_mutex);
