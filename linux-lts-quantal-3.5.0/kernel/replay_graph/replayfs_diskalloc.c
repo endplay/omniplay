@@ -753,7 +753,7 @@ static struct page *alloc_get_page(struct replayfs_diskalloc *alloc, loff_t offs
 	/* Refcnt the page before you use it! */
 	data->count++;
 
-	if (data->count > 7) {
+	if (replayfs_print_leaks && data->count > 7) {
 		printk("%s %d: Warning it appears page %lu is leaking, doing stack dump\n",
 				__func__, __LINE__, data->page->index);
 		dump_stack();
