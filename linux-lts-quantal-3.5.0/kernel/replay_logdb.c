@@ -27,7 +27,8 @@ get_replay_id (void)
 	RID_LOCK;
 	set_fs(KERNEL_DS);
 
-	if (max_logid == 0) {
+	if (max_logid <= last_logid) {
+
 		// First, get maximum log id that was saved persitently to disk
 		fd = sys_open (LOGDB_INDEX, O_RDWR, 0);
 		if (fd >= 0) {
@@ -86,6 +87,7 @@ get_replay_id (void)
 
 	ret_id = ++last_logid;
 
+	/*
 	if (ret_id >= max_logid) {
 		fd = sys_open (LOGDB_INDEX, O_RDWR, 0);
 
@@ -103,6 +105,8 @@ get_replay_id (void)
 		if (sys_fsync (fd) < 0) printk ("get_replay_id: cannot sync index file\n");
 		if (sys_close (fd) < 0) printk ("get_replay_id: cannot close index file\n");
 	}
+	*/
+	
 
 	set_fs(old_fs);
 	RID_UNLOCK;
