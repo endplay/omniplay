@@ -27,7 +27,8 @@ get_replay_id (void)
 	RID_LOCK;
 	set_fs(KERNEL_DS);
 
-	if (max_logid == 0) {
+	if (max_logid <= last_logid) {
+
 		// First, get maximum log id that was saved persitently to disk
 		fd = sys_open (LOGDB_INDEX, O_RDWR, 0);
 		if (fd >= 0) {
