@@ -84,32 +84,9 @@ get_replay_id (void)
 		if (sys_fsync (fd) < 0) printk ("get_replay_id: cannot sync index file\n");
 		if (sys_close (fd) < 0) printk ("get_replay_id: cannot close index file\n");
 	}
-<<<<<<< replay_logdb.c
 
-	if (ret_id >= max_logid) {
-		fd = sys_open (LOGDB_INDEX, O_RDWR, 0);
-
-		// Need to allocate some more ids
-		max_logid += LOGID_INCREMENT;
-
-		rc = sys_write (fd, (char *) &max_logid, sizeof(max_logid));
-		if (rc != sizeof(max_logid)) {
-			printk ("get_replay_id: cannot write max allocated id, rc=%d\n", rc);
-			sys_close (fd);
-			set_fs(old_fs);
-			RID_UNLOCK;
-			return 0;
-		}
-		if (sys_fsync (fd) < 0) printk ("get_replay_id: cannot sync index file\n");
-		if (sys_close (fd) < 0) printk ("get_replay_id: cannot close index file\n");
-	}
-
-=======
-
->>>>>>> 1.6
 	ret_id = ++last_logid;
 
-	/*
 	if (ret_id >= max_logid) {
 		fd = sys_open (LOGDB_INDEX, O_RDWR, 0);
 
@@ -127,8 +104,6 @@ get_replay_id (void)
 		if (sys_fsync (fd) < 0) printk ("get_replay_id: cannot sync index file\n");
 		if (sys_close (fd) < 0) printk ("get_replay_id: cannot close index file\n");
 	}
-	*/
-	
 
 	set_fs(old_fs);
 	RID_UNLOCK;
