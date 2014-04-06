@@ -17,6 +17,11 @@
 #include <linux/proc_fs.h>
 #include <linux/replay.h>
 
+#ifdef TIME_TRICK
+#include <linux/times.h>
+#include <linux/utime.h>
+#endif
+
 // No clean way to handle this that I know of...
 extern int replay_debug, replay_min_debug;
 #define DPRINT if(replay_debug) printk
@@ -129,7 +134,11 @@ copy_args (const char __user* const __user* args, const char __user* const __use
 
 // This function writes the process state to a disk file
 long 
+#ifdef TIME_TRICK
+replay_checkpoint_to_disk (char* filename, char* execname, char* buf, int buflen, __u64 parent_rg_id, struct timeval *tv, struct timespec *tp)
+#else
 replay_checkpoint_to_disk (char* filename, char* execname, char* buf, int buflen, __u64 parent_rg_id)
+#endif
 {
 	mm_segment_t old_fs = get_fs();
 	int fd, rc, copyed, len;
@@ -217,6 +226,26 @@ replay_checkpoint_to_disk (char* filename, char* execname, char* buf, int buflen
 	}
 	KFREE (buf);
 
+#ifdef TIME_TRICK
+	do_gettimeofday (tv);
+	rc = sys_clock_gettime (CLOCK_MONOTONIC, tp);
+	if (rc < 0) printk ("Semi-det clock for clock_gettime fails to initialize.\n");
+	printk ("semi-det time inits for gettimeofday %ld, %ld, for clock_gettime: %ld, %ld.\n", tv->tv_sec, tv->tv_usec, tp->tv_sec, tp->tv_nsec);
+	copyed = vfs_write (file, (char*) tv, sizeof (struct timeval), &pos);
+	if (copyed != sizeof (struct timeval)) {
+		printk ("replay_checkpoint_to_disk: tried to write timeval, got rc %d\n", copyed);
+		rc = -EFAULT;
+		goto exit;
+	}
+	copyed = vfs_write (file, (char*) tp, sizeof (struct timespec), &pos);
+	if (copyed != sizeof (struct timespec)) {
+		printk ("replay_checkpoint_to_disk: tried to write timespec, got rc %d\n", copyed);
+		rc = -EFAULT;
+		goto exit;
+	}
+
+#endif
+
 exit:
 	if (file) fput(file);
 	if (fd >= 0)  {
@@ -226,8 +255,11 @@ exit:
 	set_fs(old_fs);
 	return rc;
 }
-
+#ifdef TIME_TRICK
+long replay_resume_from_disk (char* filename, char** execname, char*** argsp, char*** envp, __u64* prg_id, struct timeval* tv, struct timespec *tp) 
+#else
 long replay_resume_from_disk (char* filename, char** execname, char*** argsp, char*** envp, __u64* prg_id) 
+#endif
 {
 	mm_segment_t old_fs = get_fs();
 	int rc, fd, args_cnt, env_cnt, copyed, i, len;
@@ -397,6 +429,23 @@ long replay_resume_from_disk (char* filename, char** execname, char*** argsp, ch
 
 	*argsp = args;
 	*envp = env;
+
+#ifdef TIME_TRICK
+	copyed = vfs_read(file, (char*) tv, sizeof(struct timeval), &pos);
+	if (copyed != sizeof(struct timeval)) {
+		printk ("replay_resume_from_disk: tried to read timeval. %d len, got rc %d\n", sizeof(struct timeval), copyed);
+		rc = copyed;
+		goto exit;
+	}
+	copyed = vfs_read(file, (char*) tp, sizeof(struct timespec), &pos);
+	if (copyed != sizeof(struct timespec)) {
+		printk ("replay_resume_from_disk: tried to read timespec. %d len, got rc %d\n", sizeof(struct timespec), copyed);
+		rc = copyed;
+		goto exit;
+	}
+	printk ("semi-det time inits for gettimeofday: %ld, %ld, for clock_gettime: %ld, %ld.\n", tv->tv_sec, tv->tv_usec, tp->tv_sec, tp->tv_nsec);
+
+#endif
 
 	MPRINT ("replay_resume_from_disk done\n");
 
