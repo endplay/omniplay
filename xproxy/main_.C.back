@@ -1,0 +1,1373 @@
+#include "dxpcconf.h"
+
+#include <sys/time.h>
+#include <sys/types.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <signal.h>
+#include <errno.h>
+#if !defined(__MINGW32__)
+# include <sys/wait.h>
+# include <sys/socket.h>
+# include <sys/resource.h>
+# include <sys/utsname.h>
+# include <netdb.h>
+# include <netinet/in.h>
+# include <pwd.h>
+# include <arpa/inet.h>
+#endif
+#if !defined(__CYGWIN32__) && !defined(__MINGW32__)
+# include <netinet/tcp.h>
+# include <sys/un.h>
+#endif
+
+#include "X-headers.H"
+
+#ifdef _AIX
+# include <strings.h>
+#endif /* _AIX */
+
+#include "constants.H"
+#include "util.H"
+#include "ClientMultiplexer.H"
+#include "ServerMultiplexer.H"
+
+#include "Compresser.H"
+
+#if defined(__EMX__ ) || defined(__CYGWIN32__) || defined(__MINGW32__)
+
+struct sockaddr_un
+{
+    u_short sun_family;         /* socket family: AF_UNIX */
+    char sun_path[108];         /* path name (not used) */
+};
+
+#endif
+
+#ifdef _AIX
+# include <sys/select.h>
+#endif /* _AIX */
+
+#if defined(hpux) && !defined(RLIM_INFINITY)
+/* HP-UX hides this define */
+# define    RLIM_INFINITY   0x7fffffff
+#endif
+
+static void Usage(const char **argv);
+static void Cleanup();
+static void HandleSignal(int);
+static int AwaitConnection(int portNum);
+static int ConnectToRemote(char *remoteHost, int portNum);
+static void DaemonInit(unsigned int);
+static void KillDaemon(unsigned int);
+static void MakeLockFileName(char *, unsigned int);
+
+static int VersionNumbersMatch(int sockfd);
+static int ReadDataCh(int fd, char *buf, int maxlen, char stop);
+static int parseRemoteOptions(char *opts);
+
+// This variable tells whether or not the client should initiate the
+// connection.  (see -w option)
+static int ClientInitiateConnection = 0;
+
+// Maximum number of open file descriptors for this process
+static unsigned int maxNumFDs = 0;
+
+// Variable to tell output routines whether they should be quiet or not
+// Added for -f option
+// This variable is used by other files
+int silent = 0;
+
+// Variable to indicate whether the user wants backing store turned on
+// to help reduce network traffic at some cost in server memory.
+// This variable is used by other files.
+int wantBackingStore = 0;
+
+// These two variables are needed for the forking
+// We don't fork by default since old versions didn't
+static int dofork = 0;
+static char lockfilename[512] = { 0 };
+
+// And the default lockfilename - this goes in the user's $HOME dir
+static const char *LOCK_FILE_NAME = ".dxpc.pid";
+
+// Now statistics can go to a file
+char logfilename[1024] = { 0 };
+OSTREAM *logofs;
+
+// Controls miniLZO PutImage compression: used by other files.
+int compressImages = 0;
+
+int server_replay = 0;
+
+// Info about sockets used by the client proxy (global so that
+// the cleanup signal handler can access it)
+static char udomSocketPathname[100];
+static int useUnixDomainSocket = 1;
+sockaddr_in serverAddr;
+
+// dxpc runs in client mode or server mode
+enum ProxyMode
+{
+    PROXY_CLIENT, PROXY_SERVER
+}
+proxyMode = PROXY_SERVER;
+
+// Macro is TRUE if we should initiate the connection.
+#define WE_INITIATE_CONNECTION \
+    ((proxyMode == PROXY_SERVER && !ClientInitiateConnection) \
+  || (proxyMode == PROXY_CLIENT && ClientInitiateConnection))
+
+// #define COREDUMPS_ENABLED
+
+#ifdef COREDUMPS_ENABLED
+int enableCoredumps(void)
+{
+    rlimit rlim;
+
+    if (getrlimit(RLIMIT_CORE, &rlim))
+    {
+        CERR << "Cannot read RLIMIT_CORE: " << strerror(errno) << ENDL;
+        return -1;
+    }
+
+    if (rlim.rlim_cur < rlim.rlim_max)
+    {
+        rlim.rlim_cur = rlim.rlim_max;
+        if (setrlimit(RLIMIT_CORE, &rlim))
+        {
+            CERR << "Cannot set RLIMIT_CORE: " << strerror(errno) << ENDL;
+            return -2;
+        }
+    }
+    CERR << "Set RLIMIT_CORE to " << rlim.rlim_max << ENDL;
+    return 0;
+}
+#endif
+
+int main(int argc, char **argv)
+{
+    udomSocketPathname[0] = 0;
+
+    unsigned int proxyPort = DEFAULT_PROXY_PORT;
+    unsigned int displayNum = DEFAULT_DISPLAY_NUM;
+    unsigned int statisticsLevel = 0;
+    int useTCPSocket = 1;
+    char *remoteHost = NULL;
+    const char *displaySrc = 0;
+
+#ifdef COREDUMPS_ENABLED
+    enableCoredumps();
+#endif
+
+    // used to use getopt here, but it caused too many
+    // portability problems
+    for (int argi = 1; argi < argc; argi++)
+    {
+        char *nextArg = argv[argi];
+
+        if (*nextArg == '-')
+        {
+            switch (nextArg[1])
+            {
+            case 'b':
+                {
+                    const char *arg =
+                        GetArg(argi, argc, (const char **) argv);
+                    if (!arg)
+                        Usage((const char **) argv);
+                    if (*arg == 'a')
+                        wantBackingStore = 2 /* Always */ ;
+                    else if (*arg == 'm' || *arg == 'w')
+                        wantBackingStore = 1 /* WhenMapped */ ;
+                    else if (*arg == 'n')
+                        wantBackingStore = 0;
+                    else
+                        Usage((const char **) argv);
+                }
+                break;
+
+            case 'd':
+                {
+                    const char *arg =
+                        GetArg(argi, argc, (const char **) argv);
+                    if (arg == NULL)
+                        Usage((const char **) argv);
+                    else
+                        displayNum = atoi(arg);
+                }
+                break;
+            case 'D':
+                displaySrc = GetArg(argi, argc, (const char **) argv);
+                if (!displaySrc)
+                {
+                    Usage((const char **) argv);
+                }
+                break;
+            case 'f':
+                dofork = 1;
+                break;
+            case 'k':
+                KillDaemon(proxyPort);  // This function doesn't return
+
+                break;
+            case 'l':
+                {
+                    const char *arg =
+                        GetArg(argi, argc, (const char **) argv);
+                    if (!arg)
+                        Usage((const char **) argv);
+                    else
+                        strcpy(logfilename, arg);
+                }
+                break;
+            case 'p':
+                {
+                    const char *arg =
+                        GetArg(argi, argc, (const char **) argv);
+                    if (arg == NULL)
+                        Usage((const char **) argv);
+                    else
+                        proxyPort = atoi(arg);
+                }
+                break;
+            case 's':
+                {
+                    const char *arg =
+                        GetArg(argi, argc, (const char **) argv);
+                    if (arg == NULL)
+                        Usage((const char **) argv);
+                    else
+                        statisticsLevel = atoi(arg);
+                }
+                break;
+            case 't':
+                useTCPSocket = 0;
+                break;
+            case 'u':
+                useUnixDomainSocket = 0;
+                break;
+            case 'v':
+                PrintVersionInfo();
+                exit(0);
+            case 'w':
+                ClientInitiateConnection = 1;
+                break;
+
+            case 'i':
+                {
+                    const char *arg =
+                        GetArg(argi, argc, (const char **) argv);
+                    if (arg == NULL)
+                        Usage((const char **) argv);
+                    else
+                        compressImages = atoi(arg);
+                }
+                break;
+	    case 'r':
+		//replay previous windows; only for server
+		{
+			server_replay = 1;
+		}
+		break;
+            default:
+                Usage((const char **) argv);
+            }
+        }
+        else
+        {
+            if (remoteHost != NULL)
+                Usage((const char **) argv);
+            else
+                remoteHost = nextArg;
+        }
+    }
+
+    if (logfilename[0] != '\0')
+    {
+        logofs = new OFSTREAM(logfilename, IOS_OUT);
+    }
+    else
+    {
+        logofs = &COUT;
+    }
+
+    int xServerAddrFamily = AF_INET;
+    sockaddr *xServerAddr = NULL;
+    unsigned int xServerAddrLength = 0;
+
+    if ((!remoteHost && !ClientInitiateConnection) ||
+        (remoteHost && ClientInitiateConnection))
+    {
+        COUT << "dxpc proxy running in CLIENT mode" << ENDL;
+        proxyMode = PROXY_CLIENT;
+    }
+    else
+    {
+        COUT << "dxpc proxy running in SERVER mode" << ENDL;
+        proxyMode = PROXY_SERVER;
+
+        // Keep Cleanup() from deleting the real X server's pipe
+        // when we exit...
+        useUnixDomainSocket = 0;
+
+        // $DISPLAY is the X server for which we'll act as a proxy
+        if (!displaySrc)
+        {
+            displaySrc = getenv("DISPLAY");
+        }
+        if ((displaySrc == NULL) || (*displaySrc == 0))
+        {
+            CERR << "$DISPLAY is not set" << ENDL;
+            Cleanup();
+        }
+        char *display = new char[strlen(displaySrc) + 1];
+
+        if (!display)
+        {
+            CERR << "Out of memory duping DISPLAY" << ENDL;
+            Cleanup();
+        }
+        strcpy(display, displaySrc);
+        char *separator = strchr(display, ':');
+
+        if ((separator == NULL) || !isdigit(*(separator + 1)))
+        {
+            CERR << "invalid DISPLAY '" << display << "'" << ENDL;
+            Cleanup();
+        }
+        *separator = 0;
+        int displayNum = atoi(separator + 1);
+
+        if ((separator == display) || !strcmp(display, "unix"))
+        {
+            // UNIX domain port
+            xServerAddrFamily = AF_UNIX;
+            sockaddr_un *xServerAddrUNIX = new sockaddr_un;
+
+            xServerAddrUNIX->sun_family = AF_UNIX;
+            sprintf(udomSocketPathname, "/tmp/.X11-unix/X%d", displayNum);
+            struct stat statInfo;
+
+            if (stat(udomSocketPathname, &statInfo) == -1)
+            {
+#if (defined(__hpux) || defined(hpux)) && !defined(PGID_USE_PID)
+                sprintf(udomSocketPathname, "/usr/spool/sockets/X11/%d",
+                        displayNum);
+                if (stat(udomSocketPathname, &statInfo) == -1)
+                {
+#endif
+                    CERR << "cannot open UNIX domain connection to X server"
+                        << ENDL;
+                    Cleanup();
+#if (defined(__hpux) || defined(hpux)) && !defined(PGID_USE_PID)
+                }
+#endif
+            }
+            strcpy(xServerAddrUNIX->sun_path, udomSocketPathname);
+            xServerAddr = (sockaddr *) xServerAddrUNIX;
+            //      xServerAddrLength = strlen(udomSocketPathname) + 2;
+            xServerAddrLength = sizeof(sockaddr_un);
+        }
+        else
+        {
+            // TCP port
+            xServerAddrFamily = AF_INET;
+            int ipAddr;
+            hostent *hostAddr = gethostbyname(display);
+
+            if (hostAddr == NULL)
+            {
+                // on some UNIXes, gethostbyname doesn't accept IP addresses,
+                // so try inet_addr:
+                ipAddr = (int) inet_addr(display);
+                if (ipAddr == -1)
+                {
+                    CERR << "Unknown host '" << display << "'" << ENDL;
+                    Cleanup();
+                }
+            }
+            else
+                ipAddr = *(int *) hostAddr->h_addr_list[0];
+            sockaddr_in *xServerAddrTCP = new sockaddr_in;
+
+            xServerAddrTCP->sin_family = AF_INET;
+            xServerAddrTCP->sin_port = htons(X_TCP_PORT + displayNum);
+            xServerAddrTCP->sin_addr.s_addr = ipAddr;
+            xServerAddr = (sockaddr *) xServerAddrTCP;
+            xServerAddrLength = sizeof(sockaddr_in);
+        }
+        if (display)
+        {
+            delete[]display;
+            display = 0;
+        }
+    }
+    // Sanity check compressImages.
+    if (WE_INITIATE_CONNECTION)
+    {
+        if (compressImages != -1)
+        {
+            CERR << "warning: image compression option (-i) ignored "
+                << "when initiating connection" << ENDL;
+            compressImages = -1;
+        }
+    }
+    else
+    {
+        // We will accept connections; we control image compression.
+        if (compressImages == -1)
+        {
+            // Default image compression level.
+            compressImages = DEFAULT_IMAGE_COMPRESSION_LEVEL;
+        }
+        else if (compressImages &&
+                 !Compresser::isValidCompressionLevel(compressImages))
+        {
+            CERR << "warning: invalid image compression level "
+                << compressImages << ": image compression disabled" << ENDL;
+            compressImages = 0;
+        }
+        if (!silent)
+        {
+            COUT << "using image compression level "
+                << compressImages << ENDL;
+        }
+    }
+
+    // Increase the max # of open file descriptors for this process
+
+    maxNumFDs = 0;
+#if defined(RLIMIT_NOFILE)
+    rlimit limits;
+
+    if (getrlimit(RLIMIT_NOFILE, &limits) == 0)
+    {
+        if (limits.rlim_max == RLIM_INFINITY)
+            maxNumFDs = 0;
+        else
+            maxNumFDs = (unsigned int) limits.rlim_max;
+    }
+#endif /* RLIMIT_NOFILE */
+
+#if defined(_SC_OPEN_MAX)
+    if (maxNumFDs == 0)
+        maxNumFDs = sysconf(_SC_OPEN_MAX);
+#endif
+
+#if defined(FD_SETSIZE)
+    if (maxNumFDs > FD_SETSIZE)
+        maxNumFDs = FD_SETSIZE;
+#endif /* FD_SETSIZE */
+
+#if defined(RLIMIT_NOFILE)
+    if (limits.rlim_cur < maxNumFDs)
+    {
+        limits.rlim_cur = maxNumFDs;
+        setrlimit(RLIMIT_NOFILE, &limits);
+    }
+#endif /* RLIMIT_NOFILE */
+
+#ifndef __MINGW32__
+    if (maxNumFDs == 0)
+    {
+        CERR <<
+            "cannot determine number of available file descriptors, exiting!"
+            << ENDL;
+        return 1;
+    }
+
+    // Install some signal handlers for graceful shutdown
+    signal(SIGHUP, HandleSignal);
+    signal(SIGINT, HandleSignal);
+    signal(SIGTERM, HandleSignal);
+
+    signal(SIGPIPE, (void (*)(int)) SIG_IGN);
+#else // __MINGW32__
+    WSADATA wsaData;
+
+    if (WSAStartup(0x20, &wsaData))
+    {
+        CERR << "WSAStartup failed" << ENDL;
+        return 1;
+    }
+#endif // __MINGW32__
+
+    // If running as client proxy, open sockets that mimic an
+    // X display to which X clients can connect (e.g., unix:8
+    // and <hostname>:8)
+    int tcpFD = -1;
+    int unixFD = -1;
+
+    if (proxyMode == PROXY_CLIENT)
+    {
+        if (useTCPSocket)
+        {
+            // Open TCP socket for display
+            tcpFD = socket(AF_INET, SOCK_STREAM, PF_UNSPEC);
+            if (tcpFD == -1)
+            {
+                CERR << "socket() failed for TCP socket, errno=" <<
+                    errno << ENDL;
+                Cleanup();
+            }
+            int flag = 1;
+
+            if (setsockopt(tcpFD, SOL_SOCKET, SO_REUSEADDR, (char *) &flag,
+                           sizeof(flag)) < 0)
+            {
+                CERR <<
+                    "setsockopt(SO_REUSEADDR) failed for TCP socket, errno = "
+                    << errno << ENDL;
+            }
+
+            SETNODELAY(tcpFD);
+
+            sockaddr_in tcpAddr;
+
+            tcpAddr.sin_family = AF_INET;
+            unsigned int xPortTCP = X_TCP_PORT + displayNum;
+
+            tcpAddr.sin_port = htons(xPortTCP);
+            tcpAddr.sin_addr.s_addr = htonl(INADDR_ANY);
+            if (bind(tcpFD, (sockaddr *) & tcpAddr, sizeof(tcpAddr)) == -1)
+            {
+                CERR << "bind() failed for TCP port " << xPortTCP <<
+                    ", errno=" << errno << ENDL;
+                Cleanup();
+            }
+            if (listen(tcpFD, 5) == -1)
+            {
+                CERR << "listen() failed for TCP port " << xPortTCP <<
+                    ", errno=" << errno << ENDL;
+                Cleanup();
+            }
+        }
+        if (useUnixDomainSocket)
+        {
+            // Open UNIX domain socket for display
+            unixFD = socket(AF_UNIX, SOCK_STREAM, PF_UNSPEC);
+            if (unixFD == -1)
+            {
+                CERR << "socket() failed for UNIX domain socket, errno=" <<
+                    errno << ENDL;
+                Cleanup();
+            }
+            sockaddr_un unixAddr;
+
+            unixAddr.sun_family = AF_UNIX;
+            struct stat dirStat;
+
+            if ((stat("/tmp/.X11-unix", &dirStat) == -1) && (errno == ENOENT))
+            {
+                mkdir("/tmp/.X11-unix"
+#ifndef __MINGW32__
+                      , 0777
+#endif
+                    );
+                chmod("/tmp/.X11-unix", 0777);
+            }
+            sprintf(udomSocketPathname, "/tmp/.X11-unix/X%d", displayNum);
+            strcpy(unixAddr.sun_path, udomSocketPathname);
+            if (bind(unixFD, (sockaddr *) & unixAddr,
+                     strlen(udomSocketPathname) + 2) == -1)
+            {
+                CERR << "bind() failed for UNIX domain socket " <<
+                    udomSocketPathname << ", errno=" << errno << ENDL;
+                CERR <<
+                    "This probably means you do not have sufficient rights to "
+                    << "write to /tmp/.X11-unix/." << ENDL <<
+                    "Either use the -u option or obtain the necessary rights."
+                    << ENDL;
+                Cleanup();
+            }
+            if (listen(unixFD, 5) == -1)
+            {
+                CERR << "listen() failed for UNIX domain socket " <<
+                    udomSocketPathname << ", errno=" << errno << ENDL;
+                Cleanup();
+            }
+        }
+    }
+    if (dofork)
+    {
+        DaemonInit(proxyPort);
+    }
+    // Set up low-bandwidth connection between the proxies
+    int proxyFD = -1;
+
+    if (server_replay == 1) {
+	    FILE* file = fopen ("replay_log", "r");
+	    std::cout <<" opening replay file."<<std::endl;
+	    proxyFD = fileno (file);
+    } else {
+	    if (WE_INITIATE_CONNECTION)
+	    {
+		    proxyFD = ConnectToRemote(remoteHost, proxyPort);
+		    // Compare the version number sent by the host to our version. If we don't
+		    // get back an identical string we exit.
+		    if (!VersionNumbersMatch(proxyFD))
+		    {
+			    Cleanup();
+		    }
+		    if (!silent)
+		    {
+			    *logofs << "connected to "
+				    << ((proxyMode == PROXY_CLIENT) ? "server" : "client")
+				    << " proxy\nready (connect to remote)" << ENDL;
+		    }
+	    }
+	    else
+	    {
+		    proxyFD = AwaitConnection(proxyPort);
+
+		    if (!silent)
+		    {
+			    *logofs << "connected to "
+				    << ((proxyMode == PROXY_CLIENT) ? "server" : "client")
+				    << " proxy\nready (await connection)" << ENDL;
+		    }
+	    }
+    }
+
+    // Create multiplexer
+    Multiplexer *multiplexer;
+
+    if (proxyMode == PROXY_SERVER)
+        multiplexer = new ServerMultiplexer(proxyFD, xServerAddrFamily,
+                                            xServerAddr, xServerAddrLength,
+                                            statisticsLevel);
+    else
+        multiplexer = new ClientMultiplexer(proxyFD, statisticsLevel);
+
+    if (compressImages)
+    {
+        int err = lzo_init();
+
+        if (err != LZO_E_OK)
+        {
+            CERR << "warning: cannot initialize image compression library"
+                << " (error " << err << ")" << ENDL;
+            compressImages = 0;
+        }
+    }
+
+    // Loop ENDLessly, reading from all of the open file descriptors
+    for (;;)
+    {
+        fd_set readSet;
+
+        FD_ZERO(&readSet);
+        FD_SET(proxyFD, &readSet);
+        unsigned int numFDsToSelect = proxyFD + 1;
+
+        if (proxyMode == PROXY_CLIENT)
+        {
+            if (useTCPSocket)
+            {
+                FD_SET(tcpFD, &readSet);
+                if (tcpFD >= (int) numFDsToSelect)
+                    numFDsToSelect = tcpFD + 1;
+            }
+            if (useUnixDomainSocket)
+            {
+                FD_SET(unixFD, &readSet);
+                if (unixFD >= (int) numFDsToSelect)
+                    numFDsToSelect = unixFD + 1;
+            }
+        }
+        multiplexer->setSelectFDs(&readSet, numFDsToSelect);
+
+        timeval delay;
+
+        delay.tv_sec = 600;
+        delay.tv_usec = 0;
+
+        // PGID_USE_PID, defined in <sys/types.h>, is specific to HP-UX 10.x
+#if (defined(__hpux) || defined(hpux)) && !defined(PGID_USE_PID)
+        int result =
+            select(numFDsToSelect, (int *) &readSet, NULL, NULL, &delay);
+#else
+        int result = select(numFDsToSelect, &readSet, NULL, NULL, &delay);
+#endif
+        if (result == -1)
+        {
+            if (errno == EINTR)
+                continue;
+            CERR << "select() failed, errno=" << errno << ENDL;
+            delete multiplexer;
+            Cleanup();
+        }
+        for (unsigned int j = 0; j < numFDsToSelect; j++)
+        {
+            if (!(FD_ISSET(j, &readSet)))
+                continue;
+
+            if (proxyMode == PROXY_CLIENT)
+            {
+                if ((((int) j == tcpFD) && useTCPSocket)
+                 || (((int) j == unixFD) && useUnixDomainSocket))
+                {
+                    int newFD = -1;
+
+                    if (((int) j == tcpFD) && useTCPSocket)
+                    {
+                        sockaddr_in newAddr;
+                        ACCEPT_SOCKLEN_T addrLen = sizeof(sockaddr_in);
+                        newFD = accept(tcpFD, (sockaddr *) & newAddr, &addrLen);
+                    }
+                    else
+                    {
+                        sockaddr_un newAddr;
+                        ACCEPT_SOCKLEN_T addrLen = sizeof(sockaddr_un);
+                        newFD = accept(unixFD, (sockaddr *) & newAddr, &addrLen);
+                    }
+
+                    if (newFD == -1)
+                    {
+                        CERR << "accept() failed, errno=" << errno << ENDL;
+                        delete multiplexer;
+                        Cleanup();
+                    }
+
+                    SETNODELAY(newFD);
+
+                    multiplexer->createNewConnection(newFD);
+                    continue;
+                }
+            }
+            if (!multiplexer->handleSelect(j, (proxyMode == PROXY_CLIENT?1:(server_replay?2:0))))
+            {
+                delete multiplexer;
+                Cleanup();
+            }
+        }
+    }
+
+    return 0;
+}
+
+static void Usage(const char **argv)
+{
+    CERR << "Usage: " << argv[0] <<
+        " [common options] [client options | server options] [connect options]"
+        << ENDL << ENDL;
+    CERR << "[common options]" << ENDL <<
+        "    -p port_num         Specifies the TCP port on which the LISTENING process"
+        << ENDL <<
+        "                        listens, or to which the CONNECTING process connects"
+        << ENDL <<
+        "                        (default is " << DEFAULT_PROXY_PORT << ")." 
+	<< ENDL <<
+        "    -f                  fork (starts process in background)."
+        << ENDL
+        <<
+        "    -k                  kill (kills backgrounded process started via -f)."
+        <<
+        ENDL
+        <<
+        "    -v                  Print version/license info and exit."
+        <<
+        ENDL
+        <<
+        "    -s (1|2)            Print compression stats; -s 1 prints a summary on"
+        <<
+        ENDL
+        <<
+        "                        exit, -s 2 prints details for each X application."
+        <<
+        ENDL
+        <<
+        "    -l log_file         write output to a logfile instead of stdout."
+        << ENDL << ENDL;
+    CERR << "[client options] (only meaningful to the CLIENT process)" 
+        << ENDL << 
+        "    -i compression_lvl  Specify image bitmap compression level (0-9,99,"
+        << ENDL <<
+        "                        999). 0 disables bitmap compression; 999 is maximal;"
+        << ENDL <<
+        "                        other values are tradeoffs of speed vs. compression."
+        << ENDL <<
+        "                        Default is " << DEFAULT_IMAGE_COMPRESSION_LEVEL << "."
+        << ENDL <<
+        "    -d display_num      Specify display number to emulate. Default is 8."
+        << ENDL <<
+        "    -u                  Do not attempt to open UNIX domain socket for"
+        << ENDL <<
+        "                        proxied server."
+        << ENDL <<
+        "    -t                  Do not attempt to open TCP socket for proxied server."
+        << ENDL << ENDL;
+    CERR << "[server options] (only meaningful to the SERVER process)" 
+	<< ENDL <<
+        "    -D                  Specify X host on which to display proxied"
+        << ENDL <<
+        "                        applications. Defaults to value of the DISPLAY"
+        << ENDL <<
+        "                        environment variable."
+        << ENDL <<
+        "    -b (a|w)            force backing store (-ba = always, -bw = when mapped)"
+        << ENDL << ENDL;
+    CERR << "[connect options]" 
+	<< ENDL <<
+        "     hostname           The name of the machine on which the LISTENING"
+        << ENDL <<
+        "                        process is running. The presence of the hostname"
+        << ENDL <<
+        "                        argument specifies that this is the CONNECTING"
+        << ENDL <<
+        "                        process. Its absence specifies that this is the"
+        << ENDL <<
+        "                        LISTENING process."
+        << ENDL <<
+        "     -w                 If this is the CONNECTING process, specifies that it"
+        << ENDL <<
+        "                        is the CLIENT process (by default, the CONNECTING"
+        << ENDL <<
+        "                        process is the SERVER process). If this is the"
+        << ENDL <<
+        "                        LISTENING process, specifies that it is the SERVER"
+        << ENDL <<
+        "                        process (by default, the LISTENING process is the"
+        << ENDL << 
+	"                        CLIENT process)." 
+	<< ENDL << ENDL;
+    CERR << "Notes on modes:" << ENDL << ENDL;
+    CERR <<
+        "dxpc has two modes; the connection mode, which is either LISTENING or"
+        << ENDL <<
+        "CONNECTING; and the X mode, which is either CLIENT or SERVER."
+        << ENDL << ENDL;
+    CERR <<
+        "The LISTENING process waits for a CONNECTING process to initiate the TCP"
+        << ENDL <<
+        "connection between the two processes. The LISTENING process must always be"
+        << ENDL <<
+        "started first. The CONNECTING process initiates the connection to the"
+        << ENDL <<
+        "LISTENING process. dxpc will run as the CONNECTING process if a hostname"
+        << ENDL <<
+        "argument is supplied (see connect options, above). Otherwise it will run as"
+        << ENDL << 
+	"the LISTENING process." 
+	<< ENDL << ENDL;
+    CERR <<
+        "The SERVER process is typically located on the same machine as the real X"
+        << ENDL <<
+        "server, and is responsible for displaying the output of applications. The"
+        << ENDL <<
+        "CLIENT process is typically located on the same machine as the X"
+        << ENDL <<
+        "applications, and is responsible for forwarding the output of those"
+        << ENDL <<
+        "applications to the SERVER process. By default, dxpc runs as the CLIENT"
+        << ENDL <<
+        "process if it is the LISTENING process (due to the lack of a hostname"
+        << ENDL <<
+        "argument) and the SERVER process if it is the CONNECTING process, but the -w"
+        << ENDL << "switch reverses this (see connect options, above)."
+        << ENDL << ENDL;
+    CERR <<
+        "For example, the command 'dxpc myhost.work.com' starts dxpc as the"
+        << ENDL <<
+        "CONNECTING process (because a host name is supplied) and the SERVER process"
+        << ENDL <<
+        "(because it is the CONNECTING process and -w is not supplied). The command"
+        << ENDL <<
+        "'dxpc -w' starts dxpc as the LISTENING process (because no hostname is"
+        << ENDL <<
+        "supplied) and the SERVER process (because it is the LISTENING process, and"
+        << ENDL << "-w reverses the usual logic)." << ENDL;
+
+    exit(1);
+}
+
+static void Cleanup()
+{
+    if (!silent)
+        *logofs << "Closing all file descriptors and shutting down..." <<
+            ENDL;
+
+    if (dofork)
+        if (remove(lockfilename))
+            perror("Unable to remove lockfile");
+
+    if (useUnixDomainSocket)
+        unlink(udomSocketPathname);
+
+    for (unsigned int i = 0; i < maxNumFDs; i++)
+        (void) close(i);
+
+    exit(1);
+}
+
+static void HandleSignal(int)
+{
+    Cleanup();
+}
+
+// Open TCP socket to listen for server proxy; block until server
+// proxy connects, then close listener socket and return FD of socket
+// on which server proxy is connected
+//
+static int AwaitConnection(int portNum)
+{
+    int proxyFD = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (proxyFD == -1)
+    {
+        CERR << "socket() failed for TCP socket, errno=" << errno << ENDL;
+        Cleanup();
+    }
+    int flag = 1;
+
+    if (setsockopt(proxyFD, SOL_SOCKET, SO_REUSEADDR, (char *) &flag,
+                   sizeof(flag)) < 0)
+    {
+        CERR << "setsockopt(SO_REUSEADDR) failed for proxy port, errno=" <<
+            errno << ENDL;
+    }
+    sockaddr_in tcpAddr;
+
+    tcpAddr.sin_family = AF_INET;
+    tcpAddr.sin_port = htons(portNum);
+    tcpAddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(proxyFD, (sockaddr *) & tcpAddr, sizeof(tcpAddr)) == -1)
+    {
+        CERR << "bind() failed for TCP port " << portNum <<
+            ", errno=" << errno << ENDL;
+        Cleanup();
+    }
+    if (listen(proxyFD, 1) == -1)
+    {
+        CERR << "listen() failed for TCP port " << portNum <<
+            ", errno=" << errno << ENDL;
+        Cleanup();
+    }
+    for (;;)
+    {
+        fd_set readSet;
+
+        FD_ZERO(&readSet);
+        FD_SET(proxyFD, &readSet);
+#if (defined(__hpux) || defined(hpux)) && !defined(PGID_USE_PID)
+        int result = select(proxyFD + 1, (int *) &readSet, NULL, NULL, NULL);
+#else
+        int result = select(proxyFD + 1, &readSet, NULL, NULL, NULL);
+#endif
+        if (result == -1)
+        {
+            if (errno == EINTR)
+                continue;
+            CERR << "select() failed, errno=" << errno << ENDL;
+            Cleanup();
+        }
+        if (FD_ISSET(proxyFD, &readSet))
+        {
+            sockaddr_in newAddr;
+            ACCEPT_SOCKLEN_T addrLen = sizeof(sockaddr_in);
+            int newFD = accept(proxyFD, (sockaddr *) & newAddr, &addrLen);
+
+            if (newFD == -1)
+            {
+                CERR << "accept() failed, errno=" << errno << ENDL;
+                Cleanup();
+            }
+            // Now we send our version number.
+            char version[40];
+
+            if (!WE_INITIATE_CONNECTION)
+            {
+                sprintf(version, "DXPC %i.%i/ci=%d",
+                        DXPC_VERSION_MAJOR, DXPC_VERSION_MINOR,
+                        compressImages);
+            }
+            else
+            {
+                sprintf(version, "DXPC %i.%i", DXPC_VERSION_MAJOR,
+                        DXPC_VERSION_MINOR);
+            }
+            SOCKWRITE(newFD, version, strlen(version) + 1);
+
+            // If the client doesn't like our version it will simply close the
+            // socket.
+
+            SOCKCLOSE(proxyFD);
+            return newFD;
+        }
+    }
+}
+
+// Connect to remote proxy.  If successful, return FD of connection;
+// if unsuccessful, return -1
+//
+static int ConnectToRemote(char *remoteHost, int portNum)
+{
+    int remoteIPAddr;
+    hostent *hostAddr = gethostbyname(remoteHost);
+
+    if (hostAddr == NULL)
+    {
+        // on some UNIXes, gethostbyname doesn't accept IP addresses,
+        // so try inet_addr:
+        remoteIPAddr = (int) inet_addr(remoteHost);
+        if (remoteIPAddr == -1)
+        {
+            CERR << "Unknown host '" << remoteHost << "'" << ENDL;
+            Cleanup();
+        }
+    }
+    else
+        remoteIPAddr = *(int *) hostAddr->h_addr_list[0];
+
+    int remoteProxyFD = socket(AF_INET, SOCK_STREAM, PF_UNSPEC);
+
+    if (remoteProxyFD == -1)
+    {
+        CERR << "socket() failed, errno=" << errno << ENDL;
+        Cleanup();
+    }
+    int flag = 1;
+
+    if (setsockopt(remoteProxyFD, SOL_SOCKET, SO_REUSEADDR, (char *) &flag,
+                   sizeof(flag)) < 0)
+    {
+        CERR << "setsockopt(SO_REUSEADDR) failed for proxy port, errno=" <<
+            errno << ENDL;
+    }
+    if (!silent)
+    {
+        *logofs << "trying to connect to remote proxy..." << ENDL;
+    }
+    sockaddr_in addr;
+
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(portNum);
+    addr.sin_addr.s_addr = remoteIPAddr;
+    if (connect(remoteProxyFD, (sockaddr *) & addr, sizeof(sockaddr_in)) ==
+        -1)
+    {
+        CERR << "connect() failed, errno=" << errno << ENDL;
+        SOCKCLOSE(remoteProxyFD);
+        Cleanup();
+    }
+    CERR << "connect succeeded." << ENDL;
+
+    SETNODELAY(remoteProxyFD);
+
+    return remoteProxyFD;
+}
+
+static int VersionNumbersMatch(int sockfd)
+{
+    // We consider the version numbers to match if the major and minor
+    // numbers match.  Different patch levels should by definition be
+    // compatible with each other.
+
+    char version[20];
+    char recvmsg[40];
+    char *opts;
+
+    sprintf(version, "DXPC %i.%i", DXPC_VERSION_MAJOR, DXPC_VERSION_MINOR);
+
+    if (ReadDataCh(sockfd, recvmsg, sizeof(recvmsg), '\0') < 0)
+    {
+        CERR << "No version number from far end" << ENDL;
+        return 0;
+    }
+
+    // Split any available options off from version number.
+    if ((opts = strchr(recvmsg, '/')) != NULL)
+    {
+        *opts++ = 0;
+    }
+
+    if (strncmp(recvmsg, version, strlen(version)))
+    {
+        // Make sure recvmsg will be printable
+        unsigned int ctr;
+
+        for (ctr = 0;
+             ctr < strlen(recvmsg) &&
+             (isgraph(recvmsg[ctr]) || isspace(recvmsg[ctr])); ctr++);
+
+        recvmsg[ctr] = 0;
+
+        CERR << "Error version numbers don't match!" << ENDL
+            << "Local version: " << version << ENDL
+            << "Remote version: " << recvmsg << ENDL;
+
+        return 0;
+    }
+
+    if (parseRemoteOptions(opts))
+    {
+        // Not strictly a version number mismatch, but fail anyway.
+        return 0;
+    }
+
+    // We initiated the connection; if we didn't learn a compression level,
+    // we're screwed.
+    if (compressImages == -1)
+    {
+        CERR << "error: host didn't specify image compression level" << ENDL;
+        return 0;
+    }
+    return 1;
+}
+
+static int ReadDataCh(int fd, char *buf, int maxlen, char stop)
+{
+    int ctr = 0;
+    int result;
+
+    while (ctr < maxlen)
+    {
+        if ((result = SOCKREAD(fd, buf + ctr, 1)) == -1 || !result)
+        {
+            return -1;
+        }
+        if (result && *(buf + ctr++) == stop)
+        {
+            return ctr;
+        }
+    }
+
+    return 0;
+}
+
+static void DaemonInit(unsigned int displayNum)
+{
+#if defined(__EMX__) || defined(__MINGW32__)
+    CERR << "The daemon option is disabled on this platform" << ENDL;
+    exit(-1);
+#else
+
+    switch (fork())
+    {
+    case -1:
+        perror("dxpc");
+        Cleanup();
+    case 0:
+        break;
+    default:
+        exit(0);
+    }
+    pid_t pid;
+
+    if ((pid = setsid()) == -1)
+    {
+        CERR << "Error setsid() failed." << ENDL;
+        Cleanup();
+    }
+    MakeLockFileName(lockfilename, displayNum);
+
+    // First we try to open the file to see if dxpc is already running
+    FILE *pidfile = fopen(lockfilename, "r");
+
+    if (pidfile)
+    {
+        // The open was successful
+        // So we try and read a pid out of it.
+	long oldpidval;
+
+	switch (fscanf(pidfile, "%ld", &oldpidval))
+        {
+        case 0:
+	    CERR << "Found invalid old pidfile " << lockfilename
+                << ".  Overriding." << ENDL;
+            break;
+        case EOF:
+            CERR << "Error reading from old pidfile " << lockfilename
+                << ".  Overriding." << ENDL;
+            break;
+        default:
+            int override = 0;
+
+            switch (kill(oldpidval, 0))
+            {
+            case ESRCH:
+            case EPERM:
+                // Either the pid doesn't exist or is owned by someone
+                // else.  It's probably safe to override.
+                CERR << "Stale pidfile found.  Overriding." << ENDL;
+                override = 1;
+                break;
+            default:
+                CERR << "Error.  It appears another dxpc is running at pid "
+                    << oldpidval << ENDL
+                    << "If this isn't correct, then delete " << lockfilename
+                    << ENDL;
+            }
+            if (override)
+                break;
+            fclose(pidfile);
+            dofork = 0;         // So Cleanup() won't delete the lockfile
+
+            Cleanup();
+        }
+
+        fclose(pidfile);
+    }
+    if (!(pidfile = fopen(lockfilename, "w")))
+    {
+        perror("dxpc");
+        Cleanup();
+    }
+    fprintf(pidfile, "%lu", (unsigned long) pid);
+    fclose(pidfile);
+
+    // Now turn off all non-error output to the console
+    silent = 1;
+
+#endif
+    return;
+}
+
+void KillDaemon(unsigned int displayNum)
+{
+#ifndef __MINGW32__
+    char lockfilename[512];
+
+    MakeLockFileName(lockfilename, displayNum);
+
+    FILE *pidfile = fopen(lockfilename, "r");
+
+    if (pidfile)
+    {
+        // The open was successful
+        // So we try and read a pid out of it.
+	long pidval;
+
+	switch (fscanf(pidfile, "%ld", &pidval))
+        {
+        case 0:
+        case EOF:
+            CERR << "Error reading pid from " << lockfilename << ENDL
+                << "You will have to manually kill the daemon." << ENDL;
+
+            break;
+        default:
+            fclose(pidfile);
+
+            COUT << "Killing dxpc at pid " << pidval << ENDL;
+
+            if (kill(pidval, SIGTERM) == -1)
+            {
+                perror("dxpc");
+                CERR << "Leaving pidfile intact." << ENDL;
+                exit(1);
+            }
+        }
+        exit(0);
+    }
+    else
+    {
+        CERR << "No daemon is running." << ENDL;
+        exit(1);
+    }
+#else
+    // MingW.
+    CERR << "Kill not supported on mingw." << ENDL;
+    exit(1);
+#endif
+}
+
+#ifndef __MINGW32__
+static void MakeLockFileName(char *lockfilename, unsigned int displayNum)
+{
+    char *homedir = getenv("HOME");
+
+    if (!homedir)
+    {
+        CERR << "You have no environment variable HOME!" << ENDL
+            << "How did that happen?" << ENDL;
+        exit(1);
+    }
+    strcpy(lockfilename, homedir);
+    strcat(lockfilename, "/");
+    strcat(lockfilename, LOCK_FILE_NAME);       // constants.h
+    struct utsname unameInfo;
+
+    if (uname(&unameInfo) == -1)
+    {
+        unameInfo.nodename[0] = 0;
+    }
+    else
+    {
+        char *dotptr = strchr(unameInfo.nodename, '.');
+
+        if (dotptr)
+            *dotptr = 0;
+        strcat(lockfilename, "-");
+        strcat(lockfilename, unameInfo.nodename);
+    }
+
+    struct passwd *passdata;
+
+    if ((passdata = getpwuid(getuid())) != 0)
+    {
+        strcat(lockfilename, "-");
+        strcat(lockfilename, passdata->pw_name);
+    }
+    else
+    {
+        strcat(lockfilename, "");
+    }
+    sprintf(lockfilename + strlen(lockfilename), "-%u", displayNum);
+}
+#endif // __MINGW32__
+
+// Parse the option string passed from the remote end at startup.
+static int parseRemoteOptions(char *opts)
+{
+    char *name, *value;
+
+    // The options string is intended to be a series of name/value
+    // tuples in the form name=value seperated by the '/' character.
+    name = strtok(opts, "=");
+    while (name)
+    {
+        value = strtok(NULL, "/");
+        if (!value)
+        {
+            CERR << "error in remote option " << name
+                << ": no value found" << ENDL;
+            return -1;
+        }
+
+        // Currently we only have one known option...
+        if (!strcmp(name, "ci"))
+        {
+            if (WE_INITIATE_CONNECTION)
+            {
+                // The far end just told us what level of image compression
+                // to use.
+                compressImages = atoi(value);
+                if (!silent)
+                {
+                    COUT << "using image compression level "
+                        << compressImages << ENDL;
+                }
+            }
+            else
+            {
+                CERR << "image compression option from initiating side"
+                    " ignored" << ENDL;
+            }
+        }
+        else
+        {
+            CERR << "unknown remote option: " << name << " = " << value
+                << ENDL;
+            return -1;
+        }
+
+        name = strtok(NULL, "=");
+    }
+    return 0;
+}
