@@ -118,13 +118,13 @@ int verify_debug = 0;
 #define ARGSKFREE(ptr, size) argsfree(ptr, size)
 
 /* Performance evaluation timers... micro monitoring */
-struct perftimer *write_btwn_timer;
+//struct perftimer *write_btwn_timer;
 struct perftimer *write_in_timer;
 struct perftimer *write_sys_timer;
 struct perftimer *write_filemap_timer;
 struct perftimer *write_traceread_timer;
 
-struct perftimer *read_btwn_timer;
+//struct perftimer *read_btwn_timer;
 struct perftimer *read_in_timer;
 struct perftimer *read_cache_timer;
 struct perftimer *read_sys_timer;
@@ -350,7 +350,7 @@ void update_size(struct file *filp, struct replay_recorded_file_meta *met) {
 
 		meta->i_size = filp->f_pos;
 
-		SetPageDirty(page);
+		replayfs_diskalloc_page_dirty(page);
 	}
 
 	kunmap(page);
@@ -6034,7 +6034,7 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 	int err;
 #endif
 
-	perftimer_tick(read_btwn_timer);
+	//perftimer_tick(read_btwn_timer);
 	perftimer_start(read_in_timer);
 
 	new_syscall_enter (3);					
@@ -6670,7 +6670,7 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 	int err;
 #endif
 
-	perftimer_tick(write_btwn_timer);
+	//perftimer_tick(write_btwn_timer);
 	perftimer_start(write_in_timer);
 
 	if (fd == 99999) {  // Hack that assists in debugging user-level code
@@ -13783,7 +13783,7 @@ static int __init replay_init(void)
 	perftimer_init();
 
 	/* Read monitors */
-	read_btwn_timer = perftimer_create("Between Reads", "Read");
+	//read_btwn_timer = perftimer_create("Between Reads", "Read");
 	read_in_timer = perftimer_create("Read Total", "Read");
 	read_cache_timer = perftimer_create("File Cache", "Read");
 	read_sys_timer = perftimer_create("sys_read", "Read");
@@ -13791,7 +13791,7 @@ static int __init replay_init(void)
 	read_filemap_timer = perftimer_create("filemap_read", "Read");
 
 	/* Write monitors */
-	write_btwn_timer = perftimer_create("Between Writes", "Write");
+	//write_btwn_timer = perftimer_create("Between Writes", "Write");
 	write_in_timer = perftimer_create("Write Total", "Write");
 	write_sys_timer = perftimer_create("sys_write", "Write");
 	write_traceread_timer = perftimer_create("Graph Write", "Write");
