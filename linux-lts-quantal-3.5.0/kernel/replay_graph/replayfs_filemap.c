@@ -1,6 +1,7 @@
 #include "replayfs_filemap.h"
 #include "replayfs_btree.h"
 #include "replayfs_btree128.h"
+#include "replayfs_perftimer.h"
 
 #include <linux/fs.h>
 #include <linux/kernel.h>
@@ -33,6 +34,21 @@ extern int replayfs_filemap_debug;
 
 static DEFINE_MUTEX(meta_lock);
 extern struct replayfs_btree128_head filemap_meta_tree;
+
+static struct perftimer *write_in_tmr;
+
+static struct perftimer *filemap_init_tmr;
+static struct perftimer *filemap_init_lookup_tmr;
+static struct perftimer *filemap_init_tree_init_tmr;
+
+int replayfs_filemap_glbl_init(void) {
+	write_in_tmr = perftimer_create("Time in Write", "Filemap");
+	filemap_init_tmr = perftimer_create("filemap_init", "Filemap");
+	filemap_init_lookup_tmr = perftimer_create("filemap_init, btree128_lookup", "Filemap");
+	filemap_init_tree_init_tmr = perftimer_create("filemap_init, btree_init", "Filemap");
+
+	return 0;
+}
 
 static int replayfs_filemap_create(struct replayfs_filemap *map,
 		struct replayfs_diskalloc *alloc, struct replayfs_btree128_key *key, loff_t *pos) {
@@ -280,6 +296,8 @@ int replayfs_filemap_init(struct replayfs_filemap *map,
 
 	glbl_diskalloc_init();
 
+	perftimer_start(filemap_init_tmr);
+
 	/* Give the file a unique id, filp->dentry->ino->sb->s_dev concat ino->i_no */
 	key.id1 = filp->f_dentry->d_inode->i_ino;
 	key.id2 = filp->f_dentry->d_inode->i_sb->s_dev;
@@ -297,7 +315,9 @@ int replayfs_filemap_init(struct replayfs_filemap *map,
 	printk("%s %d - %p: Looking for key {%llu, %llu}  -- ",
 			__func__, __LINE__, current, key.id1, key.id2);
 			*/
+	perftimer_start(filemap_init_lookup_tmr);
 	disk_pos = replayfs_btree128_lookup(&filemap_meta_tree, &key, &page);
+	perftimer_stop(filemap_init_lookup_tmr);
 	/*
 	if (disk_pos != NULL) {
 		printk("%s %d: Found!\n", __func__, __LINE__);
@@ -322,7 +342,9 @@ int replayfs_filemap_init(struct replayfs_filemap *map,
 
 		debugk("%s %d: ----LOADING btree from %lld\n", __func__, __LINE__,
 				disk_pos->id);
+		perftimer_start(filemap_init_tree_init_tmr);
 		ret = replayfs_btree_init(&map->entries, alloc, id);
+		perftimer_stop(filemap_init_tree_init_tmr);
 	} else {
 		debugk("%s %d: ----Creating btree for file %.*s\n", __func__, __LINE__,
 				filp->f_dentry->d_name.len, filp->f_dentry->d_name.name);
@@ -340,6 +362,8 @@ int replayfs_filemap_init(struct replayfs_filemap *map,
 	}
 
 out:
+	perftimer_stop(filemap_init_tmr);
+
 	return ret;
 }
 
@@ -390,6 +414,8 @@ int replayfs_filemap_write(struct replayfs_filemap *map, loff_t unique_id,
 	struct replayfs_btree_key key;
 	struct replayfs_btree_value value;
 
+	perftimer_start(write_in_tmr);
+
 	value.id.unique_id = unique_id;
 	value.id.pid = pid;
 	value.id.sysnum = syscall_num;
@@ -421,6 +447,8 @@ int replayfs_filemap_write(struct replayfs_filemap *map, loff_t unique_id,
 			__func__, __LINE__, map->owner->i_ino,
 			replayfs_filemap_disk_pos(map));
 			*/
+
+	perftimer_stop(write_in_tmr);
 
 	return ret;
 }

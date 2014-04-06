@@ -78,9 +78,16 @@ static inline void replayfs_diskalloc_page_access(struct page *page) {
 	SetPageReferenced(page);
 }
 
+
+/* Shouldn't be used externally... */
+void __replayfs_diskalloc_page_dirty(struct page *page);
+
 /* Page should be locked... */
+/* Should be used externally... */
 static inline void replayfs_diskalloc_page_dirty(struct page *page) {
-	SetPageDirty(page);
+	if (!PageDirty(page)) {
+		__replayfs_diskalloc_page_dirty(page);
+	}
 }
 
 int glbl_diskalloc_init(void);
