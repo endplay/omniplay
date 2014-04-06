@@ -4,7 +4,7 @@
 
 obj-y     = replayfs_filemap.o replayfs_btree.o replayfs_diskalloc.o \
             replayfs_btree128.o replayfs_syscall_cache.o replay_data.o \
-						replayfs_kmap.o
+						replayfs_kmap.o replayfs_perftimer.o
 
 
 $(obj)/configs.o: $(obj)/config_data.h

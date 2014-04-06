@@ -74,6 +74,7 @@
 #include "../kernel/replay_graph/replayfs_btree128.h"
 #include "../kernel/replay_graph/replayfs_filemap.h"
 #include "../kernel/replay_graph/replayfs_syscall_cache.h"
+#include "../kernel/replay_graph/replayfs_perftimer.h"
 
 // mcc: fix this later
 //#define MULTI_COMPUTER
@@ -150,6 +151,29 @@ unsigned int record_x = 1;
 
 #define ARGSKMALLOC(size, flags) argsalloc(size)
 #define ARGSKFREE(ptr, size) argsfree(ptr, size)
+
+/* Performance evaluation timers... micro monitoring */
+//struct perftimer *write_btwn_timer;
+struct perftimer *write_in_timer;
+struct perftimer *write_sys_timer;
+struct perftimer *write_filemap_timer;
+struct perftimer *write_traceread_timer;
+
+//struct perftimer *read_btwn_timer;
+struct perftimer *read_in_timer;
+struct perftimer *read_cache_timer;
+struct perftimer *read_sys_timer;
+struct perftimer *read_traceread_timer;
+struct perftimer *read_filemap_timer;
+
+struct perftimer *open_timer;
+struct perftimer *open_sys_timer;
+struct perftimer *open_intercept_timer;
+struct perftimer *open_cache_timer;
+
+struct perftimer *close_timer;
+struct perftimer *close_sys_timer;
+struct perftimer *close_intercept_timer;
 
 #ifdef REPLAY_COMPRESS_READS
 /* Okay, time for fun! */
@@ -361,7 +385,7 @@ void update_size(struct file *filp, struct replay_recorded_file_meta *met) {
 
 		meta->i_size = filp->f_pos;
 
-		SetPageDirty(page);
+		replayfs_diskalloc_page_dirty(page);
 	}
 
 	kunmap(page);
@@ -657,6 +681,7 @@ void replay_verify_read(struct file *filp, const char *buf, int size, loff_t pos
 #ifdef TRACE_READ_WRITE
 void replay_filp_close(struct file *filp) {
 	if (current->record_thrd != NULL) {
+		perftimer_start(close_intercept_timer);
 		if (filp != NULL) {
 			if (filp->replayfs_filemap) {
 				//printk("%s %d: destroy\n", __func__, __LINE__);
@@ -664,6 +689,7 @@ void replay_filp_close(struct file *filp) {
 				kfree(filp->replayfs_filemap);
 			}
 		}
+		perftimer_stop(close_intercept_timer);
 	}
 }
 
@@ -672,19 +698,23 @@ void replayfs_file_opened(struct file *filp) {
 	/* If we're recording... */
 	if (filp != NULL && !IS_ERR(filp)) {
 		if (current->record_thrd != NULL && !atomic_read(&open_in_replay)) {
-				struct inode *inode = filp->f_dentry->d_inode;
+			struct inode *inode = filp->f_dentry->d_inode;
 
-				if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0) {
-					struct replayfs_filemap *map = kmalloc(sizeof(struct replayfs_filemap),
-							GFP_KERNEL);
+			perftimer_start(open_intercept_timer);
 
-					glbl_diskalloc_init();
+			if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0) {
+				struct replayfs_filemap *map = kmalloc(sizeof(struct replayfs_filemap),
+						GFP_KERNEL);
 
-					replayfs_filemap_init(map, replayfs_alloc, filp);
-					filp->replayfs_filemap = map;
-				} else {
-					filp->replayfs_filemap = NULL;
-				}
+				glbl_diskalloc_init();
+
+				replayfs_filemap_init(map, replayfs_alloc, filp);
+				filp->replayfs_filemap = map;
+			} else {
+				filp->replayfs_filemap = NULL;
+			}
+
+			perftimer_stop(open_intercept_timer);
 		} else {
 			filp->replayfs_filemap = NULL;
 		}
@@ -6854,6 +6884,10 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 	int reg_file = 0;
 	int shift_clock = 1;
 #endif
+
+	//perftimer_tick(read_btwn_timer);
+	perftimer_start(read_in_timer);
+
 	new_syscall_enter (3);					
 	DPRINT ("pid %d, record read off of fd %d\n", current->pid, fd);
 #ifdef REPLAY_COMPRESS_READS
@@ -7068,6 +7102,7 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 	}
 #else
 	//printk("%s %d: In else? of macro?\n", __func__, __LINE__);
+	perftimer_start(read_cache_timer);
 	is_cache_file = is_record_cache_file_lock(current->record_thrd->rp_cache_files, fd);
 #ifdef LOG_COMPRESS
 	reg_file = is_cache_file;
@@ -7085,6 +7120,10 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 	else
 		new_syscall_done (3, rc);
 #else
+	perftimer_stop(read_cache_timer);
+	perftimer_start(read_sys_timer);
+	rc = sys_read (fd, buf, count);
+	perftimer_stop(read_sys_timer);
 	new_syscall_done (3, rc);
 #endif
 #endif
@@ -7124,11 +7163,15 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 
 				struct replayfs_filemap_entry *args;
 
+				perftimer_start(read_traceread_timer);
+
 				map = filp->replayfs_filemap;
 				//replayfs_filemap_init(&map, replayfs_alloc, filp);
 				
 				//printk("%s %d - %p: Reading %d\n", __func__, __LINE__, current, fd);
+				perftimer_start(read_filemap_timer);
 				entry = replayfs_filemap_read(map, filp->f_pos - rc, rc);
+				perftimer_stop(read_filemap_timer);
 
 				if (IS_ERR(entry) || entry == NULL) {
 					entry = kmalloc(sizeof(struct replayfs_filemap_entry), GFP_KERNEL);
@@ -7145,6 +7188,8 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 				memcpy(args, entry, cpy_size);
 
 				kfree(entry);
+
+				perftimer_stop(read_traceread_timer);
 
 				//replayfs_filemap_destroy(&map);
 			} while (0);
@@ -7337,6 +7382,8 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 	}
 
 	new_syscall_exit (3, pretval);				
+
+	perftimer_stop(read_in_timer);
 	return rc;							
 }
 
@@ -7524,6 +7571,9 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 	int err;
 #endif
 
+	//perftimer_tick(write_btwn_timer);
+	perftimer_start(write_in_timer);
+
 	if (fd == 99999) {  // Hack that assists in debugging user-level code
 		new_syscall_enter (4);
 		new_syscall_done (4, count);			       
@@ -7626,6 +7676,7 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 		new_syscall_done (4, size);			       
 	}
 #else
+	perftimer_start(write_sys_timer);
 	new_syscall_enter (4);
 	size = sys_write (fd, buf, count);
 	DPRINT ("Pid %d records write returning %d\n", current->pid,size);
@@ -7641,12 +7692,15 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 #else
 	new_syscall_done (4, size);			       
 #endif		       
+	perftimer_stop(write_sys_timer);
 #endif
 
 #ifdef TRACE_READ_WRITE
 	if (size > 0) {
 		struct file *filp;
 		struct inode *inode;
+
+		perftimer_start(write_traceread_timer);
 
 		filp = fget (fd);
 		inode = filp->f_dentry->d_inode;
@@ -7665,8 +7719,10 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 
 			fpos = filp->f_pos - size;
 			if (fpos >= 0) { 
+				perftimer_start(write_filemap_timer);
 				replayfs_filemap_write(map, current->record_thrd->rp_group->rg_id, current->record_thrd->rp_record_pid, 
 						current->record_thrd->rp_count, 0, fpos, size);
+				perftimer_stop(write_filemap_timer);
 			}
 			//replayfs_filemap_destroy(&map);
 #  ifdef TRACE_PIPE_READ_WRITE
@@ -7788,11 +7844,14 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 			}
 #endif
 		}
-
 		fput(filp);
+
+		perftimer_stop(write_traceread_timer);
 	}
 #endif
 	new_syscall_exit (4, pretparams);
+
+	perftimer_stop(write_in_timer);
 
 	return size;
 }
@@ -7868,8 +7927,12 @@ record_open (const char __user * filename, int flags, int mode)
 	struct open_retvals* recbuf = NULL;
 	long rc;	
 
+	perftimer_start(open_timer);
+
 	new_syscall_enter (5);	      
+	perftimer_start(open_sys_timer);
 	rc = sys_open (filename, flags, mode);
+	perftimer_stop(open_sys_timer);
 	new_syscall_done (5, rc);
 
 	// If opened read-only and a regular file, then use replay cache
@@ -7894,6 +7957,7 @@ record_open (const char __user * filename, int flags, int mode)
 			DPRINT ("i_sb->s_dev is %x\n", inode->i_sb->s_dev);
 			DPRINT ("writecount is %d\n", atomic_read(&inode->i_writecount));
 			if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0 && atomic_read(&inode->i_writecount) == 0) {
+				perftimer_start(open_cache_timer);
 				MPRINT ("This is an open that we can cache\n");
 				recbuf = ARGSKMALLOC(sizeof(struct open_retvals), GFP_KERNEL);
 				rg_lock (current->record_thrd->rp_group);
@@ -7901,6 +7965,7 @@ record_open (const char __user * filename, int flags, int mode)
 				add_file_to_cache (file, &recbuf->dev, &recbuf->ino, &recbuf->mtime);
 				if (set_record_cache_file (current->record_thrd->rp_cache_files, rc) < 0) fput(file);
 				rg_unlock (current->record_thrd->rp_group);
+				perftimer_stop(open_cache_timer);
 			}
 			fput (file);
 		}
@@ -7910,6 +7975,9 @@ record_open (const char __user * filename, int flags, int mode)
 	}
 
 	new_syscall_exit (5, recbuf);			
+
+	perftimer_stop(open_timer);
+
 	return rc;
 }								
 
@@ -7942,6 +8010,8 @@ record_close (int fd)
 {									
 	long rc;							
 
+	perftimer_start(close_timer);
+
 #ifdef REPLAY_COMPRESS_READS
 	do {
 		struct file *filp = fget(fd);
@@ -7952,7 +8022,9 @@ record_close (int fd)
 	} while (0);
 #endif
 	new_syscall_enter (6);
+	perftimer_start(close_sys_timer);
 	rc = sys_close (fd);
+	perftimer_stop(close_sys_timer);
 	new_syscall_done (6, rc);
 	if (rc >= 0) clear_record_cache_file (current->record_thrd->rp_cache_files, fd);
 #ifdef X_COMPRESS
@@ -7964,7 +8036,9 @@ record_close (int fd)
 	}
 #endif
 	new_syscall_exit (6, NULL);				
-	return rc;							
+
+	perftimer_stop(close_timer);
+	return rc;
 }								
 
 static asmlinkage long				       
@@ -15739,6 +15813,34 @@ static int __init replay_init(void)
 #ifdef CONFIG_SYSCTL
 	register_sysctl_table(replay_ctl_root);
 #endif
+
+	/* Performance monitoring */
+	perftimer_init();
+
+	/* Read monitors */
+	//read_btwn_timer = perftimer_create("Between Reads", "Read");
+	read_in_timer = perftimer_create("Read Total", "Read");
+	read_cache_timer = perftimer_create("File Cache", "Read");
+	read_sys_timer = perftimer_create("sys_read", "Read");
+	read_traceread_timer = perftimer_create("Graph Read", "Read");
+	read_filemap_timer = perftimer_create("filemap_read", "Read");
+
+	/* Write monitors */
+	//write_btwn_timer = perftimer_create("Between Writes", "Write");
+	write_in_timer = perftimer_create("Write Total", "Write");
+	write_sys_timer = perftimer_create("sys_write", "Write");
+	write_traceread_timer = perftimer_create("Graph Write", "Write");
+	write_filemap_timer = perftimer_create("filemap_write", "Write");
+
+	/* Open/close monitors */
+	open_timer = perftimer_create("Open Total", "Open");
+	open_sys_timer = perftimer_create("sys_open", "Open");
+	open_intercept_timer = perftimer_create("Open Intercept", "Open");
+	open_cache_timer = perftimer_create("Open Syscache", "Open");
+
+	close_timer = perftimer_create("Close Total", "Close");
+	close_sys_timer = perftimer_create("sys_close", "Close");
+	close_intercept_timer = perftimer_create("Close Intercept", "Close");
 
 #ifdef REPLAY_COMPRESS_READS
 	btree_init32(&meta_tree);
