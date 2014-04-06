@@ -4,7 +4,7 @@
 #include <linux/kernel.h>
 #include <linux/list.h>
 
-#define DO_PERFTIMER
+//#define DO_PERFTIMER
 
 struct perftimer {
 	struct list_head list;
@@ -29,7 +29,7 @@ int perftimer_tick(struct perftimer *);
 #else
 static inline int perftimer_init(void) { return 0; }
 static inline void perftimer_close(void) { }
-static inline void perftimer_printall(struct perftimer *) { }
+static inline void perftimer_printall(struct perftimer *tmr) { }
 
 /* All timers are deallocated at close, but not before */
 static inline struct perftimer *perftimer_create(const char *name,
@@ -37,9 +37,9 @@ static inline struct perftimer *perftimer_create(const char *name,
 	return NULL;
 }
 
-static inline int perftimer_start(struct perftimer *) { return 0; }
-static inline int perftimer_stop(struct perftimer *) { return 0; }
-static inline int perftimer_tick(struct perftimer *) { return 0; }
+static inline int perftimer_start(struct perftimer *tmr) { return 0; }
+static inline int perftimer_stop(struct perftimer *tmr) { return 0; }
+static inline int perftimer_tick(struct perftimer *tmr) { return 0; }
 #endif
 
 #endif
