@@ -16,6 +16,7 @@
 #include <linux/list.h>
 
 #include "replayfs_kmap.h"
+#include "replayfs_perftimer.h"
 
 #define REPLAYFS_DISKALLOC_DEBUG_ALLOCREF
 
@@ -39,6 +40,11 @@
 
 DEFINE_MUTEX(glbl_allocnum_lock);
 int glbl_allocnum = 0;
+
+struct perftimer *sync_timer;
+struct perftimer *sync_write_timer;
+
+struct perftimer *write_timer;
 
 extern unsigned long replayfs_debug_page_index;
 
@@ -100,6 +106,8 @@ extern int replayfs_diskalloc_debug_lock;
 #define MAPPINGS_PER_PAGE (PAGE_SIZE * 8)
 #define PAGE_MASK_SIZE_IN_PAGES (PAGE_ALLOC_PAGES / MAPPINGS_PER_PAGE)
 
+void replayfs_diskalloc_sync_page_internal(struct replayfs_diskalloc *alloc,
+		struct page *page);
 
 /* Unique key is inode.index */
 //#define crappy_pagecache_key(X, Y) ((((u64)((X)->filp->f_dentry->d_inode->i_ino))<<32) | (u64)(Y))
@@ -156,7 +164,7 @@ struct page_data {
 	struct list_head free;
 
 	struct list_head alloc_list;
-	struct list_head alloc_dirty;
+	struct list_head dirty_list;
 
 	int referenced;
 	int count;
@@ -320,6 +328,10 @@ int glbl_diskalloc_init(void) {
 		/* Make sure the filemap is ready */
 		replayfs_filemap_glbl_init();
 
+		write_timer = perftimer_create("vfs_write", "Diskalloc");
+		sync_timer = perftimer_create("diskalloc_sync", "Diskalloc");
+		sync_write_timer = perftimer_create("diskalloc_sync writebacks", "Diskalloc");
+
 		last_print_time = CURRENT_TIME_SEC;
 
 		/* Only does something if monitoring is turned on... */
@@ -481,7 +493,8 @@ int alloc_writepage(struct page *page,
 
 	replayfs_kunmap(page);
 
-	ClearPageDirty(page);
+	/* Should be handled in diskalloc_sync_page */
+	//ClearPageDirty(page);
 
 	return 0;
 }
@@ -510,8 +523,7 @@ static void alloc_free_page_internal(struct page_data *data, struct replayfs_dis
 	if (PageDirty(data->page)) {
 		allocref_debugk("%s %d: About to write page %lu with alloc %p, filp %p\n", __func__,
 				__LINE__, data->page->index, data->alloc, data->alloc->filp);
-		alloc_writepage(data->page, NULL, data->alloc);
-		ClearPageDirty(data->page);
+		replayfs_diskalloc_sync_page_internal(data->alloc, data->page);
 	}
 
 	/* Count should be 1... */
@@ -555,10 +567,7 @@ static void alloc_free_page_internal(struct page_data *data, struct replayfs_dis
 static void delete_from_cache(struct page_data *data,
 		struct replayfs_diskalloc *alloc) {
 	if (PageDirty(data->page)) {
-		allocref_debugk("%s %d: About to write page %lu with alloc %p, filp %p\n", __func__,
-				__LINE__, data->page->index, data->alloc, data->alloc->filp);
-		alloc_writepage(data->page, NULL, data->alloc);
-		ClearPageDirty(data->page);
+		replayfs_diskalloc_sync_page_internal(alloc, data->page);
 	}
 
 	crappy_pagecache_size--;
@@ -625,6 +634,7 @@ static struct page_data *alloc_make_page(pgoff_t pg_offset, struct replayfs_disk
 
 		INIT_LIST_HEAD(&data->lru);
 		INIT_LIST_HEAD(&data->free);
+		INIT_LIST_HEAD(&data->dirty_list);
 
 		data->page = alloc_page(GFP_KERNEL);
 		BUG_ON(IS_ERR(data->page));
@@ -650,8 +660,8 @@ static struct page_data *alloc_make_page(pgoff_t pg_offset, struct replayfs_disk
 		remove_from_free(data);
 		/* FIXME: This doesnt seem right... */
 		//printk("%s %d: initing list????\n", __func__, __LINE__);
-		BUG_ON(!mutex_is_locked(&crappy_pagecache_lock));
-		ClearPageDirty(data->page);
+		BUG_ON(PageDirty(data->page));
+		BUG_ON(!list_empty(&data->dirty_list));
 	}
 
 	allocref_debugk("%s %d: About to get data->alloc %p\n", __func__, __LINE__,
@@ -664,6 +674,7 @@ static struct page_data *alloc_make_page(pgoff_t pg_offset, struct replayfs_disk
 
 	list_add(&data->alloc_list, &alloc->alloced_pages);
 
+	data->page->private = (unsigned long)data;
 	data->page->index = pg_offset;
 	ClearPageUptodate(data->page);
 
@@ -817,15 +828,47 @@ static struct page *alloc_get_page(struct replayfs_diskalloc *alloc, loff_t offs
 	return data->page;
 }
 
+void __replayfs_diskalloc_page_dirty(struct page *page) {
+	struct page_data *data = (void *)page->private;
+
+	BUG_ON(data->page != page);
+	
+	mutex_lock(&crappy_pagecache_lock);
+
+	if (!PageDirty(page)) {
+		SetPageDirty(page);
+		cache_debugk("%s %d: Adding data %p to dirty_list\n", __func__, __LINE__, data);
+		BUG_ON(!list_empty(&data->dirty_list));
+		list_add(&data->dirty_list, &data->alloc->dirty_pages);
+	}
+
+	mutex_unlock(&crappy_pagecache_lock);
+}
+
 void replayfs_diskalloc_sync_page(struct replayfs_diskalloc *alloc,
 		struct page *page) {
-	/* Pages should be sync'd periodically... */
-
+	mutex_lock(&crappy_pagecache_lock);
 	if (PageDirty(page)) {
-		cache_debugk("%s %d: Writing back page %lld\n", __func__, __LINE__,
-				(loff_t)page->index * PAGE_SIZE);
-		alloc_writepage(page, NULL, alloc);
+		replayfs_diskalloc_sync_page_internal(alloc, page);
 	}
+	mutex_unlock(&crappy_pagecache_lock);
+}
+
+void replayfs_diskalloc_sync_page_internal(struct replayfs_diskalloc *alloc,
+		struct page *page) {
+
+	struct page_data *data = (void *)page->private;
+
+	BUG_ON(!PageDirty(page));
+
+	cache_debugk("%s %d: Writing back page %lld\n", __func__, __LINE__,
+			(loff_t)page->index * PAGE_SIZE);
+	alloc_writepage(page, NULL, alloc);
+	ClearPageDirty(page);
+
+	BUG_ON(!mutex_is_locked(&crappy_pagecache_lock));
+	cache_debugk("%s %d: Syncing and deleting data %p from dirty_list\n", __func__, __LINE__, data);
+	list_del_init(&data->dirty_list);
 }
 
 static void alloc_put_page(struct replayfs_diskalloc *alloc, struct page *page) {
@@ -1101,15 +1144,27 @@ void replayfs_diskalloc_sync(struct replayfs_diskalloc *alloc) {
 	struct page_data *data;
 	struct page_data *_t;
 
-	list_for_each_entry_safe(data, _t, &alloc->alloced_pages, alloc_list) {
+	perftimer_start(sync_timer);
+
+	mutex_lock(&crappy_pagecache_lock);
+
+	/* Must be safe, as sync_page_internal will remove from list */
+	list_for_each_entry_safe(data, _t, &alloc->dirty_pages, dirty_list) {
+		cache_debugk("%s %d: Iterated over data %p on dirty_list\n", __func__, __LINE__, data);
+
 		BUG_ON(data->alloc != alloc);
-		if (PageDirty(data->page)) {
-			alloc_debugk("%s %d: About to write page %lu with alloc %p, filp %p\n", __func__,
-					__LINE__, data->page->index, data->alloc, data->alloc->filp);
-			alloc_writepage(data->page, NULL, data->alloc);
-			ClearPageDirty(data->page);
-		}
+		BUG_ON(!PageDirty(data->page));
+
+		alloc_debugk("%s %d: About to write page %lu with alloc %p, filp %p\n", __func__,
+				__LINE__, data->page->index, data->alloc, data->alloc->filp);
+		perftimer_start(sync_write_timer);
+		replayfs_diskalloc_sync_page_internal(data->alloc, data->page);
+		perftimer_stop(sync_write_timer);
 	}
+
+	mutex_unlock(&crappy_pagecache_lock);
+
+	perftimer_stop(sync_timer);
 }
 
 void replayfs_diskalloc_destroy(struct replayfs_diskalloc *alloc) {
@@ -1864,6 +1919,9 @@ static loff_t first_free_page(struct replayfs_diskalloc *alloc) {
 			mark_page_accessed(page);
 			//SetPageDirty(page);
 			replayfs_diskalloc_page_dirty(page);
+
+			/* Sync the page immediately, This metadata page shouldn't get out of sync... */
+			replayfs_diskalloc_sync_page(alloc, page);
 			//__set_page_dirty_nobuffers(page);
 			//TestSetPageWriteback(page);
 
@@ -2097,9 +2155,12 @@ void replayfs_diskalloc_write_page_location(struct replayfs_diskalloc *alloc,
 			__LINE__, filp->f_dentry->d_inode->i_sb,
 			filp->f_dentry->d_inode->i_sb->s_dev);
 			*/
+
 	min_debugk("%s %d: Pageloc 0 contains %d, pos is %lld, i_size is %lld\n", __func__, __LINE__,
 			(int)((char *)buffer)[0], pos, i_size_read(filp->f_dentry->d_inode));
+	perftimer_start(write_timer);
 	nwritten = vfs_write(filp, buffer, PAGE_SIZE, &pos);
+	perftimer_stop(write_timer);
 	min_debugk("%s %d: pos-Pageloc 0 contains %d, pos is %lld, nwritten is %d\n", __func__, __LINE__,
 			(int)((char *)buffer)[0], pos, nwritten);
 
