@@ -1,0 +1,90 @@
+1.HOW TO BUILD
+===============================
+xproxy is written in c++, so make sure you have a c++ compiler like g++.
+The following libraries is required to build it:
+          lzo2 (liblzo2-dev package in ubuntu)
+	  X11 library (libX11-dev package in ubuntu)
+These two libraries should be enough to build xproxy on most machines, but if any other header file is missing, make sure the library containing that header file is installed.
+
+***IMPORTANT***
+The following steps may take a while, but it ensures the correctness of xproxy. 
+Opcodes for x extensions on each machine may be different. (But since we are using the same version of ubuntu, they are likely to be the same on different machines).
+So check util.H file in x proxy source directory. Line 40 to line 73 are for x extension opcodes. If you are installing x proxy on virtual machines, line 40 to line 57 should be used and line 58-74 should be commented out. If not, don't change these lines and continue. 
+
+After you check util.H, then run:
+xdpyinfo -queryExtensions | grep "opcode"
+Unfortunately, now you have to double check opcodes defined in util.H manually... (I need to write a script or detect opcodes dynamically in the future...). Make sure opcodes defined in util.H for each extension is the same with that in the output from xdpyinfo command. (XE_SGI_SLX in util.H may refer to NV-SLX extension in your machine, as it's related to the graphic cards.) The number of opcodes in util.H is less than it from xdpyinfo command and it's okay. 
+	
+
+2. HOW TO USE
+===============================
+There are three modes for xproxy, and use regular mode if you just want to collect some data or replay a program normally:
+
+a) regular mode
+-------------------
+
+This mode enables xproxy to work with replay system. 
+Make sure FILE_REPLAY and CONVERT is off in util.H in xproxy source folder before you compile the xproxy (they are off by default). And also make sure LOG_COMPRESS and X_COMPRESS is on in kernel/replay.c of our replay system. 
+
+	-------------------
+	Recording:
+	-------------------
+	Before you start to record a process with xproxy, make sure /proc/sys/kernel/x_proxy is set to 1. 
+	Run xproxy:
+		user@machine$ ./xproxy > /dev/null &
+
+	(Currently xproxy prints out a lot debugging information and after recording for a whole day, the debugging information will be huge. For now, I just drop all those debugging information by writing to /dev/null, and I will clean up the code or set up debugging level later on. )
+	Then set DISPLAY environment variable to be :8.0 and start recording. For example:
+		user@machine$ DISPLAY=:8.0
+		user@machine$ ./launcher <your program>
+
+	-------------------
+	Replaying with xproxy:
+	-------------------
+	Make sure xproxy is still running. Then, 
+		user@machine$ ./resume <recorded program>
+	DISPLAY doesn't need to be set at this time. The recorded program saves the original DISPLAY=:8.0 value automatically during recording, as environment variables are non-deterministic sources and our replay system should have logged them. Now during replaying, you should be able to see the application pops up a window and starts to behave by itself.
+
+	-------------------
+	Replaying without xproxy:
+	-------------------
+	Set /proc/sys/kernel/x_proxy to be 0 and /proc/sys/kernel/record_x to be 1. 
+	Then make sure xproxy is closed, otherwise the replayed program will still try to connect to :8.0 display as explained above. After xproxy is closed, the :8.0 display is a direct connection to x server. 
+	( I can hack it later if anyone needs xproxy to be running in background for some recorded programs while replaying some other programs without xproxy.)
+
+	-------------------
+	Location of x logs:
+	-------------------
+
+	All x logs from xproxy resides in the same directory with xproxy binary. And the folder for the log of each replay group have the same name with the one in /replay_logdb, e.g. rec_4097, rec_9834. 
+	In each folder, there are five types of files:
+	reply.log.id.<pid>.<connection>	This file contains all necessary x reply messages that we must keep. A process may connect to x server several times during execution, so the last number of the log file name reflects the sequence of the connections.
+	Event.log.id.<pid>.<connection> and error.log.id.<pid>.<connection>	These two files contains all necessary x event and error messages. Most recorded programs don't generate error.log.id.
+	Reply.log.id.debug.<pid>.<connection>	This file contains all x messages that we can discard and these messages are not necessary for a faithful replay. The xproxy will make sure these messages can be regenerated during replaying and modify regenerated messages if there are non-determinisms. 
+	Request.log.id.debug.<pid>.<connection>	Debugging purpose only. 
+
+	-------------------
+	How to know the size of logs that we can discard by using xproxy?
+	-------------------
+	Just look at the size of reply.log.id.debug.<pid>.<connection> files. That size is exactly the size of logs that we can discard. If a process has several connections to the x server and produces several reply.log.id.debug files, you should sum up the size of these files. 
+	If you add the size of reply.log.id.debug, reply.log.id, event.log.id and error.log.id files all together (ignore request.log.id.debug files), you can get total size of x messages inside our kernel replay log (klog.id). 
+
+	
+b) file replay mode
+-------------------
+	
+This mode can log all x messages for a non-recorded program and then it can replay all user activities without using our replay system.
+Turn FILE_REPLAY on in util.H before using this mode and add -r option when you want to replay a “x recorded” process. 
+
+c) convert mode
+-------------------
+	
+This mode can regenerate compressed x logs during replaying if you don't run the xproxy during recording. 
+Turn CONVERT on in util.H before using. 
+Set /proc/sys/kernel/x_proxy to be 2.
+Run xproxy as normal. 
+Replay the program and xproxy should regenerate the compressed x logs. 
+Note: This mode is not stable, and I only test firefox and a few other simple GUI applications. 
+
+
+
