@@ -669,10 +669,10 @@ struct replayfs_btree_value *replayfs_btree_last(struct replayfs_btree_head *hea
 	struct replayfs_btree_key *src_key;
 	int height = head->height;
 
-	page = get_head_page(head, &node);
-
 	if (height == 0)
 		return NULL;
+
+	page = get_head_page(head, &node);
 
 	for ( ; height > 1; height--) {
 		struct page *tmppage = page;
@@ -793,7 +793,10 @@ retry:
 
 	node = get_head_page(head, &node_data);
 	if (node) {
+		printk("%s %d: Got head page of %lu\n", __func__, __LINE__, node->index);
 		if (old_node == node->index) {
+			printk("%s %d: Putting node (%lu)\n", __func__,
+					__LINE__, node->index);
 			bval_put(head, node);
 			goto out;
 		}
@@ -840,25 +843,33 @@ retry:
 		}
 
 		if (!node) {
+			printk("%s %d: Putting oldnode %lu\n", __func__, __LINE__, oldnode->index);
 			bval_put(head, oldnode);
 			goto miss;
 		}
 
+		printk("%s %d: Looping with node->index of %lu\n", __func__, __LINE__, node->index);
 		//bval_put(head, node);
 
 		if (retry_page) {
+			printk("%s %d: Putting retry_page->index of %lu\n", __func__, __LINE__,
+					retry_page->index);
 			bval_put(head, retry_page);
 			retry_page = NULL;
 		}
 		retry_key = bkey(&replayfs_geo, oldnode_data, i);
+		
+		printk("%s %d: Setting retry_page to be oldnode: %lu\n", __func__, __LINE__,
+				oldnode->index);
 		retry_page = oldnode;
 	}
 
-	debugk("%s %d: Have node of %p\n", __func__, __LINE__, node);
-	if (!node)
+	if (!node) {
 		goto miss;
+	}
+	debugk("%s %d: Have node of %p\n", __func__, __LINE__, node);
 
-	debugk("%s %d: Have node->index of %lu\n", __func__, __LINE__, node->index);
+	printk("%s %d: Have node->index of %lu\n", __func__, __LINE__, node->index);
 
 	for (i = 0; i < replayfs_geo.no_pairs; i++) {
 		struct replayfs_btree_key *k;
@@ -879,6 +890,8 @@ retry:
 			if (!keyzero(&replayfs_geo, bkey(&replayfs_geo, node_data, i))) {
 				keycpy(__key, bkey(&replayfs_geo, node_data, i));
 				*ret_page = node;
+				printk("%s %d: returning node of %lu\n", __func__, __LINE__,
+						node->index);
 				return bval_at(head->allocator, &replayfs_geo, node_data, i);
 			} else {
 				goto miss;
@@ -887,17 +900,22 @@ retry:
 		}
 	}
 miss:
+	printk("%s %d: In miss, retry_page is %lu\n", __func__, __LINE__, retry_page->index);
 	if (retry_key) {
 		keycpy(&key, retry_key);
 		retry_key = NULL;
+		printk("%s %d: Putting retry_page %lu\n", __func__, __LINE__, retry_page->index);
 		bval_put(head, retry_page);
 		retry_page = NULL;
 		goto retry;
 	}
 out:
 	if (retry_page) {
+		printk("%s %d: Putting retry_page %lu\n", __func__, __LINE__, retry_page->index);
 		bval_put(head, retry_page);
 	}
+
+	printk("%s %d: Returning NULL %lu\n", __func__, __LINE__, retry_page->index);
 	return NULL;
 }
 
@@ -1870,7 +1888,8 @@ static int rebalance(struct replayfs_btree_head *head, struct btree_geo *geo,
 
 
 	if (fill == 0) {
-		/* Because we don't steal entries from a neighbour, this case
+		/* 
+		 * Because we don't steal entries from a neighbour, this case
 		 * can happen.  Parent node contains a single child, this
 		 * node, so merging with a sibling never happens.
 		 */
