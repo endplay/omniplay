@@ -18,6 +18,7 @@
 #include "replayfs_kmap.h"
 #include "replayfs_perftimer.h"
 
+/*
 #define REPLAYFS_DISKALLOC_DEBUG_ALLOCREF
 
 #define REPLAYFS_DISKALLOC_DEBUG
@@ -31,6 +32,7 @@
 #define REPLAYFS_DISKALLOC_DEBUG_CACHE
 
 #define REPLAYFS_DISKALLOC_ALLOC_DEBUG
+*/
 
 #define REPLAYFS_DISKALLOC_MONITOR_LISTS
 
@@ -100,6 +102,7 @@ extern int replayfs_diskalloc_debug_lock;
 #define alloc_debugk(...) if (replayfs_diskalloc_debug_alloc || replayfs_diskalloc_debug_alloc_min) {printk(__VA_ARGS__);}
 #define alloc_dump_stack() if (replayfs_diskalloc_debug_alloc) {dump_stack();}
 #else
+#define alloc_min_debugk(...)
 #define alloc_debugk(...)
 #define alloc_dump_stack()
 #endif
