@@ -5,6 +5,15 @@ The following libraries is required to build it:
           lzo2 (liblzo2-dev package in ubuntu)
 	  X11 library (libX11-dev package in ubuntu)
 These two libraries should be enough to build xproxy on most machines, but if any other header file is missing, make sure the library containing that header file is installed.
+
+***IMPORTANT***
+The following steps may take a while, but it ensures the correctness of xproxy. 
+Opcodes for x extensions on each machine may be different. (But since we are using the same version of ubuntu, they are likely to be the same on different machines).
+So check util.H file in x proxy source directory. Line 40 to line 73 are for x extension opcodes. If you are installing x proxy on virtual machines, line 40 to line 57 should be used and line 58-74 should be commented out. If not, don't change these lines and continue. 
+
+After you check util.H, then run:
+xdpyinfo -queryExtensions | grep "opcode"
+Unfortunately, now you have to double check opcodes defined in util.H manually... (I need to write a script or detect opcodes dynamically in the future...). Make sure opcodes defined in util.H for each extension is the same with that in the output from xdpyinfo command. (XE_SGI_SLX in util.H may refer to NV-SLX extension in your machine, as it's related to the graphic cards.) The number of opcodes in util.H is less than it from xdpyinfo command and it's okay. 
 	
 
 2. HOW TO USE

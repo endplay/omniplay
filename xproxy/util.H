@@ -38,6 +38,7 @@ extern int compressImages;
 extern int wantBackingStore;
 
 //define extension opcode
+/*extension opcode for virtual machines
 #define XE_EVENT_EXTENSION 129
 #define XE_SHAPE 130
 #define XE_MIT_SHM 131
@@ -53,6 +54,24 @@ extern int wantBackingStore;
 #define XE_DAMAGE 144
 #define XE_DRI2 153
 #define XE_SGI_GLX 154
+*/
+//extension opcode for host machines
+#define XE_EVENT_EXTENSION 128
+#define XE_SHAPE 129
+#define XE_MIT_SHM 130
+#define XE_XInputExtension 131
+#define XE_BIG_REQUESTS 133
+#define XE_SYNC 134
+#define XE_XKEYBOARD 135
+#define XE_XFIXES 138
+#define XE_RENDER 139
+#define XE_RANDR 140
+#define XE_XINERAMA 141
+#define XE_Composite 142
+#define XE_DAMAGE 143
+#define XE_DRI2 152
+#define XE_SGI_GLX 153
+//end for extension code
 
 //x shape extension request
 #define X_ShapeQueryVersion             0
