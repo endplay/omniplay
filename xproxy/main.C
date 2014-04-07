@@ -72,7 +72,7 @@ sockaddr_in serverAddr;
 
 // Maximum number of open file descriptors for this process
 static unsigned int maxNumFDs = 0;
-int thread_debug = 1;
+int thread_debug = 0;
 
 struct thread_struct {
 	int addrFamily;
