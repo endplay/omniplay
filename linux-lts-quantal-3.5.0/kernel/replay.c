@@ -649,9 +649,15 @@ void replay_filp_close(struct file *filp) {
 		perftimer_start(close_intercept_timer);
 		if (filp != NULL) {
 			if (filp->replayfs_filemap) {
-				//printk("%s %d: destroy\n", __func__, __LINE__);
+				/*
+				printk("%s %d: destroying %p\n", __func__, __LINE__,
+						filp->replayfs_filemap);
+						*/
 				replayfs_filemap_destroy(filp->replayfs_filemap);
+
 				kfree(filp->replayfs_filemap);
+
+				filp->replayfs_filemap = NULL;
 			}
 		}
 		perftimer_stop(close_intercept_timer);
@@ -675,6 +681,10 @@ void replayfs_file_opened(struct file *filp) {
 
 				replayfs_filemap_init(map, replayfs_alloc, filp);
 				filp->replayfs_filemap = map;
+				/*
+				printk("%s %d: Allocating %p\n", __func__, __LINE__,
+						filp->replayfs_filemap);
+						*/
 			} else {
 				filp->replayfs_filemap = NULL;
 			}
@@ -6289,7 +6299,7 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 
 #ifdef TRACE_READ_WRITE
 			do {
-				struct replayfs_filemap_entry *entry;
+				struct replayfs_filemap_entry *entry = NULL;
 				struct replayfs_filemap *map;
 				size_t cpy_size;
 
@@ -6301,9 +6311,11 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 				//replayfs_filemap_init(&map, replayfs_alloc, filp);
 				
 				//printk("%s %d - %p: Reading %d\n", __func__, __LINE__, current, fd);
-				perftimer_start(read_filemap_timer);
-				entry = replayfs_filemap_read(map, filp->f_pos - rc, rc);
-				perftimer_stop(read_filemap_timer);
+				if (filp->replayfs_filemap) {
+					perftimer_start(read_filemap_timer);
+					entry = replayfs_filemap_read(map, filp->f_pos - rc, rc);
+					perftimer_stop(read_filemap_timer);
+				}
 
 				if (IS_ERR(entry) || entry == NULL) {
 					entry = kmalloc(sizeof(struct replayfs_filemap_entry), GFP_KERNEL);
@@ -6792,7 +6804,8 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 		filp = fget (fd);
 		inode = filp->f_dentry->d_inode;
 
-		if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0) {
+		/*if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0 && filp->)*/
+		if (filp->replayfs_filemap) {
 			loff_t fpos;
 			struct replayfs_filemap *map;
 			map = filp->replayfs_filemap;
@@ -6811,6 +6824,9 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 						current->record_thrd->rp_count, 0, fpos, size);
 				perftimer_stop(write_filemap_timer);
 			}
+
+			replayfs_diskalloc_sync(map->entries.allocator);
+
 			//replayfs_filemap_destroy(&map);
 #  ifdef TRACE_PIPE_READ_WRITE
 		/* If this is is a pipe */
@@ -6924,10 +6940,11 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 				sock_put(peer);
 				if (ret) {
 					//ARGSKFREE(pretvals, sizeof(struct generic_socket_retvals));
-					return ret;
+					size = ret;
+				} else {
+					/* FIXME: in all honesty, new_syscall_exit is just looking for NULL/non-NULL, but this is hacky */
+					pretparams = (void *)1;
 				}
-				/* FIXME: in all honesty, new_syscall_exit is just looking for NULL/non-NULL, but this is hacky */
-				pretparams = (void *)1;
 			}
 #endif
 		}
@@ -7091,6 +7108,15 @@ record_close (int fd)
 		}
 	} while (0);
 #endif
+#ifdef TRACE_READ_WRITE
+	do {
+		struct file *filp = fget(fd);
+		if (filp != NULL) {
+			replay_filp_close(filp);
+			fput(filp);
+		}
+	} while (0);
+#endif
 	new_syscall_enter (6);
 	perftimer_start(close_sys_timer);
 	rc = sys_close (fd);
@@ -7147,6 +7173,7 @@ record_unlink(const char __user *pathname)
 			replay_filp_delete(filp);
 		}
 	}
+
 	if (filp != NULL && !IS_ERR(filp)) {
 		filp_close(filp, NULL);
 	}
@@ -13595,6 +13622,7 @@ int replayfs_diskalloc_debug_cache = 0;
 int replayfs_diskalloc_debug_allocref = 0;
 int replayfs_diskalloc_debug_lock = 0;
 int replayfs_diskalloc_debug_alloc = 0;
+int replayfs_diskalloc_debug_alloc_min = 0;
 
 int replayfs_debug_allocnum = -1;
 int replayfs_debug_page = -1;
@@ -13685,6 +13713,13 @@ static struct ctl_table print_ctl[] = {
 	{
 		.procname	= "replayfs_diskalloc_print_allocref",
 		.data		= &replayfs_diskalloc_debug_allocref,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "replayfs_diskalloc_print_alloc_min",
+		.data		= &replayfs_diskalloc_debug_alloc_min,
 		.maxlen		= sizeof(unsigned int),
 		.mode		= 0666,
 		.proc_handler	= &proc_dointvec,
