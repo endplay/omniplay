@@ -52,6 +52,7 @@ extern int replayfs_print_leaks;
 
 extern int replayfs_diskalloc_debug;
 extern int replayfs_diskalloc_debug_alloc;
+extern int replayfs_diskalloc_debug_alloc_min;
 extern int replayfs_diskalloc_debug_cache;
 extern int replayfs_diskalloc_debug_full;
 extern int replayfs_diskalloc_debug_allocref;
@@ -95,7 +96,8 @@ extern int replayfs_diskalloc_debug_lock;
 #endif
 
 #ifdef REPLAYFS_DISKALLOC_ALLOC_DEBUG
-#define alloc_debugk(...) if (replayfs_diskalloc_debug_alloc) {printk(__VA_ARGS__);}
+#define alloc_min_debugk(...) if (replayfs_diskalloc_debug_alloc_min) {printk(__VA_ARGS__);}
+#define alloc_debugk(...) if (replayfs_diskalloc_debug_alloc || replayfs_diskalloc_debug_alloc_min) {printk(__VA_ARGS__);}
 #define alloc_dump_stack() if (replayfs_diskalloc_debug_alloc) {dump_stack();}
 #else
 #define alloc_debugk(...)
@@ -693,8 +695,8 @@ static struct page_data *alloc_make_page(pgoff_t pg_offset, struct replayfs_disk
 
 static int alloc_free_page_nolock(struct page_data *data, struct replayfs_diskalloc *alloc) {
 	if (replayfs_print_leaks && data->count > 7) {
-		printk("%s %d: Warning it appears page %lu is leaking, doing stack dump\n",
-				__func__, __LINE__, data->page->index);
+		printk("%s %d: Warning it appears page %lu is leaking (count %d), doing stack dump\n",
+				__func__, __LINE__, data->page->index, data->count);
 		dump_stack();
 	}
 
@@ -768,8 +770,8 @@ static struct page *alloc_get_page(struct replayfs_diskalloc *alloc, loff_t offs
 	data->count++;
 
 	if (replayfs_print_leaks && data->count > 7) {
-		printk("%s %d: Warning it appears page %lu is leaking, doing stack dump\n",
-				__func__, __LINE__, data->page->index);
+		printk("%s %d: Warning it appears page %lu is leaking (count %d), doing stack dump\n",
+				__func__, __LINE__, data->page->index, data->count);
 		dump_stack();
 	}
 
@@ -795,11 +797,12 @@ static struct page *alloc_get_page(struct replayfs_diskalloc *alloc, loff_t offs
 	if (replayfs_print_leaks) {
 		struct timespec tv = CURRENT_TIME_SEC;
 		if (tv.tv_sec - last_print_time.tv_sec > 30) {
-			u64 key;
-			struct page_data *btree_data;
+			//u64 key;
+			//struct page_data *btree_data;
 			printk("%s %d: Alloc leak check, currently out %d pages\n", __func__, __LINE__, atomic_read(&gets) - atomic_read(&puts));
 			last_print_time = tv;
 
+			/*
 			mutex_lock(&crappy_pagecache_lock);
 			printk("%s %d: Now listing all alloc'ed pages!\n", __func__, __LINE__);
 			btree_for_each_safe64(&crappy_pagecache, key, btree_data) {
@@ -810,6 +813,7 @@ static struct page *alloc_get_page(struct replayfs_diskalloc *alloc, loff_t offs
 				}
 			}
 			mutex_unlock(&crappy_pagecache_lock);
+			*/
 		}
 	}
 
@@ -1118,6 +1122,7 @@ struct replayfs_diskalloc *replayfs_diskalloc_init(struct file *filp) {
 static void alloc_put(struct replayfs_diskalloc *alloc) {
 	allocref_debugk("%s %d: About to dec alloc %p to %d\n", __func__, __LINE__,
 			alloc, atomic_read(&alloc->refcnt)-1);
+
 	if (atomic_dec_and_test(&alloc->refcnt)) {
 		allocref_debugk("%s %d: Putting alloc->filp %p\n", __func__, __LINE__, alloc->filp);
 		allocref_dump_stack();
@@ -2015,6 +2020,8 @@ struct page *replayfs_diskalloc_alloc_page(struct replayfs_diskalloc *alloc) {
 		BUG();
 	}
 
+	alloc_min_debugk("%s %d: Alloc'd page %lu\n", __func__, __LINE__, page->index);
+
 	mutex_unlock(&alloc->lock);
 	return page;
 }
@@ -2027,7 +2034,7 @@ void replayfs_diskalloc_free_page_noput(struct replayfs_diskalloc *alloc,
 	/* Undo the magic */
 	atomic_dec(&diskalloc_num_blocks);
 	mark_free(alloc, (loff_t)page->index);
-	alloc_debugk("%s %d: Freed page: %lu\n", __func__, __LINE__, page->index);
+	alloc_min_debugk("%s %d: Freed page: %lu\n", __func__, __LINE__, page->index);
 	//alloc_dump_stack();
 
 	mutex_unlock(&alloc->lock);
@@ -2041,7 +2048,7 @@ void replayfs_diskalloc_free_page(struct replayfs_diskalloc *alloc,
 	/* Undo the magic */
 	atomic_dec(&diskalloc_num_blocks);
 	mark_free(alloc, (loff_t)page->index);
-	alloc_debugk("%s %d: Freed page: %lu\n", __func__, __LINE__, page->index);
+	alloc_min_debugk("%s %d: Freed page: %lu\n", __func__, __LINE__, page->index);
 	//alloc_dump_stack();
 
 	//mutex_lock(&crappy_pagecache_lock);
