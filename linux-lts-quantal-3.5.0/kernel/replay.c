@@ -3867,6 +3867,7 @@ int fork_replay (char __user* logdir, const char __user *const __user *args, con
 	// Save reduced-size checkpoint with info needed for exec
 	retval = replay_checkpoint_to_disk (ckpt, filename, argbuf, argbuflen, 0);
 #endif
+	DPRINT ("replay_checkpoint_to_disk returns %ld\n", retval);
 	if (retval) {
 		printk ("replay_checkpoint_to_disk returns %ld\n", retval);
 		return retval;
@@ -3874,7 +3875,10 @@ int fork_replay (char __user* logdir, const char __user *const __user *args, con
 
 	// Hack to support multiple glibcs - record and LD_LIBRARY_PATH info
 	prg->rg_libpath = get_libpath (env);
-	if (prg->rg_libpath == NULL) return -EINVAL;
+	if (prg->rg_libpath == NULL) {
+		printk ("fork_replay: libpath not found\n");
+		return -EINVAL;
+	}
 
 	retval = record_execve (filename, args, env, get_pt_regs (NULL));
 	if (retval) printk ("fork_replay: execve returns %ld\n", retval);
@@ -4193,12 +4197,14 @@ static int defer_signal (struct record_thread* prt, int signr, siginfo_t* info)
 	struct repsignal* psignal = KMALLOC(sizeof(struct repsignal), GFP_ATOMIC); 
 	if (psignal == NULL) {
 		SIGPRINT ("Cannot allocate replay signal\n");
+		printk ("defer_signal 0\n");
 		return 0;  // Replay broken - but might as well let recording proceed
 	}
 	psignal->signr = signr;
 	memcpy (&psignal->info, info, sizeof(siginfo_t));
 	psignal->next = prt->rp_signals;
 	prt->rp_signals = psignal;
+	printk ("defer_signal: -1\n");
 	return -1;
 }
 
@@ -4212,11 +4218,13 @@ check_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 	int ignore_flag;
 	int sysnum = syscall_get_nr(current, get_pt_regs(NULL));
 	struct syscall_result* psr;
+	printk ("begin check_signal_delivery\n");
 
 	if (prt->rp_in_ptr == 0) {
 		SIGPRINT ("Pid %d - no syscall records yet - signal %d\n", current->pid, signr);
 		if (sig_fatal(current, signr)) {
 			SIGPRINT ("Fatal signal sent w/o recording - replay broken?\n");
+			printk ("end check_signal_delivery - fatal w/o recording\n");
 			return 0; 
 		}
 		return defer_signal (prt, signr, info);
@@ -4225,6 +4233,7 @@ check_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 
 	if (prt->rp_ignore_flag_addr) {
 		get_user (ignore_flag, prt->rp_ignore_flag_addr);
+		printk ("ignore_flag is %d\n", ignore_flag);
 	} else {
 		ignore_flag = 0;
 	}
@@ -4233,6 +4242,7 @@ check_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 		  current->pid, signr, sig_fatal(current, signr), atomic_read(prt->rp_precord_clock), ignore_flag, sysnum, psr->sysnum, ka->sa.sa_handler);
 
 	if (ignore_flag && sysnum >= 0) {
+		printk ("end check_signal_delivery\n");
 		return 0;
 	} else if (!sig_fatal(current,signr) && sysnum != psr->sysnum && sysnum != 0 /* restarted syscall */) {
 		// This is an unrecorded system call or a trap.  Since we cannot guarantee that the signal will not delivered
@@ -4241,6 +4251,7 @@ check_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 		SIGPRINT ("Pid %d: not a safe place to record a signal - syscall is %d but last recorded syscall is %d ignore flag %d\n", current->pid, sysnum, psr->sysnum, ignore_flag);
 		return defer_signal (prt, signr, info);
 	}
+	printk ("end check_signal_delivery\n");
 	return 0; // Will handle this signal later
 }
 
@@ -5523,6 +5534,7 @@ sys_pthread_init (int __user * status, u_long record_hook, u_long replay_hook)
 	} else if (current->replay_thrd) {
 		struct replay_thread* prt = current->replay_thrd;
 		put_user (2, status);
+
 		prt->rp_replay_hook = replay_hook;
 		DPRINT ("pid %d sets replay hook %lx\n", current->pid, replay_hook);
 	} else {
@@ -6891,7 +6903,6 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 	int err;
 #endif
 #ifdef LOG_COMPRESS
-	int reg_file = 0;
 	int shift_clock = 1;
 #endif
 
@@ -7114,26 +7125,22 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 	//printk("%s %d: In else? of macro?\n", __func__, __LINE__);
 	perftimer_start(read_cache_timer);
 	is_cache_file = is_record_cache_file_lock(current->record_thrd->rp_cache_files, fd);
-#ifdef LOG_COMPRESS
-	reg_file = is_cache_file;
-#endif
-	rc = sys_read (fd, buf, count);
-#ifdef TIME_TRICK
-	if (rc <= 0) {
-		shift_clock = 0;
-	}
-#endif
 
-#ifdef LOG_COMPRESS
-	if(rc == count && reg_file)
-		cnew_syscall_done (3, rc, count, shift_clock);
-	else
-		new_syscall_done (3, rc);
-#else
 	perftimer_stop(read_cache_timer);
 	perftimer_start(read_sys_timer);
 	rc = sys_read (fd, buf, count);
 	perftimer_stop(read_sys_timer);
+
+#ifdef TIME_TRICK
+	if (rc <= 0) shift_clock = 0;
+#endif
+
+#ifdef LOG_COMPRESS
+	if(rc == count && is_cache_file)
+		cnew_syscall_done (3, rc, count, shift_clock);
+	else
+		new_syscall_done (3, rc);
+#else
 	new_syscall_done (3, rc);
 #endif
 #endif
