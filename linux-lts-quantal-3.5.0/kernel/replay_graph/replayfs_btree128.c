@@ -50,11 +50,9 @@
 #include "replayfs_diskalloc.h"
 #include "replayfs_kmap.h"
 
-/*
 #define REPLAYFS_BTREE128_DEBUG
 
 #define REPLAYFS_BTREE128_VERIFY
-*/
 
 #ifdef REPLAYFS_BTREE128_VERIFY
 extern struct mutex glbl_debug_lock;
@@ -686,6 +684,12 @@ static void check_tree_internal(struct replayfs_btree128_head *head, struct page
 
 	check_debugk("%s %d: Have node of {%lu, %d} (%p), level is %d, height is %d\n", __func__, __LINE__,
 			node->index, head->allocator->allocnum, node, level, head->height);
+	if (last_key != NULL) {
+		check_debugk("%s %d: Last key is {%llu, %llu}\n", __func__, __LINE__,
+				last_key->id1, last_key->id2);
+	}
+
+	BUG_ON(level == head->height && last_key != NULL);
 
 	if (level > 1) {
 		for (i = 0; i < geo->no_pairs; i++) {
@@ -707,9 +711,10 @@ static void check_tree_internal(struct replayfs_btree128_head *head, struct page
 				check_tree_internal(head, new_node, new_node_data, level-1, key);
 
 				bval_put(head, new_node);
+
+				fill_key = key;
 			} else {
 				BUG_ON(i == 0);
-				fill_key = key;
 				break;
 			}
 		}
@@ -742,9 +747,10 @@ static void check_tree_internal(struct replayfs_btree128_head *head, struct page
 		fill_key = pk;
 	}
 
+	BUG_ON(level == head->height && last_key != NULL);
 	if (last_key != NULL && fill_key != NULL) {
-		check_debugk("%s %d: Level %d fill_key {%llu, %llu}, last_key {%llu, %llu}\n",
-				__func__, __LINE__, level, fill_key->id1, fill_key->id2,
+		check_debugk("%s %d: Level %d (height %d) fill_key {%llu, %llu}, last_key {%llu, %llu}\n",
+				__func__, __LINE__, level, head->height, fill_key->id1, fill_key->id2,
 				last_key->id1, last_key->id2);
 
 		BUG_ON(rpkeycmp(fill_key, last_key) < 0);
@@ -762,7 +768,7 @@ static void check_tree(struct replayfs_btree128_head *head) {
 	node = get_head_page(head, &node_data);
 
 	debugk("%s %d: Scanning tree %p\n", __func__, __LINE__, head);
-	debug_dump_stack();
+	//debug_dump_stack();
 
 	check_tree_internal(head, node, node_data, head->height, NULL);
 
@@ -808,9 +814,11 @@ struct replayfs_btree128_value *replayfs_btree128_lookup(
 		debugk("%s %d: On non-leaf node (key is {%llu, %llu})!\n", __func__,
 				__LINE__, pos->id1, pos->id2);
 		for (i = 0; i < replayfs128_geo.no_pairs; i++) {
+			/*
 			debugk("%s %d: Checking against {%llu, %llu}\n", __func__, __LINE__, 
 					bkey(&replayfs128_geo, node_data, i)->id1,
 					bkey(&replayfs128_geo, node_data, i)->id2);
+					*/
 			if (valkeycmp(&replayfs128_geo, node_data, i, pos) <= 0) {
 				debugk("%s %d: Match!\n", __func__, __LINE__);
 				break;
@@ -847,9 +855,11 @@ struct replayfs_btree128_value *replayfs_btree128_lookup(
 	debugk("%s %d: Base key is {%llu, %llu}\n", __func__, __LINE__, pos->id1, pos->id2);
 	for (i = 0; i < replayfs128_geo.no_pairs; i++) {
 		int cmpval;
+		/*
 		debugk("%s %d: Comparing to key {%llu, %llu}\n", __func__, __LINE__,
 				bkey(&replayfs128_geo, node_data, i)->id1,
 				bkey(&replayfs128_geo, node_data, i)->id2);
+				*/
 
 		cmpval = valkeycmp(&replayfs128_geo, node_data, i, pos);
 		if (cmpval == 0) {
