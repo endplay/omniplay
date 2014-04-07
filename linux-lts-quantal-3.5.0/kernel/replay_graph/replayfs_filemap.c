@@ -40,12 +40,14 @@ static struct perftimer *write_in_tmr;
 static struct perftimer *filemap_init_tmr;
 static struct perftimer *filemap_init_lookup_tmr;
 static struct perftimer *filemap_init_tree_init_tmr;
+static struct perftimer *filemap_init_tree_create_tmr;
 
 int replayfs_filemap_glbl_init(void) {
 	write_in_tmr = perftimer_create("Time in Write", "Filemap");
 	filemap_init_tmr = perftimer_create("filemap_init", "Filemap");
 	filemap_init_lookup_tmr = perftimer_create("filemap_init, btree128_lookup", "Filemap");
 	filemap_init_tree_init_tmr = perftimer_create("filemap_init, btree_init", "Filemap");
+	filemap_init_tree_create_tmr = perftimer_create("filemap_init, btree_create", "Filemap");
 
 	return 0;
 }
@@ -318,6 +320,7 @@ int replayfs_filemap_init(struct replayfs_filemap *map,
 	perftimer_start(filemap_init_lookup_tmr);
 	disk_pos = replayfs_btree128_lookup(&filemap_meta_tree, &key, &page);
 	perftimer_stop(filemap_init_lookup_tmr);
+
 	/*
 	if (disk_pos != NULL) {
 		printk("%s %d: Found!\n", __func__, __LINE__);
@@ -349,7 +352,9 @@ int replayfs_filemap_init(struct replayfs_filemap *map,
 		debugk("%s %d: ----Creating btree for file %.*s\n", __func__, __LINE__,
 				filp->f_dentry->d_name.len, filp->f_dentry->d_name.name);
 		/* Save the location of the btree entry metadata in the meta btree */
+		perftimer_start(filemap_init_tree_create_tmr);
 		ret = replayfs_filemap_create(map, alloc, &key, NULL);
+		perftimer_stop(filemap_init_tree_create_tmr);
 		debugk("%s %d: ----Btree created at %lld\n", __func__, __LINE__,
 				map->entries.meta_loc);
 		meta_lock_debugk("%s %d - %p: Unlocking %p\n", __func__, __LINE__, current,
