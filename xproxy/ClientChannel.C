@@ -88,9 +88,9 @@ void ClientChannel::getNextRequest() {
 #ifdef CONVERT
 bool ClientChannel::hasBufferredMessage () {
 	if (readBuffer_.getLength())
-		return true;
-	else 
-		return false;
+	return true;
+	else
+	return false;
 }
 #endif
 
@@ -102,10 +102,10 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 #endif
 #ifdef CONVERT
 	if (!readBuffer_.doRead() && readBuffer_.getLength() == 0)
-		return 0;
+	return 0;
 #else
 	if (!readBuffer_.doRead())
-	return 0;
+		return 0;
 #endif
 
 	unsigned char *buffer;
@@ -130,23 +130,26 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 #ifndef FILE_REPLAY
 			//replay
 			try {
-				replayBuffer = new unsigned char[size];
-				//dummy read for file replay mode
-				logFile_.read ((char*)replayBuffer, sizeof (unsigned int) *2);
-				//real read
-				logFile_.read((char*)replayBuffer, size);
-				if (memcmp(buffer, replayBuffer, size) != 0) {
-					cout << " Different request message with recording! error"
-					<<endl;
-					cout <<"		From log:";
-					for (unsigned int i = 0; i < size; ++i)
-					cout <<(unsigned int) replayBuffer[i] <<",";
-					cout <<endl;
-					cout <<"		From x server:";
-					for (unsigned int i = 0; i < size; ++i)
-					cout <<(unsigned int) buffer[i] <<",";
-					cout <<endl;
-					detailedCompare (replayBuffer, size, buffer, size);
+
+				if (PRINT_DEBUG) {
+					replayBuffer = new unsigned char[size];
+					//dummy read for file replay mode
+					logFile_.read ((char*)replayBuffer, sizeof (unsigned int) *2);
+					//real read
+					logFile_.read((char*)replayBuffer, size);
+					if (memcmp(buffer, replayBuffer, size) != 0) {
+						cout << " Different request message with recording! error"
+						<<endl;
+						cout <<"		From log:";
+						for (unsigned int i = 0; i < size; ++i)
+						cout <<(unsigned int) replayBuffer[i] <<",";
+						cout <<endl;
+						cout <<"		From x server:";
+						for (unsigned int i = 0; i < size; ++i)
+						cout <<(unsigned int) buffer[i] <<",";
+						cout <<endl;
+						detailedCompare (replayBuffer, size, buffer, size);
+					}
 				}
 
 			} catch (fstream::failure e) {
@@ -158,10 +161,12 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 			try {
 				//#ifdef FILE_REPLAY
 				//recording into file
-				logFile_.write((char*)(outputLength_), sizeof (unsigned int));
-				logFile_.write ((char*)&size, sizeof (unsigned int));
-				//#endif
-				logFile_.write ((char*)buffer, size);
+				if (PRINT_DEBUG) {
+					logFile_.write((char*)(outputLength_), sizeof (unsigned int));
+					logFile_.write ((char*)&size, sizeof (unsigned int));
+					//#endif
+					logFile_.write ((char*)buffer, size);
+				}
 
 			} catch (fstream::failure e) {
 				cerr << "Exception writing files in ClientChannel.c"<<endl;
@@ -180,7 +185,8 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				encodeBuffer.encodeValue((unsigned int) buffer[i], 8);
 			}
 			firstRequest_ = 0;
-			cout<< "first request, size:"<<size<<endl;
+			if (PRINT_DEBUG)
+				cout<< "first request, size:"<<size<<endl;
 			if (convert_log) {
 				//put a dummy sequence number for converting log mode
 				sequenceNumQueue_.push(0, 1);
@@ -195,9 +201,10 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					bigEndian_) == 3)) {
 				opcode = X_NoOperation;
 			}
-			cout <<"request  opcode:"<<(unsigned int)opcode<<"  sequence:"
-					<<clientCache_.lastRequestSequenceNum<<"  size:"<<size
-					<<endl;
+			if (PRINT_DEBUG)
+				cout <<"request  opcode:"<<(unsigned int)opcode<<"  sequence:"
+						<<clientCache_.lastRequestSequenceNum<<"  size:"<<size
+						<<endl;
 
 			encodeBuffer.encodeCachedValue(opcode, 8, clientCache_.
 			opcodeCache[clientCache_.
@@ -376,6 +383,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				convertSelectionLastTimestamp, 32, 4);
 				clientCache_.convertSelectionLastTimestamp = timestamp;
 				cout << "not compressed (error message)"<<endl;
+				if (!PRINT_DEBUG) printString (buffer, size);
 				printMessage(buffer, size, 8, 1, 1+MAGIC_SIZE, 2, 4, 4, 4, 4, 4);
 			}
 				break;
@@ -733,8 +741,9 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 						outOfRange = 1;
 						if (window != idMap->getOldRootWindow()) {
 							// we should send a dummy request to x server
-							cout <<"GetProperty before dummy modification"
-									<<endl;
+							if (PRINT_DEBUG)
+								cout <<"GetProperty before dummy modification"
+										<<endl;
 							printMessage(buffer, size, 8, 1, 1, 2, 4, 4, 4, 4,
 									4);
 							buffer[1] = 0;
@@ -745,7 +754,8 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 							PutULONG(0, buffer + 16, bigEndian_);
 							PutULONG(0, buffer + 20, bigEndian_);
 						} else {
-							cout <<"GetProperty on root window."<<endl;
+							if (PRINT_DEBUG)
+								cout <<"GetProperty on root window."<<endl;
 							PutULONG(idMap->getNewRootWindow(), buffer+4,
 									bigEndian_);
 						}
@@ -764,7 +774,8 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 						outOfRange = 1;
 				}
 				if (outOfRange) {
-					cout <<" GetProperty: window is out of range."<<endl;
+					if (PRINT_DEBUG)
+						cout <<" GetProperty: window is out of range."<<endl;
 				}
 				sequenceNumQueue_.push(clientCache_.
 				lastRequestSequenceNum, opcode, outOfRange);
@@ -879,10 +890,12 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				lastRequestSequenceNum, opcode);
 				printMessage(buffer, size, 7, 1, 1, 2, 2, 2+MAGIC_SIZE,
 						nameLength, -1);
-				cout <<"********InternAtom request********"<<endl;
-				for (unsigned i = 0; i < nameLength; ++i)
-					cout << (char) buffer[8+i];
-				cout <<endl;
+				if (PRINT_DEBUG) {
+					cout <<"********InternAtom request********"<<endl;
+					for (unsigned i = 0; i < nameLength; ++i)
+						cout << (char) buffer[8+i];
+					cout <<endl;
+				}
 			}
 				break;
 			case X_ListExtensions: {
@@ -971,13 +984,15 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					unsigned int newWindow;
 					if (idMap->checkRangeOld(window) == false) {
 						//The window may not exist any more
-						if (window != idMap->getOldRootWindow())
-							cout
-									<<"QueryTree is modified to query on root window instead."
-									<<endl;
-						else
-							cout <<"QueryTree queries on root window."<<endl;
-
+						if (PRINT_DEBUG) {
+							if (window != idMap->getOldRootWindow())
+								cout
+										<<"QueryTree is modified to query on root window instead."
+										<<endl;
+							else
+								cout <<"QueryTree queries on root window."
+										<<endl;
+						}
 						PutULONG(idMap->getNewRootWindow(), buffer + 4,
 								bigEndian_);
 					} else {
@@ -1269,7 +1284,8 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 						outOfRange = 1;
 				}
 				if (outOfRange) {
-					cout <<"QueryColors queries on outside colormap."<<endl;
+					if (PRINT_DEBUG)
+						cout <<"QueryColors queries on outside colormap."<<endl;
 				}
 
 				sequenceNumQueue_.push(clientCache_.
@@ -1289,11 +1305,13 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					encodeBuffer.encodeValue((unsigned int) *nextSrc++, 8);
 				int hideExtension = 0;
 				if (!strncmp((char *) buffer + 8, "MIT-SHM", 7)) {
-					cout << "hiding MIT-SHM!"<<endl;
+					if (PRINT_DEBUG)
+						cout << "hiding MIT-SHM!"<<endl;
 					hideExtension = 1;
 				}
 				if (!strncmp((char*) buffer + 8, "RANDR", 5)) {
-					cout << "hiding xrandr!"<<endl;
+					if (PRINT_DEBUG)
+						cout << "hiding xrandr!"<<endl;
 					hideExtension = 1;
 				}
 
@@ -1445,12 +1463,14 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				}
 					break;
 				default: {
-					cout <<"          *** not compressed"<<endl;
+					if (PRINT_DEBUG)
+						cout <<"          *** not compressed"<<endl;
 				}
 				}
 				printMessage(buffer, size, 6, 1, 1, 2, 4, 4, 32);
-				cout <<" event included in sendEvent request: opcode:"
-						<<(unsigned int)buffer[12]<<endl;
+				if (PRINT_DEBUG)
+					cout <<" event included in sendEvent request: opcode:"
+							<<(unsigned int)buffer[12]<<endl;
 			}
 				break;
 			case X_GetImage: {
@@ -1513,7 +1533,8 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 			case XE_XINERAMA:
 			case XE_DRI2:
 			case XE_SGI_GLX: {
-				cout <<"          *** not compressed"<<endl;
+				if (PRINT_DEBUG)
+					cout <<"          *** not compressed"<<endl;
 				printMessage(buffer, size, 3, 1, 1, 2);
 				encodeBuffer.encodeValue((unsigned int) buffer[1], 8);
 				encodeBuffer.encodeValue(GetUINT(buffer + 2, bigEndian_), 16, 8);
@@ -1543,7 +1564,8 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				}
 					break;
 				default: {
-					cout <<"          *** not compressed"<<endl;
+					if (PRINT_DEBUG)
+						cout <<"          *** not compressed"<<endl;
 				}
 				}
 				printMessage(buffer, size, 3, 1, 1, 2);
@@ -1576,7 +1598,8 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				}
 					break;
 				default: {
-					cout <<"          *** not compressed"<<endl;
+					if (PRINT_DEBUG)
+						cout <<"          *** not compressed"<<endl;
 				}
 				}
 				printMessage(buffer, size, 3, 1, 1, 2);
@@ -1596,7 +1619,8 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				}
 					break;
 				default: {
-					cout <<"          *** not compressed"<<endl;
+					if (PRINT_DEBUG)
+						cout <<"          *** not compressed"<<endl;
 				}
 				}
 				sequenceNumQueue_.push(clientCache_.lastRequestSequenceNum,
@@ -1617,7 +1641,8 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				}
 					break;
 				default: {
-					cout <<"          *** not compressed"<<endl;
+					if (PRINT_DEBUG)
+						cout <<"          *** not compressed"<<endl;
 				}
 				}
 				printMessage(buffer, size, 3, 1, 1, 2);
@@ -1640,7 +1665,8 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				}
 					break;
 				default: {
-					cout <<"          *** not compressed"<<endl;
+					if (PRINT_DEBUG)
+						cout <<"          *** not compressed"<<endl;
 				}
 				}
 				sequenceNumQueue_.push(clientCache_.lastRequestSequenceNum,
@@ -1667,7 +1693,8 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				}
 					break;
 				default: {
-					cout <<"          *** not compressed"<<endl;
+					if (PRINT_DEBUG)
+						cout <<"          *** not compressed"<<endl;
 				}
 				}
 				printMessage(buffer, size, 3, 1, 1, 2);
@@ -1726,7 +1753,8 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				}
 					break;
 				default: {
-					cout <<"          *** not compressed"<<endl;
+					if (PRINT_DEBUG)
+						cout <<"          *** not compressed"<<endl;
 				}
 				}
 				printMessage(buffer, size, 3, 1, 1, 2);
@@ -1833,7 +1861,8 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				}
 					break;
 				default: {
-					cout <<"          *** not compressed"<<endl;
+					if (PRINT_DEBUG)
+						cout <<"          *** not compressed"<<endl;
 					sequenceNumQueue_.push(clientCache_.
 					lastRequestSequenceNum, opcode, (unsigned int) buffer[1]);
 				}
@@ -1846,6 +1875,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				cout
 						<<"         other non-recognized request --- not compressed (error message)"
 						<<endl;
+				if (!PRINT_DEBUG) printString (buffer, size);
 				encodeBuffer.encodeValue((unsigned int) buffer[1], 8);
 				encodeBuffer.encodeValue(GetUINT(buffer + 2, bigEndian_), 16, 8);
 				const unsigned char *nextSrc = buffer + 4;
@@ -1875,10 +1905,12 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				while (eventQueue_.getEventPos() == *outputLength_) {
 					if (eventQueue_.getEventBuffer()[0] == 1)
 						break;
-					cout
-							<<"Different: Insert event message from our log, opcode:"
-							<<(unsigned int) eventQueue_.getEventBuffer()[0]<<endl;
-					printString(eventQueue_.getEventBuffer(), 32);
+					if (PRINT_DEBUG)
+						cout
+								<<"Different: Insert event message from our log, opcode:"
+								<<(unsigned int) eventQueue_.getEventBuffer()[0]<<endl;
+					if (PRINT_DEBUG)
+						printString(eventQueue_.getEventBuffer(), 32);
 #ifndef FILE_REPLAY
 					if ((unsigned int) SOCKWRITE (appFD, eventQueue_.getEventBuffer(), 32) != 32)
 						cerr << "Cannot write to application."<<endl;

@@ -24,11 +24,11 @@ EventQueue::EventQueue(char* evenFilename, char* replyFilename,
 					| ios::binary);
 			eventLogFile.exceptions(fstream::failbit | fstream::badbit);
 			eventCount = rc / 36;
-			cout <<" Event Queue init: size is:"<<eventCount<<endl;
+			if (PRINT_DEBUG) cout <<" Event Queue init: size is:"<<eventCount<<endl;
 			nextEvent();
 			--eventCount;
 		} else
-			cout <<"Different: Event log size is 0"<<endl;
+			if (PRINT_DEBUG) cout <<"Different: Event log size is 0"<<endl;
 
 		//open error log file, if any
 		rc = stat(errorFileName, &stat_buf);
@@ -39,11 +39,11 @@ EventQueue::EventQueue(char* evenFilename, char* replyFilename,
 					| ios::binary);
 			errorLogFile.exceptions(fstream::failbit | fstream::badbit);
 			errorCount = rc / 32;
-			cout <<" Error Queue init: size is:"<<errorCount<<endl;
+			if (PRINT_DEBUG) cout <<" Error Queue init: size is:"<<errorCount<<endl;
 			nextError();
 			--errorCount;
 		} else
-			cout <<"No error messages recorded."<<endl;
+			if (PRINT_DEBUG) cout <<"No error messages recorded."<<endl;
 
 		//open reply log file
 		replyLogFile.open(replyFilename, ios::in | ios::out | ios::app
@@ -154,7 +154,7 @@ void EventQueue::nextEvent() {
 	try {
 		eventLogFile.read ((char*)&eventPos, sizeof (unsigned int));
 		eventLogFile.read ((char*)eventBuffer, 32);
-		cout << "Next event in eventQueue: pos:"<<eventPos<<", opcode:"<<eventBuffer[0]<<endl;
+		if (PRINT_DEBUG) cout << "Next event in eventQueue: pos:"<<eventPos<<", opcode:"<<eventBuffer[0]<<endl;
 	} catch (fstream::failure e) {
 		cerr << "Different: Failed to read from event.log"<<endl;
 	}
