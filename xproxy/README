@@ -31,9 +31,9 @@ Make sure FILE_REPLAY and CONVERT is off in util.H in xproxy source folder befor
 	-------------------
 	Before you start to record a process with xproxy, make sure /proc/sys/kernel/x_proxy is set to 1. 
 	Run xproxy:
-		user@machine$ ./xproxy > /dev/null &
+		user@machine$ ./xproxy > log &
 
-	(Currently xproxy prints out a lot debugging information and after recording for a whole day, the debugging information will be huge. For now, I just drop all those debugging information by writing to /dev/null, and I will clean up the code or set up debugging level later on. )
+	(To enable xproxy to print debugging information, have PRINT_DEBUG in util.H on.)
 	Then set DISPLAY environment variable to be :8.0 and start recording. For example:
 		user@machine$ DISPLAY=:8.0
 		user@machine$ ./launcher <your program>
