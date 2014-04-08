@@ -12,8 +12,8 @@
 /* The number of free'd bytes in an extent before its scheduled to merge */
 #define EXTENT_FREE_SIZE (EXTENT_SIZE >> 1)
 
-/* 1GB pagealloc? */
-#define PAGE_ALLOC_SIZE (1LL<<30)
+/* 256GB pagealloc? */
+#define PAGE_ALLOC_SIZE (1LL<<38)
 #define PAGE_ALLOC_PAGES (PAGE_ALLOC_SIZE / PAGE_SIZE)
 
 /* 
