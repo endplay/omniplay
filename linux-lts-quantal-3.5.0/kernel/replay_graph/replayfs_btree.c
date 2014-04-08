@@ -60,10 +60,13 @@
 //#define REPLAYFS_BTREE_ALLOC_DEBUG
 
 extern int btree_print;
+extern int btree_print_init;
 #ifdef REPLAYFS_BTREE_DEBUG
 #define debugk(...) if (btree_print) {printk(__VA_ARGS__);}
+#define init_debugk(...) if (btree_print ||  btree_print_init) {printk(__VA_ARGS__);}
 #else
 #define debugk(...)
+#define init_debugk(...)
 #endif
 
 #ifdef REPLAYFS_BTREE_ALLOC_DEBUG
@@ -124,8 +127,6 @@ static struct page *btree_node_alloc(struct replayfs_btree_head *head, gfp_t gfp
 		}
 		debugk("%s %d: Zeroing page!\n", __func__, __LINE__);
 		memset(addr, 0, PAGE_SIZE);
-		//__set_page_dirty_nobuffers(page);
-		//SetPageDirty(page);
 		replayfs_diskalloc_page_dirty(page);
 		replayfs_kunmap(page);
 	} else {
@@ -133,7 +134,7 @@ static struct page *btree_node_alloc(struct replayfs_btree_head *head, gfp_t gfp
 				PTR_ERR(page));
 		BUG();
 	}
-	debugk("%s %d: Allocated btree head %p with page %lu\n", __func__, __LINE__,
+	init_debugk("%s %d: Allocated btree head %p with page %lu\n", __func__, __LINE__,
 			head, page->index);
 
 	return page;
@@ -455,7 +456,7 @@ static void update_meta(struct replayfs_btree_head *head) {
 
 	if (head->node_page != NULL) {
 		meta->node_page = head->node_page->index * PAGE_SIZE;
-		debugk("%s %d: Saving meta->nodepage to %lld on page %lu\n", __func__, __LINE__,
+		init_debugk("%s %d: Saving meta->nodepage to %lld on page %lu\n", __func__, __LINE__,
 				meta->node_page, page->index);
 	} else {
 		meta->node_page = 0;
@@ -482,12 +483,12 @@ int replayfs_btree_init(struct replayfs_btree_head *head,
 	page = replayfs_diskalloc_get_page(alloc, meta_loc);
 	meta = replayfs_kmap(page);
 
-	debugk("%s %d: Got meta with node_page %lld, i_size %lld\n", __func__,
+	init_debugk("%s %d: Got meta with node_page %lld, i_size %lld\n", __func__,
 			__LINE__, meta->node_page, meta->i_size);
 
 	if (meta->node_page != 0) {
 		head->node_page = replayfs_diskalloc_get_page(alloc, meta->node_page);
-		debugk("%s %d: Setting head->node_page for %p to %lu\n", __func__,
+		init_debugk("%s %d: Setting head->node_page for %p to %lu\n", __func__,
 				__LINE__, head, head->node_page->index);
 	} else {
 		head->node_page = NULL;
@@ -500,12 +501,15 @@ int replayfs_btree_init(struct replayfs_btree_head *head,
 	//mempool_create(0, btree_alloc, btree_free, NULL);
 
 	if (head->node_page != NULL) {
-		debugk("%s %d: head->node_page %lu, head->height %d\n", __func__,
+		init_debugk("%s %d: head->node_page %lu, head->height %d\n", __func__,
 				__LINE__, head->node_page->index, head->height);
 	} else {
-		debugk("%s %d: head->node_page (null), head->height %d\n", __func__,
+		init_debugk("%s %d: head->node_page (null), head->height %d\n", __func__,
 				__LINE__, head->height);
 	}
+
+	BUG_ON(head->node_page == NULL && head->height != 0);
+	BUG_ON(head->height < 0);
 
 	return 0;
 }
@@ -1408,6 +1412,10 @@ retry:
 
 			bval_put(head, tmp);
 		}
+
+		bval_put(head, node);
+		bval_put(head, new);
+
 		goto retry;
 	}
 	BUG_ON(fill >= geo->no_pairs);
