@@ -33,7 +33,7 @@
 //#define USE_HPC
 #define USE_ARGSALLOC
 #define USE_DISK_CKPT
-//#define TRACE_READ_WRITE
+#define TRACE_READ_WRITE
 //#define TRACE_PIPE_READ_WRITE
 
 //#define PRINT_STATISTICS
@@ -599,18 +599,12 @@ int main (int argc, char* argv[])
 
 							orig_pos = lseek(fd, 0, SEEK_CUR);
 							rc = read(fd, &bleh, sizeof(loff_t));
-							if (convert) {
-								copy_to_convert_buffer (convert_buffer, &convert_offset, (char*) &bleh, sizeof (loff_t));
-							}
 							rc = read(fd, &entry, sizeof(struct replayfs_filemap_entry));
 							lseek(fd, orig_pos, SEEK_SET);
 
 							if (rc != sizeof(struct replayfs_filemap_entry)) {
 								printf ("cannot read entry\n");
 								return rc;
-							}
-							if (convert) {
-								copy_to_convert_buffer (convert_buffer, &convert_offset, (char*) &entry, sizeof (struct replayfs_filemap_entry));
 							}
 							size += sizeof(struct replayfs_filemap_entry) + entry.num_elms * sizeof(struct replayfs_filemap_value);
 						} while (0);
@@ -628,9 +622,6 @@ int main (int argc, char* argv[])
 							if (rc != sizeof(struct replayfs_filemap_entry)) {
 								printf ("cannot read entry\n");
 								return rc;
-							}
-							if (convert) {
-								copy_to_convert_buffer (convert_buffer, &convert_offset, (char*) &entry, sizeof (struct replayfs_filemap_entry));
 							}
 
 							size = sizeof(struct replayfs_filemap_entry) + entry.num_elms * sizeof(struct replayfs_filemap_value);

@@ -8,7 +8,6 @@ do
 	./parseklog $rec/$f -c /dev/null > m
 	original=$(ls -l $rec/$f | awk '{print $5}')
 	new=$(ls -l $rec/$f.convert | awk '{print $5}')
-	$((save=$original-$new))
-	echo "x message size:$save  , orignal size:$original, new: $new"
+	echo "x message size: $((save=$original-$new))  , orignal size:$original, new: $new"
 	done
 done
