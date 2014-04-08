@@ -29,16 +29,12 @@
 #include <fcntl.h>
 #include <sys/resource.h>
 
-#include "replay_headers/include/linux/replay_configs.h"
-
 #define REPLAY_MAX_THREADS 16
 //#define USE_HPC
 #define USE_ARGSALLOC
 #define USE_DISK_CKPT
-
-#define TRACE_READ_WRITE
+//#define TRACE_READ_WRITE
 //#define TRACE_PIPE_READ_WRITE
-//#define TRACE_SOCKET_READ_WRITE
 
 //#define PRINT_STATISTICS
 
@@ -95,6 +91,8 @@ struct repsignal {
 #define SR_HAS_START_CLOCK_SKIP 0x4
 #define SR_HAS_STOP_CLOCK_SKIP  0x8
 #define SR_HAS_NONZERO_RETVAL   0x10
+#define SR_HAS_SPECIAL_FIRST	0x20
+#define SR_HAS_SPECIAL_SECOND	0x40
 
 struct syscall_result {
 #ifdef USE_HPC
@@ -238,6 +236,9 @@ struct splice_retvals {
 
 u_long scount[512];
 u_long bytes[512];
+u_long clock_bytes[512];
+u_long retval_bytes[512];
+u_long cut_out [512];
 
 /* grabbed from asm/stat.h - ick - cannot include */
 /* for 32bit emulation and 32 bit kernels */
@@ -290,12 +291,22 @@ struct name_to_handle_at_retvals {
 	int                mnt_id;
 };
 
-static u_long varsize (int fd, int stats, struct syscall_result* psr)
+//#define MORE_CONVERT
+int convert = 0;
+inline void copy_to_convert_buffer (char* convert_buffer, int *offset, void* src, ssize_t size) {
+	memcpy (convert_buffer + *offset, src, size);
+	*offset += size;
+}
+
+static u_long varsize (int fd, int stats, struct syscall_result* psr, char* convert_buffer, int *offset)
 {
 	u_long val;
 	if (read (fd, &val, sizeof(u_long)) != sizeof(u_long)) {
 		printf ("cannot read variable length field\n");
 		return -1;
+	}
+	if (convert) {
+		if (convert_buffer) copy_to_convert_buffer (convert_buffer, offset, &val, sizeof (u_long));
 	}
 	printf ("\t4 bytes of variable length field header included\n");
 	if (stats) {
@@ -311,6 +322,7 @@ int main (int argc, char* argv[])
 	struct syscall_result* psrs;
 	char sig[172];
 	int dfd, fd, rc, size, call, print_recv = 0, dump_recv = 0;
+	int convert_fd, x_fd = 0, connection_times = 0;
 	char buf[65536*16];
 	int count, i, ndx, rcv_total = 0;
 	int stats = 0;
@@ -319,7 +331,6 @@ int main (int argc, char* argv[])
 	int pipe_write_only = 0;
 	u_long data_size, start_clock, stop_clock, clock, expected_clock = 0;
 	long retval;
-	int extra_bytes = 0;
 	u_int is_cache_read;
 #ifdef USE_HPC
 	// calibration to determine how long a tick is
@@ -347,7 +358,7 @@ int main (int argc, char* argv[])
 	int ipc_call = 0;
 
 	if (argc < 2) {
-		printf ("format: parselog <filename> [-r] [-f] [-s]\n");
+		printf ("format: parselog <filename> [-r] [-f] [-s] [-c]\n");
 		return -1;
 	}
 	if (argc == 3 && !strcmp(argv[2], "-r")) print_recv = 1;
@@ -355,6 +366,7 @@ int main (int argc, char* argv[])
 	if (argc == 3 && !strcmp(argv[2], "-s")) stats = 1;
 	if (argc == 3 && !strcmp(argv[2], "-g")) graph_only = 1;
 	if (argc == 3 && !strcmp(argv[2], "-p")) pipe_write_only = 1;
+	if (argc == 4 && !strcmp(argv[2], "-c")) convert = 1;
 
 	if (stats) {
 		memset (scount, 0, sizeof(scount));
@@ -375,7 +387,27 @@ int main (int argc, char* argv[])
 		}
 	}
 
+	if (convert) {
+		char convert_filename[1024];
+		memset (convert_filename, 0, 1024);
+		sprintf (convert_filename, "%s.convert", argv[1]);
+		convert_fd = open (convert_filename, O_RDWR | O_TRUNC | O_CREAT, 0644);
+	}
+	char* x_buffer = NULL;
+	int x_buffer_length = 0;
+	int x_buffer_size = 4096;
+	int x_first_time = 1;
+	int x_request_pos = 0;
+	if (convert) {
+		x_buffer = malloc (x_buffer_size);
+	}
+
+
 	while (1) {
+		int xbytes_count = 0;
+		char* convert_buffer = NULL;
+		int convert_offset = 0;
+
 #ifdef USE_HPC
 		rc = read (fd, &hpc1, sizeof(unsigned long long));
 		if (rc == 0) { // should have reached the end of the log(s) here
@@ -384,9 +416,15 @@ int main (int argc, char* argv[])
 		rc = read (fd, &tv1, sizeof(struct timeval));
 		rc = read (fd, &hpc2, sizeof(unsigned long long));
 		rc = read (fd, &tv2, sizeof(struct timeval));
+		if (convert) {
+			rc = write (convert_fd, (char*) &hpc1, sizeof (unsigned long long));
+			rc = write (convert_fd, (char*) &tv1, sizeof(struct timeval));
+			rc = write (convert_fd, (char*) &hpc2, sizeof(unsigned long long));
+			rc = write (convert_fd, (char*) &tv2, sizeof(struct timeval));
+		}
 		double usecs1 = (double)tv1.tv_sec * 1000000 + (double)tv1.tv_usec;
 		double usecs2 = (double)tv2.tv_sec * 1000000 + (double)tv2.tv_usec;
-                printf ("%Lu ticks = %f usecs\n", hpc1, usecs1);
+		printf ("%Lu ticks = %f usecs\n", hpc1, usecs1);
 		printf ("%Lu ticks = %f usecs\n", hpc2, usecs2);
 #endif
 
@@ -400,7 +438,14 @@ int main (int argc, char* argv[])
 			printf ("read returns %d, expected %d, errno = %d\n", rc, sizeof(count), errno);
 			return rc;
 		}
-		
+		if (convert) {
+			rc = write (convert_fd, (char*) &count, sizeof (count));
+			if (rc != sizeof (count)) {
+				printf ("write returns %d, expected %d, errno = %d\n", rc, sizeof(count), errno);
+				return rc;
+			}
+		}
+
 		psrs = malloc (sizeof(struct syscall_result)*count);
 		if (!psrs) {
 			printf ("Cound not malloc %d bytes\n", sizeof(struct syscall_result)*count);
@@ -412,10 +457,23 @@ int main (int argc, char* argv[])
 			printf ("read of psrs returns %d, expected %d, errno = %d\n", rc, sizeof(struct syscall_result)*count, errno);
 			return rc;
 		}
+		if (convert) {
+			rc = write (convert_fd, (char*)psrs, sizeof (struct syscall_result)*count);
+			if (rc != sizeof (struct syscall_result)*count) {
+				printf ("write returns %d, expected %d, errno = %d\n", rc, sizeof(struct syscall_result)*count, errno);
+				return rc;
+			}
+		}
 		rc = read (fd, &data_size, sizeof(data_size));
 		if (rc != sizeof(data_size)) {
 			printf ("read returns %d, expected %d, errno = %d\n", rc, sizeof(data_size), errno);
 			return rc;
+		}
+		if (convert) {
+			//alloc the write buffer now
+			convert_buffer = malloc (sizeof (data_size) + data_size);
+			copy_to_convert_buffer (convert_buffer, &convert_offset, &data_size, sizeof (data_size));
+
 		}
 		for (ndx = 0; ndx < count; ndx++) {
 			psr = psrs[ndx];
@@ -433,6 +491,15 @@ int main (int argc, char* argv[])
 				}
 				start_clock += clock;
 				bytes[psr.sysnum] += sizeof(u_long);
+				clock_bytes[psr.sysnum] += sizeof(u_long);
+#ifdef MORE_CONVERT
+				//don't copy
+				cut_out[1] += sizeof(u_long);
+#else
+				if (convert) {
+					copy_to_convert_buffer (convert_buffer, &convert_offset, (char*) &clock, sizeof (u_long));
+				}
+#endif
 			}
 			expected_clock = start_clock+1;
 
@@ -444,6 +511,15 @@ int main (int argc, char* argv[])
 					printf ("cannot read return value\n");
 					return rc;
 				}
+				bytes[psr.sysnum] += sizeof (long);
+				retval_bytes[psr.sysnum] += sizeof (long);
+#ifdef MORE_CONVERT
+				cut_out[2] += sizeof(long);
+#else
+				if (convert) {
+					copy_to_convert_buffer (convert_buffer, &convert_offset, (char*) &retval, sizeof (long));
+				}
+#endif
 			}
 
 			stop_clock = expected_clock;
@@ -455,6 +531,14 @@ int main (int argc, char* argv[])
 				}
 				stop_clock += clock;
 				bytes[psr.sysnum] += sizeof(u_long);
+				clock_bytes[psr.sysnum] += sizeof (u_long);
+#ifdef MORE_CONVERT
+				cut_out[3] +=sizeof (u_long);
+#else
+				if (convert) {
+					copy_to_convert_buffer (convert_buffer, &convert_offset, (char*) &clock, sizeof (clock));
+				}
+#endif
 			}
 			expected_clock = stop_clock+1;
 
@@ -465,6 +549,31 @@ int main (int argc, char* argv[])
 #endif
 			printf ("\n");
 
+			if (psr.flags & SR_HAS_SPECIAL_SECOND && psr.sysnum == 146) {
+				if (x_first_time) {
+					x_first_time = 0;
+					x_request_pos = 0;
+				} else {
+					if (x_fd > 0) {
+						rc = write (x_fd, (char*) &x_request_pos, sizeof (x_request_pos));
+						if (rc != sizeof (x_request_pos)) {
+							printf ("cannot write out x_request_pos\n");
+						}	
+						rc = write (x_fd, (char*) &x_buffer_length, sizeof (x_buffer_length));
+						if (rc != sizeof (x_buffer_length)) {
+							printf ("cannot write out x_buffer_length\n");
+						}						
+						rc = write (x_fd, x_buffer, x_buffer_length);
+						if (rc != x_buffer_length) 
+							printf ("cannot write out x_buffer\n");
+						printf ("write out %d bytes x messages, pos:%d\n", x_buffer_length, x_request_pos);
+						x_buffer_length = 0;
+					}
+				}
+				x_request_pos += retval;
+			}
+			
+
 			if ((psr.flags & SR_HAS_RETPARAMS) != 0) {
 				switch (psr.sysnum) {
 				case 3: {
@@ -473,6 +582,10 @@ int main (int argc, char* argv[])
 						printf ("cannot read is_cache value\n");
 						return rc;
 					}
+					if (convert) {
+						copy_to_convert_buffer (convert_buffer, &convert_offset, (char*) &is_cache_read, sizeof (u_int));
+					}
+
 					printf ("\tis_cache_file: %d\n", is_cache_read);
 					if (is_cache_read & CACHE_MASK) {
 
@@ -486,6 +599,9 @@ int main (int argc, char* argv[])
 
 							orig_pos = lseek(fd, 0, SEEK_CUR);
 							rc = read(fd, &bleh, sizeof(loff_t));
+							if (convert) {
+								copy_to_convert_buffer (convert_buffer, &convert_offset, (char*) &bleh, sizeof (loff_t));
+							}
 							rc = read(fd, &entry, sizeof(struct replayfs_filemap_entry));
 							lseek(fd, orig_pos, SEEK_SET);
 
@@ -493,8 +609,9 @@ int main (int argc, char* argv[])
 								printf ("cannot read entry\n");
 								return rc;
 							}
-
-							extra_bytes += sizeof(struct replayfs_filemap_entry) + entry.num_elms * sizeof(struct replayfs_filemap_value);
+							if (convert) {
+								copy_to_convert_buffer (convert_buffer, &convert_offset, (char*) &entry, sizeof (struct replayfs_filemap_entry));
+							}
 							size += sizeof(struct replayfs_filemap_entry) + entry.num_elms * sizeof(struct replayfs_filemap_value);
 						} while (0);
 #endif
@@ -511,6 +628,9 @@ int main (int argc, char* argv[])
 							if (rc != sizeof(struct replayfs_filemap_entry)) {
 								printf ("cannot read entry\n");
 								return rc;
+							}
+							if (convert) {
+								copy_to_convert_buffer (convert_buffer, &convert_offset, (char*) &entry, sizeof (struct replayfs_filemap_entry));
 							}
 
 							size = sizeof(struct replayfs_filemap_entry) + entry.num_elms * sizeof(struct replayfs_filemap_value);
@@ -536,8 +656,8 @@ int main (int argc, char* argv[])
 				case 28: size = sizeof(struct __old_kernel_stat); break;
 				case 42: size = 2*sizeof(int); break;
 				case 43: size = sizeof(struct tms); break;
-				case 54: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
-				case 55: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
+				case 54: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size; break;
+				case 55: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size; break;
 				case 59: size = sizeof(struct oldold_utsname); break;
 				case 62: size = sizeof(struct ustat); break;
 				case 67: size = sizeof(struct sigaction); break;
@@ -545,7 +665,7 @@ int main (int argc, char* argv[])
 				case 76: size = sizeof(struct rlimit); break;
 				case 77: size = sizeof(struct rusage); break;
 				case 78: size = sizeof(struct gettimeofday_retvals); break;
-			        case 80: size = sizeof(u_short)*retval; break;
+				case 80: size = sizeof(u_short)*retval; break;
 				case 84: size = sizeof(struct __old_kernel_stat); break;
 				case 85: size = retval; break;
 				case 86: size = sizeof(struct mmap_pgoff_retvals); break;
@@ -557,6 +677,13 @@ int main (int argc, char* argv[])
 					if (rc != sizeof(int)) {
 						printf ("cannot read call value\n");
 						return rc;
+					}
+					if (convert) {
+#ifdef MORE_CONVERT
+						//do nothing
+#else
+						copy_to_convert_buffer (convert_buffer, &convert_offset, (char*) &call, sizeof (int));
+#endif
 					}
 					if (stats) {
 						bytes[psr.sysnum] += sizeof(int);
@@ -573,6 +700,9 @@ int main (int argc, char* argv[])
 						if (rc != sizeof(struct accept_retvals) - sizeof(int)) {
 							printf ("cannot read accept value\n");
 							return rc;
+						}
+						if (convert) {
+							copy_to_convert_buffer (convert_buffer, &convert_offset, ((char *) &avr) + sizeof(int), sizeof(struct accept_retvals) - sizeof(int));
 						}
 						if (stats) {
 							bytes[psr.sysnum] += sizeof(struct accept_retvals) - sizeof(int);
@@ -593,6 +723,9 @@ int main (int argc, char* argv[])
 							printf ("cannot read recvfrom values\n");
 							return rc;
 						}
+						if (convert) {
+							copy_to_convert_buffer (convert_buffer, &convert_offset, ((char *)&msg) + sizeof(int), sizeof(struct recvmsg_retvals) - sizeof(int));
+						}
 						printf ("\trecvmsg: msgnamelen %d msg_controllen %ld msg_flags %x\n", msg.msg_namelen, msg.msg_controllen, msg.msg_flags);
 						if (stats) {
 							bytes[psr.sysnum] += sizeof(struct recvfrom_retvals) - sizeof(int);
@@ -607,6 +740,9 @@ int main (int argc, char* argv[])
 							if (rc != sizeof(long)) {
 								printf ("cannot read recvmmsg value\n");
 								return rc;
+							}
+							if (convert) {
+								copy_to_convert_buffer (convert_buffer, &convert_offset, (char*) &len, sizeof (long));
 							}
 							if (stats) bytes[psr.sysnum] += sizeof(long);
 							size = len;
@@ -626,11 +762,54 @@ int main (int argc, char* argv[])
 							printf("cannot read getsockopt value\n");
 							return rc;
 						}
+						if (convert) {
+							copy_to_convert_buffer (convert_buffer, &convert_offset, ((char *) &sor) + sizeof(int), sizeof(struct getsockopt_retvals) - sizeof(int));
+						}
 						if (stats) {
 							bytes[psr.sysnum] += sizeof(struct getsockopt_retvals) - sizeof(int);
 						}
+						size = sor.optlen;
+						//size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size;
 						break;
 					}
+					case SYS_CONNECT: {
+						size = 0;
+						if (convert && (psr.flags & SR_HAS_SPECIAL_FIRST)) {
+							char x_filename[1024];
+							memset (x_filename, 0, 1024);
+							++ connection_times;
+							sprintf (x_filename, "./%s.x.%d", argv[3], connection_times);
+							if (x_fd > 0) {
+								//write out the remaining x buffer
+								if (x_first_time) {
+									x_first_time = 0;
+									x_request_pos = 0;
+								} else {
+									if (x_fd > 0) {
+										rc = write (x_fd, (char*) &x_request_pos, sizeof (x_request_pos));
+										if (rc != sizeof (x_request_pos)) {
+											printf ("cannot write out x_request_pos\n");
+										}	
+										rc = write (x_fd, (char*) &x_buffer_length, sizeof (x_buffer_length));
+										if (rc != sizeof (x_buffer_length)) {
+											printf ("cannot write out x_buffer_length\n");
+										}						
+										rc = write (x_fd, x_buffer, x_buffer_length);
+										if (rc != x_buffer_length) 
+											printf ("cannot write out x_buffer\n");
+										printf ("write out %d bytes x messages, pos:%d\n", x_buffer_length, x_request_pos);
+										x_buffer_length = 0;
+									}
+								}
+								x_request_pos += retval;
+								close (x_fd);
+							}
+							x_fd = open (x_filename, O_RDWR | O_TRUNC | O_CREAT, 0644);
+							x_first_time = 1;
+						}
+						break;
+					}
+
 					default:
 						size = 0; 
 					}
@@ -645,32 +824,36 @@ int main (int argc, char* argv[])
 				case 109: size = sizeof(struct old_utsname); break;
 				case 114: size = sizeof(struct wait4_retvals); break;
 				case 116: size = sizeof(struct sysinfo); break;
-				case 117: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
+				case 117: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size; break;
 				case 122: size = sizeof(struct new_utsname); break;
 				case 124: size = sizeof(struct timex); break;
 				case 126: size = sizeof(unsigned long); break; // old_sigset_t - def in asm/signal.h but cannot include
-				case 131: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
+				case 131: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset);  if (size < 0) return size; break;
 				case 134: size = sizeof(long); break;
-				case 135: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
+				case 135: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size; break;
 				case 140: size = sizeof(loff_t); break;
 				case 141: size = retval; break;
-				case 142: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
+				case 142: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size; break;
 				case 145: size = retval; break;
-				case 149: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
+				case 149: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size; break;
 				case 155: size = sizeof(struct sched_param); break;
 				case 161: size = sizeof(struct timespec); break;
 				case 162: size = sizeof(struct timespec); break;
 				case 165: size = sizeof(u_short)*3; break;
-				case 168: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
+#ifdef MORE_CONVERT
+				case 168: cut_out[168] += sizeof(long); size = varsize(fd, stats, &psr, NULL, &convert_offset); if (size < 0) return size; break;
+#else
+				case 168: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size; break;
+#endif
 				case 171: size = sizeof(u_short)*3; break;
-				case 172: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
+				case 172: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size; break;
 				case 174: size = 20 /* sizeof(struct sigaction)*/; break;
-				case 175: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
-				case 176: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
+				case 175: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size; break;
+				case 176: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size; break;
 				case 177: size = sizeof(siginfo_t); break;
 				case 180: size = retval; break;
 				case 183: size = retval; break;
-				case 184: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
+				case 184: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size; break;
 				case 185: size = sizeof(struct __user_cap_header_struct); break;
 				case 187: size = sizeof(off_t); break;
 				case 191: size = sizeof(struct rlimit); break;
@@ -678,12 +861,12 @@ int main (int argc, char* argv[])
 				case 195: size = sizeof(struct stat64); break;
 				case 196: size = sizeof(struct stat64); break;
 				case 197: size = sizeof(struct stat64); break;
-			        case 205: size = sizeof(gid_t)*retval; break;
+				case 205: size = sizeof(gid_t)*retval; break;
 				case 209: size = sizeof(uid_t)*3; break;
 				case 211: size = sizeof(gid_t)*3; break;
-				case 218: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
+				case 218: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size; break;
 				case 220: size = retval; break;
-				case 221: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
+				case 221: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size; break;
 				case 229: size = retval; break;
 				case 230: size = retval; break;
 				case 231: size = retval; break;
@@ -691,7 +874,7 @@ int main (int argc, char* argv[])
 				case 233: size = retval; break;
 				case 234: size = retval; break;
 				case 239: size = sizeof(struct sendfile64_retvals); break;
-				case 242: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
+				case 242: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size; break;
 				case 245: size = sizeof(u_long); break;
 				case 247: size = retval*32; break; /* struct ioevents */
 				case 249: size = 32; break; /* struct ioevent */
@@ -705,31 +888,31 @@ int main (int argc, char* argv[])
 				case 267: size = sizeof(struct timespec); break;
 				case 268: size = 84; break; /* statfs 64 */
 				case 269: size = 84; break; /* statfs 64 */
-				case 275: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
+				case 275: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size; break;
 				case 280: size = retval; break;
 				case 282: size = sizeof(struct mq_attr); break;
 				case 284: size = sizeof(struct waitid_retvals); break;
-				case 288: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
+				case 288: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size; break;
 				case 300: size = sizeof(struct stat64); break;
 				case 305: size = retval; break;
 				case 308: size = sizeof(struct pselect6_retvals); break;
-				case 309: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
+				case 309: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size; break;
 				case 312: size = sizeof(struct get_robust_list_retvals); break;
 				case 313: size = sizeof(struct splice_retvals); break;
-				case 317: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
+				case 317: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size; break;
 				case 318: size = sizeof(unsigned)*2; break;
 				case 319: size = retval*sizeof(struct epoll_event); break;
 				case 325: size = sizeof(struct itimerspec); break;
 				case 326: size = sizeof(struct itimerspec); break;
 				case 331: size = 2*sizeof(int); break;
 				case 333: size = retval; break;
-				case 337: size = varsize(fd, stats, &psr); if (size < 0) return size; break;
-			        case 340: size = sizeof(struct rlimit64); break;
+				case 337: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size; break;
+				case 340: size = sizeof(struct rlimit64); break;
 				case 341: size = sizeof(struct name_to_handle_at_retvals); break;
 				case 343: size = sizeof(struct timex); break;
 				default: 
-					size = 0;
-					printf ("write_log_data: unrecognized syscall %d\n", psr.sysnum);
+						  size = 0;
+						  printf ("write_log_data: unrecognized syscall %d\n", psr.sysnum);
 				}
 
 				rc = read (fd, buf, size);
@@ -737,6 +920,50 @@ int main (int argc, char* argv[])
 					printf ("read of retparams returns %d, errno = %d, size is %d\n", rc, errno, size);
 					return rc;
 				} 
+				if (convert) {
+					int xsize = 0;
+
+
+					if (psr.flags & SR_HAS_SPECIAL_SECOND && (psr.sysnum==3 || psr.sysnum==102 || psr.sysnum==145)) {
+						int offset;
+						switch (psr.sysnum) {
+							case 3:
+							case 145:
+								xsize = size;
+								offset = 0;
+								break;
+							case 102:
+								if (call == SYS_RECV) {
+									offset = sizeof(struct recvfrom_retvals) - sizeof(int) - 4;
+									xsize = retval;
+								} else if (call == SYS_RECVMSG) {
+									offset = size - retval - 4;
+									xsize = retval;
+								}
+								break;
+						}
+						printf ("Reply from x, size:%d, %d, %d, %ld\n", xsize, offset, size, retval);
+						xbytes_count += xsize;
+						//x_compress (buf + offset , xsize);
+						//copy x messages to x_buffer
+						while (x_buffer_length + xsize > x_buffer_size) {
+							char* tmp_buffer = malloc (x_buffer_size * 2);
+							memcpy (tmp_buffer, x_buffer, x_buffer_length);
+							free (x_buffer);
+							x_buffer_size *= 2;
+							x_buffer = tmp_buffer;
+						}
+						memcpy (x_buffer + x_buffer_length, buf + offset, xsize);
+						x_buffer_length += xsize;
+					}
+#ifdef MORE_CONVERT
+					if ((psr.sysnum == 102 && call == SYS_RECV && psr.flags & SR_HAS_SPECIAL_SECOND) || psr.sysnum == 168 || psr.sysnum == 78 || psr.sysnum == 265) {
+						//don't copy	
+						cut_out[psr.sysnum] += size - xsize;
+					} else
+#endif
+						copy_to_convert_buffer (convert_buffer, &convert_offset, (char*) &buf, size - xsize);
+				}
 				if (stats) {
 					bytes[psr.sysnum] += size;
 				}
@@ -892,6 +1119,9 @@ int main (int argc, char* argv[])
 						printf ("read of signal returns %d, errno = %d\n", rc, errno);
 						return -1;
 					}
+					if (convert) {
+						copy_to_convert_buffer (convert_buffer, &convert_offset, (char*) &sig, 172);
+					}
 					if (stats) {
 						scount[511]++;
 						bytes[511] += 172; // Special for signals
@@ -903,6 +1133,7 @@ int main (int argc, char* argv[])
 
 			if (print_recv && psr.sysnum == 102 && call == SYS_RECV) {
 				char* data = buf + sizeof(struct recvfrom_retvals) - sizeof(int)*3;
+				int i;
 				for (i = 0; i < retval; i++) {
 					printf ("%c", data[i]);
 				}
@@ -930,6 +1161,12 @@ int main (int argc, char* argv[])
 					printf ("\tpath is %s\n", buf);
 				}
 			}
+
+			if (psr.sysnum == 265 && (psr.flags & SR_HAS_RETPARAMS)) {
+				struct timespec* time = (struct timespec*) buf;
+				printf ("clock_gettime tv_sec:%ld, tv_nsec:%ld\n", time->tv_sec, time->tv_nsec);
+			}
+
 			if (psr.sysnum == 192) {
 				if ((psr.flags & SR_HAS_RETPARAMS) != 0) {
 					printf ("\tdev is %lx\n", ((struct mmap_pgoff_retvals *)buf)->dev);
@@ -940,23 +1177,68 @@ int main (int argc, char* argv[])
 			// next system call
 			index++;
 		}
+		if (convert) {
+			//change the data_size now
+			//u_long final_size = data_size - xbytes_count;
+			u_long final_size = convert_offset - sizeof(data_size);
+			printf ("x messages consume %d bytes\n", xbytes_count);
+			memcpy (convert_buffer, &final_size, sizeof (u_long));
+			rc = write (convert_fd, convert_buffer, convert_offset);
+			if (rc != convert_offset) {
+				printf ("Convert_buffer cannot be written.\n");
+				return -1;
+			}
+		}
 	}
 
 	if (stats) {
 		for (i = 0; i < 511; i++) {
 			if (scount[i]) {
-				printf ("syscall %3d: count %5lu bytes %8lu\n", i, scount[i], bytes[i]);
+				printf ("syscall %3d: count %5lu bytes %8lu clock %8lu retval %8lu\n", i, scount[i], bytes[i], clock_bytes[i], retval_bytes[i]);
 			}
 		}
 		if (scount[511]) {
 			printf ("signals    : count %5lu bytes %8lu\n", scount[511], bytes[511]);
 		}
-		printf("Extra bytes added by replay_graph: %d\n", extra_bytes);
+	}
+	if (convert) {
+		for (i = 0; i < 511; ++i) {
+			if (cut_out[i])
+				printf ("%d, %lu\n", i, cut_out[i]);
+		}
 	}
 
 #undef printf
 
 	close (fd);
+	if (convert) {
+		close (convert_fd);
+		if (x_fd > 0) {
+			//write out the remaining x buffer
+			if (x_first_time) {
+				x_first_time = 0;
+				x_request_pos = 0;
+			} else {
+				if (x_fd > 0) {
+					rc = write (x_fd, (char*) &x_request_pos, sizeof (x_request_pos));
+					if (rc != sizeof (x_request_pos)) {
+						printf ("cannot write out x_request_pos\n");
+					}	
+					rc = write (x_fd, (char*) &x_buffer_length, sizeof (x_buffer_length));
+					if (rc != sizeof (x_buffer_length)) {
+						printf ("cannot write out x_buffer_length\n");
+					}						
+					rc = write (x_fd, x_buffer, x_buffer_length);
+					if (rc != x_buffer_length) 
+						printf ("cannot write out x_buffer\n");
+					printf ("write out %d bytes x messages\n", x_buffer_length);
+					x_buffer_length = 0;
+				}
+			}
+			x_request_pos += retval;
+			close (x_fd);
+		}
+	}
 	if (dump_recv) close (dfd);
 	return 0;
 }
