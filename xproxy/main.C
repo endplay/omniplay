@@ -72,7 +72,7 @@ sockaddr_in serverAddr;
 
 // Maximum number of open file descriptors for this process
 static unsigned int maxNumFDs = 0;
-int thread_debug = 1;
+int thread_debug = 0;
 
 struct thread_struct {
 	int addrFamily;
@@ -175,19 +175,19 @@ void *serverThread(void *args) {
 	cout <<"Get the first message for initialization. "
 			<<(replay_mode ? "replaying" : "recording")<<", logdir:"
 			<<tmp_buffer<<", pid:"<<pid<<", connection times:"<<connTimes<<endl;
-	mkdir(tmp_buffer+14, 0777);
-	sprintf(replyFileName, ".%s/reply.log.id.%u.%d", tmp_buffer + 13, pid,
+	//mkdir(tmp_buffer+14, 0777);
+	sprintf(replyFileName, "/replay_logdb/%s/reply.log.id.%u.%d", tmp_buffer + 13, pid,
 			connTimes);
-	sprintf(requestFileName, ".%s/request.log.id.debug.%u.%d", tmp_buffer + 13,
+	sprintf(requestFileName, "/replay_logdb/%s/request.log.id.debug.%u.%d", tmp_buffer + 13,
 			pid, connTimes);
-	sprintf(eventFileName, ".%s/event.log.id.%u.%d", tmp_buffer + 13, pid,
+	sprintf(eventFileName, "/replay_logdb/%s/event.log.id.%u.%d", tmp_buffer + 13, pid,
 			connTimes);
-	sprintf(errorFileName, ".%s/error.log.id.%u.%d", tmp_buffer + 13, pid,
+	sprintf(errorFileName, "/replay_logdb/%s/error.log.id.%u.%d", tmp_buffer + 13, pid,
 			connTimes);
-	sprintf(replyFileNameDebug, ".%s/reply.log.id.debug.%u.%d",
+	sprintf(replyFileNameDebug, "/replay_logdb/%s/reply.log.id.debug.%u.%d",
 			tmp_buffer + 13, pid, connTimes);
 	if (convert_log) {
-		sprintf(convertFileName, ".%s/klog.id.%u.x.%d", tmp_buffer + 13, pid,
+		sprintf(convertFileName, "/replay_logdb/%s/klog.id.%u.x.%d", tmp_buffer + 13, pid,
 				connTimes);
 		printf("reading from convert file:%s\n", convertFileName);
 	}
