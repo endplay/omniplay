@@ -61,6 +61,9 @@ static int replayfs_filemap_create(struct replayfs_filemap *map,
 	/* Populate val */
 	page = replayfs_diskalloc_alloc_page(alloc);
 
+	debugk("%s %d: Creating fielmap with new metaloc page: %lu\n", __func__,
+			__LINE__, page->index);
+
 	if (pos) {
 		*pos = PAGE_SIZE * (loff_t)page->index;
 	}
@@ -379,28 +382,41 @@ void replayfs_filemap_destroy(struct replayfs_filemap *map) {
 
 void replayfs_filemap_delete_key(struct replayfs_filemap *map,
 		struct replayfs_btree128_key *key) {
+	struct replayfs_btree128_value *disk_pos;
+	struct page *page;
+	struct page *disk_page;
 	mutex_destroy(&map->lock);
 
-	btree_debug_check();
-	debugk("%s %d: Deleting btree\n", __func__, __LINE__);
-	replayfs_btree_delete(&map->entries);
-	debugk("%s %d: Done deleting btree\n", __func__, __LINE__);
-
-	btree_debug_check();
 	meta_lock_debugk("%s %d - %p: Locking %p\n", __func__, __LINE__, current,
 			&meta_lock);
 	mutex_lock(&meta_lock);
+
+	debugk("%s %d: Removing key {%lld, %lld} from filemap list\n", __func__,
+			__LINE__, key->id1, key->id2);
+	disk_pos = replayfs_btree128_lookup(&filemap_meta_tree, key, &disk_page);
+	page = replayfs_diskalloc_get_page(map->entries.allocator, disk_pos->id);
+
+	replayfs_btree128_remove(&filemap_meta_tree, key);
+
+	btree_debug_check();
+	debugk("%s %d: Deleting btree with loc %lld\n", __func__, __LINE__,
+			map->entries.meta_loc);
+	replayfs_btree_delete(&map->entries);
+
+	replayfs_diskalloc_free_page(map->entries.allocator, page);
+
+	btree_debug_check();
+
 	/*
 	printk("%s %d - %p: Removing key {%llu, %llu}\n", __func__, __LINE__, current,
 			key->id1, key->id2);
 			*/
+
 	btree_debug_check();
-	replayfs_btree128_remove(&filemap_meta_tree, key);
 	meta_lock_debugk("%s %d - %p: Unlocking %p\n", __func__, __LINE__, current,
 			&meta_lock);
 	btree_debug_check();
 	mutex_unlock(&meta_lock);
-	debugk("%s %d: Done\n", __func__, __LINE__);
 }
 
 void replayfs_filemap_delete(struct replayfs_filemap *map, struct file *filp) {
