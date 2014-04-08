@@ -248,7 +248,6 @@ static int is_recorded_file_strict(int fd) {
 
 		/* If the inode has not been written */
 		if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0 &&
-				//!S_ISDIR(inode->i_flags) && !S_ISFIFO(inode->i_flags) && !S_ISSOCK(inode->i_flags)) {
 				S_ISREG(inode->i_mode)) {
 
 			ret = replayfs_filemap_exists(filp);
@@ -274,7 +273,6 @@ static int is_recorded_file(int fd) {
 
 		/* If the inode has not been written */
 		if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0 &&
-				//!S_ISDIR(inode->i_flags) && !S_ISFIFO(inode->i_flags) && !S_ISSOCK(inode->i_flags)) {
 				S_ISREG(inode->i_mode)) {
 			if (i_size_read(filp->f_dentry->d_inode) == 0) {
 				//printk("%s %d: Empty file is record file! %p\n", __func__, __LINE__, filp);
@@ -7609,9 +7607,11 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 		struct file *filp;
 		filp = fget(fd);
 
-		if (filp && is_pipe(filp)) {
-			int ret;
-			ret = track_usually_pt2pt_write_begin(filp->f_dentry->d_inode, filp);
+		if (filp) {
+
+			if (is_pipe(filp)) {
+				track_usually_pt2pt_write_begin(filp->f_dentry->d_inode, filp);
+			}
 
 			fput(filp);
 		}
@@ -14206,14 +14206,15 @@ record_unlinkat(int dfd, const char __user *pathname, int flag)
 	 * If we're about to delete the file, and it is a replayfs file, then remove
 	 * it from our replayfs knowledge base
 	 */
-	if (is_recorded_file_strict(fd)) {
-		struct inode *inode = filp->f_dentry->d_inode;
-		if (inode->i_nlink == 1) {
-			/* Inode is about to be removed, delete it entirely */
-			replay_filp_delete(filp);
-		}
-	}
 	if (filp != NULL && !IS_ERR(filp)) {
+		if (is_recorded_file_strict(fd)) {
+			struct inode *inode = filp->f_dentry->d_inode;
+			if (inode->i_nlink == 1) {
+				/* Inode is about to be removed, delete it entirely */
+				replay_filp_delete(filp);
+			}
+		}
+
 		fput(filp);
 	}
 
@@ -15375,24 +15376,6 @@ int read_mmap_log (struct record_group* precg)
 	return rc;
 }
 
-int btree_print = 0;
-int replayfs_btree128_debug = 0;
-int replayfs_btree128_debug_verbose = 0;
-int replayfs_filemap_debug = 0;
-int replayfs_diskalloc_debug = 0;
-int replayfs_diskalloc_debug_full = 0;
-int replayfs_diskalloc_debug_cache = 0;
-int replayfs_diskalloc_debug_allocref = 0;
-int replayfs_diskalloc_debug_lock = 0;
-int replayfs_diskalloc_debug_alloc = 0;
-int replayfs_diskalloc_debug_alloc_min = 0;
-
-int replayfs_debug_allocnum = -1;
-int replayfs_debug_page = -1;
-
-int replayfs_print_leaks = 0;
-
-unsigned long replayfs_debug_page_index = 0xFFFFFFFF;
 #ifdef LOG_COMPRESS_1
 // only can be called after init_log_write
 struct file* init_clog_write (struct record_thread* prect, loff_t* ppos, int* pfd)
@@ -15658,12 +15641,40 @@ error:
 
 #endif
 
+int btree_print = 0;
+int btree_print_init = 0;
+int replayfs_btree128_do_verify = 0;
+int replayfs_btree128_debug = 0;
+int replayfs_btree128_debug_verbose = 0;
+int replayfs_filemap_debug = 0;
+int replayfs_diskalloc_debug = 0;
+int replayfs_diskalloc_debug_full = 0;
+int replayfs_diskalloc_debug_cache = 0;
+int replayfs_diskalloc_debug_allocref = 0;
+int replayfs_diskalloc_debug_lock = 0;
+int replayfs_diskalloc_debug_alloc = 0;
+int replayfs_diskalloc_debug_alloc_min = 0;
+
+int replayfs_debug_allocnum = -1;
+int replayfs_debug_page = -1;
+
+int replayfs_print_leaks = 0;
+
+unsigned long replayfs_debug_page_index = 0xFFFFFFFF;
+
 #ifdef CONFIG_SYSCTL
 extern atomic_t diskalloc_num_blocks;
 static struct ctl_table print_ctl[] = {
 	{
 		.procname	= "replayfs_btree_print",
 		.data		= &btree_print,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "replayfs_btree_print_init",
+		.data		= &btree_print_init,
 		.maxlen		= sizeof(unsigned int),
 		.mode		= 0666,
 		.proc_handler	= &proc_dointvec,
@@ -15685,6 +15696,13 @@ static struct ctl_table print_ctl[] = {
 	{
 		.procname	= "replayfs_debug_btree_allocnum",
 		.data		= &replayfs_debug_allocnum,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "replayfs_btree128_verify",
+		.data		= &replayfs_btree128_do_verify,
 		.maxlen		= sizeof(unsigned int),
 		.mode		= 0666,
 		.proc_handler	= &proc_dointvec,
