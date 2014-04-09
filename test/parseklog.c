@@ -29,12 +29,12 @@
 #include <fcntl.h>
 #include <sys/resource.h>
 
+#include "replay_headers/include/linux/replay_configs.h"
+
 #define REPLAY_MAX_THREADS 16
 //#define USE_HPC
 #define USE_ARGSALLOC
 #define USE_DISK_CKPT
-#define TRACE_READ_WRITE
-//#define TRACE_PIPE_READ_WRITE
 
 //#define PRINT_STATISTICS
 
@@ -331,6 +331,7 @@ int main (int argc, char* argv[])
 	int pipe_write_only = 0;
 	u_long data_size, start_clock, stop_clock, clock, expected_clock = 0;
 	long retval;
+	int extra_bytes = 0;
 	u_int is_cache_read;
 #ifdef USE_HPC
 	// calibration to determine how long a tick is
@@ -606,6 +607,8 @@ int main (int argc, char* argv[])
 								printf ("cannot read entry\n");
 								return rc;
 							}
+
+							extra_bytes += sizeof(struct replayfs_filemap_entry) + entry.num_elms * sizeof(struct replayfs_filemap_value);
 							size += sizeof(struct replayfs_filemap_entry) + entry.num_elms * sizeof(struct replayfs_filemap_value);
 						} while (0);
 #endif
@@ -1191,6 +1194,7 @@ int main (int argc, char* argv[])
 		if (scount[511]) {
 			printf ("signals    : count %5lu bytes %8lu\n", scount[511], bytes[511]);
 		}
+		printf("Extra bytes added by replay_graph: %d\n", extra_bytes);
 	}
 	if (convert) {
 		for (i = 0; i < 511; ++i) {
