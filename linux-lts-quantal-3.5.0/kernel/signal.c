@@ -2215,6 +2215,7 @@ int get_signal_to_deliver(siginfo_t *info, struct k_sigaction *return_ka,
 {
 	struct sighand_struct *sighand = current->sighand;
 	struct signal_struct *signal = current->signal;
+	int ignore_flag = 0;
 	int signr;
 
 	if (unlikely(uprobe_deny_signal()))
@@ -2229,6 +2230,9 @@ relock:
 	 */
 	try_to_freeze();
 
+	// Get this value before we disable interrupts to avoid deadlocking kernel!
+	if (current->record_thrd) ignore_flag = get_record_ignore_flag ();
+	  
 	spin_lock_irq(&sighand->siglock);
 	/*
 	 * Every stopped thread goes here after wakeup. Check to see if
@@ -2311,7 +2315,7 @@ relock:
 			}
 			if (current->record_thrd && signr > 0) {
 				if (!(signr == 9 && SI_FROMKERNEL(info))) {
-					if (check_signal_delivery(signr, info, &sighand->action[signr-1]) == -1) {
+				  if (check_signal_delivery(signr, info, &sighand->action[signr-1], ignore_flag) == -1) {
 						signr = 0; // Delay signal to safe point
 						break; 
 					}
