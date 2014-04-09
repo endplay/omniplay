@@ -34,5 +34,27 @@ function setup_spec() {
 	}
 }
 
+function build_test() {
+	pushd $OMNIPLAY_DIR/test &> /dev/null
+	makemsg=$(make)
 
+	if [[ "$?" -ne "0" ]]; then
+		echo "Failed to build test!"
+		echo "Test output:"
+		echo $makemsg
+		return 1
+	fi
+
+	popd &> /dev/null
+}
+
+function check_for_prog() {
+	progname="$1"
+
+	if [[ ! -x "$OMNIPLAY_DIR/test/$progname" ]]; then
+		return 0
+	fi
+
+	return 1
+}
 
