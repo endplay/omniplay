@@ -398,12 +398,12 @@ void replayfs_filemap_delete_key(struct replayfs_filemap *map,
 
 	replayfs_btree128_remove(&filemap_meta_tree, key);
 
+	replayfs_diskalloc_free_page(map->entries.allocator, page);
+
 	btree_debug_check();
 	debugk("%s %d: Deleting btree with loc %lld\n", __func__, __LINE__,
 			map->entries.meta_loc);
 	replayfs_btree_delete(&map->entries);
-
-	replayfs_diskalloc_free_page(map->entries.allocator, page);
 
 	btree_debug_check();
 
