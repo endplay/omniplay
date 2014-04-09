@@ -11,6 +11,12 @@ import os
 import subprocess
 import time
 
+if "OMNIPLAY_DIR" not in os.environ:
+    print "OMNIPLAY_DIR is not yet set, please run <omniplay>/scripts/setup.sh"
+    sys.exit(1)
+
+omniplay_dir=os.environ["OMNIPLAY_DIR"]
+
 def get_stats():
     p = subprocess.Popen (["./getstats"], stdout=subprocess.PIPE)
     lines = p.stdout.read().split("\n")
@@ -53,7 +59,8 @@ reclist = sorted(recordings.keys())
 for rec in reclist:
     print "Replaying", rec
     os.system("./parseckpt " + recordings[rec] + " | egrep Argument");
-    os.system("./resume " + recordings[rec] + " --pthread /home/jflinn/src/omniplay/eglibc-2.15/prefix/lib/")
+    print "Running: " + "./resume " + recordings[rec] + " --pthread " + omniplay_dir + "/eglibc-2.15/prefix/lib/"
+    os.system("./resume " + recordings[rec] + " --pthread " + omniplay_dir + "/eglibc-2.15/prefix/lib/")
     done = 0
     while (not done):
         (started, finished, mismatched) = get_stats()
