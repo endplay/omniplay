@@ -385,6 +385,7 @@ void replayfs_filemap_delete_key(struct replayfs_filemap *map,
 	struct replayfs_btree128_value *disk_pos;
 	struct page *page;
 	struct page *disk_page;
+	struct replafys_diskalloc *alloc;
 	mutex_destroy(&map->lock);
 
 	meta_lock_debugk("%s %d - %p: Locking %p\n", __func__, __LINE__, current,
@@ -398,12 +399,14 @@ void replayfs_filemap_delete_key(struct replayfs_filemap *map,
 
 	replayfs_btree128_remove(&filemap_meta_tree, key);
 
-	replayfs_diskalloc_free_page(map->entries.allocator, page);
+	alloc = map->entries.allocator;
 
 	btree_debug_check();
 	debugk("%s %d: Deleting btree with loc %lld\n", __func__, __LINE__,
 			map->entries.meta_loc);
 	replayfs_btree_delete(&map->entries);
+
+	replayfs_diskalloc_free_page(alloc, page);
 
 	btree_debug_check();
 
