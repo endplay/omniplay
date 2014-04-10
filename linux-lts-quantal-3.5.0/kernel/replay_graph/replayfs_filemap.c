@@ -385,7 +385,7 @@ void replayfs_filemap_delete_key(struct replayfs_filemap *map,
 	struct replayfs_btree128_value *disk_pos;
 	struct page *page;
 	struct page *disk_page;
-	struct replafys_diskalloc *alloc;
+	struct replayfs_diskalloc *alloc;
 	mutex_destroy(&map->lock);
 
 	meta_lock_debugk("%s %d - %p: Locking %p\n", __func__, __LINE__, current,
