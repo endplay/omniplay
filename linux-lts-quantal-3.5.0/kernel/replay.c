@@ -15641,6 +15641,56 @@ error:
 
 #endif
 
+int do_is_record(struct ctl_table *table, int write, void __user *buffer, 
+		size_t *lenp, loff_t *ppos) {
+	char __user *cbuf = buffer;
+
+	if (!table->maxlen || !*lenp || (*ppos && !write) || (*ppos > 2)) {
+		*lenp = 0;
+		return 0;
+	}
+
+	if (write) {
+		return -EINVAL;
+	}
+
+	if (*lenp > 0 && *ppos == 0) {
+		if (current->record_thrd == NULL) {
+			if (copy_to_user(cbuf, "0", 1)) {
+				return -EFAULT;
+			}
+		} else {
+			if (copy_to_user(cbuf, "1", 1)) {
+				return -EFAULT;
+			}
+		}
+		*ppos += 1;
+		*lenp -= 1;
+	}
+
+	if (*ppos==1 && *lenp > 0) {
+		if (copy_to_user(cbuf+1, "\n", 1)) {
+			return -EFAULT;
+		}
+		*ppos += 1;
+		*lenp -= 1;
+	}
+
+	/*
+	if (*ppos==2 && *lenp > 0) {
+		if (copy_to_user(cbuf+2, "\0", 1)) {
+			return -EFAULT;
+		}
+		*ppos += 1;
+		*lenp -= 1;
+	}
+	*/
+
+	printk("%s %d: Returning proc entry with lenp %u, ppos %lld\n", __func__,
+			__LINE__, *lenp, *ppos);
+	return 0;
+}
+
 int btree_print = 0;
 int btree_print_init = 0;
 int replayfs_btree128_do_verify = 0;
@@ -15828,6 +15878,13 @@ static struct ctl_table replay_ctl[] = {
 		.maxlen		= sizeof(unsigned long),
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "proc_is_record",
+		.data		= NULL,
+		.maxlen		= sizeof(unsigned long),
+		.mode		= 0644,
+		.proc_handler	= &do_is_record,
 	},
 	{
 		.procname	= "diskalloc_num_blocks",
