@@ -207,8 +207,13 @@ unsigned char *ReadBuffer::getMessage(unsigned int &messageLength) {
 		messageLength = dataLength;
 		if (dataLength)
 			result += headerLength;
-		else
+		else {
+			// probably this application is using big request extension
+			// we need to get the new request size; but read more bytes first
+			
 			messageLength += headerLength;
+			return NULL;
+		}
 		start_ += (headerLength + dataLength + trailerLength);
 		length_ -= (headerLength + dataLength + trailerLength);
 		return result;
