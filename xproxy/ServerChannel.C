@@ -1211,13 +1211,17 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 				 }
 				 */
 				if (buffer[0] == 0) {
+					cout <<"Got An error message from x server."<<endl;
+					printMessage (buffer, size, 7, 1, 1, 2, 4, 2, 1, -1);
 					if (sequenceNumQueue_.peek(dummySequenceNum, dummyOpcode)
 							&& ((unsigned int) dummySequenceNum == sequenceNum))
 						sequenceNumQueue_.pop(dummySequenceNum, dummyOpcode);
 				}
-				if (PRINT_DEBUG)
+				if (PRINT_DEBUG) {
 					cout <<"event   opcode:"<<opcode<<"  sequence:"
 							<<sequenceNum <<"  size:"<<size<<endl;
+					printString (buffer, size);
+				}
 
 				//replay log
 				if (replay) {

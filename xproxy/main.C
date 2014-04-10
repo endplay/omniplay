@@ -276,6 +276,7 @@ void *serverThread(void *args) {
 					cout << "client application quits."<<endl;
 					SOCKCLOSE (xAppFD);
 					SOCKCLOSE (xServerFD);
+					cout <<"quiting the thread now."<<endl;
 					break;
 				}
 #ifndef FILE_REPLAY

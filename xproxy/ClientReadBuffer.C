@@ -33,6 +33,13 @@ int ClientReadBuffer::locateMessage(const unsigned char *start,
     else
     {
         dataLength = (GetUINT(start + 2, bigEndian_) << 2);
+        if (dataLength == 0) {
+			// probably this application is using big request extension
+			// we need to get the new request size; but read more bytes first
+        	if (size >= 8) {
+        		dataLength = (GetULONG (start + 4, bigEndian_) << 2);
+        	}
+        }
     }
 
     if (size < dataLength)
