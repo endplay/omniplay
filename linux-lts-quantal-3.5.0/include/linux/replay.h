@@ -37,7 +37,8 @@ long get_used_addresses (struct used_address __user * plist, int listsize);
 void print_memory_areas (void);
 
 /* Handles replay-specific work to record a signal */
-long check_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka);
+int get_record_ignore_flag (void);
+long check_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka, int ignore_flag);
 long record_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka);
 void replay_signal_delivery (int* signr, siginfo_t* info);
 int replay_has_pending_signal (void);

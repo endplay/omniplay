@@ -25,6 +25,10 @@ class ReadBuffer
     int getConvertPos () {
     	return convertPos;
     }
+    
+    void setLength (unsigned int length) {
+    	length_ = length;
+    }
 
   protected:
       virtual int locateMessage(const unsigned char *start,

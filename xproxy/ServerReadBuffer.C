@@ -18,10 +18,11 @@ int ServerReadBuffer::locateMessage(const unsigned char *start,
     }
     else
     {
-        if (*start == 1)
+        if (*start == 1 || *start == 35)
             dataLength = 32 + (GetULONG(start + 4, bigEndian_) << 2);
-        else
+        else {
             dataLength = 32;
+        }
     }
 
     if (size < dataLength)
