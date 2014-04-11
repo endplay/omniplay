@@ -141,9 +141,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 				printMessage(buffer + pad + 8*i, 8, 4, 1, 1, 1, -1);
 			}
 			if (screenNum != 1) {
-				cerr <<"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"<<endl;
-				cerr <<"multi screens are found! may cause bugs."<<endl;
-				cerr <<"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"<<endl;
+				cerr <<"multi screens are found! may cause bugs during replaying"<<endl;
 			} else {
 				if (PRINT_DEBUG)
 					cout <<"	first reply: screen"<<endl;
@@ -374,47 +372,26 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 					}
 						break;
 					case X_GetKeyboardMapping: {
-						unsigned int keysymsPerKeycode =
-								(unsigned int) buffer[1];
-						if (ServerCache::getKeyboardMappingLastMap.
-						compare(size - 32, buffer + 32)
-								&& (keysymsPerKeycode
-										== ServerCache::getKeyboardMappingLastKeysymsPerKeycode)) {
-							encodeBuffer.encodeValue(1, 1);
-							break;
+						specialReply = 1;
+						if (!replay) {
+							eventQueue_.recordReply(buffer, size);
+						} else {
+							//this is different, we will send the original reply back to the application, and remember the mapped window id
+							unsigned int asize = eventQueue_.replayReply();
+#ifndef FILE_REPLAY
+							if ((unsigned int) SOCKWRITE (appFD, eventQueue_.getReplyBuffer(), asize) != asize)
+								cerr << "Cannot write to application."<<endl;
+#endif
+							if (PRINT_DEBUG)
+								cout <<"recorded message is "<<endl;
+							printMessage(eventQueue_.getReplyBuffer(), size, 6,
+									1, 1+MAGIC_SIZE, 2, 4, 4, -1);
+							if (PRINT_DEBUG)
+								cout
+										<< "This is a special reply, send recorded message to the application instead."
+										<<endl;
 						}
-						ServerCache::getKeyboardMappingLastKeysymsPerKeycode
-								= keysymsPerKeycode;
-						encodeBuffer.encodeValue(0, 1);
-						unsigned int numKeycodes = (((size - 32)
-								/ keysymsPerKeycode) >> 2);
-						encodeBuffer.encodeValue(numKeycodes, 8);
-						encodeBuffer.encodeValue(keysymsPerKeycode, 8, 4);
-						const unsigned char *nextSrc = buffer + 32;
-						unsigned char previous = 0;
 
-						for (unsigned int count = numKeycodes
-								* keysymsPerKeycode; count; --count) {
-							unsigned int keysym = GetULONG(nextSrc, bigEndian_);
-							nextSrc += 4;
-							if (keysym == NoSymbol)
-								encodeBuffer.encodeValue(1, 1);
-							else {
-								encodeBuffer.encodeValue(0, 1);
-								unsigned int first3Bytes = (keysym >> 8);
-
-								encodeBuffer.
-								encodeCachedValue(first3Bytes, 24,
-										serverCache_.
-										getKeyboardMappingKeysymCache, 9);
-								unsigned char lastByte =
-										(unsigned char) (keysym & 0xff);
-								encodeBuffer.encodeCachedValue(lastByte
-										- previous, 8, serverCache_.
-								getKeyboardMappingLastByteCache, 5);
-								previous = lastByte;
-							}
-						}
 						printMessage(buffer, size, 5, 1, 1, 2, 4, 24+MAGIC_SIZE);
 					}
 						break;
@@ -1033,12 +1010,35 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 						switch (requestData[0]) {
 						case X_kbUseExtension:
 						case X_kbSelectEvents:
-						case X_kbGetMap:
 						case X_kbGetNames:
 						case X_kbPerClientFlags: {
 							// do nothing
 						}
 							break;
+
+						case X_kbGetMap: {
+							specialReply = 1;
+							if (!replay) {
+								eventQueue_.recordReply(buffer, size);
+							} else {
+								//this is different, we will send the original reply back to the application, and remember the mapped window id
+								unsigned int asize = eventQueue_.replayReply();
+#ifndef FILE_REPLAY
+								if ((unsigned int) SOCKWRITE (appFD, eventQueue_.getReplyBuffer(), asize) != asize)
+									cerr << "Cannot write to application."<<endl;
+#endif
+								if (PRINT_DEBUG)
+									cout <<"recorded message is "<<endl;
+								printMessage(eventQueue_.getReplyBuffer(), size, 6,
+										1, 1+MAGIC_SIZE, 2, 4, 4, -1);
+								if (PRINT_DEBUG)
+									cout
+										<< "This is a special reply, send recorded message to the application instead."
+										<<endl;
+							}
+
+						}
+								 break;
 						default: {
 							if (PRINT_DEBUG)
 								cout<<"           ***not compressed"<<endl;
