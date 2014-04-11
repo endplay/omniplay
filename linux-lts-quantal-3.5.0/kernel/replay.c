@@ -130,9 +130,9 @@ int verify_debug = 0;
    * record_x should be set to 1 if you want a copy of all x messages in the replay log; otherwise, only a compressed x message log in the same folder with x proxy is enough for replaying
    *TIME_TRICK is for deterministic time; don't turn it on for now as I'm changing it. TIME_TRICK is defined in replay.h
    */
-//#define LOG_COMPRESS //log compress level 0
+#define LOG_COMPRESS //log compress level 0
 //#define LOG_COMPRESS_1 //log compress level 1
-//#define X_COMPRESS  // note: x_compress should be defined at least along with log_compress level 0
+#define X_COMPRESS  // note: x_compress should be defined at least along with log_compress level 0
 #define USE_SYSNUM
 //#define REPLAY_PAUSE
 #define DET_TIME_DEBUG 0
@@ -145,6 +145,7 @@ int verify_debug = 0;
 #define x_detail 0
 unsigned int x_proxy = 0;
 unsigned int record_x = 1;
+unsigned int replay_pause_tool = 0;
 //xdou
 
 //#define KFREE(x) my_kfree(x, __LINE__)
@@ -2357,8 +2358,10 @@ destroy_record_group (struct record_group *prg)
 	MPRINT ("Pid %d destroying record group %p\n", current->pid, prg);
 
 #ifdef REPLAY_PAUSE
-	atomic_set ((prg->rg_pkrecord_clock + 1), 0);
-	printk ("Pid %d clear up pause clock\n", current->pid);
+	if (replay_pause_tool) {
+		atomic_set ((prg->rg_pkrecord_clock + 1), 0);
+		printk ("Pid %d clear up pause clock\n", current->pid);
+	}
 #endif
 
 	kunmap (prg->rg_shared_page);
@@ -5129,7 +5132,7 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 		}
 	}
 #ifdef REPLAY_PAUSE
-	if (*prt->rp_preplay_clock >= *(prt->rp_preplay_clock + 1)) {
+	if (replay_pause_tool && *prt->rp_preplay_clock >= *(prt->rp_preplay_clock + 1)) {
 		printk ("Pid %d replay will pause here, clock is %lu now\n", current->pid, *prt->rp_preplay_clock);
 		prt->rp_wait_clock = *(prt->rp_preplay_clock + 1);
 		rg_unlock (prg->rg_rec_group);
@@ -15931,6 +15934,13 @@ static struct ctl_table replay_ctl[] = {
 	{
 		.procname	= "record_x",
 		.data		= &record_x,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "pause_tool",
+		.data		= &replay_pause_tool,
 		.maxlen		= sizeof(unsigned int),
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec,
