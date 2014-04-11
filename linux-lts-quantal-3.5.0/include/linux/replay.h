@@ -3,8 +3,7 @@
 
 //#define TIME_TRICK
 #ifdef TIME_TRICK
-#include <linux/times.h>
-#include <linux/utime.h>
+#include "det_time.h"
 #endif
 
 #define MAX_LOGDIR_STRLEN 80

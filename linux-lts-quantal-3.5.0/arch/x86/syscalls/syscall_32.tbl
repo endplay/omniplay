@@ -229,7 +229,7 @@
 220	i386	getdents64		shim_getdents64			compat_sys_getdents64
 221	i386	fcntl64			shim_fcntl64			compat_sys_fcntl64
 # 222 is unused
-# 223 is unused
+223 	i386 	wakeup_paused_process 	sys_wakeup_paused_process 
 224	i386	gettid			shim_gettid
 225	i386	readahead		shim_readahead			sys32_readahead
 226	i386	setxattr		shim_setxattr
