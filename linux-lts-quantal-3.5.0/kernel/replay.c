@@ -5579,29 +5579,9 @@ sys_pthread_dumbass_link (int __user * status, u_long __user * record_hook, u_lo
 asmlinkage long
 sys_pthread_log (u_long log_addr, int __user * ignore_addr)
 {
-	struct rlimit* rlim;
-	long rc;
-
 	if (current->record_thrd) {
 		current->record_thrd->rp_user_log_addr = log_addr;
 		current->record_thrd->rp_ignore_flag_addr = ignore_addr;
-
-#if 0
-		// Up the resource limit by one if it is set so as not to interfere with user-level mlocks
-		read_lock(&tasklist_lock);
-		rlim = current->signal->rlim + RLIMIT_MEMLOCK;
-		task_lock(current->group_leader);
-		DPRINT ("rlimit before %ld %ld\n", rlim->rlim_cur, rlim->rlim_max);
-		if (rlim->rlim_max) rlim->rlim_max += PAGE_SIZE;
-		if (rlim->rlim_cur) rlim->rlim_cur += PAGE_SIZE;
-		DPRINT ("rlimit after %ld %ld\n", rlim->rlim_cur, rlim->rlim_max);
-		task_unlock(current->group_leader);
-		read_unlock(&tasklist_lock);
-		
-		rc = sys_mlock ((u_long) ignore_addr, sizeof(int)); // lock this in memory because we need to check when recording signals with interrupts disabled 
-		if (rc < 0) DPRINT ("pid %d: mlock of ignore address %p failed, rc=%ld\n", current->pid, ignore_addr, rc); 
-		DPRINT ("User log info address for thread %d is %lx, ignore addr is %p\n", current->pid, log_addr, ignore_addr);
-#endif
 	} else if (current->replay_thrd) {
 		current->replay_thrd->rp_record_thread->rp_user_log_addr = log_addr;
 		current->replay_thrd->rp_record_thread->rp_ignore_flag_addr = ignore_addr;
@@ -6278,8 +6258,6 @@ void
 recplay_exit_start(void)
 {
 	struct record_thread* prt = current->record_thrd;
-	struct rlimit* rlim;
-	long rc;
 
 	if (prt) {
 		MPRINT ("Record thread %d starting to exit\n", current->pid);
@@ -6292,27 +6270,6 @@ recplay_exit_start(void)
 #endif
 		MPRINT ("Pid %d -- Deallocate the user log", current->pid);
 		deallocate_user_log (prt); // For multi-threaded programs, we need to reuse the memory
-
-#if 0
-		if (prt->rp_ignore_flag_addr) {
-			rc = sys_munlock ((u_long) prt->rp_ignore_flag_addr, sizeof(int)); // lock this in memory because we need to check when recording signals with interrupts disabled 
-			if (rc >= 0) {
-				read_lock(&tasklist_lock);
-				rlim = current->signal->rlim + RLIMIT_MEMLOCK;
-				task_lock(current->group_leader);
-				DPRINT ("rlimit before %ld %ld\n", rlim->rlim_cur, rlim->rlim_max);
-				if (rlim->rlim_max) rlim->rlim_max += PAGE_SIZE;
-				if (rlim->rlim_cur) rlim->rlim_cur += PAGE_SIZE;
-				DPRINT ("rlimit after %ld %ld\n", rlim->rlim_cur, rlim->rlim_max);
-				task_unlock(current->group_leader);
-				read_unlock(&tasklist_lock);
-			} else {
-				DPRINT("pid %d: munlock of ignore address %p failed, rc=%ld\n", current->pid, prt->rp_ignore_flag_addr, rc); 
-			}
-		} else {
-			MPRINT ("No ignore address for pid %d\n", current->pid);
-		}
-#endif
 	} else if (current->replay_thrd) {
 		MPRINT ("Replay thread %d starting to exit, recpid %d\n", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid);
 		
@@ -6887,6 +6844,8 @@ void consume_socket_args_read(void *retparams) {
 		consume_size = sizeof(u_int) + sizeof(u64) + sizeof(int);
 
 		argsconsume (current->replay_thrd->rp_record_thread, consume_size);
+	} else {
+		argsconsume (current->replay_thrd->rp_record_thread, sizeof(u_int));
 	}
 }
 
@@ -6894,6 +6853,8 @@ void consume_socket_args_write(void *retparams) {
 	u_int shared = *((u_int *)retparams);
 	if (shared) {
 		argsconsume (current->replay_thrd->rp_record_thread, sizeof(u_int) + sizeof(int));
+	} else {
+		argsconsume (current->replay_thrd->rp_record_thread, sizeof(u_int));
 	}
 }
 #endif
@@ -10627,16 +10588,20 @@ replay_socketcall (int call, unsigned long __user *args)
 			put_user (retvals->msg_flags, &msg->msg_flags);           // Out parameter
 
 			if (retvals->msg_namelen) {
-				if (copy_to_user ((char *) msg->msg_name, pdata, retvals->msg_namelen)) {
-					printk ("Pid %d cannot copy msg_name to user\n", current->pid);
+				long crc = copy_to_user ((char *) msg->msg_name, pdata, retvals->msg_namelen);
+				if (crc) {
+					printk ("Pid %d cannot copy msg_namelen %p to user %p len %d, rc=%ld\n", 
+						current->pid, msg->msg_name, pdata, retvals->msg_namelen, crc);
 					syscall_mismatch();
 				}
 				pdata += retvals->msg_namelen;
 			}
 
 			if (retvals->msg_controllen) {
-				if (copy_to_user ((char *) msg->msg_control, pdata, retvals->msg_controllen)) {
-					printk ("Pid %d cannot copy msg_name to user\n", current->pid);
+				long crc = copy_to_user ((char *) msg->msg_control, pdata, retvals->msg_controllen);
+				if (crc) {
+					printk ("Pid %d cannot copy msg_control %p to user %p len %d, rc=%ld\n", 
+						current->pid, msg->msg_control, pdata, retvals->msg_controllen, crc);
 					syscall_mismatch();
 				}
 				pdata += retvals->msg_controllen;
