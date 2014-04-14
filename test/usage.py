@@ -4,28 +4,42 @@ import os
 import glob
 import time
 import re
+import sys
 
 print "Cache stats:"
 print
 
 count_by_date = {}
 bytes_by_date = {}
+bsize_by_date = {}
 total_count = 0
 total_bytes = 0
+total_bsize = 0
 
 for cfile in glob.glob("/replay_cache/*"):
+    if re.search("replaymap", cfile):
+        continue
     st = os.stat (cfile)
     ts_string = time.strftime("%m-%d", time.localtime(st.st_ctime))
     count_by_date[ts_string] = count_by_date.get(ts_string,0) + 1
     total_count += 1
     bytes_by_date[ts_string] = bytes_by_date.get(ts_string,0) + st.st_size
     total_bytes += st.st_size
+    bsize_by_date[ts_string] = bsize_by_date.get(ts_string,0) + (512 * st.st_blocks)
+    total_bsize += (512 * st.st_blocks)
+
 
 for k in sorted(count_by_date.keys()):
-    print "Date %s: %6d files comprising %5d MB" % (k, count_by_date[k], bytes_by_date[k]/(1024*1024))
+    print "Date %s: %6d files comprising %5d MB (%5d MB by blocksize)" % (k, count_by_date[k], bytes_by_date[k]/(1024*1024), bsize_by_date[k]/(1024*1024))
 
-print "Total:      %6d files comprising %5d MB" % (total_count, total_bytes/(1024*1024))
+print "Total:      %6d files comprising %5d MB (%5d MB by blocksize)" % (total_count, total_bytes/(1024*1024), total_bsize/(1024*1024))
 
+# Replay map
+print
+print "Replay map:"
+for cfile in glob.glob("/replay_cache/replaymap*"):
+    st = os.stat (cfile)
+    print "%s stat size %d MB block size %d MB"%(cfile, st.st_size/(1024*1024), (512 * st.st_blocks)/(1024*1024))
 
 groups_by_date = {}
 total_groups = 0
@@ -160,6 +174,8 @@ total_mcompressed = 0
 total_xcompressed = 0
 
 for k in sorted(groups_by_date.keys()):
+    if len(sys.argv) > 1 and k < sys.argv[1]:
+        continue
     print "Date %s: %6d groups" % (k, groups_by_date[k]),
     day_bytes = 0
     if k in cfiles_by_date:
