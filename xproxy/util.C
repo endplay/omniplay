@@ -30,8 +30,6 @@ void detailedCompare (unsigned char* buf1, int size1, unsigned char* buf2, int s
 void printMessage (unsigned const char* buffer, int size, int num, ...) {
 	va_list arguments;
 	int count = 0;
-	if (PRINT_DEBUG == 0)
-		return;
 	va_start (arguments, num);
 	cout <<"----------------------"<<endl;
 	for (int i = 0; i < num; ++i) {
