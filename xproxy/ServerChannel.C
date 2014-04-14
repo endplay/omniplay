@@ -125,7 +125,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 			}
 			if (PRINT_DEBUG)
 				cout << "first reply, size:"<<size<<endl;
-			printMessage(buffer, size, 21, 1, 1+MAGIC_SIZE, 2, 2, 2, 4, 4, 4,
+			if (PRINT_DEBUG) printMessage(buffer, size, 21, 1, 1+MAGIC_SIZE, 2, 2, 2, 4, 4, 4,
 					4, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 4+MAGIC_SIZE, -1);
 			int vendorSize = GetUINT(buffer + 24, bigEndian_);
 			if (PRINT_DEBUG)
@@ -138,14 +138,14 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 			for (int i = 0; i<formatNum; ++i) {
 				if (PRINT_DEBUG)
 					cout << "	first reply: format, total num:"<<formatNum<<endl;
-				printMessage(buffer + pad + 8*i, 8, 4, 1, 1, 1, -1);
+				if (PRINT_DEBUG) printMessage(buffer + pad + 8*i, 8, 4, 1, 1, 1, -1);
 			}
 			if (screenNum != 1) {
 				cerr <<"multi screens are found! may cause bugs during replaying"<<endl;
 			} else {
 				if (PRINT_DEBUG)
 					cout <<"	first reply: screen"<<endl;
-				printMessage(buffer + pad + 8*formatNum, size - (40 + pad + 8
+				if (PRINT_DEBUG) printMessage(buffer + pad + 8*formatNum, size - (40 + pad + 8
 						*formatNum), 16, 4, 4, 4, 4, 4, 2, 2, 2, 2, 2, 2, 4, 1,
 						1, 1, 1);
 			}
@@ -310,7 +310,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 						}
 						unsigned int pixel = GetULONG(buffer + 16, bigEndian_);
 						encodeBuffer.encodeValue(pixel, 32, 9);
-						printMessage(buffer, size, 10, 1, 1+MAGIC_SIZE, 2, 4,
+						if (PRINT_DEBUG) printMessage(buffer, size, 10, 1, 1+MAGIC_SIZE, 2, 4,
 								2, 2, 2, 2, 4, -1);
 					}
 						break;
@@ -324,7 +324,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 						for (unsigned int i = 0; i < nameLength; i++)
 							clientCache_.internAtomTextCompressor.
 							encodeChar(*nextSrc++, encodeBuffer);
-						printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 4, 2,
+						if (PRINT_DEBUG) printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 4, 2,
 								22+MAGIC_SIZE);
 					}
 						break;
@@ -345,7 +345,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 									getGeometryGeomCache[i], 8);
 							nextSrc += 2;
 						}
-						printMessage(buffer, size, 11, 1, 1, 2, 4, 4, 2, 2, 2,
+						if (PRINT_DEBUG) printMessage(buffer, size, 11, 1, 1, 2, 4, 4, 2, 2, 2,
 								2, 2, -1);
 					}
 						break;
@@ -361,14 +361,14 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 #endif
 							if (PRINT_DEBUG)
 								cout <<"recorded message is "<<endl;
-							printMessage(eventQueue_.getReplyBuffer(), size, 6,
+							if (PRINT_DEBUG) printMessage(eventQueue_.getReplyBuffer(), size, 6,
 									1, 1, 2, 4, 4, -1);
 							if (PRINT_DEBUG)
 								cout
 										<< "This is a special reply, send recorded message to the application instead."
 										<<endl;
 						}
-						printMessage(buffer, size, 6, 1, 1, 2, 4, 4, -1);
+						if (PRINT_DEBUG) printMessage(buffer, size, 6, 1, 1, 2, 4, 4, -1);
 					}
 						break;
 					case X_GetKeyboardMapping: {
@@ -384,7 +384,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 #endif
 							if (PRINT_DEBUG)
 								cout <<"recorded message is "<<endl;
-							printMessage(eventQueue_.getReplyBuffer(), size, 6,
+							if (PRINT_DEBUG) printMessage(eventQueue_.getReplyBuffer(), size, 6,
 									1, 1+MAGIC_SIZE, 2, 4, 4, -1);
 							if (PRINT_DEBUG)
 								cout
@@ -392,7 +392,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 										<<endl;
 						}
 
-						printMessage(buffer, size, 5, 1, 1, 2, 4, 24+MAGIC_SIZE);
+						if (PRINT_DEBUG) printMessage(buffer, size, 5, 1, 1, 2, 4, 24+MAGIC_SIZE);
 					}
 						break;
 					case X_GetModifierMapping: {
@@ -415,7 +415,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 								encodeBuffer.encodeValue(next, 8);
 							}
 						}
-						printMessage(buffer, size, 5, 1, 1, 2, 4, 24+MAGIC_SIZE);
+						if (PRINT_DEBUG) printMessage(buffer, size, 5, 1, 1, 2, 4, 24+MAGIC_SIZE);
 					}
 						break;
 					case X_GetProperty: {
@@ -491,7 +491,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 								//dummy read; consume the rest unread bytes in reply.log.debug
 								if (PRINT_DEBUG)
 									cout <<"recorded message is "<<endl;
-								printMessage(eventQueue_.getReplyBuffer(),
+								if (PRINT_DEBUG) printMessage(eventQueue_.getReplyBuffer(),
 										aSize, 8, 1, 1, 2, 4, 4, 4, 4, 12
 												+MAGIC_SIZE);
 								//the atom could be window
@@ -515,7 +515,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 										bigEndian_);
 							}
 						}
-						printMessage(buffer, size, 8, 1, 1, 2, 4, 4, 4, 4, 12
+						if (PRINT_DEBUG) printMessage(buffer, size, 8, 1, 1, 2, 4, 4, 4, 4, 12
 								+MAGIC_SIZE);
 					}
 						break;
@@ -532,7 +532,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 #endif
 							if (PRINT_DEBUG)
 								cout <<"recorded message is "<<endl;
-							printMessage(eventQueue_.getReplyBuffer(), size, 6,
+							if (PRINT_DEBUG) printMessage(eventQueue_.getReplyBuffer(), size, 6,
 									1, 1+MAGIC_SIZE, 2, 4, 4, -1);
 							int owner = GetULONG(eventQueue_.getReplyBuffer()
 									+ 8, bigEndian_);
@@ -545,7 +545,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 										<< "This is a special reply, send recorded message to the application instead."
 										<<endl;
 						}
-						printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 4, 4,
+						if (PRINT_DEBUG) printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 4, 4,
 								-1);
 					}
 						break;
@@ -595,14 +595,14 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 						encodeCachedValue(GetUINT(buffer + 40, bigEndian_), 16,
 								serverCache_.
 								getWindowAttributesDontPropagateCache);
-						printMessage(buffer, size, 1, 1, 2, 4, 4, 2, 1, 1, 4,
+						if (PRINT_DEBUG) printMessage(buffer, size, 1, 1, 2, 4, 4, 2, 1, 1, 4,
 								4, 1, 1, 1, 1, 4, 4, 4, 2, -1);
 					}
 						break;
 					case X_GrabKeyboard:
 					case X_GrabPointer: {
 						encodeBuffer.encodeValue((unsigned int) buffer[1], 3);
-						printMessage(buffer, size, 5, 1, 1, 2, 4, -1);
+						if (PRINT_DEBUG) printMessage(buffer, size, 5, 1, 1, 2, 4, -1);
 					}
 						break;
 					case X_InternAtom: {
@@ -617,7 +617,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 #endif
 							if (PRINT_DEBUG)
 								cout <<"recorded message is"<<endl;
-							printMessage(eventQueue_.getReplyBuffer(), size, 6,
+							if (PRINT_DEBUG) printMessage(eventQueue_.getReplyBuffer(), size, 6,
 									1, 1+MAGIC_SIZE, 2, 4, 4, -1);
 							// add atom map
 							idMap->addAtomMap(GetULONG(
@@ -629,7 +629,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 										<< "This is a special reply, send recorded message to the application instead."
 										<<endl;
 						}
-						printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 4, 4,
+						if (PRINT_DEBUG) printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 4, 4,
 								-1);
 					}
 						break;
@@ -651,7 +651,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 							if (PRINT_DEBUG)
 								cout <<" not compressed, error message"<<endl;
 						}
-						printMessage(buffer, size, 5, 1, 1, 2, 4, 24+MAGIC_SIZE);
+						if (PRINT_DEBUG) printMessage(buffer, size, 5, 1, 1, 2, 4, 24+MAGIC_SIZE);
 					}
 						break;
 					case X_ListFonts: {
@@ -670,7 +670,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 								serverCache_.getPropertyTextCompressor.
 								encodeChar(*nextSrc++, encodeBuffer);
 						}
-						printMessage(buffer, size, 6, 1+MAGIC_SIZE, 1, 2, 4, 2,
+						if (PRINT_DEBUG) printMessage(buffer, size, 6, 1+MAGIC_SIZE, 1, 2, 4, 2,
 								22+MAGIC_SIZE);
 
 					}
@@ -696,10 +696,10 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 							nextSrc += 2;
 						} while (--count);
 						if (nextOpcode == X_LookupColor)
-							printMessage(buffer, size, 11, 1, 1+MAGIC_SIZE, 2,
+							if (PRINT_DEBUG) printMessage(buffer, size, 11, 1, 1+MAGIC_SIZE, 2,
 									4, 2, 2, 2, 2, 2, 2, -1);
 						else
-							printMessage(buffer, size, 12, 1, 1+MAGIC_SIZE, 2,
+							if (PRINT_DEBUG) printMessage(buffer, size, 12, 1, 1+MAGIC_SIZE, 2,
 									4, 4, 2, 2, 2, 2, 2, 2, -1);
 					}
 						break;
@@ -708,7 +708,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 						encodeValue(GetUINT(buffer + 8, bigEndian_), 16, 8);
 						encodeBuffer.
 						encodeValue(GetUINT(buffer + 10, bigEndian_), 16, 8);
-						printMessage(buffer, size, 7, 1, 1+MAGIC_SIZE, 2, 4, 2,
+						if (PRINT_DEBUG) printMessage(buffer, size, 7, 1, 1+MAGIC_SIZE, 2, 4, 2,
 								2, -1);
 					}
 						break;
@@ -759,13 +759,13 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 											<<endl;
 								if (PRINT_DEBUG)
 									cout <<"recorded message is "<<endl;
-								printMessage(eventQueue_.getReplyBuffer(),
+								if (PRINT_DEBUG) printMessage(eventQueue_.getReplyBuffer(),
 										aSize, 8, 1, 1, 2, 4, 4, 4, 4, 12
 												+MAGIC_SIZE);
 
 							}
 						}
-						printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 4, 2,
+						if (PRINT_DEBUG) printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 4, 2,
 								22+MAGIC_SIZE);
 					}
 						break;
@@ -776,7 +776,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 							buffer[8] = 0;
 							buffer[9] = 0;
 						}
-						printMessage(buffer, size, 9, 1, 1+MAGIC_SIZE, 2, 4, 1,
+						if (PRINT_DEBUG) printMessage(buffer, size, 9, 1, 1+MAGIC_SIZE, 2, 4, 1,
 								1, 1, 1, 20+MAGIC_SIZE);
 					}
 						break;
@@ -829,7 +829,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 							encodeCharInfo_(nextSrc, encodeBuffer);
 							nextSrc += 12;
 						}
-						printMessage(buffer, size, 19, 1, 1+MAGIC_SIZE, 2, 4,
+						if (PRINT_DEBUG) printMessage(buffer, size, 19, 1, 1+MAGIC_SIZE, 2, 4,
 								12, 4+MAGIC_SIZE, 12, 4+MAGIC_SIZE, 2, 2, 2, 2,
 								1, 1, 1, 1, 2, 2, 4);
 
@@ -857,10 +857,10 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 										<<endl;
 							if (PRINT_DEBUG)
 								cout <<"recorded message is"<<endl;
-							printMessage(eventQueue_.getReplyBuffer(), 32, 12,
+							if (PRINT_DEBUG) printMessage(eventQueue_.getReplyBuffer(), 32, 12,
 									1, 1, 2, 4, 4, 4, 2, 2, 2, 2, 2, -1);
 						}
-						printMessage(buffer, size, 12, 1, 1, 2, 4, 4, 4, 2, 2,
+						if (PRINT_DEBUG) printMessage(buffer, size, 12, 1, 1, 2, 4, 4, 4, 2, 2,
 								2, 2, 2, -1);
 					}
 						break;
@@ -879,7 +879,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 										<<endl;
 							if (PRINT_DEBUG)
 								cout <<"the recorded message is "<<endl;
-							printMessage(eventQueue_.getReplyBuffer(), aSize,
+							if (PRINT_DEBUG) printMessage(eventQueue_.getReplyBuffer(), aSize,
 									8, 1, 1+MAGIC_SIZE, 2, 4, 4, 4, 2, 14
 											+MAGIC_SIZE);
 
@@ -895,7 +895,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 							eventQueue_.recordReply(buffer, size);
 						}
 
-						printMessage(buffer, size, 8, 1, 1+MAGIC_SIZE, 2, 4, 4,
+						if (PRINT_DEBUG) printMessage(buffer, size, 8, 1, 1+MAGIC_SIZE, 2, 4, 4,
 								4, 2, 14+MAGIC_SIZE);
 					}
 						break;
@@ -918,7 +918,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 #endif
 							if (PRINT_DEBUG)
 								cout <<"recorded message is"<<endl;
-							printMessage(eventQueue_.getReplyBuffer(), size, 8,
+							if (PRINT_DEBUG) printMessage(eventQueue_.getReplyBuffer(), size, 8,
 									1, 1, 2, 4, 4, 2, 2, -1);
 							if (PRINT_DEBUG)
 								cout
@@ -926,13 +926,13 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 										<<endl;
 						}
 
-						printMessage(buffer, size, 8, 1, 1, 2, 4, 4, 2, 2, -1);
+						if (PRINT_DEBUG) printMessage(buffer, size, 8, 1, 1, 2, 4, 4, 2, 2, -1);
 					}
 						break;
 						//starting point for additional message support 
 						//reply not compressed yet
 					case X_ListFontsWithInfo: {
-						printMessage(buffer, size, 4, 1, 1, 2, 4);
+						if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1, 2, 4);
 						// this is not the last reply in series, so add more sequence number here. 
 						if (nextOpcode == X_ListFontsWithInfo && buffer[1])
 							sequenceNumQueue_.push(sequenceNum, nextOpcode);
@@ -942,7 +942,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 						if (replay)
 							PutULONG(idMap->mapToOld(GetULONG(buffer + 8,
 									bigEndian_)), buffer + 8, bigEndian_);
-						printMessage(buffer, size, 4, 1, 1, 2, 4);
+						if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1, 2, 4);
 					}
 						break;
 
@@ -953,7 +953,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 					case XE_SGI_GLX: {
 						if (PRINT_DEBUG)
 							cout<<"           ***not compressed"<<endl;
-						printMessage(buffer, size, 4, 1, 1, 2, 4);
+						if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1, 2, 4);
 					}
 						break;
 						//starting point for x extensions parsing
@@ -969,7 +969,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 								cout<<"           ***not compressed"<<endl;
 						}
 						}
-						printMessage(buffer, size, 4, 1, 1, 2, 4);
+						if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1, 2, 4);
 					}
 						break;
 					case XE_SYNC: {
@@ -984,7 +984,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 								cout<<"           ***not compressed"<<endl;
 						}
 						}
-						printMessage(buffer, size, 4, 1, 1, 2);
+						if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1, 2);
 					}
 						break;
 					case XE_XFIXES: {
@@ -998,12 +998,12 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 								cout<<"           ***not compressed"<<endl;
 						}
 						}
-						printMessage(buffer, size, 4, 1, 1, 2);
+						if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1, 2);
 					}
 						break;
 					case XE_MIT_SHM: {
 						//cout <<"          *** not compressed"<<endl;
-						printMessage(buffer, size, 4, 1, 1, 2, 4);
+						if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1, 2, 4);
 					}
 						break;
 					case XE_XKEYBOARD: {
@@ -1029,7 +1029,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 #endif
 								if (PRINT_DEBUG)
 									cout <<"recorded message is "<<endl;
-								printMessage(eventQueue_.getReplyBuffer(), size, 6,
+								if (PRINT_DEBUG) printMessage(eventQueue_.getReplyBuffer(), size, 6,
 										1, 1+MAGIC_SIZE, 2, 4, 4, -1);
 								if (PRINT_DEBUG)
 									cout
@@ -1044,12 +1044,12 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 								cout<<"           ***not compressed"<<endl;
 						}
 						}
-						printMessage(buffer, size, 4, 1, 1, 2);
+						if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1, 2);
 					}
 						break;
 
 					case XE_EVENT_EXTENSION: {
-						printMessage(buffer, size, 5, 1, 1, 2, 2, 2);
+						if (PRINT_DEBUG) printMessage(buffer, size, 5, 1, 1, 2, 2, 2);
 					}
 						break;
 
@@ -1067,14 +1067,14 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 								cout<<"           ***not compressed"<<endl;
 						}
 						}
-						printMessage(buffer, size, 4, 1, 1, 2, 4);
+						if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1, 2, 4);
 
 					}
 						break;
 					case XE_BIG_REQUESTS: {
 						encodeBuffer.encodeValue(GetULONG(buffer + 8,
 								bigEndian_), 32);
-						printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 4, 4,
+						if (PRINT_DEBUG) printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 4, 4,
 								-1);
 					}
 						break;
@@ -1090,7 +1090,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 								cout<<"           ***not compressed"<<endl;
 						}
 						}
-						printMessage(buffer, size, 4, 1, 1, 2);
+						if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1, 2);
 					}
 						break;
 					case XE_RANDR: {
@@ -1107,7 +1107,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 							 PutULONG(idMap->mapToNew(GetULONG(buffer + 4,
 							 bigEndian_)), buffer + 4, bigEndian_);
 							 }
-							 printMessage(buffer, size, 3, 1, 1, 2);
+							 if (PRINT_DEBUG) printMessage(buffer, size, 3, 1, 1, 2);
 							 }
 							 break;*/
 						case X_RRGetOutputInfo:
@@ -1128,10 +1128,10 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 						default: {
 							if (PRINT_DEBUG)
 								cout<<"           ***not compressed"<<endl;
-							printMessage(buffer, size, 4, 1, 1, 2, 4);
+							if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1, 2, 4);
 						}
 						}
-						printMessage(buffer, size, 4, 1, 1, 2, 4);
+						if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1, 2, 4);
 					}
 						break;
 					default: {
@@ -1212,7 +1212,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 				 */
 				if (buffer[0] == 0) {
 					cout <<"Got An error message from x server."<<endl;
-					printMessage (buffer, size, 7, 1, 1, 2, 4, 2, 1, -1);
+					if (PRINT_DEBUG) printMessage (buffer, size, 7, 1, 1, 2, 4, 2, 1, -1);
 					if (sequenceNumQueue_.peek(dummySequenceNum, dummyOpcode)
 							&& ((unsigned int) dummySequenceNum == sequenceNum))
 						sequenceNumQueue_.pop(dummySequenceNum, dummyOpcode);
@@ -1241,13 +1241,13 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 								cerr << "Cannot write to application."<<endl;
 #endif
 								eventQueue_.replayError();
-								printMessage (buffer, size, 7, 1, 1, 2, 4, 2, 1, -1);
+								if (PRINT_DEBUG) printMessage (buffer, size, 7, 1, 1, 2, 4, 2, 1, -1);
 								*outputLength_ += 1;
 							} else {
 								cout <<"Get an error message from x server!"<<endl;
 								cerr << "Get an error message from x server!"<<endl;
 								if (!PRINT_DEBUG) printString (buffer, size);
-								printMessage (buffer, size, 7, 1, 1, 2, 4, 2, 1, -1);
+								if (PRINT_DEBUG) printMessage (buffer, size, 7, 1, 1, 2, 4, 2, 1, -1);
 							}
 						} else {
 							if (PRINT_DEBUG) cout <<"Get an event message from x server, skip. outputLength:"<<*outputLength_<<", current pos:"<<eventQueue_.getEventPos()<<endl;
@@ -1397,7 +1397,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 							}
 						}
 					}
-					/*printMessage (buffer, size, 14, 1, 1, 2, 4, 4, 
+					/*if (PRINT_DEBUG) printMessage (buffer, size, 14, 1, 1, 2, 4, 4, 
 					 4, 4, 2, 2, 2, 
 					 2, 2, 1, 1);*/
 
@@ -1435,7 +1435,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 						nextSrc += 2;
 					}
 					encodeBuffer.encodeValue(*nextSrc, 1);
-					/*printMessage (buffer, size, 13, 1, 1+MAGIC_SIZE, 2, 4, 4, 
+					/*if (PRINT_DEBUG) printMessage (buffer, size, 13, 1, 1+MAGIC_SIZE, 2, 4, 4, 
 					 4, 2, 2, 2, 2, 
 					 2, 1, -1);*/
 				}
@@ -1472,7 +1472,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 								exposeGeomCache[i], 6);
 						nextSrc += 2;
 					}
-					/*printMessage (buffer, size, 10, 1, 1+MAGIC_SIZE, 2, 4, 2, 
+					/*if (PRINT_DEBUG) printMessage (buffer, size, 10, 1, 1+MAGIC_SIZE, 2, 4, 2, 
 					 2, 2, 2, 2, -1);*/
 				}
 					break;
@@ -1513,10 +1513,10 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 						encodeBuffer.
 						encodeValue((unsigned int) buffer[12], 1);
 					/*if (*buffer == UnmapNotify)
-					 printMessage (buffer, size, 7, 1, 1+MAGIC_SIZE, 2, 4, 4, 
+					 if (PRINT_DEBUG) printMessage (buffer, size, 7, 1, 1+MAGIC_SIZE, 2, 4, 4, 
 					 1, -1);
 					 else if (*buffer == MapNotify)
-					 printMessage (buffer, size, 4, 1, 1+MAGIC_SIZE, 2, -1);*/
+					 if (PRINT_DEBUG) printMessage (buffer, size, 4, 1, 1+MAGIC_SIZE, 2, -1);*/
 				}
 					break;
 				case NoExpose: {
@@ -1547,7 +1547,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 					serverCache_.lastTimestamp = timestamp;
 					encodeBuffer.encodeValue(timestampDiff, 32, 9);
 					encodeBuffer.encodeValue((unsigned int) buffer[16], 1);
-					/*printMessage (buffer, size, 8, 1, 1+MAGIC_SIZE, 2, 4, 4, 
+					/*if (PRINT_DEBUG) printMessage (buffer, size, 8, 1, 1+MAGIC_SIZE, 2, 4, 4, 
 					 4, 1, -1);*/
 				}
 					break;
@@ -1566,7 +1566,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 					encodeBuffer.
 					encodeValue(GetUINT(nextSrc + 2, bigEndian_), 16, 6);
 					encodeBuffer.encodeValue((unsigned int) buffer[20], 1);
-					/*printMessage (buffer, size, 10, 1, 1+MAGIC_SIZE, 2, 4, 4, 
+					/*if (PRINT_DEBUG) printMessage (buffer, size, 10, 1, 1+MAGIC_SIZE, 2, 4, 4, 
 					 4, 2, 2, 1, -1);*/
 				}
 					break;
@@ -2049,7 +2049,7 @@ int ServerChannel::doWrite(const unsigned char *message, unsigned int length,
 					mask <<= 1;
 				}
 				writeBuffer_.unregisterPointer();
-				//if(replay_debug) printMessage (outputMessage, outputLength, 6, 1, 1+MAGIC_SIZE, 2, 4, 4, 4);
+				//if(replay_debug) if (PRINT_DEBUG) printMessage (outputMessage, outputLength, 6, 1, 1+MAGIC_SIZE, 2, 4, 4, 4);
 			}
 				break;
 			case X_CreatePixmap: {
@@ -3140,7 +3140,7 @@ int ServerChannel::doWrite(const unsigned char *message, unsigned int length,
 				}
 			}
 				if (replay_debug)
-					printMessage(outputMessage, outputLength, 12, 1, 1, 2, 4,
+					if (PRINT_DEBUG) printMessage(outputMessage, outputLength, 12, 1, 1, 2, 4,
 							4, 2, 2, 2, 2, 1, 1, 2);
 				break;
 			case X_QueryBestSize: {
