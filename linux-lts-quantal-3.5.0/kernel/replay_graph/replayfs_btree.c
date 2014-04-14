@@ -1894,7 +1894,7 @@ static int rebalance(struct replayfs_btree_head *head, struct btree_geo *geo,
 	 * Unimplemented... will happen if we get 85^2 unique entries... I'm going to
 	 * hope it doesn't for now...
 	 */
-	BUG_ON(level != 1);
+	/* BUG_ON(level != 1); */
 
 	parent = find_level(head, geo, key, level + 1, &parent_data);
 
