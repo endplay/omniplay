@@ -13,7 +13,7 @@
 #define EXTENT_FREE_SIZE (EXTENT_SIZE >> 1)
 
 /* 256GB pagealloc? */
-#define PAGE_ALLOC_SIZE (1LL<<38)
+#define PAGE_ALLOC_SIZE (1LL<<33)
 #define PAGE_ALLOC_PAGES (PAGE_ALLOC_SIZE / PAGE_SIZE)
 
 /* 

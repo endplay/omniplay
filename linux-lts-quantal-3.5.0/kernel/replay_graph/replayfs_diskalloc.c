@@ -388,7 +388,7 @@ int glbl_diskalloc_init(void) {
 		old_fs = get_fs();
 		set_fs(KERNEL_DS);
 		atomic_set(&open_in_replay, 1);
-		filp = filp_open(REPLAYFS_DISK_FILE, O_RDWR|O_LARGEFILE, 0777);
+		filp = filp_open(REPLAYFS_DISK_FILE, O_RDWR | O_LARGEFILE, 0777);
 		atomic_set(&open_in_replay, 0);
 		set_fs(old_fs);
 		if (IS_ERR(filp)) {
@@ -2185,10 +2185,8 @@ void replayfs_diskalloc_write_page_location(struct replayfs_diskalloc *alloc,
 	loff_t pos;
 	loff_t expected_pos;
 	unsigned int fmode;
-	/*
 	char path[200];
 	char *real_path;
-	*/
 
 	filp = alloc->filp;
 	fmode = alloc->filp->f_mode;
@@ -2201,12 +2199,10 @@ void replayfs_diskalloc_write_page_location(struct replayfs_diskalloc *alloc,
 	old_fs = get_fs();
 	set_fs(KERNEL_DS);
 
-	/*
 	real_path = d_path(&filp->f_path, path, 200);
 	if (IS_ERR(real_path)) {
 		BUG();
 	}
-	*/
 
 	BUG_ON(!S_ISREG(filp->f_dentry->d_inode->i_mode));
 	min_debugk("%s %d: filp is %p, inode is %p, ino is %lu\n", __func__, __LINE__,
@@ -2229,7 +2225,10 @@ void replayfs_diskalloc_write_page_location(struct replayfs_diskalloc *alloc,
 	min_debugk("%s %d: pos-Pageloc 0 contains %d, pos is %lld, nwritten is %d\n", __func__, __LINE__,
 			(int)((char *)buffer)[0], pos, nwritten);
 
-	BUG_ON(pos != expected_pos);
+	if (pos != expected_pos) {
+		printk("%s %d: File %p (%s) has unexpected return pos (got %lld instead of %lld), nwritten is %d\n", 
+				__func__, __LINE__, filp, real_path, pos, expected_pos, nwritten);
+	}
 
 	alloc->filp->f_mode = fmode;
 
