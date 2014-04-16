@@ -728,6 +728,7 @@ int main (int argc, char* argv[])
 						}
 #endif
 					case SYS_ACCEPT: 
+					case SYS_ACCEPT4:
 					case SYS_GETSOCKNAME:
 					case SYS_GETPEERNAME: {
 						struct accept_retvals avr;
