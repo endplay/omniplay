@@ -527,6 +527,7 @@ struct replayfs_filemap_entry *replayfs_filemap_read(struct replayfs_filemap *ma
 			lock_debugk("%s %d - %p: Unlocking %p\n", __func__, __LINE__, current,
 					&map->lock);
 			mutex_unlock(&map->lock);
+			kfree(vals);
 			return ERR_PTR(-ENOENT);
 		}
 
@@ -534,6 +535,7 @@ struct replayfs_filemap_entry *replayfs_filemap_read(struct replayfs_filemap *ma
 			lock_debugk("%s %d - %p: Unlocking %p\n", __func__, __LINE__, current,
 					&map->lock);
 			mutex_unlock(&map->lock);
+			kfree(vals);
 			return (void *)val;
 		}
 
