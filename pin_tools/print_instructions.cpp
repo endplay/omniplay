@@ -214,14 +214,10 @@ void thread_fini (THREADID threadid, const CONTEXT* ctxt, INT32 code, VOID* v)
     fprintf(stderr, "Pid %d (recpid %d, tid %d) thread fini\n", PIN_GetPid(), ptdata->record_pid, PIN_GetTid());
 }
 
-void before_rtn(const char* name)
+void change_getpid(ADDRINT reg_ref)
 {
-    fprintf(stderr, "Before call to %s\n", name);
-}
-
-void after_rtn(const char* name)
-{
-    fprintf(stderr, "After call to %s\n", name);
+    int pid = get_record_pid();
+    *(int*)reg_ref = pid;
 }
 
 void routine (RTN rtn, VOID *v)
@@ -232,8 +228,16 @@ void routine (RTN rtn, VOID *v)
 
     RTN_Open(rtn);
 
-    RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)before_rtn, IARG_PTR, name, IARG_END);
-    RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)after_rtn, IARG_PTR, name, IARG_END);
+    /* 
+     * On replay we can't return the replayed pid from the kernel because Pin
+     * needs the real pid too. (see kernel/replay.c replay_clone).
+     * To account for glibc caching of the pid, we have to account for the 
+     * replay pid in the pintool itself.
+     * */
+    if (!strcmp(name, "getpid") || !strcmp(name, "__getpid")) {
+        RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)change_getpid, 
+                IARG_REG_REFERENCE, LEVEL_BASE::REG_EAX, IARG_END);
+    }
 
     RTN_Close(rtn);
 }
@@ -285,6 +289,7 @@ int main(int argc, char** argv)
 
     IMG_AddInstrumentFunction (ImageLoad, 0);
     TRACE_AddInstrumentFunction (track_trace, 0);
+    RTN_AddInstrumentFunction (routine, 0);
 
     PIN_AddSyscallExitFunction(inst_syscall_end, 0);
     PIN_StartProgram();
