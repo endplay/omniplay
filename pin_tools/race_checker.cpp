@@ -8,8 +8,15 @@
 // edited by hyihe
 #include "happens_before.h"
 
-#define START_AT_SYSCALL 1024
-#define STOP_AT_SYSCALL  1024
+#define INSTMNT_CALL_RET
+#define START_AT_SYSCALL 0
+#define STOP_AT_SYSCALL  224999
+
+int print_limit = 10;
+int print_stop = 10;
+
+KNOB<string> KnobPrintLimit(KNOB_MODE_WRITEONCE, "pintool", "p", "10000000", "syscall print limit");
+KNOB<string> KnobPrintStop(KNOB_MODE_WRITEONCE, "pintool", "s", "10000000", "syscall print stop");
 
 // BEGIN GENERIC STUFF NEEDED TO REPLAY WITH PIN
 
@@ -33,8 +40,8 @@ int num_threads = 0;
 var_map_t variables;
 
 static inline bool inrange() {
-    return ((syscall_cnt >= START_AT_SYSCALL) 
-        && (syscall_cnt <= STOP_AT_SYSCALL));
+    return ((syscall_cnt >= print_limit) 
+        && (syscall_cnt <= print_stop));
 }
 
 bool detect_race(THREADID tid, VOID *ref_addr, ADDRINT size, VOID *ip, int ref_type) {
@@ -117,32 +124,18 @@ void syscall_after (ADDRINT ip)
 
 // END GENERIC STUFF NEEDED TO REPLAY WITH PIN
 
-#ifdef START_AT_SYSCALL
-
 void instrument_call(ADDRINT address, ADDRINT target, ADDRINT next_address)
 {
-    if (syscall_cnt > START_AT_SYSCALL) {
-#ifdef STOP_AT_SYSCALL
-	if (syscall_cnt < STOP_AT_SYSCALL) {
-#endif
-	    fprintf (stderr, "Thread %5d Call 0x%08x target 0x%08x next 0x%08x\n", PIN_ThreadId(), address, target, next_address);
-#ifdef STOP_AT_SYSCALL
-	}
-#endif
-    }
+//    if(inrange()) {
+//        fprintf (stderr, "Thread %5d Call 0x%08x target 0x%08x next 0x%08x\n", PIN_ThreadId(), address, target, next_address);
+//    }
 }
 
 void instrument_ret(ADDRINT address, ADDRINT target)
 {
-    if (syscall_cnt > START_AT_SYSCALL) {
-#ifdef STOP_AT_SYSCALL
-	if (syscall_cnt < STOP_AT_SYSCALL) {
-#endif
-	    fprintf (stderr, "Thread %5d Ret  0x%08x target 0x%08x\n", PIN_ThreadId(), address, target);
-#ifdef STOP_AT_SYSCALL
-	}
-#endif
-    }
+//    if(inrange()) {
+//        fprintf (stderr, "Thread %5d Ret  0x%08x target 0x%08x\n", PIN_ThreadId(), address, target);
+//    }
 }
 
 bool type_is_enter (ADDRINT type) {
@@ -155,15 +148,9 @@ bool type_is_enter (ADDRINT type) {
 
 void log_replay_enter (ADDRINT type, ADDRINT check)
 {
-    if (syscall_cnt > START_AT_SYSCALL) {
-#ifdef STOP_AT_SYSCALL
-	if (syscall_cnt < STOP_AT_SYSCALL) {
-#endif
-	    fprintf (stderr, "Thread %5d Repl type %d check %08lx\n", PIN_ThreadId(), (int) type, (u_long) check);
-#ifdef STOP_AT_SYSCALL
-	}
-#endif
-    }
+//    if (inrange()) {
+//        fprintf (stderr, "Thread %5d Repl type %d check %08lx\n", PIN_ThreadId(), (int) type, (u_long) check);
+//    }
     
     // edited by hyihe
     long curr_clock = get_clock_value(fd);
@@ -171,7 +158,7 @@ void log_replay_enter (ADDRINT type, ADDRINT check)
     	// *_ENTER type
         // Indicates the end of an interval
         thd_entr_type[PIN_ThreadId()] = type;
-        fprintf (stderr, "Thread %5d reaches sync point (%d) at clock %ld\n", PIN_ThreadId(), type, curr_clock);
+        //fprintf (stderr, "Thread %5d reaches sync point (%d) at clock %ld\n", PIN_ThreadId(), type, curr_clock);
         update_interval_speculate(thd_ints, PIN_ThreadId(), curr_clock);
     } else {
     	// *_EXIT type
@@ -185,15 +172,9 @@ void log_replay_enter (ADDRINT type, ADDRINT check)
 
 void record_read (VOID* ip, VOID* addr, ADDRINT size)
 {
-    if (syscall_cnt > START_AT_SYSCALL) {
-#ifdef STOP_AT_SYSCALL
-	if (syscall_cnt < STOP_AT_SYSCALL) {
-#endif
-	    fprintf (stderr, "Thread %5d read address %p size 0x%lx (inst %p)\n", PIN_ThreadId(), addr, (u_long) size, ip);
-#ifdef STOP_AT_SYSCALL
-	}
-#endif
-    }
+//    if (inrange()) {
+//        fprintf (stderr, "Thread %5d read address %p size 0x%lx (inst %p)\n", PIN_ThreadId(), addr, (u_long) size, ip);
+//    }
     // edited by hyihe
     if(detect_race(PIN_ThreadId(), addr, size, ip, MEM_REF_READ))
         exit(1);
@@ -201,28 +182,16 @@ void record_read (VOID* ip, VOID* addr, ADDRINT size)
 
 void record_read2 (VOID* ip, VOID* addr)
 {
-    if (syscall_cnt > START_AT_SYSCALL) {
-#ifdef STOP_AT_SYSCALL
-	if (syscall_cnt < STOP_AT_SYSCALL) {
-#endif
-	    fprintf (stderr, "Thread %5d read2 address %p (inst %p)\n", PIN_ThreadId(), addr, ip);
-#ifdef STOP_AT_SYSCALL
-	}
-#endif
-    }
+//    if (inrange()) {
+//        fprintf (stderr, "Thread %5d read2 address %p (inst %p)\n", PIN_ThreadId(), addr, ip);
+//    }
 }
 
 void record_write (VOID* ip, VOID* addr, ADDRINT size)
 {
-    if (syscall_cnt > START_AT_SYSCALL) {
-#ifdef STOP_AT_SYSCALL
-	if (syscall_cnt < STOP_AT_SYSCALL) {
-#endif
-	    fprintf (stderr, "Thread %5d wrote address %p size 0x%lx (inst %p)\n", PIN_ThreadId(), addr, (u_long) size, ip);
-#ifdef STOP_AT_SYSCALL
-	}
-#endif
-    }
+//    if (syscall_cnt > START_AT_SYSCALL) {
+//        fprintf (stderr, "Thread %5d wrote address %p size 0x%lx (inst %p)\n", PIN_ThreadId(), addr, (u_long) size, ip);
+//    }
     // edited by hyihe
     if(detect_race(PIN_ThreadId(), addr, size, ip, MEM_REF_WRITE))
         exit(1);
@@ -230,32 +199,21 @@ void record_write (VOID* ip, VOID* addr, ADDRINT size)
 
 void record_locked (VOID* ip)
 {
-    if (syscall_cnt > START_AT_SYSCALL) {
-#ifdef STOP_AT_SYSCALL
-	if (syscall_cnt < STOP_AT_SYSCALL) {
-#endif
+	if (inrange()) {
 	    fprintf (stderr, "Thread %5d locked inst %p\n", PIN_ThreadId(), ip);
-#ifdef STOP_AT_SYSCALL
-	}
-#endif
     }
 }
 
 void log_replay_exit ()
 {
-    if (syscall_cnt > START_AT_SYSCALL) {
-#ifdef STOP_AT_SYSCALL
-	if (syscall_cnt < STOP_AT_SYSCALL) {
-#endif
-	    fprintf (stderr, "Thread %5d Repl Exit\n", PIN_ThreadId());
-#ifdef STOP_AT_SYSCALL
-	}
-#endif
-    }
+//    if (syscall_cnt > START_AT_SYSCALL) {
+//        fprintf (stderr, "Thread %5d Repl Exit\n", PIN_ThreadId());
+//    }
+
     int type = thd_entr_type[PIN_ThreadId()];
     if(!type_is_enter(type)) {
         long curr_clock = get_clock_value(fd) - 1;
-        fprintf (stderr, "Thread %5d resumes (%d) at clock %ld\n", PIN_ThreadId(), type, curr_clock);
+        //fprintf (stderr, "Thread %5d resumes (%d) at clock %ld\n", PIN_ThreadId(), type, curr_clock);
         thd_ints[PIN_ThreadId()] = new_interval(curr_clock);
     }
 }
@@ -285,8 +243,6 @@ void track_function(RTN rtn, void* v)
     }
     RTN_Close(rtn);
 }
-
-#endif
 
 void track_inst(INS ins, void* data) 
 {
@@ -321,7 +277,7 @@ void track_inst(INS ins, void* data)
 	INS_InsertPredicatedCall (ins, IPOINT_BEFORE, AFUNPTR(record_locked), IARG_INST_PTR, IARG_END);
     }
 
-#ifdef START_AT_SYSCALL
+#ifdef INSTMNT_CALL_RET
     // sometimes commented out to make testing faster
     switch (INS_Opcode(ins)) {
 	case XED_ICLASS_CALL_NEAR:
@@ -398,6 +354,8 @@ int main(int argc, char** argv)
 
     // Obtain a key for TLS storage
     tls_key = PIN_CreateThreadDataKey(0);
+    print_limit = atoi(KnobPrintLimit.Value().c_str());
+    print_stop = atoi(KnobPrintStop.Value().c_str());
 
     PIN_AddThreadStartFunction(thread_start, 0);
 
@@ -484,8 +442,8 @@ interval_t *new_interval(long clock) {
 
 void update_interval_speculate(std::vector<interval_t *> &thd_ints, uint32_t tid, long clock) {
 	if(thd_ints[tid]->second != clock) {
-		fprintf(stderr, "Thread %5d's interval updated (spec) from %ld to %ld\n",
-			tid, thd_ints[tid]->second, clock);
+//		fprintf(stderr, "Thread %5d's interval updated (spec) from %ld to %ld\n",
+//			tid, thd_ints[tid]->second, clock);
 		thd_ints[tid]->second = clock;
 	}
 }
