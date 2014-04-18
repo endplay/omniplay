@@ -173,7 +173,7 @@ int ReadBuffer::doRead() {
 		// The buffer is full; double its size so that we can read some more
 		unsigned char *newBuffer = new unsigned char[size_ << 1];
 
-		cout <<"current size is "<<size_<<endl;
+		if (PRINT_DEBUG) cout <<"current size is "<<size_<<endl;
 		memset(newBuffer, 0, size_ << 1);
 		memcpy(newBuffer, buffer_, size_);
 		delete[]buffer_;
@@ -207,8 +207,13 @@ unsigned char *ReadBuffer::getMessage(unsigned int &messageLength) {
 		messageLength = dataLength;
 		if (dataLength)
 			result += headerLength;
-		else
+		else {
+			// probably this application is using big request extension
+			// we need to get the new request size; but read more bytes first
+			
 			messageLength += headerLength;
+			return NULL;
+		}
 		start_ += (headerLength + dataLength + trailerLength);
 		length_ -= (headerLength + dataLength + trailerLength);
 		return result;

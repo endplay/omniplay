@@ -8,6 +8,12 @@ for replay_dir in /replay_logdb/*; do
 		for replay_file in $replay_dir/*; do
 			if echo "$replay_file" | grep "klog.id." &> /dev/null; then
 				output=$(./parseklog $replay_file -s)
+				rc=$?
+
+				if [[ "$rc" -ne "0" ]]; then
+					echo "Failed to parse $replay_file"
+				fi
+
 				line=$(echo "$output" | tail -n1) 
 				stats=$(echo "$line" | sed -e "s|Extra bytes added by replay_graph:||")
 

@@ -5,7 +5,7 @@ using namespace std;
 
 static const unsigned int INITIALSIZE_ = 16;
 static const unsigned int GROWTH_INCREMENT = 16;
-#define seq_debug 1
+#define seq_debug 0
 
 SequenceNumQueue::SequenceNumQueue():
     queue_(new RequestSequenceNum[INITIALSIZE_]),

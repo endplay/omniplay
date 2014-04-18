@@ -27,9 +27,11 @@ statisticsLevel, ResourceID *IdMap, unsigned int* outputLength, char* filename,
 	else
 	replyFile_.open(filename, ios::in | ios::out | ios::binary | ios::app);
 #else
-	replyFile_.open(filename, ios::in | ios::out | ios::binary | ios::app);
+	if (PRINT_DEBUG)
+		replyFile_.open(filename, ios::in | ios::out | ios::binary | ios::app);
 #endif
-	replyFile_.exceptions(fstream::failbit | fstream::badbit);
+	if (PRINT_DEBUG)
+		replyFile_.exceptions(fstream::failbit | fstream::badbit);
 	file_replay = fileReplay;
 	convertPos = 0;
 }
@@ -77,7 +79,8 @@ ServerChannel::~ServerChannel() {
 
 		decompresser = 0;
 	}
-	replyFile_.close();
+	if (PRINT_DEBUG)
+		replyFile_.close();
 	cout <<"logging all reply and event messages"<<endl;
 }
 
@@ -87,13 +90,13 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 #ifdef CONVERT
 	int pos = readBuffer_.doRead();
 	if (pos <= 0)
-		return pos;
+	return pos;
 	cout <<"serverChannel inside pos:"<<pos <<endl;
-	if (pos > convertPos)
-		return pos;
+	if (pos> convertPos)
+	return pos;
 #else
 	if (!readBuffer_.doRead())
-	return 0;
+		return 0;
 #endif
 
 	unsigned char *buffer;
@@ -120,25 +123,28 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 				for (unsigned int i = 8; i < size; i++)
 					encodeBuffer.encodeValue((unsigned int) buffer[i], 8);
 			}
-			cout << "first reply, size:"<<size<<endl;
+			if (PRINT_DEBUG)
+				cout << "first reply, size:"<<size<<endl;
 			printMessage(buffer, size, 21, 1, 1+MAGIC_SIZE, 2, 2, 2, 4, 4, 4,
 					4, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 4+MAGIC_SIZE, -1);
 			int vendorSize = GetUINT(buffer + 24, bigEndian_);
-			cout <<"	first reply: vendor (40-"<<vendorSize<<"):";
-			printString(buffer + 40, vendorSize);
+			if (PRINT_DEBUG)
+				cout <<"	first reply: vendor (40-"<<vendorSize<<"):";
+			if (PRINT_DEBUG)
+				printString(buffer + 40, vendorSize);
 			int formatNum = (unsigned int) (buffer[29]);
 			int screenNum = (unsigned int) buffer[28];
 			int pad = ((40 + vendorSize + 3)/4) *4;
 			for (int i = 0; i<formatNum; ++i) {
-				cout << "	first reply: format, total num:"<<formatNum<<endl;
+				if (PRINT_DEBUG)
+					cout << "	first reply: format, total num:"<<formatNum<<endl;
 				printMessage(buffer + pad + 8*i, 8, 4, 1, 1, 1, -1);
 			}
 			if (screenNum != 1) {
-				cerr <<"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"<<endl;
-				cerr <<"multi screens are found! may cause bugs."<<endl;
-				cerr <<"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"<<endl;
+				cerr <<"multi screens are found! may cause bugs during replaying"<<endl;
 			} else {
-				cout <<"	first reply: screen"<<endl;
+				if (PRINT_DEBUG)
+					cout <<"	first reply: screen"<<endl;
 				printMessage(buffer + pad + 8*formatNum, size - (40 + pad + 8
 						*formatNum), 16, 4, 4, 4, 4, 4, 2, 2, 2, 2, 2, 2, 4, 1,
 						1, 1, 1);
@@ -156,9 +162,10 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 				 cerr << "Exception reading files in ServerChannel.c"<<endl;
 				 }*/
 				unsigned int aSize = eventQueue_.replayReply();
-				cout
-						<< "This is a special reply, send recorded message to the application instead. First Reply:recorded size:"
-						<<aSize<< ", actual size:"<<size <<endl;
+				if (PRINT_DEBUG)
+					cout
+							<< "This is a special reply, send recorded message to the application instead. First Reply:recorded size:"
+							<<aSize<< ", actual size:"<<size <<endl;
 				replayBuffer = eventQueue_.getReplyBuffer();
 				*outputLength_ += 1;
 
@@ -175,9 +182,10 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 				if ((unsigned int) SOCKWRITE (appFD, eventQueue_.getReplyBuffer(), aSize) != aSize)
 					cerr << "Cannot write to application."<<endl;
 #endif
-				cout
-						<< "This is a special reply, send recorded message to the application instead. First Reply:recorded size:"
-						<<aSize<< ", actual size:"<<size <<endl;
+				if (PRINT_DEBUG)
+					cout
+							<< "This is a special reply, send recorded message to the application instead. First Reply:recorded size:"
+							<<aSize<< ", actual size:"<<size <<endl;
 
 			} else {
 				// recording
@@ -258,9 +266,11 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 					sequenceNumQueue_.pop(nextSequenceNum, nextOpcode,
 							requestData[0], requestData[1], requestData[2]);
 					requestOpcode = nextOpcode;
-					cout <<"reply  opcode:"<<(unsigned int)nextOpcode
-							<<"  sequence:"<<nextSequenceNum<<"  size:"<<size
-							<<" outputLength:"<<*outputLength_ <<endl;
+					if (PRINT_DEBUG)
+						cout <<"reply  opcode:"<<(unsigned int)nextOpcode
+								<<"  sequence:"<<nextSequenceNum<<"  size:"
+								<<size <<" outputLength:"<<*outputLength_
+								<<endl;
 
 					/*					if (replay) {
 					 if (nextOpcode == X_QueryTree) {
@@ -349,58 +359,39 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 							if ((unsigned int) SOCKWRITE (appFD, eventQueue_.getReplyBuffer(), 32) != 32)
 								cerr << "Cannot write to application."<<endl;
 #endif
-							cout <<"recorded message is "<<endl;
+							if (PRINT_DEBUG)
+								cout <<"recorded message is "<<endl;
 							printMessage(eventQueue_.getReplyBuffer(), size, 6,
 									1, 1, 2, 4, 4, -1);
-							cout
-									<< "This is a special reply, send recorded message to the application instead."
-									<<endl;
+							if (PRINT_DEBUG)
+								cout
+										<< "This is a special reply, send recorded message to the application instead."
+										<<endl;
 						}
 						printMessage(buffer, size, 6, 1, 1, 2, 4, 4, -1);
 					}
 						break;
 					case X_GetKeyboardMapping: {
-						unsigned int keysymsPerKeycode =
-								(unsigned int) buffer[1];
-						if (ServerCache::getKeyboardMappingLastMap.
-						compare(size - 32, buffer + 32)
-								&& (keysymsPerKeycode
-										== ServerCache::getKeyboardMappingLastKeysymsPerKeycode)) {
-							encodeBuffer.encodeValue(1, 1);
-							break;
+						specialReply = 1;
+						if (!replay) {
+							eventQueue_.recordReply(buffer, size);
+						} else {
+							//this is different, we will send the original reply back to the application, and remember the mapped window id
+							unsigned int asize = eventQueue_.replayReply();
+#ifndef FILE_REPLAY
+							if ((unsigned int) SOCKWRITE (appFD, eventQueue_.getReplyBuffer(), asize) != asize)
+								cerr << "Cannot write to application."<<endl;
+#endif
+							if (PRINT_DEBUG)
+								cout <<"recorded message is "<<endl;
+							printMessage(eventQueue_.getReplyBuffer(), size, 6,
+									1, 1+MAGIC_SIZE, 2, 4, 4, -1);
+							if (PRINT_DEBUG)
+								cout
+										<< "This is a special reply, send recorded message to the application instead."
+										<<endl;
 						}
-						ServerCache::getKeyboardMappingLastKeysymsPerKeycode
-								= keysymsPerKeycode;
-						encodeBuffer.encodeValue(0, 1);
-						unsigned int numKeycodes = (((size - 32)
-								/ keysymsPerKeycode) >> 2);
-						encodeBuffer.encodeValue(numKeycodes, 8);
-						encodeBuffer.encodeValue(keysymsPerKeycode, 8, 4);
-						const unsigned char *nextSrc = buffer + 32;
-						unsigned char previous = 0;
 
-						for (unsigned int count = numKeycodes
-								* keysymsPerKeycode; count; --count) {
-							unsigned int keysym = GetULONG(nextSrc, bigEndian_);
-							nextSrc += 4;
-							if (keysym == NoSymbol)
-								encodeBuffer.encodeValue(1, 1);
-							else {
-								encodeBuffer.encodeValue(0, 1);
-								unsigned int first3Bytes = (keysym >> 8);
-
-								encodeBuffer.
-								encodeCachedValue(first3Bytes, 24,
-										serverCache_.
-										getKeyboardMappingKeysymCache, 9);
-								unsigned char lastByte =
-										(unsigned char) (keysym & 0xff);
-								encodeBuffer.encodeCachedValue(lastByte
-										- previous, 8, serverCache_.
-								getKeyboardMappingLastByteCache, 5);
-								previous = lastByte;
-							}
-						}
 						printMessage(buffer, size, 5, 1, 1, 2, 4, 24+MAGIC_SIZE);
 					}
 						break;
@@ -479,7 +470,8 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 						if (requestData[0]) {
 							specialReply = 1;
 							if (!replay) {
-								cout <<" Special GetProperty reply."<<endl;
+								if (PRINT_DEBUG)
+									cout <<" Special GetProperty reply."<<endl;
 								// record this reply as this window may not be accessible
 								eventQueue_.recordReply(buffer, size);
 							} else {
@@ -491,11 +483,14 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 											<< "Cannot write to x app for special getproperty."
 											<<endl;
 #endif
-								cout
-										<< "This is a special reply, send recorded message to the application instead. GetProperty:recorded size:"
-										<<aSize<< ", actual size:"<<size <<endl;
+								if (PRINT_DEBUG)
+									cout
+											<< "This is a special reply, send recorded message to the application instead. GetProperty:recorded size:"
+											<<aSize<< ", actual size:"<<size
+											<<endl;
 								//dummy read; consume the rest unread bytes in reply.log.debug
-								cout <<"recorded message is "<<endl;
+								if (PRINT_DEBUG)
+									cout <<"recorded message is "<<endl;
 								printMessage(eventQueue_.getReplyBuffer(),
 										aSize, 8, 1, 1, 2, 4, 4, 4, 4, 12
 												+MAGIC_SIZE);
@@ -535,7 +530,8 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 							if ((unsigned int) SOCKWRITE (appFD, eventQueue_.getReplyBuffer(), 32) != 32)
 								cerr << "Cannot write to application."<<endl;
 #endif
-							cout <<"recorded message is "<<endl;
+							if (PRINT_DEBUG)
+								cout <<"recorded message is "<<endl;
 							printMessage(eventQueue_.getReplyBuffer(), size, 6,
 									1, 1+MAGIC_SIZE, 2, 4, 4, -1);
 							int owner = GetULONG(eventQueue_.getReplyBuffer()
@@ -544,9 +540,10 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 								idMap->addSpecialMap(owner, GetULONG(
 										buffer + 8, bigEndian_));
 							}
-							cout
-									<< "This is a special reply, send recorded message to the application instead."
-									<<endl;
+							if (PRINT_DEBUG)
+								cout
+										<< "This is a special reply, send recorded message to the application instead."
+										<<endl;
 						}
 						printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 4, 4,
 								-1);
@@ -618,7 +615,8 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 							if ((unsigned int) SOCKWRITE (appFD, eventQueue_.getReplyBuffer(), 32) != 32)
 								cerr << "Cannot write to application."<<endl;
 #endif
-							cout <<"recorded message is"<<endl;
+							if (PRINT_DEBUG)
+								cout <<"recorded message is"<<endl;
 							printMessage(eventQueue_.getReplyBuffer(), size, 6,
 									1, 1+MAGIC_SIZE, 2, 4, 4, -1);
 							// add atom map
@@ -626,9 +624,10 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 									eventQueue_.getReplyBuffer() + 8,
 									bigEndian_), GetULONG(buffer + 8,
 									bigEndian_));
-							cout
-									<< "This is a special reply, send recorded message to the application instead."
-									<<endl;
+							if (PRINT_DEBUG)
+								cout
+										<< "This is a special reply, send recorded message to the application instead."
+										<<endl;
 						}
 						printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 4, 4,
 								-1);
@@ -648,9 +647,9 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 								memcpy((unsigned char *) nextSrc, "NOT-SHM", 7);
 							for (; length; length--)
 								encodeBuffer.
-								encodeValue((unsigned
-								int) (*nextSrc++), 8);
-							cout <<" not compressed, error message"<<endl;
+								encodeValue((unsigned int) (*nextSrc++), 8);
+							if (PRINT_DEBUG)
+								cout <<" not compressed, error message"<<endl;
 						}
 						printMessage(buffer, size, 5, 1, 1, 2, 4, 24+MAGIC_SIZE);
 					}
@@ -741,7 +740,8 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 						if (requestData[0]) {
 							specialReply = 1;
 							if (!replay) {
-								cout <<"Special QueryColors reply."<<endl;
+								if (PRINT_DEBUG)
+									cout <<"Special QueryColors reply."<<endl;
 								eventQueue_.recordReply(buffer, size);
 							} else {
 								unsigned int aSize;
@@ -752,10 +752,13 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 											<< "Cannot write to x app for special queryColor."
 											<<endl;
 #endif
-								cout
-										<< "This is a special reply, send recorded message to the application instead. GetProperty:recorded size:"
-										<<aSize<< ", actual size:"<<size <<endl;
-								cout <<"recorded message is "<<endl;
+								if (PRINT_DEBUG)
+									cout
+											<< "This is a special reply, send recorded message to the application instead. GetProperty:recorded size:"
+											<<aSize<< ", actual size:"<<size
+											<<endl;
+								if (PRINT_DEBUG)
+									cout <<"recorded message is "<<endl;
 								printMessage(eventQueue_.getReplyBuffer(),
 										aSize, 8, 1, 1, 2, 4, 4, 4, 4, 12
 												+MAGIC_SIZE);
@@ -848,10 +851,12 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 										eventQueue_.getReplyBuffer() + 12,
 										bigEndian_), child);
 							}
-							cout
-									<< "This is a special reply (QueryPointer), send recorded message to the application instead."
-									<<endl;
-							cout <<"recorded message is"<<endl;
+							if (PRINT_DEBUG)
+								cout
+										<< "This is a special reply (QueryPointer), send recorded message to the application instead."
+										<<endl;
+							if (PRINT_DEBUG)
+								cout <<"recorded message is"<<endl;
 							printMessage(eventQueue_.getReplyBuffer(), 32, 12,
 									1, 1, 2, 4, 4, 4, 2, 2, 2, 2, 2, -1);
 						}
@@ -869,8 +874,11 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 							if ((unsigned int) SOCKWRITE (appFD, eventQueue_.getReplyBuffer(), aSize) != aSize)
 								cerr << "Cannot write to application."<<endl;
 #endif
-							cout <<"This is a special reply, queryTree"<<endl;
-							cout <<"the recorded message is "<<endl;
+							if (PRINT_DEBUG)
+								cout <<"This is a special reply, queryTree"
+										<<endl;
+							if (PRINT_DEBUG)
+								cout <<"the recorded message is "<<endl;
 							printMessage(eventQueue_.getReplyBuffer(), aSize,
 									8, 1, 1+MAGIC_SIZE, 2, 4, 4, 4, 2, 14
 											+MAGIC_SIZE);
@@ -908,12 +916,14 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 							if ((unsigned int) SOCKWRITE (appFD, eventQueue_.getReplyBuffer(), 32) != 32)
 								cerr << "Cannot write to application."<<endl;
 #endif
-							cout <<"recorded message is"<<endl;
+							if (PRINT_DEBUG)
+								cout <<"recorded message is"<<endl;
 							printMessage(eventQueue_.getReplyBuffer(), size, 8,
 									1, 1, 2, 4, 4, 2, 2, -1);
-							cout
-									<< "This is a special reply, send recorded message to the application instead."
-									<<endl;
+							if (PRINT_DEBUG)
+								cout
+										<< "This is a special reply, send recorded message to the application instead."
+										<<endl;
 						}
 
 						printMessage(buffer, size, 8, 1, 1, 2, 4, 4, 2, 2, -1);
@@ -941,7 +951,8 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 					case XE_XINERAMA:
 					case XE_DRI2:
 					case XE_SGI_GLX: {
-						cout<<"           ***not compressed"<<endl;
+						if (PRINT_DEBUG)
+							cout<<"           ***not compressed"<<endl;
 						printMessage(buffer, size, 4, 1, 1, 2, 4);
 					}
 						break;
@@ -954,7 +965,8 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 						}
 							break;
 						default: {
-							cout<<"           ***not compressed"<<endl;
+							if (PRINT_DEBUG)
+								cout<<"           ***not compressed"<<endl;
 						}
 						}
 						printMessage(buffer, size, 4, 1, 1, 2, 4);
@@ -968,7 +980,8 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 						}
 							break;
 						default: {
-							cout<<"           ***not compressed"<<endl;
+							if (PRINT_DEBUG)
+								cout<<"           ***not compressed"<<endl;
 						}
 						}
 						printMessage(buffer, size, 4, 1, 1, 2);
@@ -981,7 +994,8 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 						}
 							break;
 						default: {
-							cout<<"           ***not compressed"<<endl;
+							if (PRINT_DEBUG)
+								cout<<"           ***not compressed"<<endl;
 						}
 						}
 						printMessage(buffer, size, 4, 1, 1, 2);
@@ -996,14 +1010,38 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 						switch (requestData[0]) {
 						case X_kbUseExtension:
 						case X_kbSelectEvents:
-						case X_kbGetMap:
 						case X_kbGetNames:
 						case X_kbPerClientFlags: {
 							// do nothing
 						}
 							break;
+
+						case X_kbGetMap: {
+							specialReply = 1;
+							if (!replay) {
+								eventQueue_.recordReply(buffer, size);
+							} else {
+								//this is different, we will send the original reply back to the application, and remember the mapped window id
+								unsigned int asize = eventQueue_.replayReply();
+#ifndef FILE_REPLAY
+								if ((unsigned int) SOCKWRITE (appFD, eventQueue_.getReplyBuffer(), asize) != asize)
+									cerr << "Cannot write to application."<<endl;
+#endif
+								if (PRINT_DEBUG)
+									cout <<"recorded message is "<<endl;
+								printMessage(eventQueue_.getReplyBuffer(), size, 6,
+										1, 1+MAGIC_SIZE, 2, 4, 4, -1);
+								if (PRINT_DEBUG)
+									cout
+										<< "This is a special reply, send recorded message to the application instead."
+										<<endl;
+							}
+
+						}
+								 break;
 						default: {
-							cout<<"           ***not compressed"<<endl;
+							if (PRINT_DEBUG)
+								cout<<"           ***not compressed"<<endl;
 						}
 						}
 						printMessage(buffer, size, 4, 1, 1, 2);
@@ -1025,7 +1063,8 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 						}
 							break;
 						default: {
-							cout<<"           ***not compressed"<<endl;
+							if (PRINT_DEBUG)
+								cout<<"           ***not compressed"<<endl;
 						}
 						}
 						printMessage(buffer, size, 4, 1, 1, 2, 4);
@@ -1047,7 +1086,8 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 						}
 							break;
 						default: {
-							cout<<"           ***not compressed"<<endl;
+							if (PRINT_DEBUG)
+								cout<<"           ***not compressed"<<endl;
 						}
 						}
 						printMessage(buffer, size, 4, 1, 1, 2);
@@ -1073,9 +1113,10 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 						case X_RRGetOutputInfo:
 						case X_RRGetCrtcInfo:
 						case X_RRGetScreenResourcesCurrent: {
-							cout
-									<< "X_RRGetOutputInfo/X_RRGetCrtcInfo/X_RRGetScreenResourcesCurrent, may be an error."
-									<<endl;
+							if (PRINT_DEBUG)
+								cout
+										<< "X_RRGetOutputInfo/X_RRGetCrtcInfo/X_RRGetScreenResourcesCurrent, may be an error."
+										<<endl;
 						}
 							break;
 						case X_RRGetOutputPrimary: {
@@ -1085,7 +1126,8 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 						}
 							break;
 						default: {
-							cout<<"           ***not compressed"<<endl;
+							if (PRINT_DEBUG)
+								cout<<"           ***not compressed"<<endl;
 							printMessage(buffer, size, 4, 1, 1, 2, 4);
 						}
 						}
@@ -1104,6 +1146,8 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 					cout
 							<<"reply (non-recognized not compressed) (error message) sequence:"
 							<<sequenceNum <<" size:"<<size<<endl;
+					if (!PRINT_DEBUG)
+						printString(buffer, size);
 					encodeBuffer.encodeValue(buffer[1], 8);
 					encodeBuffer.encodeValue(GetULONG(buffer + 4, bigEndian_),
 							32);
@@ -1115,15 +1159,15 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 					if (replay) {
 						//replay
 						try {
-							replayBuffer = new unsigned char[size];
-							replyFile_.read((char*)replayBuffer, size);
+							if (PRINT_DEBUG) replayBuffer = new unsigned char[size];
+							if (PRINT_DEBUG) replyFile_.read((char*)replayBuffer, size);
 						} catch (fstream::failure e) {
 							cerr << "Exception reading files in ServerChannel.c"<<endl;
 						}
 					} else {
 						// recording
 						try {
-							replyFile_.write ((char*) buffer, size);
+							if (PRINT_DEBUG) replyFile_.write ((char*) buffer, size);
 						} catch (fstream::failure e) {
 							cerr << "Exception writing files in ServerChannel.c"<<endl;
 						}
@@ -1167,12 +1211,17 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 				 }
 				 */
 				if (buffer[0] == 0) {
+					cout <<"Got An error message from x server."<<endl;
+					printMessage (buffer, size, 7, 1, 1, 2, 4, 2, 1, -1);
 					if (sequenceNumQueue_.peek(dummySequenceNum, dummyOpcode)
 							&& ((unsigned int) dummySequenceNum == sequenceNum))
 						sequenceNumQueue_.pop(dummySequenceNum, dummyOpcode);
 				}
-				cout <<"event   opcode:"<<opcode<<"  sequence:"<<sequenceNum
-						<<"  size:"<<size<<endl;
+				if (PRINT_DEBUG) {
+					cout <<"event   opcode:"<<opcode<<"  sequence:"
+							<<sequenceNum <<"  size:"<<size<<endl;
+					printString (buffer, size);
+				}
 
 				//replay log
 				if (replay) {
@@ -1197,11 +1246,12 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 							} else {
 								cout <<"Get an error message from x server!"<<endl;
 								cerr << "Get an error message from x server!"<<endl;
+								if (!PRINT_DEBUG) printString (buffer, size);
 								printMessage (buffer, size, 7, 1, 1, 2, 4, 2, 1, -1);
 							}
 						} else {
-							cout <<"Get an event message from x server, skip. outputLength:"<<*outputLength_<<", current pos:"<<eventQueue_.getEventPos()<<endl;
-							printString (buffer, size);
+							if (PRINT_DEBUG) cout <<"Get an event message from x server, skip. outputLength:"<<*outputLength_<<", current pos:"<<eventQueue_.getEventPos()<<endl;
+							if (PRINT_DEBUG) printString (buffer, size);
 							//outputLength_ += size;
 						}
 					} catch (fstream::failure e) {
@@ -1591,19 +1641,23 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 					if ((unsigned int) SOCKWRITE (appFD, buffer, size) != size)
 						cerr << "Cannot write to application."<<endl;
 #endif
-					if (memcmp(buffer, replayBuffer, size) != 0) {
-						cout
-								<< " Different reply message with recording! error"
-								<<endl;
-						cout <<"		From log:";
-						for (unsigned int i = 0; i < (firstReply_ ? 40 : size); ++i)
-							cout <<(unsigned int) replayBuffer[i] <<",";
-						cout <<endl;
-						cout <<"		From x server:";
-						for (unsigned int i = 0; i < (firstReply_ ? 40 : size); ++i)
-							cout <<(unsigned int) buffer[i] <<",";
-						cout <<endl;
-						detailedCompare(replayBuffer, size, buffer, size);
+					if (PRINT_DEBUG) {
+						if (memcmp(buffer, replayBuffer, size) != 0) {
+							cout
+									<< " Different reply message with recording! error"
+									<<endl;
+							cout <<"		From log:";
+							for (unsigned int i = 0; i < (firstReply_ ? 40
+									: size); ++i)
+								cout <<(unsigned int) replayBuffer[i] <<",";
+							cout <<endl;
+							cout <<"		From x server:";
+							for (unsigned int i = 0; i < (firstReply_ ? 40
+									: size); ++i)
+								cout <<(unsigned int) buffer[i] <<",";
+							cout <<endl;
+							detailedCompare(replayBuffer, size, buffer, size);
+						}
 					}
 				}
 
@@ -1616,9 +1670,12 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 			while (eventQueue_.getEventPos() == *outputLength_) {
 				if (eventQueue_.getEventBuffer()[0] == 1)
 					break;
-				cout <<"Different: Insert event message from our log, opcode:"
-						<<(unsigned int) eventQueue_.getEventBuffer()[0]<<endl;
-				printString(eventQueue_.getEventBuffer(), 32);
+				if (PRINT_DEBUG)
+					cout
+							<<"Different: Insert event message from our log, opcode:"
+							<<(unsigned int) eventQueue_.getEventBuffer()[0]<<endl;
+				if (PRINT_DEBUG)
+					printString(eventQueue_.getEventBuffer(), 32);
 #ifndef FILE_REPLAY
 				if ((unsigned int) SOCKWRITE (appFD, eventQueue_.getEventBuffer(), 32) != 32)
 					cerr << "Cannot write to application."<<endl;
@@ -1631,26 +1688,26 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 #ifdef CONVERT
 			unsigned int ret;
 			unsigned int count = 0;
-			if (size > 512) {
+			if (size> 512) {
 				//the socket may block
 				int flags = fcntl(appFD, F_GETFL, 0);
 				if (flags < 0)
-					cerr<<"fcntl fails"<<endl;
+				cerr<<"fcntl fails"<<endl;
 				flags = flags &~O_NONBLOCK;
 				fcntl(appFD, F_SETFL, flags);
 				if (flags < 0)
-					cerr<<"fcntl fails"<<endl;
+				cerr<<"fcntl fails"<<endl;
 				if ((ret = (unsigned int) SOCKWRITE (appFD, buffer, size)) != size)
-					cerr << "Cannot write to application, expected:"<<size
-							<<"returned:"<<ret<<endl;
+				cerr << "Cannot write to application, expected:"<<size
+				<<"returned:"<<ret<<endl;
 				flags = flags | O_NONBLOCK;
 				fcntl(appFD, F_SETFL, flags);
 				if (flags < 0)
-					cerr<<"fcntl fails"<<endl;
+				cerr<<"fcntl fails"<<endl;
 			} else {
 				if ((ret = (unsigned int) SOCKWRITE (appFD, buffer, size)) != size)
-					cerr << "Cannot write to application, expected:"<<size
-							<<"returned:"<<ret<<endl;
+				cerr << "Cannot write to application, expected:"<<size
+				<<"returned:"<<ret<<endl;
 			}
 			/*while (count < size) {
 			 ret = (unsigned int) SOCKWRITE (appFD, buffer + count, size - count);
@@ -1663,7 +1720,8 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 #else
 			unsigned int ret;
 			if ((ret = (unsigned int) SOCKWRITE (appFD, buffer, size)) != size)
-			cerr << "Cannot write to application, expected:"<<size <<"returned:"<<ret<<endl;
+				cerr << "Cannot write to application, expected:"<<size
+						<<"returned:"<<ret<<endl;
 #endif
 		}
 	}
