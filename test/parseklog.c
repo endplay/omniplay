@@ -728,6 +728,7 @@ int main (int argc, char* argv[])
 						}
 #endif
 					case SYS_ACCEPT: 
+					case SYS_ACCEPT4:
 					case SYS_GETSOCKNAME:
 					case SYS_GETPEERNAME: {
 						struct accept_retvals avr;
@@ -1264,11 +1265,11 @@ int main (int argc, char* argv[])
 									}
 								} else {
 									for (i = 0; i < entry->num_elms; i++) {
-										always_print ("%d %d %d {%lld, %d, %lld, %d, %ld}\n",
-												index, entry->elms[i].bval.buff_offs, entry->elms[i].size,
+										always_print ("%d %lld %d {%lld, %d, %lld, %d, %d}\n",
+												index, entry->elms[i].offset - entry->elms[0].offset, entry->elms[i].size,
 												(loff_t)entry->elms[i].bval.id.unique_id, entry->elms[i].bval.id.pid,
 												(loff_t)entry->elms[i].bval.id.sysnum,
-												entry->elms[i].read_offset, retval);
+												entry->elms[i].read_offset, entry->elms[i].size);
 									}
 								}
 							} while (0);

@@ -191,7 +191,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				//put a dummy sequence number for converting log mode
 				sequenceNumQueue_.push(0, 1);
 			}
-			printMessage(buffer, size, 7, 1, 1+MAGIC_SIZE, 2, 2, 2, 2, 2
+			if (PRINT_DEBUG) printMessage(buffer, size, 7, 1, 1+MAGIC_SIZE, 2, 2, 2, 2, 2
 					+MAGIC_SIZE);
 		} else {
 			clientCache_.lastRequestSequenceNum++;
@@ -231,7 +231,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				sequenceNumQueue_.push(clientCache_.
 				lastRequestSequenceNum, opcode, colorData[0], colorData[1],
 						colorData[2]);
-				printMessage(buffer, size, 8, 1, 1+MAGIC_SIZE, 2, 4, 2, 2, 2,
+				if (PRINT_DEBUG) printMessage(buffer, size, 8, 1, 1+MAGIC_SIZE, 2, 4, 2, 2, 2,
 						-1);
 			}
 				break;
@@ -248,7 +248,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					PutULONG(idMap->atomMapToNew(GetULONG(buffer + 12,
 							bigEndian_)), buffer+ 12, bigEndian_);
 				}
-				printMessage(buffer, size, 11, 1, 1, 2, 4, 4, 4, 1, 3
+				if (PRINT_DEBUG) printMessage(buffer, size, 11, 1, 1, 2, 4, 4, 4, 1, 3
 						+MAGIC_SIZE, 4, (format == 8 ? dataLength
 						: (format==16 ? dataLength*2 : dataLength*4)), -1);
 			}
@@ -288,7 +288,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					PutULONG(idMap->mapToNewSpecial(GetULONG(buffer + 4,
 							bigEndian_)), buffer + 4, bigEndian_);
 				}
-				printMessage(buffer, size, 5, 1, 1+MAGIC_SIZE, 2, 4, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 5, 1, 1+MAGIC_SIZE, 2, 4, 4);
 			}
 				break;
 			case X_ClearArea: {
@@ -309,7 +309,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					PutULONG(idMap->mapToNew(GetULONG(buffer + 4, bigEndian_)),
 							buffer + 4, bigEndian_);
 				}
-				printMessage(buffer, size, 8, 1, 1, 2, 4, 2, 2, 2, 2);
+				if (PRINT_DEBUG) printMessage(buffer, size, 8, 1, 1, 2, 4, 2, 2, 2, 2);
 			}
 				break;
 			case X_CloseFont: {
@@ -318,7 +318,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					PutULONG(idMap->mapToNew(GetULONG(buffer + 4, bigEndian_)),
 							buffer + 4, bigEndian_);
 				}
-				printMessage(buffer, size, 4, 1, 1+MAGIC_SIZE, 2, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1+MAGIC_SIZE, 2, 4);
 			}
 				break;
 			case X_ConfigureWindow: {
@@ -359,7 +359,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					PutULONG(idMap->mapToNew(GetULONG(buffer + 4, bigEndian_)),
 							buffer + 4, bigEndian_);
 				}
-				printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 4, 2, 2
+				if (PRINT_DEBUG) printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 4, 2, 2
 						+MAGIC_SIZE);
 			}
 				break;
@@ -384,7 +384,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				clientCache_.convertSelectionLastTimestamp = timestamp;
 				cout << "not compressed (error message)"<<endl;
 				if (!PRINT_DEBUG) printString (buffer, size);
-				printMessage(buffer, size, 8, 1, 1+MAGIC_SIZE, 2, 4, 4, 4, 4, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 8, 1, 1+MAGIC_SIZE, 2, 4, 4, 4, 4, 4);
 			}
 				break;
 			case X_CopyArea: {
@@ -398,7 +398,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 							idMap->mapToNew(GetULONG(buffer + 12, bigEndian_)),
 							buffer + 12, bigEndian_);
 				}
-				printMessage(buffer, size, 12, 1, 1+MAGIC_SIZE, 2, 4, 4, 4, 2,
+				if (PRINT_DEBUG) printMessage(buffer, size, 12, 1, 1+MAGIC_SIZE, 2, 4, 4, 4, 2,
 						2, 2, 2, 2, 2);
 			}
 				break;
@@ -412,7 +412,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				encodeBuffer.
 				encodeCachedValue(GetULONG(buffer + 12, bigEndian_), 23,
 						clientCache_.createGCBitmaskCache);
-				printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 4, 4, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 4, 4, 4);
 
 			}
 				break;
@@ -437,7 +437,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				encodeBuffer.encodeCachedValue(
 						GetULONG(buffer + 28, bigEndian_), 32, clientCache_.
 						copyPlaneBitPlaneCache, 10);
-				printMessage(buffer, size, 13, 1, 1+MAGIC_SIZE, 2, 4, 4, 4, 2,
+				if (PRINT_DEBUG) printMessage(buffer, size, 13, 1, 1+MAGIC_SIZE, 2, 4, 4, 4, 2,
 						2, 2, 2, 2, 2, 4);
 			}
 				break;
@@ -479,7 +479,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 						mask <<= 1;
 					}
 				}
-				printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 4, 4, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 4, 4, 4);
 			}
 				break;
 			case X_CreatePixmap: {
@@ -491,7 +491,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					PutULONG(idMap->mapToNew(GetULONG(buffer + 8, bigEndian_)),
 							buffer + 8, bigEndian_);
 				}
-				printMessage(buffer, size, 7, 1, 1, 2, 4, 4, 2, 2);
+				if (PRINT_DEBUG) printMessage(buffer, size, 7, 1, 1, 2, 4, 4, 2, 2);
 			}
 				break;
 			case X_CreateWindow: {
@@ -548,7 +548,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					PutULONG(idMap->mapToNew(GetULONG(buffer + 8, bigEndian_)),
 							buffer + 8, bigEndian_);
 				}
-				printMessage(buffer, size, 13, 1, 1, 2, 4, 4, 2, 2, 2, 2, 2, 2,
+				if (PRINT_DEBUG) printMessage(buffer, size, 13, 1, 1, 2, 4, 4, 2, 2, 2, 2, 2, 2,
 						4, 4);
 			}
 				break;
@@ -561,7 +561,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					PutULONG(idMap->atomMapToNew(GetULONG(buffer + 8,
 							bigEndian_)), buffer+ 8, bigEndian_);
 				}
-				printMessage(buffer, size, 5, 1, 1+MAGIC_SIZE, 2, 4, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 5, 1, 1+MAGIC_SIZE, 2, 4, 4);
 			}
 				break;
 			case X_FillPoly: {
@@ -631,7 +631,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					if (pointIndex + 1 < FILL_POLY_MAX_POINTS)
 						pointIndex++;
 				}
-				printMessage(buffer, size, 8, 1, 1+MAGIC_SIZE, 2, 4, 4, 1, 1, 2
+				if (PRINT_DEBUG) printMessage(buffer, size, 8, 1, 1+MAGIC_SIZE, 2, 4, 4, 1, 1, 2
 						+MAGIC_SIZE);
 			}
 				break;
@@ -651,7 +651,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					nextSrc += 4;
 					numPixels--;
 				}
-				printMessage(buffer, size, 5, 1, 1+MAGIC_SIZE, 2, 4, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 5, 1, 1+MAGIC_SIZE, 2, 4, 4);
 			}
 				break;
 			case X_FreeCursor: {
@@ -660,7 +660,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					PutULONG(idMap->mapToNew(GetULONG(buffer + 4, bigEndian_)),
 							buffer + 4, bigEndian_);
 				}
-				printMessage(buffer, size, 4, 1, 1+MAGIC_SIZE, 2, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1+MAGIC_SIZE, 2, 4);
 			}
 				break;
 			case X_FreeGC: {
@@ -669,7 +669,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					PutULONG(idMap->mapToNew(GetULONG(buffer + 4, bigEndian_)),
 							buffer + 4, bigEndian_);
 				}
-				printMessage(buffer, size, 4, 1, 1+MAGIC_SIZE, 2, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1+MAGIC_SIZE, 2, 4);
 			}
 				break;
 			case X_FreePixmap: {
@@ -688,7 +688,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					PutULONG(idMap->mapToNew(GetULONG(buffer + 4, bigEndian_)),
 							buffer + 4, bigEndian_);
 				}
-				printMessage(buffer, size, 4, 1, 1+MAGIC_SIZE, 2, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1+MAGIC_SIZE, 2, 4);
 			}
 				break;
 			case X_GetAtomName: {
@@ -700,7 +700,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 							bigEndian_)), buffer+ 4, bigEndian_);
 				sequenceNumQueue_.push(clientCache_.
 				lastRequestSequenceNum, opcode);
-				printMessage(buffer, size, 4, 1, 1+MAGIC_SIZE, 2, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1+MAGIC_SIZE, 2, 4);
 				//cout<<"************GetAtomName***********"<<endl;
 			}
 				break;
@@ -713,14 +713,14 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				}
 				sequenceNumQueue_.push(clientCache_.
 				lastRequestSequenceNum, opcode);
-				printMessage(buffer, size, 4, 1, 1+MAGIC_SIZE, 2, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1+MAGIC_SIZE, 2, 4);
 			}
 				break;
 			case X_GetInputFocus:
 			case X_GetModifierMapping: {
 				sequenceNumQueue_.push(clientCache_.
 				lastRequestSequenceNum, opcode);
-				printMessage(buffer, size, 3, 1, 1+MAGIC_SIZE, 2);
+				if (PRINT_DEBUG) printMessage(buffer, size, 3, 1, 1+MAGIC_SIZE, 2);
 			}
 				break;
 			case X_GetKeyboardMapping: {
@@ -728,7 +728,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				encodeBuffer.encodeValue((unsigned int) buffer[5], 8);
 				sequenceNumQueue_.push(clientCache_.
 				lastRequestSequenceNum, opcode);
-				printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 1, 1, -1);
+				if (PRINT_DEBUG) printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 1, 1, -1);
 			}
 				break;
 			case X_GetProperty: {
@@ -744,7 +744,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 							if (PRINT_DEBUG)
 								cout <<"GetProperty before dummy modification"
 										<<endl;
-							printMessage(buffer, size, 8, 1, 1, 2, 4, 4, 4, 4,
+							if (PRINT_DEBUG) printMessage(buffer, size, 8, 1, 1, 2, 4, 4, 4, 4,
 									4);
 							buffer[1] = 0;
 							PutULONG(idMap->getNewRootWindow(), buffer+4,
@@ -779,7 +779,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				}
 				sequenceNumQueue_.push(clientCache_.
 				lastRequestSequenceNum, opcode, outOfRange);
-				printMessage(buffer, size, 8, 1, 1, 2, 4, 4, 4, 4, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 8, 1, 1, 2, 4, 4, 4, 4, 4);
 			}
 				break;
 			case X_GetSelectionOwner: {
@@ -789,7 +789,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 							bigEndian_)), buffer+ 4, bigEndian_);
 				sequenceNumQueue_.push(clientCache_.
 				lastRequestSequenceNum, opcode);
-				printMessage(buffer, size, 4, 1, 1+MAGIC_SIZE, 2, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1+MAGIC_SIZE, 2, 4);
 			}
 				break;
 			case X_GrabButton:
@@ -806,7 +806,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				}
 
 				if (opcode == X_GrabButton) {
-					printMessage(buffer, size, 12, 1, 1, 2, 4, 2, 1, 1, 4, 4,
+					if (PRINT_DEBUG) printMessage(buffer, size, 12, 1, 1, 2, 4, 2, 1, 1, 4, 4,
 							1, 1, 2);
 				} else {
 					//unsigned int timestamp = GetULONG(buffer + 20, bigEndian_);
@@ -816,7 +816,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 						// this could be buggy, set the time to be current time
 						PutULONG(0, buffer + 20, bigEndian_);
 					}
-					printMessage(buffer, size, 10, 1, 1, 2, 4, 2, 1, 1, 4, 4, 4);
+					if (PRINT_DEBUG) printMessage(buffer, size, 10, 1, 1, 2, 4, 2, 1, 1, 4, 4, 4);
 				}
 			}
 				break;
@@ -834,13 +834,13 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				encodeBuffer.encodeValue((unsigned int) buffer[13], 1);
 				sequenceNumQueue_.push(clientCache_.
 				lastRequestSequenceNum, opcode);
-				printMessage(buffer, size, 8, 1, 1, 2, 4, 4, 1, 1, -1);
+				if (PRINT_DEBUG) printMessage(buffer, size, 8, 1, 1, 2, 4, 4, 1, 1, -1);
 			}
 				break;
 			case X_GrabServer:
 			case X_UngrabServer:
 			case X_NoOperation: {
-				printMessage(buffer, size, 3, 1, 1+MAGIC_SIZE, 2);
+				if (PRINT_DEBUG) printMessage(buffer, size, 3, 1, 1+MAGIC_SIZE, 2);
 			}
 				break;
 			case X_ImageText8: {
@@ -871,7 +871,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				for (unsigned int j = 0; j < textLength; j++)
 					clientCache_.imageText8TextCompressor.
 					encodeChar(*nextSrc++, encodeBuffer);
-				printMessage(buffer, size, 9, 1, 1, 2, 4, 4, 2, 2, textLength,
+				if (PRINT_DEBUG) printMessage(buffer, size, 9, 1, 1, 2, 4, 4, 2, 2, textLength,
 						-1);
 			}
 				break;
@@ -888,7 +888,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					encodeChar(*nextSrc++, encodeBuffer);
 				sequenceNumQueue_.push(clientCache_.
 				lastRequestSequenceNum, opcode);
-				printMessage(buffer, size, 7, 1, 1, 2, 2, 2+MAGIC_SIZE,
+				if (PRINT_DEBUG) printMessage(buffer, size, 7, 1, 1, 2, 2, 2+MAGIC_SIZE,
 						nameLength, -1);
 				if (PRINT_DEBUG) {
 					cout <<"********InternAtom request********"<<endl;
@@ -901,7 +901,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 			case X_ListExtensions: {
 				sequenceNumQueue_.push(clientCache_.
 				lastRequestSequenceNum, opcode);
-				printMessage(buffer, size, 3, 1, 1+MAGIC_SIZE, 2);
+				if (PRINT_DEBUG) printMessage(buffer, size, 3, 1, 1+MAGIC_SIZE, 2);
 			}
 				break;
 			case X_ListFonts: {
@@ -917,7 +917,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					encodeChar(*nextSrc++, encodeBuffer);
 				sequenceNumQueue_.push(clientCache_.
 				lastRequestSequenceNum, opcode);
-				printMessage(buffer, size, 7, 1, 1+MAGIC_SIZE, 2, 2, 2,
+				if (PRINT_DEBUG) printMessage(buffer, size, 7, 1, 1+MAGIC_SIZE, 2, 2, 2,
 						textLength, -1);
 
 			}
@@ -938,7 +938,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				for (unsigned int i = 0; i < textLength; i++)
 					clientCache_.polyText8TextCompressor.
 					encodeChar(*nextSrc++, encodeBuffer);
-				printMessage(buffer, size, 8, 1, 1+MAGIC_SIZE, 2, 4, 2, 2,
+				if (PRINT_DEBUG) printMessage(buffer, size, 8, 1, 1+MAGIC_SIZE, 2, 4, 2, 2,
 						textLength, -1);
 
 			}
@@ -966,7 +966,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					PutULONG(idMap->mapToNewSpecial(GetULONG(buffer + 4,
 							bigEndian_)), buffer + 4, bigEndian_);
 				}
-				printMessage(buffer, size, 4, 1, 1+MAGIC_SIZE, 2, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1+MAGIC_SIZE, 2, 4);
 			}
 				break;
 			case X_QueryTree: {
@@ -1000,7 +1000,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 						PutULONG(newWindow, buffer + 4, bigEndian_);
 					}
 				}
-				printMessage(buffer, size, 4, 1, 1+MAGIC_SIZE, 2, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1+MAGIC_SIZE, 2, 4);
 			}
 				break;
 			case X_QueryPointer: {
@@ -1012,7 +1012,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				}
 				sequenceNumQueue_.push(clientCache_.
 				lastRequestSequenceNum, opcode);
-				printMessage(buffer, size, 4, 1, 1+MAGIC_SIZE, 2, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1+MAGIC_SIZE, 2, 4);
 			}
 				break;
 			case X_OpenFont: {
@@ -1022,7 +1022,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					PutULONG(idMap->mapToNew(GetULONG(buffer + 4, bigEndian_)),
 							buffer + 4, bigEndian_);
 				}
-				printMessage(buffer, size, 8, 1, 1+MAGIC_SIZE, 2, 4, 2, 2
+				if (PRINT_DEBUG) printMessage(buffer, size, 8, 1, 1+MAGIC_SIZE, 2, 4, 2, 2
 						+MAGIC_SIZE, nameLength, -1);
 			}
 				break;
@@ -1085,7 +1085,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					PutULONG(idMap->mapToNew(GetULONG(buffer + 8, bigEndian_)),
 							buffer + 8, bigEndian_);
 				}
-				printMessage(buffer, size, 5, 1, 1+MAGIC_SIZE, 2, 4, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 5, 1, 1+MAGIC_SIZE, 2, 4, 4);
 			}
 				break;
 			case X_PolyPoint: {
@@ -1122,7 +1122,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					polyPointCacheY[index], 8);
 					index = 1;
 				}
-				printMessage(buffer, size, 5, 1, 1, 2, 4, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 5, 1, 1, 2, 4, 4);
 			}
 				break;
 			case X_PolyLine: {
@@ -1160,7 +1160,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					index = 1;
 				}
 
-				printMessage(buffer, size, 5, 1, 1, 2, 4, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 5, 1, 1, 2, 4, 4);
 			}
 				break;
 			case X_PolyRectangle: {
@@ -1171,7 +1171,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					PutULONG(idMap->mapToNew(GetULONG(buffer + 8, bigEndian_)),
 							buffer + 8, bigEndian_);
 				}
-				printMessage(buffer, size, 5, 1, 1, 2, 4, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 5, 1, 1, 2, 4, 4);
 			}
 				break;
 			case X_PolySegment: {
@@ -1182,7 +1182,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					PutULONG(idMap->mapToNew(GetULONG(buffer + 8, bigEndian_)),
 							buffer + 8, bigEndian_);
 				}
-				printMessage(buffer, size, 5, 1, 1, 2, 4, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 5, 1, 1, 2, 4, 4);
 			}
 				break;
 			case X_PolyText8: {
@@ -1239,7 +1239,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					PutULONG(idMap->mapToNew(GetULONG(buffer + 8, bigEndian_)),
 							buffer + 8, bigEndian_);
 				}
-				printMessage(buffer, size, 7, 1, 1+MAGIC_SIZE, 2, 4, 4, 2, 2);
+				if (PRINT_DEBUG) printMessage(buffer, size, 7, 1, 1+MAGIC_SIZE, 2, 4, 4, 2, 2);
 
 			}
 				break;
@@ -1250,7 +1250,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					PutULONG(idMap->mapToNew(GetULONG(buffer + 8, bigEndian_)),
 							buffer + 8, bigEndian_);
 				}
-				printMessage(buffer, size, 12, 1, 1, 2, 4, 4, 2, 2, 2, 2, 1, 1,
+				if (PRINT_DEBUG) printMessage(buffer, size, 12, 1, 1, 2, 4, 4, 2, 2, 2, 2, 1, 1,
 						2+MAGIC_SIZE);
 			}
 				break;
@@ -1264,7 +1264,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 						8);
 				sequenceNumQueue_.push(clientCache_.
 				lastRequestSequenceNum, opcode);
-				printMessage(buffer, size, 6, 1, 1, 2, 4, 2, 2);
+				if (PRINT_DEBUG) printMessage(buffer, size, 6, 1, 1, 2, 4, 2, 2);
 			}
 				break;
 			case X_QueryColors: {
@@ -1290,12 +1290,12 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 
 				sequenceNumQueue_.push(clientCache_.
 				lastRequestSequenceNum, opcode, outOfRange);
-				printMessage(buffer, size, 4, 1, 1+MAGIC_SIZE, 2, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1+MAGIC_SIZE, 2, 4);
 			}
 				break;
 			case X_QueryExtension: {
 				unsigned int nameLength = GetUINT(buffer + 4, bigEndian_);
-				printMessage(buffer, size, 7, 1, 1+MAGIC_SIZE, 2, 2, 2
+				if (PRINT_DEBUG) printMessage(buffer, size, 7, 1, 1+MAGIC_SIZE, 2, 2, 2
 						+MAGIC_SIZE, nameLength, -1);
 
 				encodeBuffer.encodeValue(nameLength, 16, 6);
@@ -1327,7 +1327,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				}
 				sequenceNumQueue_.push(clientCache_.
 				lastRequestSequenceNum, opcode);
-				printMessage(buffer, size, 4, 1, 1+MAGIC_SIZE, 2, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1+MAGIC_SIZE, 2, 4);
 			}
 				break;
 			case X_SetClipRectangles: {
@@ -1336,7 +1336,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					PutULONG(idMap->mapToNew(GetULONG(buffer + 4, bigEndian_)),
 							buffer + 4, bigEndian_);
 				}
-				printMessage(buffer, size, 6, 1, 1, 2, 4, 2, 2);
+				if (PRINT_DEBUG) printMessage(buffer, size, 6, 1, 1, 2, 4, 2, 2);
 			}
 				break;
 			case X_SetDashes: {
@@ -1356,7 +1356,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					encodeBuffer.encodeCachedValue(*nextSrc++, 8, clientCache_.
 					setDashesDashCache_[i &
 					1], 5);
-				printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 4, 2, 2);
+				if (PRINT_DEBUG) printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 4, 2, 2);
 			}
 				break;
 			case X_SetSelectionOwner: {
@@ -1369,7 +1369,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					// this could be buggy, config-timestamp
 					PutULONG(0, buffer + 12, bigEndian_);
 				}
-				printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 4, 4, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 4, 4, 4);
 
 			}
 				break;
@@ -1383,7 +1383,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				}
 				sequenceNumQueue_.push(clientCache_.
 				lastRequestSequenceNum, opcode);
-				printMessage(buffer, size, 7, 1, 1+MAGIC_SIZE, 2, 4, 4, 2, 2);
+				if (PRINT_DEBUG) printMessage(buffer, size, 7, 1, 1+MAGIC_SIZE, 2, 4, 4, 2, 2);
 			}
 				break;
 				//starting point for additional request support, already compressed
@@ -1395,14 +1395,14 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					PutULONG(idMap->mapToNew(GetULONG(buffer + 8, bigEndian_)),
 							buffer + 8, bigEndian_);
 				}
-				printMessage(buffer, size, 6, 1, 1, 2, 4, 4, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 6, 1, 1, 2, 4, 4, 4);
 			}
 				break;
 			case X_FreeColormap: {
 				encodeBuffer.encodeCachedValue(
 						GetULONG(buffer + 4, bigEndian_), 29,
 						clientCache_.colormapCache, 9);
-				printMessage(buffer, size, 4, 1, 1+MAGIC_SIZE, 2, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1+MAGIC_SIZE, 2, 4);
 			}
 				break;
 			case X_SetInputFocus: {
@@ -1413,12 +1413,12 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					//this could be buggy with the timestamp
 					PutULONG(0, buffer + 8, bigEndian_);
 				}
-				printMessage(buffer, size, 5, 1, 1, 2, 4, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 5, 1, 1, 2, 4, 4);
 
 			}
 				break;
 			case X_ListFontsWithInfo: {
-				printMessage(buffer, size, 3, 1, 1, 2);
+				if (PRINT_DEBUG) printMessage(buffer, size, 3, 1, 1, 2);
 				sequenceNumQueue_.push(clientCache_.lastRequestSequenceNum,
 						opcode);
 			}
@@ -1431,7 +1431,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					PutULONG(idMap->mapToNew(GetULONG(buffer + 8, bigEndian_)),
 							buffer + 8, bigEndian_);
 				}
-				printMessage(buffer, size, 5, 1, 1+MAGIC_SIZE, 2, 4, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 5, 1, 1+MAGIC_SIZE, 2, 4, 4);
 				sequenceNumQueue_.push(clientCache_.lastRequestSequenceNum,
 						opcode);
 			}
@@ -1467,14 +1467,14 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 						cout <<"          *** not compressed"<<endl;
 				}
 				}
-				printMessage(buffer, size, 6, 1, 1, 2, 4, 4, 32);
+				if (PRINT_DEBUG) printMessage(buffer, size, 6, 1, 1, 2, 4, 4, 32);
 				if (PRINT_DEBUG)
 					cout <<" event included in sendEvent request: opcode:"
 							<<(unsigned int)buffer[12]<<endl;
 			}
 				break;
 			case X_GetImage: {
-				printMessage(buffer, size, 9, 1, 1, 2, 4, 2, 2, 2, 2, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 9, 1, 1, 2, 4, 2, 2, 2, 2, 4);
 				if (replay) {
 					// drawable id, 4-8
 					PutULONG(idMap->mapToNew(GetULONG(buffer + 4, bigEndian_)),
@@ -1492,7 +1492,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					PutULONG(idMap->mapToNew(GetULONG(buffer + 8, bigEndian_)),
 							buffer + 8, bigEndian_);
 				}
-				printMessage(buffer, size, 7, 1, 1, 2, 4, 4, 2, 2);
+				if (PRINT_DEBUG) printMessage(buffer, size, 7, 1, 1, 2, 4, 4, 2, 2);
 			}
 				break;
 			case X_CreateCursor: {
@@ -1506,7 +1506,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 							buffer + 12, bigEndian_);
 
 				}
-				printMessage(buffer, size, 14, 1, 1, 2, 4, 4, 4, 2, 2, 2, 2, 2,
+				if (PRINT_DEBUG) printMessage(buffer, size, 14, 1, 1, 2, 4, 4, 4, 2, 2, 2, 2, 2,
 						2, 2, 2);
 			}
 				break;
@@ -1515,7 +1515,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					// this could be buggy
 					PutULONG(0, buffer + 4, bigEndian_);
 				}
-				printMessage(buffer, size, 4, 1, 1, 2, 4);
+				if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1, 2, 4);
 			}
 				break;
 				// starting point for x extensions parsing
@@ -1535,7 +1535,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 			case XE_SGI_GLX: {
 				if (PRINT_DEBUG)
 					cout <<"          *** not compressed"<<endl;
-				printMessage(buffer, size, 3, 1, 1, 2);
+				if (PRINT_DEBUG) printMessage(buffer, size, 3, 1, 1, 2);
 				encodeBuffer.encodeValue((unsigned int) buffer[1], 8);
 				encodeBuffer.encodeValue(GetUINT(buffer + 2, bigEndian_), 16, 8);
 				sequenceNumQueue_.push(clientCache_.lastRequestSequenceNum,
@@ -1568,7 +1568,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 						cout <<"          *** not compressed"<<endl;
 				}
 				}
-				printMessage(buffer, size, 3, 1, 1, 2);
+				if (PRINT_DEBUG) printMessage(buffer, size, 3, 1, 1, 2);
 			}
 				break;
 			case XE_XFIXES: {
@@ -1602,7 +1602,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 						cout <<"          *** not compressed"<<endl;
 				}
 				}
-				printMessage(buffer, size, 3, 1, 1, 2);
+				if (PRINT_DEBUG) printMessage(buffer, size, 3, 1, 1, 2);
 			}
 				break;
 			case XE_MIT_SHM: {
@@ -1625,7 +1625,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				}
 				sequenceNumQueue_.push(clientCache_.lastRequestSequenceNum,
 						opcode, (unsigned int) buffer[1]);
-				printMessage(buffer, size, 3, 1, 1, 2);
+				if (PRINT_DEBUG) printMessage(buffer, size, 3, 1, 1, 2);
 			}
 				break;
 			case XE_XKEYBOARD: {
@@ -1645,7 +1645,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 						cout <<"          *** not compressed"<<endl;
 				}
 				}
-				printMessage(buffer, size, 3, 1, 1, 2);
+				if (PRINT_DEBUG) printMessage(buffer, size, 3, 1, 1, 2);
 			}
 				break;
 			case XE_XInputExtension: {
@@ -1672,7 +1672,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				sequenceNumQueue_.push(clientCache_.lastRequestSequenceNum,
 						opcode, (unsigned int) buffer[1]);
 
-				printMessage(buffer, size, 3, 1, 1, 2);
+				if (PRINT_DEBUG) printMessage(buffer, size, 3, 1, 1, 2);
 
 			}
 				break;
@@ -1697,13 +1697,13 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 						cout <<"          *** not compressed"<<endl;
 				}
 				}
-				printMessage(buffer, size, 3, 1, 1, 2);
+				if (PRINT_DEBUG) printMessage(buffer, size, 3, 1, 1, 2);
 				sequenceNumQueue_.push(clientCache_.lastRequestSequenceNum,
 						opcode, (unsigned int) buffer[1]);
 			}
 				break;
 			case XE_EVENT_EXTENSION: {
-				printMessage(buffer, size, 6, 1, 1, 2, 2, 2, -1);
+				if (PRINT_DEBUG) printMessage(buffer, size, 6, 1, 1, 2, 2, 2, -1);
 				sequenceNumQueue_.push(clientCache_.lastRequestSequenceNum,
 						opcode);
 			}
@@ -1736,7 +1736,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					 PutULONG(idMap->mapToNew(GetULONG(buffer + 4,
 					 bigEndian_)), buffer + 4, bigEndian_);
 					 }
-					 printMessage(buffer, size, 3, 1, 1, 2);
+					 if (PRINT_DEBUG) printMessage(buffer, size, 3, 1, 1, 2);
 					 sequenceNumQueue_.push(clientCache_.lastRequestSequenceNum,
 					 opcode);
 					 }
@@ -1757,7 +1757,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 						cout <<"          *** not compressed"<<endl;
 				}
 				}
-				printMessage(buffer, size, 3, 1, 1, 2);
+				if (PRINT_DEBUG) printMessage(buffer, size, 3, 1, 1, 2);
 
 			}
 				break;
@@ -1868,7 +1868,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				}
 					break;
 				}
-				printMessage(buffer, size, 3, 1, 1, 2);
+				if (PRINT_DEBUG) printMessage(buffer, size, 3, 1, 1, 2);
 			}
 				break;
 			default: {
