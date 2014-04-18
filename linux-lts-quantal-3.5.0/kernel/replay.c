@@ -114,10 +114,10 @@ int verify_debug = 0;
 // how long we wait on the wait_queue before timing out
 #define SCHED_TO 1000000
 
-#define DPRINT if(replay_debug) printk
-//#define DPRINT(x,...)
-#define MPRINT if(replay_debug || replay_min_debug) printk
-//#define MPRINT(x,...)
+//#define DPRINT if(replay_debug) printk
+#define DPRINT(x,...)
+//#define MPRINT if(replay_debug || replay_min_debug) printk
+#define MPRINT(x,...)
 #define MCPRINT
 
 //xdou
@@ -153,6 +153,17 @@ unsigned int record_x = 1;
 #define ARGSKFREE(ptr, size) argsfree(ptr, size)
 
 /* Performance evaluation timers... micro monitoring */
+
+/* Syscall timers */
+struct perftimer *fstat64_tmr;
+struct perftimer *lstat64_tmr;
+/*
+struct perftimer *flistxattr_tmr;
+struct perftimer *fsetxattr_tmr;
+struct perftimer *utimensat_tmr;
+*/
+
+
 //struct perftimer *write_btwn_timer;
 struct perftimer *write_in_timer;
 struct perftimer *write_sys_timer;
@@ -174,6 +185,9 @@ struct perftimer *open_cache_timer;
 struct perftimer *close_timer;
 struct perftimer *close_sys_timer;
 struct perftimer *close_intercept_timer;
+
+atomic_t entry_kfree = {0};
+atomic_t entry_kmalloc = {0};
 
 #ifdef REPLAY_COMPRESS_READS
 /* Okay, time for fun! */
@@ -676,64 +690,6 @@ void replay_verify_read(struct file *filp, const char *buf, int size, loff_t pos
 }
 #endif
 #else
-#ifdef TRACE_READ_WRITE
-void replay_filp_close(struct file *filp) {
-	if (current->record_thrd != NULL) {
-		perftimer_start(close_intercept_timer);
-		if (filp != NULL) {
-			if (filp->replayfs_filemap) {
-				/*
-				printk("%s %d: destroying %p\n", __func__, __LINE__,
-						filp->replayfs_filemap);
-						*/
-				replayfs_filemap_destroy(filp->replayfs_filemap);
-
-				kfree(filp->replayfs_filemap);
-
-				filp->replayfs_filemap = NULL;
-			}
-		}
-		perftimer_stop(close_intercept_timer);
-	}
-}
-
-extern atomic_t open_in_replay;
-void replayfs_file_opened(struct file *filp) {
-	/* If we're recording... */
-	if (filp != NULL && !IS_ERR(filp)) {
-		if (current->record_thrd != NULL && !atomic_read(&open_in_replay)) {
-			struct inode *inode = filp->f_dentry->d_inode;
-
-			perftimer_start(open_intercept_timer);
-
-			if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0) {
-				struct replayfs_filemap *map = kmalloc(sizeof(struct replayfs_filemap),
-						GFP_KERNEL);
-
-				glbl_diskalloc_init();
-
-				replayfs_filemap_init(map, replayfs_alloc, filp);
-				filp->replayfs_filemap = map;
-				/*
-				printk("%s %d: Allocating %p\n", __func__, __LINE__,
-						filp->replayfs_filemap);
-						*/
-			} else {
-				filp->replayfs_filemap = NULL;
-			}
-
-			perftimer_stop(open_intercept_timer);
-		} else {
-			filp->replayfs_filemap = NULL;
-		}
-	}
-}
-#else
-void replay_filp_close(struct file *filp) {
-}
-void replayfs_file_opened(struct file *filp) {
-}
-#endif
 #endif
 
 #define IS_RECORDED_FILE 1<<3
@@ -1228,6 +1184,8 @@ struct record_thread {
 	                               // (0:init,1:cloning,2:completed)
 	long rp_sysrc;                 // Return code for replay_prefork
 
+	int in_fs;
+
 	/* Recording log */
 	struct syscall_result* rp_log;  // Logs system calls per thread
 	u_long rp_in_ptr;               // Next record to insert
@@ -1277,6 +1235,100 @@ struct record_thread {
 	struct clog_struct rp_clog; 	// additional parameters used by compressed log
 #endif
 };
+
+/* FIXME: Put this somewhere that doesn't suck */
+#ifdef TRACE_READ_WRITE
+void replay_filp_close(struct file *filp) {
+	if (current->record_thrd != NULL) {
+		perftimer_start(close_intercept_timer);
+		if (filp != NULL) {
+			if (filp->replayfs_filemap) {
+				/*
+				printk("%s %d: destroying %p\n", __func__, __LINE__,
+						filp->replayfs_filemap);
+						*/
+				replayfs_filemap_destroy(filp->replayfs_filemap);
+
+				kfree(filp->replayfs_filemap);
+
+				filp->replayfs_filemap = NULL;
+			}
+		}
+		perftimer_stop(close_intercept_timer);
+	}
+}
+
+extern atomic_t open_in_replay;
+void replayfs_file_opened(struct file *filp) {
+	/* If we're recording... */
+	if (filp != NULL && !IS_ERR(filp)) {
+		if (current->record_thrd != NULL && !atomic_read(&open_in_replay)) {
+			struct inode *inode = filp->f_dentry->d_inode;
+
+			perftimer_start(open_intercept_timer);
+
+
+			if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0 &&
+					current->record_thrd->in_fs == 0 && S_ISREG(inode->i_mode)) {
+				struct replayfs_filemap *map = kmalloc(sizeof(struct replayfs_filemap),
+						GFP_KERNEL);
+
+				current->record_thrd->in_fs=1;
+
+				glbl_diskalloc_init();
+
+				replayfs_filemap_init(map, replayfs_alloc, filp);
+				//replayfs_filemap_embed(map, filp);
+				filp->replayfs_filemap = map;
+				/*
+				printk("%s %d: Allocating %p\n", __func__, __LINE__,
+						filp->replayfs_filemap);
+						*/
+				current->record_thrd->in_fs=0;
+			} else {
+				filp->replayfs_filemap = NULL;
+			}
+
+
+			perftimer_stop(open_intercept_timer);
+		} else {
+			filp->replayfs_filemap = NULL;
+		}
+	}
+}
+
+
+static void replay_filp_delete(struct file *filp) {
+	if (filp != NULL && !IS_ERR(filp)) {
+		if (filp->replayfs_filemap) {
+			/*
+			char path[200];
+			char *real_path;
+
+			real_path = d_path(&filp->f_path, path, 200);
+			if (IS_ERR(real_path)) {
+				BUG();
+			}
+
+			printk("%s %d: Deleting (not destroying) btree for file %s\n", __func__,
+					__LINE__, real_path);
+					*/
+
+			replayfs_filemap_delete(filp->replayfs_filemap, filp);
+
+			kfree(filp->replayfs_filemap);
+
+			filp->replayfs_filemap = NULL;
+		}
+	}
+}
+
+#else
+void replay_filp_close(struct file *filp) {
+}
+void replayfs_file_opened(struct file *filp) {
+}
+#endif
 
 #define REPLAY_STATUS_RUNNING         0 // I am the running thread - should only be one of these per group
 #define REPLAY_STATUS_ELIGIBLE        1 // I could run now
@@ -2458,6 +2510,8 @@ new_record_thread (struct record_group* prg, u_long recpid, struct record_cache_
 	prp->rp_read_clog_pos = 0;
 #endif
 
+	prp->in_fs = 0;
+
 	INIT_LIST_HEAD(&prp->rp_argsalloc_list);
 
 #ifdef TRACE_READ_WRITE
@@ -3506,6 +3560,7 @@ long get_num_filemap_entries(int fd, loff_t offset, int size) {
 
 	num_entries = entry->num_elms;
 	MPRINT("get_num_filemap_entries is %d\n", num_entries);
+	atomic_inc(&entry_kfree);
 	kfree(entry);
 
 	return num_entries;
@@ -3553,6 +3608,7 @@ long get_filemap(int fd, loff_t offset, int size, void __user* entries, int num_
 	}
 
 	kfree(entry);
+	atomic_inc(&entry_kfree);
 	return rc;
 }
 EXPORT_SYMBOL(get_filemap);
@@ -6669,6 +6725,7 @@ int track_usually_pt2pt_read(void *key, int size, struct file *filp) {
 		memcpy(args, entry, cpy_size);
 
 		kfree(entry);
+		atomic_inc(&entry_kfree);
 
 		replayfs_filemap_destroy(&map);
 
@@ -7095,6 +7152,7 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 
 			/* Free memory */
 			kfree(entry);
+			atomic_inc(&entry_kfree);
 			/* dun */
 
 			/* FIXME: see below */
@@ -7192,6 +7250,7 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 
 				if (IS_ERR(entry) || entry == NULL) {
 					entry = kmalloc(sizeof(struct replayfs_filemap_entry), GFP_KERNEL);
+					atomic_inc(&entry_kmalloc);
 					/* FIXME: Handle this properly */
 					BUG_ON(entry == NULL);
 					entry->num_elms = 0;
@@ -7205,6 +7264,7 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 				memcpy(args, entry, cpy_size);
 
 				kfree(entry);
+				atomic_inc(&entry_kfree);
 
 				perftimer_stop(read_traceread_timer);
 
@@ -7745,7 +7805,7 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 				perftimer_stop(write_filemap_timer);
 			}
 
-			replayfs_diskalloc_sync(map->entries.allocator);
+			//replayfs_diskalloc_sync(map->entries.allocator);
 
 			//replayfs_filemap_destroy(&map);
 #  ifdef TRACE_PIPE_READ_WRITE
@@ -8105,11 +8165,11 @@ SIMPLE_SHIM1(close, 6, int, fd);
 RET1_SHIM3(waitpid, 7, int, stat_addr, pid_t, pid, int __user *, stat_addr, int, options);
 SIMPLE_SHIM2(creat, 8, const char __user *, pathname, int, mode);
 SIMPLE_SHIM2(link, 9, const char __user *, oldname, const char __user *, newname);
-#ifdef REPLAY_COMPRESS_READS
 static asmlinkage long
 record_unlink(const char __user *pathname)
 {
 	long rc;
+#ifdef REPLAY_COMPRESS_READS
 	struct file *filp;
 
 	filp = filp_open(pathname, O_RDWR, 0777);
@@ -8129,6 +8189,32 @@ record_unlink(const char __user *pathname)
 	if (filp != NULL && !IS_ERR(filp)) {
 		filp_close(filp, NULL);
 	}
+#endif
+#ifdef TRACE_READ_WRITE
+	struct file *filp;
+
+	filp = filp_open(pathname, O_RDONLY, 0777);
+
+	/* 
+	 * If we're about to delete the file, and it is a replayfs file, then remove
+	 * it from our replayfs knowledge base
+	 */
+	/*
+	printk("%s %d: checking filemap %p, nlink %d\n", __func__, __LINE__,
+			filp->replayfs_filemap, filp->f_dentry->d_inode->i_nlink);
+			*/
+	if (filp && !IS_ERR(filp) && filp->replayfs_filemap) {
+		struct inode *inode = filp->f_dentry->d_inode;
+		if (inode->i_nlink == 1) {
+			/* Inode is about to be removed, delete it entirely */
+			replay_filp_delete(filp);
+		}
+	}
+
+	if (filp != NULL && !IS_ERR(filp)) {
+		filp_close(filp, NULL);
+	}
+#endif
 
 	new_syscall_enter(10);
 	rc = sys_unlink(pathname);
@@ -8148,9 +8234,7 @@ replay_unlink(const char __user *pathname)
 }
 
 asmlinkage long shim_unlink (const char __user * pathname) SHIM_CALL(unlink, 10, pathname);
-#else
-SIMPLE_SHIM1(unlink, 10, const char __user *, pathname);
-#endif
+//SIMPLE_SHIM1(unlink, 10, const char __user *, pathname);
 
 // This should be called with the record group lock
 static int
@@ -13182,6 +13266,8 @@ record_lstat64(char __user *filename, struct stat64 __user *statbuf) {
 	long rc;
 	struct stat64 *pretval = NULL;
 
+	perftimer_start(lstat64_tmr);
+
 	new_syscall_enter (196);
 	rc = sys_lstat64 (filename, statbuf);
 	new_syscall_done (196, rc);
@@ -13213,6 +13299,9 @@ record_lstat64(char __user *filename, struct stat64 __user *statbuf) {
 	}
 
 	new_syscall_exit (196, pretval);
+
+	perftimer_stop(lstat64_tmr);
+
 	return rc;
 }
 
@@ -13225,6 +13314,8 @@ static asmlinkage long
 record_fstat64(int fd, struct stat64 __user *statbuf) {
 	long rc;
 	struct stat64 *pretval = NULL;
+
+	perftimer_start(fstat64_tmr);
 
 	new_syscall_enter (197);
 	rc = sys_fstat64 (fd, statbuf);
@@ -13259,6 +13350,8 @@ record_fstat64(int fd, struct stat64 __user *statbuf) {
 	}
 
 	new_syscall_exit (197, pretval);
+
+	perftimer_stop(fstat64_tmr);
 	return rc;
 }
 
@@ -14191,15 +14284,15 @@ SIMPLE_SHIM5(fchownat, 298, int, dfd, const char __user *, filename, uid_t, user
 SIMPLE_SHIM3(futimesat, 299, int, dfd, char __user *, filename, struct timeval __user *,utimes);
 RET1_SHIM4(fstatat64, 300, struct stat64, statbuf, int, dfd, char __user *, filename, struct stat64 __user *, statbuf, int, flag);
 
-#ifdef REPLAY_COMPRESS_READS
 static asmlinkage long
 record_unlinkat(int dfd, const char __user *pathname, int flag)
 {
 	long rc;
+#ifdef REPLAY_COMPRESS_READS
 	struct file *filp;
 	int fd;
 
-	fd = do_sys_open(dfd, pathname, O_RDWR, 0777);
+	fd = do_sys_open(dfd, pathname, O_RDONLY, 0777);
 	filp = fget(fd);
 
 	/* 
@@ -14219,9 +14312,39 @@ record_unlinkat(int dfd, const char __user *pathname, int flag)
 	}
 
 	sys_close(fd);
+#endif
+#ifdef TRACE_READ_WRITE
+	struct file *filp;
+	int fd;
+
+	fd = do_sys_open(dfd, pathname, O_RDONLY, 0777);
+	filp = fget(fd);
+
+	/* 
+	 * If we're about to delete the file, and it is a replayfs file, then remove
+	 * it from our replayfs knowledge base
+	 */
+	if (filp != NULL && !IS_ERR(filp)) {
+		/*
+		printk("%s %d: checking filemap %p, nlink %d\n", __func__, __LINE__,
+				filp->replayfs_filemap, filp->f_dentry->d_inode->i_nlink);
+				*/
+		if (filp->replayfs_filemap) {
+			struct inode *inode = filp->f_dentry->d_inode;
+			if (inode->i_nlink == 1) {
+				/* Inode is about to be removed, delete it entirely */
+				replay_filp_delete(filp);
+			}
+		}
+
+		fput(filp);
+	}
+
+	sys_close(fd);
+#endif
 
 	new_syscall_enter(301);
-	rc = sys_unlink(pathname);
+	rc = sys_unlinkat(dfd, pathname, flag);
 	new_syscall_done(301, rc);
 
 	new_syscall_exit(301, NULL);
@@ -14238,9 +14361,7 @@ replay_unlinkat(int dfd, const char __user *pathname, int flag)
 }
 
 asmlinkage long shim_unlinkat (int dfd, const char __user *pathname, int flag) SHIM_CALL(unlinkat, 301, dfd, pathname, flag);
-#else
-SIMPLE_SHIM3(unlinkat, 301, int, dfd, const char __user *, pathname, int, flag);
-#endif
+//SIMPLE_SHIM3(unlinkat, 301, int, dfd, const char __user *, pathname, int, flag);
 
 SIMPLE_SHIM4(renameat, 302, int, olddfd, const char __user *, oldname, int, newdfd, const char __user *, newname);
 SIMPLE_SHIM5(linkat, 303, int, olddfd, const char __user *, oldname, int, newdfd, const char __user *, newname, int, flags);
@@ -15660,11 +15781,84 @@ int replayfs_debug_page = -1;
 
 int replayfs_print_leaks = 0;
 
+atomic_t replayfs_debug_sizes[16];
+
+atomic_t vals_kmalloc = {0};
+atomic_t vals_kfree = {0};
+
+atomic_t data_kmallocs = {0};
+atomic_t diskalloc_kmallocs = {0};
+atomic_t disk_alloc_kmallocs = {0};
+atomic_t other_kmallocs = {0};
+
 unsigned long replayfs_debug_page_index = 0xFFFFFFFF;
 
 #ifdef CONFIG_SYSCTL
 extern atomic_t diskalloc_num_blocks;
 static struct ctl_table print_ctl[] = {
+	{
+		.procname	= "data_kmallocs",
+		.data		= &data_kmallocs.counter,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "diskalloc_kmallocs",
+		.data		= &diskalloc_kmallocs.counter,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "disk_alloc_kmallocs",
+		.data		= &disk_alloc_kmallocs.counter,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "other_kmalloc",
+		.data		= &other_kmallocs.counter,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "data_kmalloc",
+		.data		= &data_kmallocs.counter,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "entry_kfree",
+		.data		= &entry_kfree.counter,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "vals_kmalloc",
+		.data		= &vals_kmalloc.counter,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "vals_kfree",
+		.data		= &vals_kfree.counter,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "entry_kmalloc",
+		.data		= &entry_kmalloc.counter,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
 	{
 		.procname	= "replayfs_btree_print",
 		.data		= &btree_print,
@@ -15791,6 +15985,118 @@ static struct ctl_table print_ctl[] = {
 		.mode		= 0666,
 		.proc_handler	= &proc_dointvec,
 	},
+	{
+		.procname	= "head_size15",
+		.data		= &replayfs_debug_sizes[15].counter,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "head_size14",
+		.data		= &replayfs_debug_sizes[14].counter,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "head_size13",
+		.data		= &replayfs_debug_sizes[13].counter,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "head_size12",
+		.data		= &replayfs_debug_sizes[12].counter,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "head_size11",
+		.data		= &replayfs_debug_sizes[11].counter,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "head_size10",
+		.data		= &replayfs_debug_sizes[10].counter,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "head_size9",
+		.data		= &replayfs_debug_sizes[9].counter,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "head_size8",
+		.data		= &replayfs_debug_sizes[8].counter,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "head_size7",
+		.data		= &replayfs_debug_sizes[7].counter,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "head_size6",
+		.data		= &replayfs_debug_sizes[6].counter,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "head_size5",
+		.data		= &replayfs_debug_sizes[5].counter,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "head_size4",
+		.data		= &replayfs_debug_sizes[4].counter,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "head_size3",
+		.data		= &replayfs_debug_sizes[3].counter,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "head_size2",
+		.data		= &replayfs_debug_sizes[2].counter,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "head_size1",
+		.data		= &replayfs_debug_sizes[1].counter,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "head_size0",
+		.data		= &replayfs_debug_sizes[0].counter,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0666,
+		.proc_handler	= &proc_dointvec,
+	},
 	{0, },
 };
 static struct ctl_table replay_ctl[] = {
@@ -15901,6 +16207,14 @@ static int __init replay_init(void)
 	close_timer = perftimer_create("Close Total", "Close");
 	close_sys_timer = perftimer_create("sys_close", "Close");
 	close_intercept_timer = perftimer_create("Close Intercept", "Close");
+
+	fstat64_tmr = perftimer_create("fstat64", "Syscalls");
+	lstat64_tmr = perftimer_create("lstat64", "Syscalls");
+	/*
+	flistxattr_tmr = perftimer_create("flistxattr", "Syscalls");
+	fsetxattr_tmr = perftimer_create("fsetxattr", "Syscalls");
+	utimensat_tmr = perftimer_create("utimensat", "Close");
+	*/
 
 #ifdef REPLAY_COMPRESS_READS
 	btree_init32(&meta_tree);

@@ -57,27 +57,29 @@ static int replayfs_filemap_create(struct replayfs_filemap *map,
 	int ret;
 	struct page *page;
 	struct replayfs_btree128_value val;
+	loff_t loc;
 
 	/* Populate val */
-	page = replayfs_diskalloc_alloc_page(alloc);
+	loc = replayfs_diskalloc_alloc_meta(alloc);
+	page = replayfs_diskalloc_get_page(alloc, loc);
 
 	debugk("%s %d: Creating fielmap with new metaloc page: %lu\n", __func__,
 			__LINE__, page->index);
 
 	if (pos) {
-		*pos = PAGE_SIZE * (loff_t)page->index;
+		*pos = loc;
 	}
 
 	replayfs_diskalloc_put_page(alloc, page);
 
 	ret = replayfs_btree_create(&map->entries, alloc,
-			PAGE_SIZE * (loff_t)page->index);
+			loc);
 	if (ret) {
 		//replayfs_diskalloc_free_page(alloc, page);
 		goto out;
 	}
 
-	val.id = PAGE_SIZE * (loff_t)page->index;
+	val.id = loc;
 
 	debugk("%s %d - %p: Inserting tree with key {%llu, %llu} to {%lld}\n",
 			__func__, __LINE__, current, key->id1, key->id2, val.id);
@@ -181,7 +183,6 @@ int replayfs_filemap_exists(struct file *filp) {
 	printk("%s %d - %p: Looking for key {%llu, %llu}  -- ",
 			__func__, __LINE__, current, key.id1, key.id2);
 			*/
-	btree_debug_check();
 	disk_pos = replayfs_btree128_lookup(&filemap_meta_tree, &key, &page);
 	/*
 	if (disk_pos != NULL) {
@@ -191,7 +192,6 @@ int replayfs_filemap_exists(struct file *filp) {
 	}
 	*/
 
-	btree_debug_check();
 	/* If exists */
 	if (disk_pos != NULL) {
 		ret = 1;
@@ -233,7 +233,6 @@ int replayfs_filemap_init_with_pos(struct replayfs_filemap *map,
 	/* Check for this file in the meta btree */
 	debugk("%s %d: Checking btree for key {%lld, %lld}\n", __func__, __LINE__,
 			key.id1, key.id2);
-	btree_debug_check();
 	/*
 	printk("%s %d - %p: Looking for key {%llu, %llu}  -- ",
 			__func__, __LINE__, current, key.id1, key.id2);
@@ -247,11 +246,11 @@ int replayfs_filemap_init_with_pos(struct replayfs_filemap *map,
 				key.id1, key.id2);
 	}
 	*/
-	btree_debug_check();
 
 	/* If exists */
 	if (disk_pos != NULL) {
 		loff_t id;
+
 		/*
 		debugk("%s %d: Opening filemap for file {%llu} with disk_pos of %lld\n",
 				__func__, __LINE__, inode->i_ino, disk_pos->id);
@@ -266,7 +265,6 @@ int replayfs_filemap_init_with_pos(struct replayfs_filemap *map,
 
 		debugk("%s %d: ----LOADING btree from %lld\n", __func__, __LINE__,
 				disk_pos->id);
-		btree_debug_check();
 		ret = replayfs_btree_init(&map->entries, alloc, id);
 	} else {
 		debugk("%s %d: ----Creating btree\n", __func__, __LINE__);
@@ -276,7 +274,6 @@ int replayfs_filemap_init_with_pos(struct replayfs_filemap *map,
 		ret = replayfs_filemap_create(map, alloc, &key, meta_pos);
 		debugk("%s %d: ----Btree created at %lld\n", __func__, __LINE__,
 				map->entries.meta_loc);
-		btree_debug_check();
 
 		meta_lock_debugk("%s %d - %p: Unlocking %p\n", __func__, __LINE__, current,
 				&meta_lock);
@@ -288,7 +285,6 @@ int replayfs_filemap_init_with_pos(struct replayfs_filemap *map,
 	}
 
 out:
-	btree_debug_check();
 	return ret;
 }
 
@@ -335,6 +331,19 @@ int replayfs_filemap_init(struct replayfs_filemap *map,
 	/* If exists */
 	if (disk_pos != NULL) {
 		loff_t id;
+
+		/*
+		char path[200];
+		char *real_path;
+
+		real_path = d_path(&filp->f_path, path, 200);
+		if (IS_ERR(real_path)) {
+			BUG();
+		}
+
+		printk("%s %d: Initializing (not creating) btree for file %s\n", __func__,
+				__LINE__, real_path);
+		*/
 		/*
 		debugk("%s %d: Opening filemap for file {%llu} with disk_pos of %lld\n",
 				__func__, __LINE__, inode->i_ino, disk_pos->id);
@@ -383,9 +392,9 @@ void replayfs_filemap_destroy(struct replayfs_filemap *map) {
 void replayfs_filemap_delete_key(struct replayfs_filemap *map,
 		struct replayfs_btree128_key *key) {
 	struct replayfs_btree128_value *disk_pos;
-	struct page *page;
 	struct page *disk_page;
-	struct replafys_diskalloc *alloc;
+	struct replayfs_diskalloc *alloc;
+	loff_t meta_loc;
 	mutex_destroy(&map->lock);
 
 	meta_lock_debugk("%s %d - %p: Locking %p\n", __func__, __LINE__, current,
@@ -395,30 +404,27 @@ void replayfs_filemap_delete_key(struct replayfs_filemap *map,
 	debugk("%s %d: Removing key {%lld, %lld} from filemap list\n", __func__,
 			__LINE__, key->id1, key->id2);
 	disk_pos = replayfs_btree128_lookup(&filemap_meta_tree, key, &disk_page);
-	page = replayfs_diskalloc_get_page(map->entries.allocator, disk_pos->id);
+	meta_loc = disk_pos->id;
+
+	replayfs_btree128_put_page(&filemap_meta_tree, disk_page);
 
 	replayfs_btree128_remove(&filemap_meta_tree, key);
 
 	alloc = map->entries.allocator;
 
-	btree_debug_check();
 	debugk("%s %d: Deleting btree with loc %lld\n", __func__, __LINE__,
 			map->entries.meta_loc);
 	replayfs_btree_delete(&map->entries);
 
-	replayfs_diskalloc_free_page(alloc, page);
-
-	btree_debug_check();
+	replayfs_diskalloc_free_meta(alloc, meta_loc);
 
 	/*
 	printk("%s %d - %p: Removing key {%llu, %llu}\n", __func__, __LINE__, current,
 			key->id1, key->id2);
 			*/
 
-	btree_debug_check();
 	meta_lock_debugk("%s %d - %p: Unlocking %p\n", __func__, __LINE__, current,
 			&meta_lock);
-	btree_debug_check();
 	mutex_unlock(&meta_lock);
 }
 
@@ -447,7 +453,6 @@ int replayfs_filemap_write(struct replayfs_filemap *map, loff_t unique_id,
 
 	key.offset = offset;
 	key.size = size;
-	btree_debug_check();
 
 	debugk("%s %d: Inserting into filemap btree (%lld) key {%lld, %lld}\n", __func__,
 			__LINE__, map->entries.meta_loc, key.offset, key.size);
@@ -458,9 +463,7 @@ int replayfs_filemap_write(struct replayfs_filemap *map, loff_t unique_id,
 			&map->lock);
 	debugk("%s %d: Filemap writing to %lld, %p\n", __func__, __LINE__,
 			map->entries.meta_loc, map->entries.node_page);
-	btree_debug_check();
 	ret = replayfs_btree_insert_update(&map->entries, &key, &value, GFP_NOFS);
-	btree_debug_check();
 	lock_debugk("%s %d - %p: Unlocking %p\n", __func__, __LINE__, current,
 			&map->lock);
 	mutex_unlock(&map->lock);
@@ -477,6 +480,9 @@ int replayfs_filemap_write(struct replayfs_filemap *map, loff_t unique_id,
 	return ret;
 }
 
+extern atomic_t vals_kmalloc;
+extern atomic_t vals_kfree;
+extern atomic_t entry_kmalloc;
 struct replayfs_filemap_entry *replayfs_filemap_read(struct replayfs_filemap *map,
 		loff_t offset, int size) {
 	loff_t ret;
@@ -494,6 +500,7 @@ struct replayfs_filemap_entry *replayfs_filemap_read(struct replayfs_filemap *ma
 	if (vals == NULL) {
 		return ERR_PTR(-ENOMEM);
 	}
+	atomic_inc(&vals_kmalloc);
 	vals_index = 0;
 
 	debugk("%s %d: Doing read with offset %lld, size %d, cur_addr %lld end_addr %lld\n",
@@ -504,7 +511,6 @@ struct replayfs_filemap_entry *replayfs_filemap_read(struct replayfs_filemap *ma
 	mutex_lock(&map->lock);
 	lock_debugk("%s %d - %p: Locked %p\n", __func__, __LINE__, current,
 			&map->lock);
-	btree_debug_check();
 
 	ret = 0;
 
@@ -527,6 +533,8 @@ struct replayfs_filemap_entry *replayfs_filemap_read(struct replayfs_filemap *ma
 			lock_debugk("%s %d - %p: Unlocking %p\n", __func__, __LINE__, current,
 					&map->lock);
 			mutex_unlock(&map->lock);
+			kfree(vals);
+			atomic_inc(&vals_kfree);
 			return ERR_PTR(-ENOENT);
 		}
 
@@ -534,6 +542,8 @@ struct replayfs_filemap_entry *replayfs_filemap_read(struct replayfs_filemap *ma
 			lock_debugk("%s %d - %p: Unlocking %p\n", __func__, __LINE__, current,
 					&map->lock);
 			mutex_unlock(&map->lock);
+			kfree(vals);
+			atomic_inc(&vals_kfree);
 			return (void *)val;
 		}
 
@@ -541,7 +551,6 @@ struct replayfs_filemap_entry *replayfs_filemap_read(struct replayfs_filemap *ma
 		/* Now I have a set of ranges, figure out what ranges */
 		val_end = key.offset + key.size;
 
-		btree_debug_check();
 		entry_end = val_end;
 		if (val_end > end_addr) {
 			entry_end = end_addr;
@@ -581,16 +590,18 @@ struct replayfs_filemap_entry *replayfs_filemap_read(struct replayfs_filemap *ma
 				ret = -ENOMEM;
 				goto out_unlock;
 			}
+			atomic_inc(&vals_kmalloc);
+
 			memcpy(vals, old_vals,
 					sizeof(struct replayfs_filemap_value) * (vals_size>>1));
 			debugk("%s %d: here!\n", __func__, __LINE__);
 			kfree(old_vals);
+			atomic_inc(&vals_kfree);
 		}
 		/*
 		printk("%s %d: Adding val with buff_offs %u!\n", __func__, __LINE__,
 				val->buff_offs);
 				*/
-		btree_debug_check();
 		memcpy(&vals[vals_index].bval, val, sizeof(struct replayfs_btree_value));
 		vals[vals_index].offset = key.offset;
 		vals[vals_index].size = size;
@@ -602,7 +613,6 @@ struct replayfs_filemap_entry *replayfs_filemap_read(struct replayfs_filemap *ma
 		cur_addr = val_end;
 
 		replayfs_btree_put_page(&map->entries, btree_page);
-		btree_debug_check();
 	}
 	lock_debugk("%s %d - %p: Unlocking %p\n", __func__, __LINE__, current,
 			&map->lock);
@@ -617,6 +627,7 @@ struct replayfs_filemap_entry *replayfs_filemap_read(struct replayfs_filemap *ma
 		ret = -ENOMEM;
 		goto out;
 	}
+	atomic_inc(&entry_kmalloc);
 
 
 	debugk("%s %d: about to alloc/copy with vals_index of %d!\n", __func__, __LINE__, vals_index);
@@ -628,6 +639,7 @@ struct replayfs_filemap_entry *replayfs_filemap_read(struct replayfs_filemap *ma
 
 out:
 	kfree(vals);
+	atomic_inc(&vals_kfree);
 	if (ret) {
 		debugk("%s %d: Erroring out with ret %lld!\n", __func__, __LINE__, ret);
 		entry = ERR_PTR(ret);
@@ -637,7 +649,6 @@ out:
 out_unlock:
 	lock_debugk("%s %d - %p: Unlocking %p\n", __func__, __LINE__, current,
 			&map->lock);
-	btree_debug_check();
 	mutex_unlock(&map->lock);
 	goto out;
 }

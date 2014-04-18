@@ -447,12 +447,104 @@ void replayfs_btree_init_allocator(struct replayfs_btree_head *head,
 	head->allocator = allocator;
 }
 
+static int keyzero(struct btree_geo *geo, struct replayfs_btree_key *key)
+{
+	if (key->offset == 0 && key->size == 0) {
+		return 1;
+	}
+
+	return 0;
+}
+
+static struct replayfs_btree_meta *get_meta(struct replayfs_btree_head *head,
+		struct page **page) {
+	char *cpage;
+	struct replayfs_btree_meta *meta;
+
+	*page = replayfs_diskalloc_get_page(head->allocator, head->meta_loc);
+	cpage = replayfs_kmap(*page);
+	meta = (void *)(cpage + (head->meta_loc % PAGE_SIZE));
+
+	return meta;
+}
+
+static void put_meta(struct replayfs_btree_head *head,
+		struct page *page) {
+	replayfs_kunmap(page);
+	replayfs_diskalloc_put_page(head->allocator, page);
+}
+
+static void meta_clear(struct replayfs_btree_head *head) {
+	struct replayfs_btree_meta *meta;
+	struct page *meta_page;
+
+	meta = get_meta(head, &meta_page);
+
+	memset(&meta->key, 0, sizeof(struct replayfs_btree_key));
+	memcpy(&meta->val, &replayfs_zero_value, sizeof(struct
+				replayfs_btree_value));
+	replayfs_diskalloc_page_dirty(meta_page);
+
+	put_meta(head, meta_page);
+}
+
+static int meta_is_clear(struct replayfs_btree_head *head) {
+	struct replayfs_btree_meta *meta;
+	struct page *page;
+
+	int ret;
+	if (head->height > 0) {
+		return 1;
+	}
+
+	meta = get_meta(head, &page);
+
+	if (keyzero(&replayfs_geo, &meta->key)) {
+		ret = 1;
+	} else {
+		ret = 0;
+	}
+
+	put_meta(head, page);
+
+	return ret;
+}
+
+static void meta_get(struct replayfs_btree_head *head,
+		struct replayfs_btree_key *key, struct replayfs_btree_value *val) {
+	struct replayfs_btree_meta *meta;
+	struct page *page;
+
+	meta = get_meta(head, &page);
+
+	memcpy(val, &meta->val, sizeof(struct replayfs_btree_value));
+	memcpy(key, &meta->key, sizeof(struct replayfs_btree_key));
+
+	put_meta(head, page);
+}
+
+static void meta_set(struct replayfs_btree_head *head,
+		struct replayfs_btree_key *key, struct replayfs_btree_value *val) {
+	struct replayfs_btree_meta *meta;
+	struct page *page;
+
+	meta = get_meta(head, &page);
+
+	memcpy(&meta->val, val, sizeof(struct replayfs_btree_value));
+	memcpy(&meta->key, key, sizeof(struct replayfs_btree_key));
+	replayfs_diskalloc_page_dirty(page);
+
+	put_meta(head, page);
+}
+
 static void update_meta(struct replayfs_btree_head *head) {
 	struct page *page;
+	char *cpage;
 	struct replayfs_btree_meta *meta;
 
 	page = replayfs_diskalloc_get_page(head->allocator, head->meta_loc);
-	meta = replayfs_kmap(page);
+	cpage = replayfs_kmap(page);
+	meta = (void *)(cpage + (head->meta_loc % PAGE_SIZE));
 
 	if (head->node_page != NULL) {
 		meta->node_page = head->node_page->index * PAGE_SIZE;
@@ -474,6 +566,7 @@ int replayfs_btree_init(struct replayfs_btree_head *head,
 		struct replayfs_diskalloc *alloc, loff_t meta_loc)
 {
 	struct page *page;
+	char *cpage;
 	struct replayfs_btree_meta *meta;
 
 	head->allocator = alloc;
@@ -481,7 +574,9 @@ int replayfs_btree_init(struct replayfs_btree_head *head,
 	head->meta_loc = meta_loc;
 
 	page = replayfs_diskalloc_get_page(alloc, meta_loc);
-	meta = replayfs_kmap(page);
+	cpage = replayfs_kmap(page);
+
+	meta = (void *)(cpage + (meta_loc % PAGE_SIZE));
 
 	init_debugk("%s %d: Got meta with node_page %lld, i_size %lld\n", __func__,
 			__LINE__, meta->node_page, meta->i_size);
@@ -494,6 +589,8 @@ int replayfs_btree_init(struct replayfs_btree_head *head,
 		head->node_page = NULL;
 	}
 	head->height = meta->height;
+
+	head->size = -1;
 
 	replayfs_kunmap(page);
 
@@ -520,6 +617,9 @@ int replayfs_btree_create(struct replayfs_btree_head *head,
 	head->meta_loc = meta_loc;
 	__btree_init(head);
 	head->allocator = alloc;
+	head->size = 0;
+	/* Clear the bonus key */
+	meta_clear(head);
 	update_meta(head);
 	//mempool_create(0, btree_alloc, btree_free, NULL);
 	return 0;
@@ -531,7 +631,7 @@ void replayfs_btree_destroy(struct replayfs_btree_head *head)
 		replayfs_diskalloc_put_page(head->allocator, head->node_page);
 	}
 
-	replayfs_diskalloc_sync(head->allocator);
+	//replayfs_diskalloc_sync(head->allocator);
 
 	/* Sync all of the nodes in the tree */
 	head->allocator = NULL;
@@ -702,15 +802,6 @@ static int keycmp(struct btree_geo *geo, unsigned long *node, int pos,
 		  struct replayfs_btree_key *key)
 {
 	return rpkeycmp(bkey(geo, node, pos), key);
-}
-
-static int keyzero(struct btree_geo *geo, struct replayfs_btree_key *key)
-{
-	if (key->offset == 0 && key->size == 0) {
-		return 1;
-	}
-
-	return 0;
 }
 
 int replayfs_btree_update(struct replayfs_btree_head *head,
@@ -1043,6 +1134,21 @@ static struct replayfs_btree_value *replayfs_btree_lookup_internal(
 	unsigned long *node_data;
 	node = get_head_page(head, &node_data);
 
+	if (!meta_is_clear(head)) {
+		struct replayfs_btree_meta *meta;
+		struct page *page;
+
+		meta = get_meta(head, &page);
+		/* Check for the key */
+		if (meta->key.size > pos) {
+			*ret_page = page;
+			keycpy(key, &meta->key);
+
+			return &meta->val;
+		}
+
+		put_meta(head, page);
+	}
 
 	if (height == 0) {
 		debugk("%s %d: Empty tree!\n", __func__, __LINE__);
@@ -1574,6 +1680,7 @@ retry:
 	return 0;
 }
 
+extern atomic_t replayfs_debug_sizes[];
 int __must_check replayfs_btree_insert_update(struct replayfs_btree_head *head,
 			      struct replayfs_btree_key *key, struct replayfs_btree_value *val,
 						gfp_t gfp) {
@@ -1587,6 +1694,35 @@ int __must_check replayfs_btree_insert_update(struct replayfs_btree_head *head,
 			key->offset, key->size);
 
 	BUG_ON(head->node_page == NULL && head->height != 0);
+
+	if (head->size >= 0) {
+		if (head->size < 16) {
+			if (head->size > 0) {
+				//printk("%s %d: dec'ing debug_sizes at %d\n", __func__, __LINE__,
+						//head->size-1);
+				atomic_dec(&replayfs_debug_sizes[head->size-1]);
+			}
+			//printk("%s %d: inc'ing debug_sizes at %d\n", __func__, __LINE__,
+					//head->size);
+			atomic_inc(&replayfs_debug_sizes[head->size]);
+		}
+	}
+	head->size++;
+
+	/* If we're empty, and we don't need to zero fill! */
+	if (meta_is_clear(head) && key->offset == 0) {
+		meta_set(head, key, val);
+		return 0;
+	} else if (head->height == 0) {
+		struct replayfs_btree_key tkey;
+		struct replayfs_btree_value tvalue;
+		int rc;
+
+		meta_get(head, &tkey, &tvalue);
+
+		rc = replayfs_btree_insert(head, &tkey, &tvalue, gfp);
+		BUG_ON(rc);
+	}
 
 	check_tree(head);
 	/* 
@@ -1894,7 +2030,7 @@ static int rebalance(struct replayfs_btree_head *head, struct btree_geo *geo,
 	 * Unimplemented... will happen if we get 85^2 unique entries... I'm going to
 	 * hope it doesn't for now...
 	 */
-	BUG_ON(level != 1);
+	//BUG_ON(level != 1);
 
 	parent = find_level(head, geo, key, level + 1, &parent_data);
 

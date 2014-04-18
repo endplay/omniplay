@@ -4,7 +4,7 @@
 #include <linux/kernel.h>
 #include <linux/list.h>
 
-//#define DO_PERFTIMER
+#define DO_PERFTIMER
 
 struct perftimer {
 	struct list_head list;

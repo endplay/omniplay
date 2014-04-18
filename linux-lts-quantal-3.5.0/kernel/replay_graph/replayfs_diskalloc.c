@@ -32,11 +32,13 @@
 #define REPLAYFS_DISKALLOC_DEBUG_CACHE
 
 #define REPLAYFS_DISKALLOC_ALLOC_DEBUG
-*/
 
 #define REPLAYFS_DISKALLOC_MONITOR_LISTS
 
 #define REPLAYFS_DISKALLOC_STANDARD_CHECKS
+*/
+
+#define REPLAYFS_DISKALLOC_NO_SYNCS
 
 #if defined(REPLAYFS_DISKALLOC_DEBUG) && !defined(REPLAYFS_DISKALLOC_DEBUG_MIN)
 #  define REPLAYFS_DISKALLOC_DEBUG_MIN
@@ -44,6 +46,10 @@
 
 DEFINE_MUTEX(glbl_allocnum_lock);
 int glbl_allocnum = 0;
+
+extern atomic_t diskalloc_kmallocs;
+extern atomic_t disk_alloc_kmallocs;
+extern atomic_t data_kmallocs;
 
 struct perftimer *sync_timer;
 struct perftimer *sync_write_timer;
@@ -108,11 +114,6 @@ extern int replayfs_diskalloc_debug_lock;
 #define alloc_debugk(...)
 #define alloc_dump_stack()
 #endif
-
-#define WORDS_PER_PAGE (PAGE_SIZE/sizeof(unsigned int))
-#define MAPPINGS_PER_PAGE (PAGE_SIZE * 8)
-#define PAGE_MASK_SIZE_IN_PAGES ((loff_t)PAGE_ALLOC_PAGES / MAPPINGS_PER_PAGE)
-#define FIRST_PAGEALLOC_PAGE ((loff_t)PAGE_MASK_SIZE_IN_PAGES * PAGE_SIZE)
 
 void replayfs_diskalloc_sync_page_internal(struct replayfs_diskalloc *alloc,
 		struct page *page);
@@ -188,9 +189,6 @@ struct diskalloc_raw {
 	__le64 free_list_start;
 };
 
-/* Fixme? */
-struct inode *buf_inode;
-
 struct extent_raw {
 	__le64 pos;
 	__le64 size;
@@ -234,7 +232,7 @@ void check_page_allocated(struct replayfs_diskalloc *alloc, loff_t index) {
 	alloc_put_page_nocheck(alloc, page);
 }
 #else
-#define check_allocated(...)
+#define check_page_allocated(...)
 #endif
 
 #ifdef REPLAYFS_DISKALLOC_MONITOR_LISTS
@@ -648,11 +646,28 @@ static void alloc_evict_page(struct replayfs_diskalloc *alloc) {
 	}
 }
 
+static atomic_t num_out = {0};
 static struct page_data *alloc_make_page(pgoff_t pg_offset, struct replayfs_diskalloc *alloc) {
 	struct page_data *data;
 
-
 	crappy_pagecache_size++;
+#if 0
+	if (crappy_pagecache_size % 4096 == 0) {
+		printk("%s %d: Creating page #%d\n", __func__, __LINE__,
+				crappy_pagecache_size);
+		if (crappy_pagecache_size > 50000) {
+			while (crappy_pagecache_size > 0x4000) {
+				//cache_debugk("%s %d: Evicting page\n", __func__, __LINE__);
+				BUG_ON(!mutex_is_locked(&crappy_pagecache_lock));
+				/* Technically possible... if there are more pages in-use than in-cache */
+				BUG_ON(list_empty(&crappy_pagecache_lru_list));
+				alloc_evict_page(alloc);
+			}
+		}
+	}
+#endif
+	/* Never evict... */
+//#ifndef REPLAYFS_DISKALLOC_NO_SYNCS
 	while (crappy_pagecache_size > CRAPPY_PAGECACHE_MAX_SIZE) {
 		//cache_debugk("%s %d: Evicting page\n", __func__, __LINE__);
 		BUG_ON(!mutex_is_locked(&crappy_pagecache_lock));
@@ -660,6 +675,7 @@ static struct page_data *alloc_make_page(pgoff_t pg_offset, struct replayfs_disk
 		BUG_ON(list_empty(&crappy_pagecache_lru_list));
 		alloc_evict_page(alloc);
 	}
+//#endif
 
 	if (list_empty(&crappy_pagecache_free_list)) {
 		crappy_pagecache_allocated_pages++;
@@ -667,6 +683,7 @@ static struct page_data *alloc_make_page(pgoff_t pg_offset, struct replayfs_disk
 
 		data = kmalloc(sizeof(struct page_data), GFP_KERNEL);
 		BUG_ON(data == NULL);
+		atomic_inc(&data_kmallocs);
 
 		data->count = 1;
 		data->referenced = 0;
@@ -678,6 +695,10 @@ static struct page_data *alloc_make_page(pgoff_t pg_offset, struct replayfs_disk
 		data->page = alloc_page(GFP_KERNEL);
 		BUG_ON(IS_ERR(data->page));
 		BUG_ON(data->page == NULL);
+		atomic_inc(&num_out);
+#ifdef REPLAYFS_KEEP_MAPPED
+		kmap(data->page);
+#endif
 	} else {
 		BUG_ON(list_empty(&crappy_pagecache_free_list));
 		BUG_ON(!mutex_is_locked(&crappy_pagecache_lock));
@@ -709,7 +730,6 @@ static struct page_data *alloc_make_page(pgoff_t pg_offset, struct replayfs_disk
 	cache_debugk("%s %d: Alloced page %p with count of %d\n", __func__, __LINE__,
 			data->page, data->count);
 	/* Make sure we read in the data... */
-	//page = read_mapping_page(buf_inode->i_mapping, pg_offset, NULL);
 
 	list_add(&data->alloc_list, &alloc->alloced_pages);
 
@@ -845,7 +865,9 @@ static struct page *alloc_get_page_nocheck(struct replayfs_diskalloc *alloc, lof
 		if (tv.tv_sec - last_print_time.tv_sec > 30) {
 			//u64 key;
 			//struct page_data *btree_data;
-			printk("%s %d: Alloc leak check, currently out %d pages\n", __func__, __LINE__, atomic_read(&gets) - atomic_read(&puts));
+			//printk("%s %d: Alloc leak check, currently out %d pages\n", __func__, __LINE__, atomic_read(&gets) - atomic_read(&puts));
+			printk("%s %d: Alloc leak check, currently out %d pages\n", __func__,
+					__LINE__, atomic_read(&num_out));
 			last_print_time = tv;
 
 			/*
@@ -1095,6 +1117,8 @@ static void do_init(struct replayfs_diskalloc *alloc, struct file *filp) {
 
 	alloc->cur_extent = NULL;
 
+	alloc->meta_page = NULL;
+
 	/* Gah... race.. */
 #ifdef REPLAYFS_DISKALLOC_DEBUG
 	mutex_lock(&glbl_allocnum_lock);
@@ -1114,6 +1138,7 @@ static struct replayfs_diskalloc *replayfs_diskalloc_create_with_extent(struct f
 	if (alloc == NULL) {
 		return ERR_PTR(-ENOMEM);
 	}
+	atomic_inc(&diskalloc_kmallocs);
 
 	do_init(alloc, filp);
 
@@ -1135,6 +1160,7 @@ struct replayfs_diskalloc *replayfs_diskalloc_create(struct file *filp) {
 	if (alloc == NULL) {
 		return ERR_PTR(-ENOMEM);
 	}
+	atomic_inc(&diskalloc_kmallocs);
 
 	do_init(alloc, filp);
 
@@ -1156,6 +1182,7 @@ struct replayfs_diskalloc *replayfs_diskalloc_init(struct file *filp) {
 	if (alloc == NULL) {
 		return ERR_PTR(-ENOMEM);
 	}
+	atomic_inc(&diskalloc_kmallocs);
 
 	debugk("%s %d: Initing %p\n", __func__, __LINE__, &alloc->lock);
 	do_init(alloc, filp);
@@ -1234,6 +1261,7 @@ void replayfs_diskalloc_destroy(struct replayfs_diskalloc *alloc) {
 			alloc->filp->f_dentry->d_inode->i_ino, alloc->allocnum);
 
 	/* Flush/delete all of the pages in alloc */
+#ifndef REPLAYFS_DISKALLOC_NO_SYNCS
 	mutex_lock(&crappy_pagecache_lock);
 
 	list_for_each_entry_safe(data, _t, &alloc->alloced_pages, alloc_list) {
@@ -1254,6 +1282,7 @@ void replayfs_diskalloc_destroy(struct replayfs_diskalloc *alloc) {
 	}
 
 	mutex_unlock(&crappy_pagecache_lock);
+#endif
 
 	alloc_put(alloc);
 }
@@ -1299,9 +1328,11 @@ static struct replayfs_disk_alloc *replayfs_extent_alloc(
 	BUG_ON(alloc_filp != extent->alloc->filp);
 
 	alloc = kmalloc(sizeof(struct replayfs_disk_alloc), GFP_NOFS);
+	/* For now, shouldn't be here! */
 	if (alloc == NULL) {
 		return ERR_PTR(-ENOMEM);
 	}
+	atomic_inc(&disk_alloc_kmallocs);
 
 	/* Wohoo, this is where we actually allocate space in the extent! */
 	alloc->alloc = extent->alloc;
@@ -1681,6 +1712,7 @@ struct replayfs_disk_alloc *replayfs_disk_alloc_get(
 	if (ret == NULL) {
 		return ERR_PTR(-ENOMEM);
 	}
+	atomic_inc(&disk_alloc_kmallocs);
 
 	header_pos = pos - sizeof(struct alloc_header);
 
@@ -1718,6 +1750,7 @@ static struct replayfs_extent *replayfs_extent_create_disk(
 	loff_t write_pos;
 
 	ret = kmalloc(sizeof(struct replayfs_extent), GFP_NOFS);
+	atomic_inc(&disk_alloc_kmallocs);
 
 	ret->id = extent;
 
@@ -1796,6 +1829,7 @@ static struct replayfs_extent *extent_read_from_disk(
 	if (ret == NULL) {
 		return ERR_PTR(-ENOMEM);
 	}
+	atomic_inc(&disk_alloc_kmallocs);
 
 	/* TODO: left off here */
 	page = alloc_get_page_nocheck(alloc, extent);
@@ -1825,6 +1859,7 @@ static struct replayfs_extent *create_extent_nolock(struct replayfs_diskalloc *a
 	if (ret == NULL) {
 		return ERR_PTR(-ENOMEM);
 	}
+	atomic_inc(&disk_alloc_kmallocs);
 
 	/* Get the next chunk from the alloc */
 	pos = alloc->extent_pos;
@@ -1863,6 +1898,7 @@ static struct replayfs_extent *create_extent(struct replayfs_diskalloc *alloc,
 	if (ret == NULL) {
 		return ERR_PTR(-ENOMEM);
 	}
+	atomic_inc(&disk_alloc_kmallocs);
 
 	/* Get the next chunk from the alloc */
 
@@ -1973,7 +2009,9 @@ static loff_t first_free_page(struct replayfs_diskalloc *alloc) {
 			replayfs_diskalloc_page_dirty(page);
 
 			/* Sync the page immediately, This metadata page shouldn't get out of sync... */
+#ifndef REPLAYFS_DISKALLOC_NO_SYNCS
 			replayfs_diskalloc_sync_page(alloc, page);
+#endif
 			//__set_page_dirty_nobuffers(page);
 			//TestSetPageWriteback(page);
 
@@ -2046,7 +2084,37 @@ loff_t replayfs_diskalloc_alloc_page_idx(struct replayfs_diskalloc *alloc) {
 	return page_idx;
 }
 
-struct page *replayfs_diskalloc_alloc_page(struct replayfs_diskalloc *alloc) {
+int replayfs_diskalloc_page_is_alloced(struct replayfs_diskalloc *alloc,
+		loff_t page_offs) {
+	/* The word offset of this bit */
+	/* NOTE PAGE_SIZE / PAGE_SIZE is 1... */
+	loff_t index = page_offs / PAGE_SIZE;
+	struct page *page = alloc_get_page_nocheck(alloc, index/(8));
+	loff_t word = index / (sizeof(unsigned long) * 8);
+	unsigned int *used_page_map = replayfs_kmap(page);
+	int shift = (sizeof(unsigned long) * 8) - 1;
+	int ret;
+	word %= (PAGE_SIZE/sizeof(unsigned long));
+
+	/* Magic here */
+	/* Okay, allocation policy, get the next page from the first extent */
+	mutex_lock(&alloc->lock);
+
+
+	alloc_min_debugk("%s %d: Checking page with index %lld, index %lu, word %lld, offs %d, used_page_map[word] 0x%08X\n", 
+			__func__, __LINE__, index, page->index, word,
+			(1<<(index&shift)), used_page_map[word]);
+
+	ret = ((used_page_map[word] & (1 << (index & shift))) != 0);
+
+	replayfs_kunmap(page);
+	alloc_put_page_nocheck(alloc, page);
+
+	mutex_unlock(&alloc->lock);
+	return ret;
+}
+
+static struct page *replayfs_diskalloc_alloc_page_nolock(struct replayfs_diskalloc *alloc) {
 	struct page *page;
 	loff_t page_idx;
 	/* Magic here */
@@ -2059,7 +2127,6 @@ struct page *replayfs_diskalloc_alloc_page(struct replayfs_diskalloc *alloc) {
 
 	debugk("%s %d: Locking %p\n", __func__, __LINE__, &alloc->lock);
 	/* Lock the diskalloc */
-	mutex_lock(&alloc->lock);
 
 	/* Find the first free page */
 	page_idx = first_free_page(alloc);
@@ -2080,7 +2147,16 @@ struct page *replayfs_diskalloc_alloc_page(struct replayfs_diskalloc *alloc) {
 
 	alloc_min_debugk("%s %d: Alloc'd page %lu\n", __func__, __LINE__, page->index);
 
+	return page;
+}
+
+struct page *replayfs_diskalloc_alloc_page(struct replayfs_diskalloc *alloc) {
+	struct page *page;
+
+	mutex_lock(&alloc->lock);
+	page = replayfs_diskalloc_alloc_page_nolock(alloc);
 	mutex_unlock(&alloc->lock);
+
 	return page;
 }
 
@@ -2185,8 +2261,6 @@ void replayfs_diskalloc_write_page_location(struct replayfs_diskalloc *alloc,
 	loff_t pos;
 	loff_t expected_pos;
 	unsigned int fmode;
-	char path[200];
-	char *real_path;
 
 	filp = alloc->filp;
 	fmode = alloc->filp->f_mode;
@@ -2199,16 +2273,10 @@ void replayfs_diskalloc_write_page_location(struct replayfs_diskalloc *alloc,
 	old_fs = get_fs();
 	set_fs(KERNEL_DS);
 
-	real_path = d_path(&filp->f_path, path, 200);
-	if (IS_ERR(real_path)) {
-		BUG();
-	}
-
 	BUG_ON(!S_ISREG(filp->f_dentry->d_inode->i_mode));
 	min_debugk("%s %d: filp is %p, inode is %p, ino is %lu\n", __func__, __LINE__,
 			filp, filp->f_dentry->d_inode, filp->f_dentry->d_inode->i_ino);
 	/*
-	printk("%s %d: Path is %s\n", __func__, __LINE__, real_path);
 	printk("%s %d: REMOVE_ME: i_flags are 0x%X i_mode is 0x%X, f_flags are 0x%lX\n", __func__,
 			__LINE__, filp->f_dentry->d_inode->i_flags,
 			(unsigned int)filp->f_dentry->d_inode->i_mode, (unsigned long)fmode);
@@ -2220,12 +2288,24 @@ void replayfs_diskalloc_write_page_location(struct replayfs_diskalloc *alloc,
 	min_debugk("%s %d: Pageloc 0 contains %d, pos is %lld, i_size is %lld\n", __func__, __LINE__,
 			(int)((char *)buffer)[0], pos, i_size_read(filp->f_dentry->d_inode));
 	perftimer_start(write_timer);
+	/*
+	printk("%s %d: Doing write??\n", __func__, __LINE__);
+	dump_stack();
+	*/
 	nwritten = vfs_write(filp, buffer, PAGE_SIZE, &pos);
 	perftimer_stop(write_timer);
 	min_debugk("%s %d: pos-Pageloc 0 contains %d, pos is %lld, nwritten is %d\n", __func__, __LINE__,
 			(int)((char *)buffer)[0], pos, nwritten);
 
 	if (pos != expected_pos) {
+		char path[200];
+		char *real_path;
+
+		real_path = d_path(&filp->f_path, path, 200);
+		if (IS_ERR(real_path)) {
+			BUG();
+		}
+
 		printk("%s %d: File %p (%s) has unexpected return pos (got %lld instead of %lld), nwritten is %d\n", 
 				__func__, __LINE__, filp, real_path, pos, expected_pos, nwritten);
 	}
@@ -2240,6 +2320,203 @@ void replayfs_diskalloc_put_page(struct replayfs_diskalloc *alloc,
 	alloc_put_page(alloc, page);
 }
 
-/* FIXME: Proc entry for blocks allocated */
+static void make_new_meta_page(struct replayfs_diskalloc *alloc) {
+	struct page *meta_page;
+	struct meta_page *header;
 
+	BUILD_BUG_ON(sizeof(struct meta_page) > PAGE_SIZE);
+	BUILD_BUG_ON(NO_PAIRS > HEADER_SIZE * 8);
+
+	/* Allocate the page */
+	meta_page = replayfs_diskalloc_alloc_page_nolock(alloc);
+
+	header = replayfs_kmap(meta_page);
+
+	/* Set its allocated bits to zero */
+	memset(header, 0, sizeof(header->header));
+	replayfs_diskalloc_page_dirty(meta_page);
+
+	replayfs_kunmap(meta_page);
+
+	alloc->meta_page = meta_page;
+}
+
+static int meta_page_empty(struct page *meta_page) {
+	struct meta_page *header;
+	int ret = 1;
+	int i;
+
+	header = replayfs_kmap(meta_page);
+
+	for (i = 0; i < HEADER_SIZE/sizeof(unsigned long); i++) {
+		if (header->header[i] != 0x0) {
+			ret = 0;
+			break;
+		}
+	}
+
+	replayfs_kunmap(meta_page);
+
+	return ret;
+}
+int popcountl(unsigned long i) {
+	i = i - ((i >> 1) & 0x55555555);
+	i = (i & 0x33333333) + ((i >> 2) & 0x33333333);
+	return (((i + (i >> 4)) & 0x0F0F0F0F) * 0x01010101) >> 24;
+}
+
+static int meta_page_full(struct page *meta_page) {
+	struct meta_page *header;
+	int ret = 0;
+	int i;
+	int num_alloc = 0;
+
+	header = replayfs_kmap(meta_page);
+
+	for (i = 0; i < HEADER_SIZE/sizeof(unsigned long); i++) {
+		if (~header->header[i] == 0x0) {
+			num_alloc += 32;
+		} else {
+			//num_alloc += __builtin_popcountl(header->header[i]);
+			num_alloc += popcountl(header->header[i]);
+
+			/*
+			printk("%s %d: Just got (likely) max alloc %d from %lu\n", __func__,
+					__LINE__, num_alloc, meta_page->index);
+					*/
+		}
+
+		if (num_alloc == NO_PAIRS) {
+			ret = 1;
+			break;
+		}
+		BUG_ON(num_alloc > NO_PAIRS);
+	}
+
+	replayfs_kunmap(meta_page);
+
+	return ret;
+}
+
+static loff_t first_free_meta(struct replayfs_diskalloc *alloc,
+		struct page *meta_page) {
+	struct meta_page *header;
+	int i;
+	int idx=0;
+	int offset;
+	int found = 0;
+
+	/* get the meta header... */
+	header = replayfs_kmap(meta_page);
+
+	/* For each int in the header */
+	for (i = 0; i < HEADER_SIZE/sizeof(unsigned long); i++) {
+		/* if the int isn't all zeros */
+		if (~header->header[i] != 0) {
+			int bit;
+
+			found = 1;
+			/* Get the first 0, and mark it as allocated */
+			/*
+			printk("%s %d: scanning %lX for zeros\n", __func__, __LINE__,
+					header->header[i]);
+					*/
+
+			bit = __builtin_ctz(~header->header[i]);
+
+			header->header[i] |= (1<<bit);
+			/*
+			printk("%s %d: After update now %lX,  switched bit %d\n", __func__, __LINE__,
+					header->header[i], bit);
+					*/
+
+			/* idx = 32*i + first 0 */
+			idx = (32*i) + bit;
+
+			break;
+		}
+	}
+
+	BUG_ON(!found);
+
+	/*
+	printk("%s %d: Allocating index %d from page %lu\n", __func__, __LINE__, idx,
+			meta_page->index);
+			*/
+
+	replayfs_diskalloc_page_dirty(meta_page);
+
+	/* Offset is 32 + sizeof(btree_meta) * idx */
+	offset = HEADER_SIZE + (sizeof(struct replayfs_btree_meta) * idx);
+
+	BUG_ON(offset+sizeof(struct replayfs_btree_meta) > PAGE_SIZE);
+	
+	/* Return the offset + page->index * PAGE_SIZE */
+	return ((loff_t)meta_page->index * PAGE_SIZE) + (loff_t)offset;
+}
+
+loff_t replayfs_diskalloc_alloc_meta(struct replayfs_diskalloc *alloc) {
+	loff_t ret;
+
+	mutex_lock(&alloc->lock);
+	if (alloc->meta_page == NULL || meta_page_full(alloc->meta_page)) {
+		if (alloc->meta_page) {
+			alloc_put_page(alloc, alloc->meta_page);
+		}
+		/* Allocate a new meta page */
+		make_new_meta_page(alloc);
+	}
+
+	ret = first_free_meta(alloc, alloc->meta_page);
+
+	mutex_unlock(&alloc->lock);
+
+	return ret;
+}
+
+void replayfs_diskalloc_free_meta(struct replayfs_diskalloc *alloc,
+		loff_t meta_loc) {
+	/* 
+	 * FIXME: For some reason freeing breaks my system right now... I need to make
+	 * this work later...
+	 */
+#if 0
+	/* Use replayfs_diskalloc version, as we are not locked */
+	struct page *page = replayfs_diskalloc_get_page(alloc, meta_loc);
+	struct meta_page *header;
+
+	int offset = meta_loc % PAGE_SIZE;
+	int idx_tmp;
+	int idx;
+	int bit;
+
+	mutex_lock(&alloc->lock);
+
+	header = replayfs_kmap(page);
+
+	idx_tmp = offset - HEADER_SIZE;
+	idx = idx_tmp / sizeof(struct replayfs_btree_meta);
+
+	bit = idx % 32;
+	idx /= 32;
+
+	printk("%s %d: Freeing bit %d on page %lu, before %lX\n", __func__, __LINE__,
+			bit, page->index, header->header[idx]);
+	header->header[idx] &= ~(1UL<<bit);
+	printk("%s %d: after %lX\n", __func__, __LINE__,
+			header->header[idx]);
+
+	replayfs_diskalloc_page_dirty(page);
+
+	replayfs_kunmap(page);
+
+	mutex_unlock(&alloc->lock);
+
+	if (meta_page_empty(page)) {
+		replayfs_diskalloc_free_page(alloc, page);
+	} else {
+		replayfs_diskalloc_put_page(alloc, page);
+	}
+#endif
+}
 
