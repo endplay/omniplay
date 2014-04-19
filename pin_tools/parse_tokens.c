@@ -40,15 +40,17 @@ int main(int argc, char** argv)
         if (read_token_from_file(fp, token)) {
             fprintf(stderr, "could not read token, count is %lu\n", count);
         }
-        fprintf(stdout, "%d %u %d %llu %d %d %d\n",
+        fprintf(stdout, "%d %u %d %llu %d %d %d %c\n",
                 token->type,
                 token->token_num,
                 token->fileno,
                 token->rg_id,
                 token->record_pid,
                 token->syscall_cnt,
-                token->byte_offset);
+                token->byte_offset,
+		token->value);
         free(token);
         count += (sizeof(struct token));
     }
+    return 0;
 }
