@@ -546,22 +546,6 @@ void replay_filp_close_work(struct work_struct *ws) {
 	put_work_struct(fws);
 }
 
-void replay_filp_close(struct file *filp) {
-	/*
-	if (current->record_thrd != NULL || current->replay_thrd != NULL) {
-		struct file_work_struct *work = get_work_struct();
-
-		work->entry = (u32)filp->f_dentry->d_inode;
-
-		//printk("%s %d: Scheduling destruction of filemap key %u\n", __func__, __LINE__, work->entry);
-		schedule_work(&work->work);
-	}
-	*/
-}
-
-void replayfs_file_opened(struct file *filp) {
-}
-
 #ifdef VERIFY_COMPRESSED_DATA
 void replay_verify_write(struct file *filp, const void *buf, int size, loff_t pos) {
 	struct file *cache_filp;
@@ -6982,6 +6966,7 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 				 */
 				count -= (size_t)(max_pos - (loff_t)size);
 			}
+
 			//printk("%s %d: Count adjusted to %u\n", __func__, __LINE__, count);
 			rc = count;
 			/* Now do a lookup */
