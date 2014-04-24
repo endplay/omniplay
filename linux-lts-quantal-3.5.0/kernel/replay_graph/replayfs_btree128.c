@@ -50,9 +50,9 @@
 #include "replayfs_diskalloc.h"
 #include "replayfs_kmap.h"
 
-/*
-#define REPLAYFS_BTREE128_DEBUG
+//#define REPLAYFS_BTREE128_DEBUG
 
+/*
 #define REPLAYFS_BTREE128_VERIFY
 */
 
