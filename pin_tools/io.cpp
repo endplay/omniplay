@@ -37,11 +37,12 @@ long include_mmap_exec = 0;
 /* Files opened by this replay group */
 FILE* filenames = NULL;
 FILE* stream_fp = NULL; // description of all the reads/writes going on
+FILE* times_fp = NULL; // syscall cnt -> time (for gettimeofday)
 char stream_directory[256];
 char stream_write_directory[256];
 char stream_read_directory[256];
 KNOB<string> KnobDirectoryPrefix(KNOB_MODE_WRITEONCE, "pintool", "d", "/tmp",
-		"top-level directory to make the io directory");
+        "top-level directory to make the io directory");
 KNOB<BOOL> KnobIncludeExMmap(KNOB_MODE_WRITEONCE, "pintool", "x", "0",
         "Include mmaps with PROT_EXEC as input");
 
@@ -177,6 +178,13 @@ struct readv_info {
     int count;
 };
 
+struct pread_info {
+    int fd;
+    void* buf;
+    size_t count;
+    off_t offset;
+};
+
 struct recvmsg_info {
     int fd;
     struct msghdr* msg;
@@ -219,7 +227,16 @@ struct socket_info {
     int domain;
     int type;
     int protocol;
+    /* Contains information if we end up connecting on
+     * this socket
+     * NULL if this socket didn't connect somewhere
+     * */
     struct connect_info* ci;
+    /* If bind is called to a socket, save the info here.
+     * Potentially we could, use the ci field since sockets
+     * can't connect and bind. But I think it's better to be explicit here.
+     * */
+    struct connect_info* bind_info;
     /* Contains information about the accepting socket.
      * NULL if this socket wasn't accepted */
     struct connect_info* accept_info; 
@@ -237,12 +254,9 @@ struct connect_info {
 };
 
 struct accept_info {
-    int fd;
-    int domain;
-    int type;
-    int protocol;
-    struct connect_info* accept_info;
-    struct connect_info* connect_info;
+    int sockfd;
+    struct sockaddr* addr;
+    socklen_t addrlen;
 };
 
 struct dup_info {
@@ -251,11 +265,15 @@ struct dup_info {
     int flags;
 };
 
+struct gettimeofday_info {
+    struct timeval* tv;
+};
+
 inline
 void increment_syscall_cnt (struct thread_data* ptdata, int syscall_num)
 {
-    // ignore pthread syscalls, or deterministic system calls that we don't log (e.g. 243, 244)
-    if (!(syscall_num == 17 || syscall_num == 31 || syscall_num == 32 || syscall_num == 35 || syscall_num == 44 || syscall_num == 53 || syscall_num == 56 || syscall_num == 98 || syscall_num == 119 || syscall_num == 243 || syscall_num == 244)) {
+    // ignore pthread syscalls, or deterministic system calls that we don't log (e.g. 123, 186, 243, 244)
+    if (!(syscall_num == 17 || syscall_num == 31 || syscall_num == 32 || syscall_num == 35 || syscall_num == 44 || syscall_num == 53 || syscall_num == 56 || syscall_num == 98 || syscall_num == 119 || syscall_num == 123 || syscall_num == 186 || syscall_num == 243 || syscall_num == 244)) {
         if (ptdata->ignore_flag) {
             if (!(*(int *)(ptdata->ignore_flag))) {
                 ptdata->syscall_cnt++;
@@ -481,6 +499,66 @@ void readv_stop(int rc)
     }
 }
 
+void pread_start(int fd, void* buf, size_t count, off_t offset)
+{
+    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+
+    struct pread_info* pri;
+    pri = (struct pread_info *) malloc(sizeof(struct pread_info));
+
+    pri->fd = fd;
+    pri->buf = buf;
+    pri->count = count;
+    pri->offset = offset;
+
+    tdata->syscall_info = (void *) pri;
+}
+
+void pread_stop(int rc)
+{
+    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+
+    // successful read
+    if (rc > 0) {
+        char* channel_name = (char *) "--";
+        int rcc;
+        int has_fd = 0;
+        struct pread_info* pri = (struct pread_info *) tdata->syscall_info;
+        assert (pri);
+        if (monitor_has_fd(open_fds, pri->fd)) {
+            struct open_info* oi = (struct open_info *) monitor_get_fd_data(open_fds, pri->fd);
+            assert (oi);
+            channel_name = oi->filename;
+            fprintf(stream_fp, "PREAD %ld size: %d (offset %ld) from %s\n", global_syscall_cnt, rc, pri->offset, oi->filename);
+            fflush(stream_fp);
+
+            has_fd = 1;
+        } 
+
+        if (copy_data && has_fd) {
+            FILE* out_fp;
+            int out_fd = create_out_file(stream_read_directory, tdata->rg_id, tdata->record_pid, global_syscall_cnt, 0, rc);
+            assert (out_fd > 0);
+            // write a header
+            out_fp = fdopen(out_fd, "w");
+            assert(out_fp);
+            fprintf(out_fp, "%llu %d %ld %d %d %s\n",
+                    tdata->rg_id, tdata->record_pid, global_syscall_cnt, 0, rc, channel_name);
+            fflush(out_fp);
+            rcc = write(out_fd, pri->buf, rc);
+            if (rcc != rc) {
+                fprintf(stderr, "pread: could not write to read mirror file, expected %d got %d\n", rc, rcc);
+            }
+            fsync(out_fd);
+            close(out_fd);
+        }
+
+        tdata->bytes_read += rc;
+        bytes_read += rc;
+
+    }
+}
+
 void recvmsg_start(int fd, struct msghdr* msg, int flags) {
     struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
 
@@ -613,13 +691,47 @@ void write_stop(int rc) {
             struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, wi->fd);
             assert(si);
             if (si->accept_info) {
-                fprintf(stream_fp, "WRITE to socket %ld size: %d (accepted socket)\n", global_syscall_cnt, rc);
-                channel_name = (char *) "accepted_socket";
+                char channel_name[256];
                 if (si->domain == AF_UNIX) {
-                    channel_name = si->accept_info->path;
+                    // XXX Do we need to use the magic number here instead? There are weird path names with \0 in it
+                    snprintf(channel_name, 256, "%s", si->accept_info->path);
                 } else if (si->domain == AF_INET) {
+                    int port;
+                    char straddr[INET_ADDRSTRLEN];
+                    inet_ntop(AF_INET, &si->ci->sin_addr, straddr, INET_ADDRSTRLEN);
+                    port = si->ci->port;
+                    snprintf(channel_name, 256, "(accept)%s:%d", straddr, port);
                 } else if (si->domain == AF_INET6) {
+                    int port;
+                    char straddr[INET_ADDRSTRLEN];
+                    inet_ntop(AF_INET6, &si->ci->sin_addr6, straddr, INET_ADDRSTRLEN);
+                    port = si->ci->port;
+                    snprintf(channel_name, 256, "(accept)%s:%d", straddr, port);
+                } else {
+                    snprintf(channel_name, 256, "%s", "unknown_accepted_socket");
                 }
+                fprintf(stream_fp, "WRITE to socket %ld size: %d %s\n", global_syscall_cnt, rc, channel_name);
+            } else if (si->ci) {
+                char channel_name[256];
+                if (si->domain == AF_UNIX) {
+                    // XXX Do we need to use the magic number here instead? There are weird path names with \0 in it
+                    snprintf(channel_name, 256, "%s", si->accept_info->path);
+                } else if (si->domain == AF_INET) {
+                    int port;
+                    char straddr[INET_ADDRSTRLEN];
+                    inet_ntop(AF_INET, &si->ci->sin_addr, straddr, INET_ADDRSTRLEN);
+                    port = si->ci->port;
+                    snprintf(channel_name, 256, "%s:%d", straddr, port);
+                } else if (si->domain == AF_INET6) {
+                    int port;
+                    char straddr[INET_ADDRSTRLEN];
+                    inet_ntop(AF_INET6, &si->ci->sin_addr6, straddr, INET_ADDRSTRLEN);
+                    port = si->ci->port;
+                    snprintf(channel_name, 256, "%s:%d", straddr, port);
+                } else {
+                    snprintf(channel_name, 256, "%s", "unknown_socket");
+                }
+                fprintf(stream_fp, "WRITE to connected socket %ld size: %d %s\n", global_syscall_cnt, rc, channel_name);
             } else {
                 fprintf(stream_fp, "WRITE to socket %ld size: %d\n", global_syscall_cnt, rc);
                 if (si->domain == AF_UNIX) {
@@ -767,14 +879,6 @@ void open_stop(int rc) {
     // on successful open
     if (rc > 0) {
         int cloexec = 0;
-        if (copy_data) {
-            char read_stream_name[256];
-            char write_stream_name[256];
-            // Make the stream filename start with the global syscall cnt
-            snprintf(read_stream_name, 256, "/tmp/io/%ld_read", global_syscall_cnt);
-            snprintf(write_stream_name, 256, "/tmp/io/%ld_write", global_syscall_cnt);
-        }
-
         cloexec = oi->flags & O_CLOEXEC;
         DEBUG_PRINT (stderr, "[OPEN] Successful open of %s, fd %d, cloexec 0x%x\n", oi->filename, rc, cloexec);
         DEBUG_PRINT(stderr, "open_fds has %d fds\n", monitor_size(open_fds));
@@ -907,7 +1011,7 @@ void socket_stop(int rc) {
     if (rc > 0) {
         struct socket_info* si = (struct socket_info *) tdata->syscall_info;
         monitor_add_fd(open_socks, rc, 0, si);
-	tdata->syscall_info = NULL; // Giving si to the monitor
+        tdata->syscall_info = NULL; // Giving si to the monitor
     }
 }
 
@@ -924,33 +1028,33 @@ void connect_start(int sockfd, struct sockaddr* addr, socklen_t addrlen)
         ci->fd = sockfd;
         if (si->domain == AF_UNIX) {
             struct sockaddr_un* sun = (struct sockaddr_un*) addr;
-	    if (addr->sa_family == AF_UNIX) {
-		memcpy(ci->path, sun->sun_path, 108); // apparently 108 is the magic number
-	    } else {
-		fprintf (stderr, "unknown sa_family %d is not AF_UNIX len is %d vs %d\n", addr->sa_family, addrlen, sizeof(struct sockaddr_un));
-		memcpy(ci->path, "UNK", 4);
-	    }
+            if (addr->sa_family == AF_UNIX) {
+                memcpy(ci->path, sun->sun_path, 108); // apparently 108 is the magic number
+            } else {
+                fprintf (stderr, "unknown sa_family %d is not AF_UNIX len is %d vs %d\n", addr->sa_family, addrlen, sizeof(struct sockaddr_un));
+                memcpy(ci->path, "UNK", 4);
+            }
         } else if (si->domain == AF_INET) {
-	    if (addr->sa_family == AF_INET || addrlen == sizeof(struct sockaddr_in)) {
-		struct sockaddr_in* sin = (struct sockaddr_in*) addr;
-		ci->port = htons(sin->sin_port);
-		memcpy(&ci->sin_addr, &sin->sin_addr, sizeof(struct in_addr));
-		fprintf (stderr, "connect AF_INET port %d addr %x\n", ci->port, ci->sin_addr.s_addr);
-	    } else {
-		fprintf (stderr, "unknown sa_family %d is not AF_INET len is %d vs %d\n", addr->sa_family, addrlen, sizeof(struct sockaddr_in));
-		ci->port = 0;
-		memcpy(&ci->sin_addr, "UNK", 4);
-	    }
+            if (addr->sa_family == AF_INET || addrlen == sizeof(struct sockaddr_in)) {
+                struct sockaddr_in* sin = (struct sockaddr_in*) addr;
+                ci->port = htons(sin->sin_port);
+                memcpy(&ci->sin_addr, &sin->sin_addr, sizeof(struct in_addr));
+                fprintf (stderr, "connect AF_INET port %d addr %x\n", ci->port, ci->sin_addr.s_addr);
+            } else {
+                fprintf (stderr, "unknown sa_family %d is not AF_INET len is %d vs %d\n", addr->sa_family, addrlen, sizeof(struct sockaddr_in));
+                ci->port = 0;
+                memcpy(&ci->sin_addr, "UNK", 4);
+            }
         } else if (si->domain == AF_INET6) {
-	    if (addr->sa_family == AF_INET6) {
-		struct sockaddr_in6* sin6 = (struct sockaddr_in6*) addr;
-		ci->port = htons(sin6->sin6_port);
-		memcpy(&ci->sin_addr6, &sin6->sin6_addr, sizeof(struct in6_addr));
-	    } else {
-		fprintf (stderr, "unknown sa_family %d is not AF_INET6 len is %d vs %d\n", addr->sa_family, addrlen, sizeof(struct sockaddr_in6));
-		ci->port = 0;
-		memcpy(&ci->sin_addr6, "UNK", 4);
-	    }
+            if (addr->sa_family == AF_INET6) {
+                struct sockaddr_in6* sin6 = (struct sockaddr_in6*) addr;
+                ci->port = htons(sin6->sin6_port);
+                memcpy(&ci->sin_addr6, &sin6->sin6_addr, sizeof(struct in6_addr));
+            } else {
+                fprintf (stderr, "unknown sa_family %d is not AF_INET6 len is %d vs %d\n", addr->sa_family, addrlen, sizeof(struct sockaddr_in6));
+                ci->port = 0;
+                memcpy(&ci->sin_addr6, "UNK", 4);
+            }
         } else {
             fprintf(stderr, "unsupport socket family %d\n", si->domain);
             free(ci);
@@ -968,7 +1072,10 @@ void connect_stop(int rc)
     if (!rc && tdata->syscall_info) {
         struct connect_info* ci = (struct connect_info *) tdata->syscall_info;
         struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, ci->fd);
-        assert(si);
+        if (!si) {
+            fprintf(stderr, "could not find socket info for connect, fd is %d\n", ci->fd);
+            return;
+        }
 
         si->ci = ci;
         tdata->syscall_info = NULL; // Socket_info owns this now
@@ -996,89 +1103,123 @@ void connect_stop(int rc)
         }
 #else
         if (si->domain == AF_UNIX) {
-            char read_stream_name[256];
-            char write_stream_name[256];
             fprintf(stream_fp, "CONNECT %ld AF_UNIX path %s\n", global_syscall_cnt, ci->path);
             fflush(stream_fp);
-
-            if (copy_data) {
-                snprintf(read_stream_name, 256, "/tmp/%ld_%s_read", global_syscall_cnt, ci->path);
-                snprintf(write_stream_name, 256, "/tmp/%ld_%s_write", global_syscall_cnt, ci->path);
-            }
         } else if (si->domain == AF_INET) {
-            char read_stream_name[256];
-            char write_stream_name[256];
             char straddr[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &ci->sin_addr, straddr, INET_ADDRSTRLEN);
             fprintf(stream_fp, "CONNECT %ld AF_INET addr: %s port %d\n", global_syscall_cnt, straddr, ci->port);
             fflush(stream_fp);
-
-            if (copy_data) {
-                snprintf(read_stream_name, 256, "/tmp/%ld_%s_%d_read", global_syscall_cnt, straddr, ci->port);
-                snprintf(write_stream_name, 256, "/tmp/%ld_%s_%d_write", global_syscall_cnt, straddr, ci->port);
-            }
         } else if (si->domain == AF_INET6) {
-            char read_stream_name[256];
-            char write_stream_name[256];
             char straddr[INET6_ADDRSTRLEN];
             inet_ntop(AF_INET6, &ci->sin_addr6, straddr, INET6_ADDRSTRLEN);
             fprintf(stream_fp, "CONNECT %ld AF_INET6 addr: %s port %d\n", global_syscall_cnt, straddr, ci->port);
             fflush(stream_fp);
-
-            if (copy_data) {
-                snprintf(read_stream_name, 256, "/tmp/%ld_%s_%d_read", global_syscall_cnt, straddr, ci->port);
-                snprintf(write_stream_name, 256, "/tmp/%ld_%s_%d_write", global_syscall_cnt, straddr, ci->port);
-            }
         }
 #endif
     }
 }
 
-void accept_start(int sockfd, struct sockaddr* addr, socklen_t size)
+void bind_start(int sockfd, struct sockaddr* addr, socklen_t addrlen)
+{
+    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+
+    if (monitor_has_fd(open_socks, sockfd)) {
+        struct socket_info* si = (struct socket_info*) monitor_get_fd_data(open_socks, sockfd);
+        /* bind has all of the same fields as collect, so just use the collect struct */
+        struct connect_info* bi = (struct connect_info *) malloc(sizeof(struct connect_info));
+        memset(bi, 0, sizeof(struct connect_info));
+        assert(si);
+
+        bi->fd = sockfd;
+        if (si->domain == AF_UNIX) {
+            struct sockaddr_un* sun = (struct sockaddr_un*) addr;
+            if (addr->sa_family == AF_UNIX) {
+                memcpy(bi->path, sun->sun_path, 108); // apparently 108 is the magic number
+            } else {
+                fprintf (stderr, "bind: unknown sa_family %d is not AF_UNIX len is %d vs %d\n",
+                        addr->sa_family, addrlen, sizeof(struct sockaddr_un));
+                memcpy(bi->path, "UNK", 4);
+            }
+        } else if (si->domain == AF_INET) {
+            if (addr->sa_family == AF_INET || addrlen == sizeof(struct sockaddr_in)) {
+                struct sockaddr_in* sin = (struct sockaddr_in*) addr;
+                bi->port = htons(sin->sin_port);
+                memcpy(&bi->sin_addr, &sin->sin_addr, sizeof(struct in_addr));
+                fprintf (stderr, "bind AF_INET port %d addr %x\n", bi->port, bi->sin_addr.s_addr);
+            } else {
+                fprintf (stderr, "bind: unknown sa_family %d is not AF_INET len is %d vs %d\n",
+                        addr->sa_family, addrlen, sizeof(struct sockaddr_in));
+                bi->port = 0;
+                memcpy(&bi->sin_addr, "UNK", 4);
+            }
+        } else if (si->domain == AF_INET6) {
+            if (addr->sa_family == AF_INET6) {
+                struct sockaddr_in6* sin6 = (struct sockaddr_in6*) addr;
+                bi->port = htons(sin6->sin6_port);
+                memcpy(&bi->sin_addr6, &sin6->sin6_addr, sizeof(struct in6_addr));
+            } else {
+                fprintf (stderr, "bind: unknown sa_family %d is not AF_INET6 len is %d vs %d\n",
+                        addr->sa_family, addrlen, sizeof(struct sockaddr_in6));
+                bi->port = 0;
+                memcpy(&bi->sin_addr6, "UNK", 4);
+            }
+        } else {
+            fprintf(stderr, "bind: unsupport socket family %d\n", si->domain);
+            free(bi);
+            return;
+        }
+        tdata->syscall_info = (void *) bi;
+    }
+}
+
+void bind_stop(int rc)
+{
+    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+
+    // successful bind
+    if (!rc && tdata->syscall_info) {
+        struct connect_info* bi = (struct connect_info *) tdata->syscall_info;
+        struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, bi->fd);
+        if (!si) {
+            fprintf(stderr, "could not find socket info for bind, fd is %d\n", bi->fd);
+            return;
+        }
+
+        si->bind_info = bi;
+        tdata->syscall_info = NULL; // Socket_info owns this now
+        
+        // output to stream_fp
+        if (si->domain == AF_UNIX) {
+            fprintf(stream_fp, "BIND %ld AF_UNIX path %s\n", global_syscall_cnt, bi->path);
+            fflush(stream_fp);
+        } else if (si->domain == AF_INET) {
+            char straddr[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &bi->sin_addr, straddr, INET_ADDRSTRLEN);
+            fprintf(stream_fp, "BIND %ld AF_INET addr: %s port %d\n", global_syscall_cnt, straddr, bi->port);
+            fflush(stream_fp);
+        } else if (si->domain == AF_INET6) {
+            char straddr[INET6_ADDRSTRLEN];
+            inet_ntop(AF_INET6, &bi->sin_addr6, straddr, INET6_ADDRSTRLEN);
+            fprintf(stream_fp, "BIND %ld AF_INET6 addr: %s port %d\n", global_syscall_cnt, straddr, bi->port);
+            fflush(stream_fp);
+        }
+    }
+}
+
+void accept_start(int sockfd, struct sockaddr* addr, socklen_t addrlen)
 {
     struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
 
     if (monitor_has_fd(open_socks, sockfd)) {
         struct accept_info* ai = (struct accept_info *) malloc(sizeof(struct accept_info));
+        /* The bound socket we're listening on*/
         struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, sockfd);
-        struct connect_info* accept_info = (struct connect_info *) malloc(sizeof(struct connect_info));
-        struct connect_info* connect_info = (struct connect_info *) malloc(sizeof(struct connect_info));
-	memset(accept_info, 0, sizeof(struct connect_info));
-	memset(connect_info, 0, sizeof(struct connect_info));
-
         assert (si);
 
-        memcpy(accept_info, si->ci, sizeof(struct connect_info));
-
-        if (si->domain == AF_UNIX) {
-            struct sockaddr_un* sun = (struct sockaddr_un*) addr;
-            assert(addr->sa_family == AF_UNIX);
-            
-            strncpy(connect_info->path, sun->sun_path, MAX_PATH_LEN);
-        } else if (si->domain == AF_INET) {
-            struct sockaddr_in* sin = (struct sockaddr_in*) addr;
-            assert(addr->sa_family == AF_INET);
-            connect_info->port = htons(sin->sin_port);
-            memcpy(&connect_info->sin_addr, &sin->sin_addr, sizeof(struct in_addr));
-        } else if (si->domain == AF_INET6) {
-            struct sockaddr_in6* sin6 = (struct sockaddr_in6*) addr;
-            assert(addr->sa_family == AF_INET6);
-            connect_info->port = htons(sin6->sin6_port);
-            memcpy(&connect_info->sin_addr6, &sin6->sin6_addr, sizeof(struct in6_addr));
-        } else {
-            fprintf(stderr, "accept on unsupported socket family %d\n", si->domain);
-            free(accept_info);
-            free(connect_info);
-            free(ai);
-            return;
-        }
-
-        ai->fd = sockfd;
-        ai->domain = si->domain;
-        ai->type = si->type;
-        ai->protocol = si->protocol;
-        ai->accept_info = accept_info;
-        ai->connect_info = connect_info;
+        ai->sockfd = sockfd;
+        ai->addr = addr;
+        ai->addrlen = addrlen;
         tdata->syscall_info = (void *) ai;
     }
 }
@@ -1089,17 +1230,99 @@ void accept_stop(int rc)
 
     // successful accept
     if (rc > 0 && tdata->syscall_info) {
+        /* On a successful accept, we create a new socket for the accepted socket.
+         * With that socket info, we keep the associated connect and accept metadata.
+         * */
         struct accept_info* ai = (struct accept_info *) tdata->syscall_info;
+        /* Describes the socket returned by accept */
         struct socket_info* si = (struct socket_info *) malloc(sizeof(struct socket_info));
+        struct connect_info* accept_ci = (struct connect_info *) malloc(sizeof(struct connect_info));
+        /* Describes the accepting socket */
+        struct socket_info* accept_si = (struct socket_info *) monitor_get_fd_data(open_socks, ai->sockfd);
+        struct connect_info* accepting_ci = (struct connect_info *) malloc(sizeof(struct connect_info));
+        assert(accept_si);
+        memset(accepting_ci, 0, sizeof(struct connect_info));
 
         si->call = SYS_ACCEPT;
-        si->domain = ai->domain;
-        si->type = ai->type;
-        si->protocol = ai->protocol;
-        si->ci = ai->connect_info;
-        si->accept_info = ai->accept_info;
+        si->domain = accept_si->domain;
+        si->type = accept_si->type;
+        si->protocol = accept_si->protocol;
 
+        /* Save information about the accepting socket to the accepted socket */
+        memcpy(accepting_ci, accept_si->bind_info, sizeof(struct connect_info));
+        si->accept_info = accepting_ci;
+
+        // populate the connect info
+        if (accept_si->domain == AF_UNIX) {
+            struct sockaddr_un* sun = (struct sockaddr_un*) ai->addr;
+            if (ai->addr->sa_family == AF_UNIX) {
+                memcpy(accept_ci->path, sun->sun_path, 108); // apparently 108 is the magic number
+            } else {
+                fprintf (stderr, "accept: unknown sa_family %d is not AF_UNIX len is %d vs %d\n",
+                        ai->addr->sa_family, ai->addrlen, sizeof(struct sockaddr_un));
+                memcpy(accept_ci->path, "UNK", 4);
+            }
+        } else if (accept_si->domain == AF_INET) {
+            if (ai->addr->sa_family == AF_INET || ai->addrlen == sizeof(struct sockaddr_in)) {
+                struct sockaddr_in* sin = (struct sockaddr_in*) ai->addr;
+                accept_ci->port = htons(sin->sin_port);
+                memcpy(&accept_ci->sin_addr, &sin->sin_addr, sizeof(struct in_addr));
+                fprintf (stderr, "connect AF_INET port %d addr %x\n",
+                        accept_ci->port, accept_ci->sin_addr.s_addr);
+            } else {
+                fprintf (stderr, "unknown sa_family %d is not AF_INET len is %d vs %d\n",
+                        ai->addr->sa_family, ai->addrlen, sizeof(struct sockaddr_in));
+                accept_ci->port = 0;
+                memcpy(&accept_ci->sin_addr, "UNK", 4);
+            }
+        } else if (accept_si->domain == AF_INET6) {
+            if (ai->addr->sa_family == AF_INET6 || ai->addrlen == sizeof(struct sockaddr_in6)) {
+                struct sockaddr_in6* sin6 = (struct sockaddr_in6*) ai->addr;
+                accept_ci->port = htons(sin6->sin6_port);
+                memcpy(&accept_ci->sin_addr6, &sin6->sin6_addr, sizeof(struct in6_addr));
+            } else {
+                fprintf (stderr, "unknown sa_family %d is not AF_INET6 len is %d vs %d\n",
+                        ai->addr->sa_family, ai->addrlen, sizeof(struct sockaddr_in6));
+                accept_ci->port = 0;
+                memcpy(&accept_ci->sin_addr6, "UNK", 4);
+            }
+        }
+        si->ci = accept_ci;
+
+        // add the returned socket to the open_socks
         monitor_add_fd(open_socks, rc, 0, si);
+        tdata->syscall_info = NULL; // monitor owns si now
+
+        if (accept_si->domain == AF_INET) {
+            int port;
+            int connect_port;
+            char straddr[INET_ADDRSTRLEN];
+            char connect_straddr[INET_ADDRSTRLEN];
+
+            inet_ntop(AF_INET, &accepting_ci->sin_addr, straddr, INET_ADDRSTRLEN);
+            inet_ntop(AF_INET, &accept_ci->sin_addr, connect_straddr, INET_ADDRSTRLEN);
+            port = accepting_ci->port;
+            connect_port = accept_ci->port;
+            fprintf(stream_fp, "ACCEPTed %ld AF_INET on %s port %d from %s on port %d\n",
+                    global_syscall_cnt, straddr, port, connect_straddr, connect_port);
+        } else if (accept_si->domain == AF_INET6) {
+            int port;
+            int connect_port;
+            char straddr[INET_ADDRSTRLEN];
+            char connect_straddr[INET_ADDRSTRLEN];
+
+            inet_ntop(AF_INET6, &accepting_ci->sin_addr6, straddr, INET_ADDRSTRLEN);
+            inet_ntop(AF_INET6, &accept_ci->sin_addr6, connect_straddr, INET_ADDRSTRLEN);
+            port = accepting_ci->port;
+            connect_port = accept_ci->port;
+            fprintf(stream_fp, "ACCEPTed %ld AF_INET6 on %s port %d from %s on port %d\n",
+                    global_syscall_cnt, straddr, port, connect_straddr, connect_port);
+        } else if (accept_si->domain == AF_UNIX) {
+            fprintf(stream_fp, "ACCEPTed %ld AF_UNIX\n", global_syscall_cnt);
+            // TODO
+        } else {
+            fprintf(stream_fp, "ACCEPT %ld unknown domain\n", global_syscall_cnt);
+        }
     }
 }
 
@@ -1130,6 +1353,28 @@ void dup_stop(int rc)
         DEBUG_PRINT (stderr, "[DUP] dup returns %d, oldfd %d\n", rc, di->oldfd);
         if (monitor_has_fd(open_fds, di->oldfd)) {
         }
+    }
+}
+
+void gettimeofday_start(struct timeval* tv)
+{
+    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+    struct gettimeofday_info* gi;
+    gi = (struct gettimeofday_info *) malloc(sizeof(struct gettimeofday_info));
+    gi->tv = tv;
+
+    tdata->syscall_info = (void *) gi;
+}
+
+void gettimeofday_stop(int rc)
+{
+    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+    struct gettimeofday_info* gi;
+    gi = (struct gettimeofday_info *) tdata->syscall_info;
+
+    if (!rc) { // successful
+        fprintf(times_fp, "%ld %ld\n", global_syscall_cnt, gi->tv->tv_sec);
+        fflush(times_fp);
     }
 }
 
@@ -1166,6 +1411,8 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
         case SYS_writev:
             writev_stop((int) ret_value);
             break;
+        case SYS_pread64:
+            pread_stop((int) ret_value);    
         case SYS_dup:
             dup_stop((int) ret_value);
             break;
@@ -1174,6 +1421,9 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
         case SYS_dup2:
             break;
         case SYS_fcntl:
+            break;
+        case SYS_gettimeofday:
+            gettimeofday_stop((int) ret_value);
             break;
         case SYS_socketcall:
             int call = tdata->socketcall;
@@ -1189,17 +1439,18 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
                     write_stop((int) ret_value);
                     break;
                 case SYS_RECV:
-		case SYS_RECVFROM:
+                case SYS_RECVFROM:
                     read_stop((int) ret_value);
                     break;
-	        case SYS_RECVMSG:
+                case SYS_RECVMSG:
                     recvmsg_stop((int) ret_value);
                     break;
                 case SYS_BIND:
                     // TODO
-                    connect_stop((int) ret_value);
+                    bind_stop((int) ret_value);
                     break;
                 case SYS_ACCEPT:
+                case SYS_ACCEPT4:
                     // TODO
                     accept_stop((int) ret_value);
                     break;
@@ -1257,6 +1508,8 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscalla
         case SYS_readv:
             readv_start((int)syscallarg0, (struct iovec*)syscallarg1, (int)syscallarg2);
             break;
+        case SYS_pread64:
+            pread_start((int)syscallarg0, (void *)syscallarg1, (size_t)syscallarg2, (off_t) syscallarg3);
         case SYS_write:
             write_start((int)syscallarg0, (void *)syscallarg1, (int)syscallarg2);
             break;
@@ -1281,6 +1534,9 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscalla
                 }
                 break;
             }
+        case SYS_gettimeofday:
+            gettimeofday_start((struct timeval *)syscallarg0);
+            break;
         case SYS_socketcall:
             int call = (int)syscallarg0;
             unsigned long *args = (unsigned long *)syscallarg1;
@@ -1301,15 +1557,16 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscalla
                     read_start((int)args[0], (void *) args[1], (int)args[2]);
                     break;
 	        case SYS_RECVMSG:
-		    recvmsg_start ((int)args[0], (struct msghdr *)args[1], (int)args[2]);
-		    break;
+                    recvmsg_start ((int)args[0], (struct msghdr *)args[1], (int)args[2]);
+                    break;
                 case SYS_SOCKETPAIR:
                     break;
                 case SYS_BIND:
                     // TODO
-                    connect_start((int)args[0], (struct sockaddr *)args[1], (socklen_t)args[2]);
+                    bind_start((int)args[0], (struct sockaddr *)args[1], (socklen_t)args[2]);
                     break;
                 case SYS_ACCEPT:
+                case SYS_ACCEPT4:
                     // TODO
                     accept_start((int)args[0], (struct sockaddr *)args[1], (socklen_t)args[2]);
                     break;
@@ -1373,6 +1630,34 @@ void track_trace(TRACE trace, void* data)
     // So we can instrument every trace (instead of every instruction) to check to see if
     // the beginning of the trace is the first instruction after a system call.
     TRACE_InsertCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_after, IARG_INST_PTR, IARG_END);
+}
+
+void change_getpid(ADDRINT reg_ref)
+{
+    int pid = get_record_pid();
+    *(int*)reg_ref = pid;
+}
+
+void routine (RTN rtn, VOID *v)
+{
+    const char *name;
+
+    name = RTN_Name(rtn).c_str();
+
+    RTN_Open(rtn);
+
+    /* 
+     * On replay we can't return the replayed pid from the kernel because Pin
+     * needs the real pid too. (see kernel/replay.c replay_clone).
+     * To account for glibc caching of the pid, we have to account for the 
+     * replay pid in the pintool itself.
+     * */
+    if (!strcmp(name, "getpid") || !strcmp(name, "__getpid")) {
+        RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)change_getpid, 
+                IARG_REG_REFERENCE, LEVEL_BASE::REG_EAX, IARG_END);
+    }
+
+    RTN_Close(rtn);
 }
 
 BOOL follow_child(CHILD_PROCESS child, void* data)
@@ -1453,6 +1738,16 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
             filenames = fopen(filename_file, "w");
             if (!filenames) {
                 fprintf(stderr, "Could not create %s/filenames\n", stream_directory);
+                exit(0);
+            }
+        }
+
+        if (!times_fp) {
+            char times_filename[256];
+            snprintf(times_filename, 256, "%s/times", stream_directory);
+            times_fp = fopen(times_filename, "w");
+            if (!times_fp) {
+                fprintf(stderr, "Could not create %s/times\n", stream_directory);
                 exit(0);
             }
         }
@@ -1557,6 +1852,7 @@ int main(int argc, char** argv)
     PIN_AddForkFunction(FPOINT_AFTER_IN_CHILD, AfterForkInChild, 0);
 
     TRACE_AddInstrumentFunction (track_trace, 0);
+    RTN_AddInstrumentFunction (routine, 0);
 
     PIN_AddSyscallExitFunction(instrument_syscall_ret, 0);
     PIN_StartProgram();
