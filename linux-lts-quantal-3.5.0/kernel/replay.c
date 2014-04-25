@@ -12713,8 +12713,299 @@ asmlinkage long shim_rt_sigpending (sigset_t __user *set, size_t sigsetsize) SHI
 RET1_SHIM4(rt_sigtimedwait, 177, siginfo_t, uinfo, const sigset_t __user *, uthese, siginfo_t __user *, uinfo, const struct timespec __user *, uts, size_t, sigsetsize);
 SIMPLE_SHIM3(rt_sigqueueinfo, 178, int, pid, int, sig, siginfo_t __user *, uinfo);
 SIMPLE_SHIM2(rt_sigsuspend, 179, sigset_t __user *, unewset, size_t, sigsetsize);
-RET1_COUNT_SHIM4(pread64, 180, buf, unsigned int, fd, char __user *, buf, size_t, count, loff_t, pos);
-SIMPLE_SHIM4(pwrite64, 181, unsigned int, fd, const char __user *, buf, size_t, count, loff_t, pos);
+
+static asmlinkage long
+record_pread64(unsigned int fd, char __user *buf, size_t count, loff_t pos)
+{
+	long rc;
+	char *pretval = NULL;
+	struct files_struct* files;
+	struct fdtable *fdt;
+	struct file* filp;
+	int is_cache_file;
+#ifdef LOG_COMPRESS
+	int shift_clock = 1;
+#endif
+
+	new_syscall_enter (180);					
+	DPRINT ("pid %d, record read off of fd %d\n", current->pid, fd);
+	//printk("%s %d: In else? of macro?\n", __func__, __LINE__);
+	is_cache_file = is_record_cache_file_lock(current->record_thrd->rp_cache_files, fd);
+
+	rc = sys_pread64 (fd, buf, count, pos);
+
+#ifdef TIME_TRICK
+	if (rc <= 0) shift_clock = 0;
+#endif
+
+#ifdef LOG_COMPRESS
+	if(rc == count && is_cache_file)
+		cnew_syscall_done (180, rc, count, shift_clock);
+	else
+		new_syscall_done (180, rc);
+#else
+	new_syscall_done (180, rc);
+#endif
+	if (rc > 0 && buf) {
+		// For now, include a flag that indicates whether this is a cached read or not - this is only
+		// needed for parseklog and so we may take it out later
+
+		files = current->files;
+		spin_lock(&files->file_lock);
+		fdt = files_fdtable(files);
+		if (fd >= fdt->max_fds) {
+			printk ("record_read: invalid fd but read succeeded?\n");
+			record_cache_file_unlock (current->record_thrd->rp_cache_files, fd);
+			return -EINVAL;
+		}
+
+		filp = fdt->fd[fd];
+		spin_unlock(&files->file_lock);
+		if (is_cache_file) {
+			// Since not all syscalls handled for cached reads, record the position
+			DPRINT ("Cached read of fd %u - record by reference\n", fd);
+			pretval = ARGSKMALLOC (sizeof(u_int) + sizeof(loff_t), GFP_KERNEL);
+			if (pretval == NULL) {
+				printk ("record_read: can't allocate pos buffer\n"); 
+				record_cache_file_unlock (current->record_thrd->rp_cache_files, fd);
+				return -ENOMEM;
+			}
+			*((u_int *) pretval) = 1;
+			record_cache_file_unlock (current->record_thrd->rp_cache_files, fd);
+			*((loff_t *) (pretval+sizeof(u_int))) = filp->f_pos - rc;
+
+#ifdef TRACE_READ_WRITE
+			do {
+				struct replayfs_filemap_entry *entry = NULL;
+				struct replayfs_filemap *map;
+				size_t cpy_size;
+
+				struct replayfs_filemap_entry *args;
+
+				map = filp->replayfs_filemap;
+				//replayfs_filemap_init(&map, replayfs_alloc, filp);
+				
+				//printk("%s %d - %p: Reading %d\n", __func__, __LINE__, current, fd);
+				if (filp->replayfs_filemap) {
+					entry = replayfs_filemap_read(map, pos, rc);
+				}
+
+				if (IS_ERR(entry) || entry == NULL) {
+					entry = kmalloc(sizeof(struct replayfs_filemap_entry), GFP_KERNEL);
+					/* FIXME: Handle this properly */
+					BUG_ON(entry == NULL);
+					entry->num_elms = 0;
+				}
+
+				cpy_size = sizeof(struct replayfs_filemap_entry) +
+						(entry->num_elms * sizeof(struct replayfs_filemap_value));
+
+				args = ARGSKMALLOC(cpy_size, GFP_KERNEL);
+
+				memcpy(args, entry, cpy_size);
+
+				kfree(entry);
+
+				//replayfs_filemap_destroy(&map);
+			} while (0);
+#endif
+		} else {
+			pretval = ARGSKMALLOC (rc+sizeof(u_int), GFP_KERNEL);
+			if (pretval == NULL) {
+				printk ("record_read: can't allocate buffer\n"); 
+				return -ENOMEM;
+			}
+			*((u_int *) pretval) = 0;
+			if (copy_from_user (pretval+sizeof(u_int), buf, rc)) { 
+				printk ("record_read: can't copy to buffer\n"); 
+				ARGSKFREE(pretval, rc+sizeof(u_int));	
+				return -EFAULT;
+			}							
+#ifdef X_COMPRESS
+			if (fd == current->record_thrd->rp_clog.x.xfd) {
+				change_log_special_second ();
+			}
+#endif
+
+		}
+	} else if (is_cache_file) {
+		record_cache_file_unlock (current->record_thrd->rp_cache_files, fd);
+	}
+
+	new_syscall_exit (180, pretval);				
+
+	perftimer_stop(read_in_timer);
+	return rc;							
+}
+
+static asmlinkage long
+replay_pread64(unsigned int fd, char __user *buf, size_t count, loff_t pos)
+{
+	char *retparams = NULL;
+#ifndef LOG_COMPRESS
+	long retval, rc = get_next_syscall (180, &retparams);
+#else
+	long retval, rc = cget_next_syscall (180, &retparams, (long)count);		
+#endif
+	int cache_fd;
+
+	if (retparams) {
+		int consume_size;
+
+		if (is_replay_cache_file(current->replay_thrd->rp_cache_files, fd, &cache_fd)) {
+			// read from the open cache file
+			loff_t off = *((loff_t *) (retparams+sizeof(u_int)));
+			DPRINT ("read from cache file %d files %p bytes %ld off %ld\n", cache_fd, current->replay_thrd->rp_cache_files, rc, (u_long) off);
+			retval = sys_pread64 (cache_fd, buf, rc, off);
+			if (retval != rc) {
+				printk ("pid %d read from cache file %d files %p orig fd %u off %ld returns %ld not expected %ld\n", current->pid, cache_fd, current->replay_thrd->rp_cache_files, fd, (long) off, retval, rc);
+				return syscall_mismatch();
+			}
+			consume_size = sizeof(u_int) + sizeof(loff_t);
+			argsconsume (current->replay_thrd->rp_record_thread, consume_size);
+
+#ifdef TRACE_READ_WRITE
+			do {
+				struct replayfs_filemap_entry *entry = (void *)(retparams + consume_size);
+
+				consume_size = sizeof(struct replayfs_filemap_entry) +
+						(entry->num_elms * sizeof(struct replayfs_filemap_value));
+
+				argsconsume (current->replay_thrd->rp_record_thread, consume_size); 
+			} while (0);
+#endif
+		} else {
+#ifdef X_COMPRESS
+			if (rc > 0) {
+				if (fd == current->replay_thrd->rp_record_thread->rp_clog.x.xfd) {
+					if (x_detail) printk ("Pid %d read for x, fd:%d, buf:%p, count:%d, rc:%ld\n", current->pid, fd, buf, count, rc);
+					if (x_proxy) {
+						retval = sys_read (X_STRUCT_REP.actual_xfd, buf, count);
+						if (rc != retval)
+							printk ("pid %d read from x socket fails, expected:%ld, actual:%ld\n", current->pid, rc, retval);
+					}
+					if (record_x) {
+						if (copy_to_user (buf, retparams+sizeof(u_int), rc)) printk ("replay_read: pid %d cannot copy to user\n", current->pid);
+						consume_size = sizeof(u_int)+rc;
+						argsconsume (current->replay_thrd->rp_record_thread, consume_size); 
+					} else {
+						argsconsume (current->replay_thrd->rp_record_thread, sizeof(u_int)); 
+					}
+					//x_decompress_reply (rc, &X_STRUCT_REP, node); // this function should only computes the sequence number
+					//validate_decode_buffer (retparams+sizeof(u_int), rc, &X_STRUCT_REP);
+					//consume_decode_buffer (rc, &X_STRUCT_REP);
+					return rc;
+				}
+			}
+#endif
+			// uncached read
+			DPRINT ("uncached read of fd %u\n", fd);
+			if (copy_to_user (buf, retparams+sizeof(u_int), rc)) printk ("replay_read: pid %d cannot copy %ld bytes to user\n", current->pid, rc);
+			consume_size = sizeof(u_int)+rc;
+			argsconsume (current->replay_thrd->rp_record_thread, consume_size); 
+		}
+	}
+
+	return rc;							
+}
+
+static asmlinkage long
+record_pwrite64(unsigned int fd, const char __user *buf, size_t count, loff_t pos)
+{
+	char *pretparams = NULL;
+	ssize_t size;
+
+
+	new_syscall_enter (181);
+	size = sys_pwrite64 (fd, buf, count, pos);
+
+	DPRINT ("Pid %d records write returning %d\n", current->pid,size);
+#ifdef X_COMPRESS
+	if (fd == current->record_thrd->rp_clog.x.xfd && size > 0) {
+		if (x_detail) printk ("Pid %d write for x\n", current->pid);
+		BUG_ON (size != count);
+		//x_compress_req (buf, size, &X_STRUCT_REC);
+	}
+#endif
+#ifdef LOG_COMPRESS
+	cnew_syscall_done (181, size, count, 1);
+#else
+	new_syscall_done (181, size);			       
+#endif		       
+
+#ifdef TRACE_READ_WRITE
+	if (size > 0) {
+		struct file *filp;
+		struct inode *inode;
+
+		filp = fget(fd);
+		inode = filp->f_dentry->d_inode;
+
+		/*if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0 && filp->)*/
+		if (filp->replayfs_filemap) {
+			loff_t fpos;
+			struct replayfs_filemap *map;
+			map = filp->replayfs_filemap;
+			if (map == NULL) {
+				replayfs_file_opened(filp);
+				map = filp->replayfs_filemap;
+			}
+
+			BUG_ON(map == NULL);
+			//replayfs_filemap_init(&map, replayfs_alloc, filp);
+
+			fpos = pos;
+			if (fpos >= 0) { 
+				replayfs_filemap_write(map, current->record_thrd->rp_group->rg_id, current->record_thrd->rp_record_pid, 
+						current->record_thrd->rp_count, 0, fpos, size);
+			}
+
+			replayfs_diskalloc_sync(map->entries.allocator);
+
+			//replayfs_filemap_destroy(&map);
+		}
+		fput(filp);
+	}
+#endif
+	new_syscall_exit (181, pretparams);
+
+	return size;
+}
+
+static asmlinkage long
+replay_pwrite64(unsigned int fd, const char __user *buf, size_t count, loff_t pos)
+{
+	ssize_t rc;
+	char *pretparams = NULL;
+
+#ifndef LOG_COMPRESS
+	rc = get_next_syscall (181, &pretparams);
+#else
+	rc = cget_next_syscall (181, &pretparams, (long)count);
+#endif
+	DPRINT ("Pid %d replays write returning %d\n", current->pid,rc);
+
+#ifdef X_COMPRESS
+	if (fd == current->replay_thrd->rp_record_thread->rp_clog.x.xfd && rc > 0) {
+		if (x_detail) printk ("Pid %d write for x\n", current->pid);
+		if (x_proxy) {
+			long retval;
+			retval = sys_write (X_STRUCT_REP.actual_xfd, buf, count);
+			if (rc != retval)
+				printk ("pid %d write to x socket fails, expected:%d, actual:%ld\n", current->pid, rc, retval);
+		}
+		//x_compress_req (buf, rc, &X_STRUCT_REP);
+	}
+#endif
+
+	return rc;
+}
+
+asmlinkage long shim_pread64(unsigned int fd, char __user *buf, size_t count, loff_t pos) SHIM_CALL(pread64, 180, fd, buf, count, pos);
+
+//RET1_COUNT_SHIM4(pread64, 180, buf, unsigned int, fd, char __user *, buf, size_t, count, loff_t, pos);
+asmlinkage long shim_pwrite64(unsigned int fd, const char __user *buf, size_t count, loff_t pos) SHIM_CALL(pwrite64, 181, fd, buf, count, pos);
+//SIMPLE_SHIM4(pwrite64, 181, unsigned int, fd, const char __user *, buf, size_t, count, loff_t, pos);
 SIMPLE_SHIM3(chown16, 182, const char __user *, filename, old_uid_t, user, old_gid_t, group);
 
 static asmlinkage long 

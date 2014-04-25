@@ -1,0 +1,131 @@
+Race checker (race_checker.cpp & happens_before.h)
+  Last updated by hyihe on Apr 21, 2014
+
+## Usage ##
+  The usage is identical to the print_instructions pintool, with -l and -s
+  options specifying the operating range (in terms of syscall_cnt) of the race
+  detector. The tool currently will print out syscall_cnt value to inform the
+  user of the progress of the replay. Upon race conditions, the detector will
+  print out two lines (both starting with "@@@@") reporting the details of the
+  detected race.
+
+  It is recommended to redirect the output of the detector to a file so that
+  it can be analyzed more easily (by searching for "@@@@").
+
+## Overview ##
+  This race checker can be used to check for data races exposed by the replay
+  system during replay.
+  
+  For each race it detects, tt spits out two lines starting with "@@@@"
+  indicating the type of the violating access as well as the interval
+  interleaving causing the race.
+  
+  Right following these two lines, an additional line prints informative
+  information such as the instruction pointer location as well as the memory
+  location of the variable subject to the race condition. The instruction
+  pointer value can be passed into tools like GDB to obtain line number in
+  source code.
+
+
+## Core Data Structures ##
+  The race detector uses a std::map to maintain all variables being accessed
+  in the program. Each variable is keyed by its starting memory address and
+  its size in bytes.
+
+  Each variable is also associated with two "interval vectors", which are
+  used to keep track of the most recent read and write accesses to this
+  variable by all threads in the system. All interval vectors contain only
+  pointers to an interval so that their information will be consistent when
+  the an interval is updated due to context switch, etc. Interval objects
+  (implemented using std::pair) are not currently freed.
+
+  The performance can be improved by using a hash map (std::unordered_map
+  as available from C++11) instead of the tree map. We may also consider
+  freeing the interval objects when there are no variables still pointing
+  to it.
+
+
+## Happens-before Criterion ##
+  The happens-before criterion used in this race detector is relatively
+  simple, because all context switches are enforced by the replay system.
+  Interval A happens before interval B if and only if the exit timestamp
+  of A is strictly less than the enter timestamp of B, or
+
+      A.end < B.start
+  
+  Otherwise the two intervals are concurrent. Two concurrent accesses to
+  the same variable with at least one being a write form a race condition.
+
+
+## Implementation Notes ##
+  One analysis function was added and several were modified. Most of the
+  modifications are trivial and self-explanatory, here lists only a few
+  which I think worth mentioning:
+
+  NEWLY ADDED ANALYSIS ROUTINE:
+  
+  void log_replay_block(ADDRINT block_until)
+  
+  This function is inserted before all calls to pthread_log_block(), which
+  invokes the once-mysterious syscall 32 to enforce a context switch. The
+  execution of function pthread_log_block() indicates that the currently
+  running thread reaches a non-sequential clock value and needs to wait
+  until some value "block_until" to be eligible to run again. This 
+  "block_until" value, which happens to be the only argument of the
+  pthread_log_block() call, is then forwarded to the analysis routine,
+  being used to update the exit timestamp of the current interval before
+  it concludes.
+
+  MODIFIED ANALYSIS ROUTINES:
+
+  1. void log_replay_enter(ADDRINT type, ADDRINT check)
+  
+  Each complete pthread_log_replay() function call is associated with two
+  calls to log_replay_enter(), one being PTHREAD_*_ENTER type and the
+  other being PTHREAD_*_EXIT. In the race detector, this conveniently
+  divides up the intervals of execution by clearly marking the begin and
+  end time of each interval.
+  
+  Each call to log_replay_enter() with *_ENTER type indicates an end of
+  an interval, and each call with *_EXIT type indicates a start of new
+  interval. When the end of an interval is reached, the detector
+  "speculatively" updates the exit timestamp of the interval to the
+  current replay clock value.
+  
+  The update is "speculative" because it can be overwritten if a context
+  switch is determined necessary. Upon a context switch, the exit timestamp
+  of the interval will be updated by log_replay_block() function as mentioned
+  above.
+  
+  Note that even if there won't be a context switch, the exit and begin
+  timestamps of an interval are not necessarily sequential, due to the
+  possibile involvement of system calls in between.
+
+  On the other hand, when a start of a new interval is reached, the enter
+  timestamp of the interval (new interval) is updated to the current replay
+  clock value, and a tentative exit timestamp of curr_clock_value + 1 is
+  used. The exit timestamp of the current interval cannot be determined until
+  the interval is concluded, either with a normal call to log_replay_enter()
+  with *_ENTER type or with a context switch to another thread.
+
+  2. void thread_start(THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
+  
+  The only thing worth noting is that upon each thread creation a new interval
+  (curr_clock, curr_clock + 1) is being assigned to the new thread. It is
+  consistent with the rest of the set up in the race detector, and it will
+  start updating itself once it reaches the first pthread_log_replay() function
+  along its execution path.
+
+  ### All modified locations in race_checker.cpp are marked with:
+  // edited by hyihe
+
+## TODOs ##
+  PERFORMANCE:
+    Perhaps better memory management and a faster data structure than std::map?
+    Using mmapped replay clock value.
+
+  FUNCTIONALITY:
+    Print backtrace once a race is detected.
+    Suspend execution after first race?
+    Store additional information in var_t to know which function contented
+    with the violating access. (Perhaps will use up a lot of memory)
