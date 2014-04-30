@@ -2020,6 +2020,9 @@ static inline void post_schedule(struct rq *rq)
  * schedule_tail - first thing a freshly forked thread must call.
  * @prev: the thread we just switched away from.
  */
+/* BEGIN: REPLAY */
+#include <linux/replay.h> 
+/* END: REPLAY */
 asmlinkage void schedule_tail(struct task_struct *prev)
 	__releases(rq->lock)
 {
@@ -2037,8 +2040,15 @@ asmlinkage void schedule_tail(struct task_struct *prev)
 	/* In this case, finish_task_switch does not reenable preemption */
 	preempt_enable();
 #endif
-	if (current->set_child_tid)
-		put_user(task_pid_vnr(current), current->set_child_tid);
+	/* BEGIN: REPLAY */
+	if (current->set_child_tid) {
+		if (current->replay_thrd) {
+			put_user(get_log_id(), current->set_child_tid);
+		} else {
+			put_user(task_pid_vnr(current), current->set_child_tid);
+		}
+	}
+	/* END: REPLAY */
 }
 
 /*
