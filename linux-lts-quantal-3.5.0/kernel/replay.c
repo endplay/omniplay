@@ -15250,12 +15250,18 @@ struct file* init_log_write (struct record_thread* prect, loff_t* ppos, int* pfd
 			return NULL;
 		}
 		*ppos = st.st_size;
-		*pfd = sys_open(filename, O_WRONLY|O_APPEND|O_LARGEFILE, 0644);
+		*pfd = sys_open(filename, O_WRONLY|O_APPEND|O_LARGEFILE, 0777);
 		MPRINT ("Reopened log file %s, pos = %ld\n", filename, (long) *ppos);
 	} else {
 #ifdef LOG_COMPRESS_1
 		sprintf (filename, "%s/klog.id.%d.clog", prect->rp_group->rg_logdir, prect->rp_record_pid);
 		*pfd = sys_open(filename, O_WRONLY|O_CREAT|O_TRUNC|O_LARGEFILE, 0644);
+		if (*pfd > 0) {
+			rc = sys_fchmod(*pfd, 0777);
+			if (rc == -1) {
+				printk("Pid %d fchmod of klog %s failed\n", current->pid, filename);
+			}
+		}
 		MPRINT ("Opened log file %s\n", filename);
 		if (*pfd < 0) {
 			printk ("Cannot open log file %s", filename);
@@ -15263,7 +15269,13 @@ struct file* init_log_write (struct record_thread* prect, loff_t* ppos, int* pfd
 		}
 		sprintf (filename, "%s/klog.id.%d", prect->rp_group->rg_logdir, prect->rp_record_pid);
 #endif
-		*pfd = sys_open(filename, O_WRONLY|O_CREAT|O_TRUNC|O_LARGEFILE, 0644);
+		*pfd = sys_open(filename, O_WRONLY|O_CREAT|O_TRUNC|O_LARGEFILE, 0777);
+		if (*pfd > 0) {
+			rc = sys_fchmod(*pfd, 0777);
+			if (rc == -1) {
+				printk("Pid %d fchmod of klog %s failed\n", current->pid, filename);
+			}
+		}
 		MPRINT ("Opened log file %s\n", filename);
 		*ppos = 0;
 		prect->rp_klog_opened = 1;

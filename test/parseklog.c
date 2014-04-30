@@ -1070,7 +1070,47 @@ int main (int argc, char* argv[])
 				case 175: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size; break;
 				case 176: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size; break;
 				case 177: size = sizeof(siginfo_t); break;
-				case 180: size = retval; break;
+				//case 180: size = retval; break;
+				case 180: {
+					rc = read (fd, &is_cache_read, sizeof(u_int));
+					if (rc != sizeof(u_int)) {
+						printf ("cannot read is_cache value\n");
+						return rc;
+					}
+					if (convert) {
+						copy_to_convert_buffer (convert_buffer, &convert_offset, (char*) &is_cache_read, sizeof (u_int));
+					}
+
+					printf ("\tis_cache_file: %d\n", is_cache_read);
+					if (is_cache_read & CACHE_MASK) {
+
+						size = sizeof (loff_t);
+
+#ifdef TRACE_READ_WRITE
+						do {
+							off_t orig_pos;
+							struct replayfs_filemap_entry entry;
+							loff_t bleh;
+
+							orig_pos = lseek(fd, 0, SEEK_CUR);
+							rc = read(fd, &bleh, sizeof(loff_t));
+							rc = read(fd, &entry, sizeof(struct replayfs_filemap_entry));
+							lseek(fd, orig_pos, SEEK_SET);
+
+							if (rc != sizeof(struct replayfs_filemap_entry)) {
+								printf ("cannot read entry\n");
+								return rc;
+							}
+
+							extra_bytes += sizeof(struct replayfs_filemap_entry) + entry.num_elms * sizeof(struct replayfs_filemap_value);
+							size += sizeof(struct replayfs_filemap_entry) + entry.num_elms * sizeof(struct replayfs_filemap_value);
+						} while (0);
+#endif
+					} else {
+						size = retval; 
+					}
+					break;
+				}
 				case 183: size = retval; break;
 				case 184: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size; break;
 				case 185: size = sizeof(struct __user_cap_header_struct); break;
