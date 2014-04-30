@@ -12703,7 +12703,7 @@ record_pread64(unsigned int fd, char __user *buf, size_t count, loff_t pos)
 			}
 			*((u_int *) pretval) = 1;
 			record_cache_file_unlock (current->record_thrd->rp_cache_files, fd);
-			*((loff_t *) (pretval+sizeof(u_int))) = filp->f_pos - rc;
+			*((loff_t *) (pretval+sizeof(u_int))) = pos;
 
 #ifdef TRACE_READ_WRITE
 			do {
