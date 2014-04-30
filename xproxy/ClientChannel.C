@@ -1314,6 +1314,11 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 						cout << "hiding xrandr!"<<endl;
 					hideExtension = 1;
 				}
+				if (!strncmp((char*) buffer + 8, "XINERAMA", 8)) {
+					cout <<"hiding XINERAMA!"<<endl;
+						hideExtension = 1;
+				}
+				cout << "extensions: "<<(char*) buffer + 8 <<endl;
 
 				sequenceNumQueue_.push(clientCache_.
 				lastRequestSequenceNum, opcode, hideExtension);
