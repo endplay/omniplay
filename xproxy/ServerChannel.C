@@ -1062,6 +1062,30 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 							// not sure about opendevice
 						}
 							break;
+						case X_XIQueryDevice: {
+						specialReply = 1;
+						if (!replay) {
+							eventQueue_.recordReply(buffer, size);
+						} else {
+							unsigned int asize = eventQueue_.replayReply();
+#ifndef FILE_REPLAY
+							if ((unsigned int) SOCKWRITE (appFD, eventQueue_.getReplyBuffer(), asize) != asize)
+								cerr << "Cannot write to application."<<endl;
+#endif
+							if (PRINT_DEBUG)
+								cout <<"recorded message is "<<endl;
+							if (PRINT_DEBUG) printMessage(eventQueue_.getReplyBuffer(), size, 6,
+									1, 1+MAGIC_SIZE, 2, 4, 4, -1);
+							if (PRINT_DEBUG)
+								cout
+										<< "This is a special reply, send recorded message to the application instead."
+										<<endl;
+						}
+
+						if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1, 2, 4);
+				
+						}
+							break;
 						default: {
 							if (PRINT_DEBUG)
 								cout<<"           ***not compressed"<<endl;
