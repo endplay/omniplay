@@ -7913,7 +7913,6 @@ replay_write (unsigned int fd, const char __user * buf, size_t count)
 	char kbuf[80];
 #ifdef X_COMPRESS
         int actual_fd;
-	int modify_fd;
 #endif
 
 #ifndef LOG_COMPRESS
@@ -10672,7 +10671,7 @@ replay_socketcall (int call, unsigned long __user *args)
 			if (retvals->msg_controllen) {
 				long crc = copy_to_user ((char *) msg->msg_control, pdata, retvals->msg_controllen);
 				if (crc) {
-					printk ("Pid %d cannot copy msg_control %p to user %p len %d, rc=%ld\n", 
+					printk ("Pid %d cannot copy msg_control %p to user %p len %ld, rc=%ld\n", 
 						current->pid, msg->msg_control, pdata, retvals->msg_controllen, crc);
 					syscall_mismatch();
 				}
@@ -13940,9 +13939,9 @@ record_futex_ignored (u32 __user *uaddr, int op, u32 val, struct timespec __user
 	rc = sys_futex (uaddr, op, val, utime, uaddr2, val3);
 	if ((op & 1) == FUTEX_WAIT && utime) {
 		if (rc == -ETIMEDOUT) {
-			int need_fake_calls = 1;
 			//add a fake syscall here
 			/*
+			int need_fake_calls = 1;
 			new_syscall_enter (SIGNAL_WHILE_SYSCALL_IGNORED); 
 			new_syscall_done (SIGNAL_WHILE_SYSCALL_IGNORED, 0);
 			new_syscall_exit (SIGNAL_WHILE_SYSCALL_IGNORED, NULL);
