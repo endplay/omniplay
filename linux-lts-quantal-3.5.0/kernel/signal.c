@@ -1798,7 +1798,18 @@ static void do_notify_parent_cldstop(struct task_struct *tsk,
 	spin_lock_irqsave(&sighand->siglock, flags);
 	if (sighand->action[SIGCHLD-1].sa.sa_handler != SIG_IGN &&
 	    !(sighand->action[SIGCHLD-1].sa.sa_flags & SA_NOCLDSTOP))
-		__group_send_sig_info(SIGCHLD, &info, parent);
+	{
+		/* Begin REPLAY */
+		// Current process and parent are replay threads, so
+		// don't send SIGCHLD
+		if (!tsk->replay_thrd && !tsk->parent->replay_thrd) {
+			if (tsk->replay_thrd) {
+				printk("Pid %d replay thread but parent is not?\n", current->pid);
+			}
+		/* End REPLAY */
+			__group_send_sig_info(SIGCHLD, &info, parent);
+		}
+	}
 	/*
 	 * Even if SIGCHLD is not generated, we must wake up wait4 calls.
 	 */
@@ -2230,8 +2241,10 @@ relock:
 	 */
 	try_to_freeze();
 
+	/* Begin REPLAY */
 	// Get this value before we disable interrupts to avoid deadlocking kernel!
 	if (current->record_thrd) ignore_flag = get_record_ignore_flag ();
+	/* End REPLAY */
 	  
 	spin_lock_irq(&sighand->siglock);
 	/*
