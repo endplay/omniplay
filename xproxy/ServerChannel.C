@@ -111,7 +111,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 			scanlineUnit_ = buffer[32];
 			scanlinePad_ = buffer[33];
 			firstReply_ = 0;
-			encodeBuffer.encodeValue((unsigned int) buffer[0], 8);
+			/*encodeBuffer.encodeValue((unsigned int) buffer[0], 8);
 			encodeBuffer.encodeValue((unsigned int) buffer[1], 8);
 			encodeBuffer.encodeValue(GetUINT(buffer + 2, bigEndian_), 16);
 			encodeBuffer.encodeValue(GetUINT(buffer + 4, bigEndian_), 16);
@@ -122,7 +122,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 				encodeBuffer.encodeValue(0, 1);
 				for (unsigned int i = 8; i < size; i++)
 					encodeBuffer.encodeValue((unsigned int) buffer[i], 8);
-			}
+			}*/
 			if (PRINT_DEBUG)
 				cout << "first reply, size:"<<size<<endl;
 			if (PRINT_DEBUG) printMessage(buffer, size, 21, 1, 1+MAGIC_SIZE, 2, 2, 2, 4, 4, 4,
@@ -294,57 +294,16 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 					 }
 					 */switch (nextOpcode) {
 					case X_AllocColor: {
-						const unsigned char *nextSrc = buffer + 8;
-
-						for (unsigned int i = 0; i < 3; i++) {
-							unsigned int colorValue = GetUINT(nextSrc,
-									bigEndian_);
-							nextSrc += 2;
-							if (colorValue == requestData[i])
-								encodeBuffer.encodeValue(1, 1);
-							else {
-								encodeBuffer.encodeValue(0, 1);
-								encodeBuffer.encodeValue(colorValue
-										- colorValue, 16, 6);
-							}
-						}
-						unsigned int pixel = GetULONG(buffer + 16, bigEndian_);
-						encodeBuffer.encodeValue(pixel, 32, 9);
 						if (PRINT_DEBUG) printMessage(buffer, size, 10, 1, 1+MAGIC_SIZE, 2, 4,
 								2, 2, 2, 2, 4, -1);
 					}
 						break;
 					case X_GetAtomName: {
-						unsigned int nameLength = GetUINT(buffer + 8,
-								bigEndian_);
-						encodeBuffer.encodeValue(nameLength, 16, 6);
-						const unsigned char *nextSrc = buffer + 32;
-
-						clientCache_.internAtomTextCompressor.reset();
-						for (unsigned int i = 0; i < nameLength; i++)
-							clientCache_.internAtomTextCompressor.
-							encodeChar(*nextSrc++, encodeBuffer);
 						if (PRINT_DEBUG) printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 4, 2,
 								22+MAGIC_SIZE);
 					}
 						break;
 					case X_GetGeometry: {
-						encodeBuffer.encodeCachedValue(buffer[1], 8,
-								serverCache_.
-								depthCache);
-						encodeBuffer.
-						encodeCachedValue(GetULONG(buffer + 8, bigEndian_), 29,
-								serverCache_.
-								getGeometryRootCache, 9);
-						const unsigned char *nextSrc = buffer + 12;
-
-						for (unsigned int i = 0; i < 5; i++) {
-							encodeBuffer.
-							encodeCachedValue(GetUINT(nextSrc, bigEndian_), 16,
-									*serverCache_.
-									getGeometryGeomCache[i], 8);
-							nextSrc += 2;
-						}
 						if (PRINT_DEBUG) printMessage(buffer, size, 11, 1, 1, 2, 4, 4, 2, 2, 2,
 								2, 2, -1);
 					}
@@ -396,75 +355,10 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 					}
 						break;
 					case X_GetModifierMapping: {
-						encodeBuffer.encodeValue((unsigned int) buffer[1], 8);
-						const unsigned char *nextDest = buffer + 32;
-
-						if (ServerCache::getModifierMappingLastMap.
-						compare(size - 32, nextDest)) {
-							encodeBuffer.encodeValue(1, 1);
-							break;
-						}
-						encodeBuffer.encodeValue(0, 1);
-						for (unsigned int count = size - 32; count; count--) {
-							unsigned char next = *nextDest++;
-
-							if (next == 0)
-								encodeBuffer.encodeValue(1, 1);
-							else {
-								encodeBuffer.encodeValue(0, 1);
-								encodeBuffer.encodeValue(next, 8);
-							}
-						}
 						if (PRINT_DEBUG) printMessage(buffer, size, 5, 1, 1, 2, 4, 24+MAGIC_SIZE);
 					}
 						break;
 					case X_GetProperty: {
-						unsigned char format = (unsigned int) buffer[1];
-
-						encodeBuffer.encodeCachedValue(format, 8, serverCache_.
-						getPropertyFormatCache);
-						unsigned int numBytes = GetULONG(buffer + 16,
-								bigEndian_);
-						encodeBuffer.encodeValue(numBytes, 32, 9);
-						if (format == 16)
-							numBytes <<= 1;
-						else if (format == 32)
-							numBytes <<= 2;
-						encodeBuffer.
-						encodeCachedValue(GetULONG(buffer + 8, bigEndian_), 29,
-								serverCache_.
-								getPropertyTypeCache, 9);
-						encodeBuffer.
-						encodeValue(GetULONG(buffer + 12, bigEndian_), 32, 9);
-						const unsigned char *nextSrc = buffer + 32;
-
-						if (format == 8) {
-							if (requestData[0] == XA_RESOURCE_MANAGER) {
-								if (ServerCache::xResources.
-								compare(numBytes, buffer + 32)) {
-									encodeBuffer.encodeValue(1, 1);
-									break;
-								}
-								encodeBuffer.encodeValue(0, 1);
-							}
-							serverCache_.getPropertyTextCompressor.
-							reset();
-							for (unsigned int i = 0; i < numBytes; i++) {
-								unsigned char nextChar;
-
-								serverCache_.getPropertyTextCompressor.
-								encodeChar(nextChar = *nextSrc++, encodeBuffer);
-								if (nextChar == 10) {
-									serverCache_.
-									getPropertyTextCompressor.
-									reset(nextChar);
-								}
-							}
-						} else {
-							for (unsigned int i = 0; i < numBytes; i++)
-								encodeBuffer.
-								encodeValue((unsigned int) *nextSrc++, 8);
-						}
 						unsigned int atom = GetULONG(buffer + 8, bigEndian_);
 
 						if (requestData[0]) {
@@ -474,14 +368,62 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 									cout <<" Special GetProperty reply."<<endl;
 								// record this reply as this window may not be accessible
 								eventQueue_.recordReply(buffer, size);
+								/*	unsigned char format = (unsigned int) buffer[1];
+
+								encodeBuffer.encodeCachedValue(format, 8, serverCache_.
+										getPropertyFormatCache);
+								unsigned int numBytes = GetULONG(buffer + 16,
+										bigEndian_);
+								encodeBuffer.encodeValue(numBytes, 32, 9);
+								if (format == 16)
+									numBytes <<= 1;
+								else if (format == 32)
+									numBytes <<= 2;
+								encodeBuffer.
+									encodeCachedValue(GetULONG(buffer + 8, bigEndian_), 29,
+											serverCache_.
+											getPropertyTypeCache, 9);
+								encodeBuffer.
+									encodeValue(GetULONG(buffer + 12, bigEndian_), 32, 9);
+								const unsigned char *nextSrc = buffer + 32;
+
+								if (format == 8) {
+									if (requestData[0] == XA_RESOURCE_MANAGER) {
+										if (ServerCache::xResources.
+												compare(numBytes, buffer + 32)) {
+											encodeBuffer.encodeValue(1, 1);
+											break;
+										}
+										encodeBuffer.encodeValue(0, 1);
+									}
+									serverCache_.getPropertyTextCompressor.
+										reset();
+									for (unsigned int i = 0; i < numBytes; i++) {
+										unsigned char nextChar;
+
+										serverCache_.getPropertyTextCompressor.
+											encodeChar(nextChar = *nextSrc++, encodeBuffer);
+										if (nextChar == 10) {
+											serverCache_.
+												getPropertyTextCompressor.
+												reset(nextChar);
+										}
+									}
+								} else {
+									for (unsigned int i = 0; i < numBytes; i++)
+										encodeBuffer.
+											encodeValue((unsigned int) *nextSrc++, 8);
+								}*/
+
 							} else {
+
 								unsigned int aSize;
 								aSize = eventQueue_.replayReply();
 #ifndef FILE_REPLAY
 								if ((unsigned int) SOCKWRITE (appFD, eventQueue_.getReplyBuffer(), aSize) != aSize)
 									cerr
-											<< "Cannot write to x app for special getproperty."
-											<<endl;
+										<< "Cannot write to x app for special getproperty."
+										<<endl;
 #endif
 								if (PRINT_DEBUG)
 									cout
@@ -550,58 +492,12 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 					}
 						break;
 					case X_GetWindowAttributes: {
-						encodeBuffer.encodeValue((unsigned int) buffer[1], 2);
-						encodeBuffer.
-						encodeCachedValue(GetULONG(buffer + 8, bigEndian_), 29,
-								serverCache_.visualCache, 9);
-						encodeBuffer.
-						encodeCachedValue(GetUINT(buffer + 12, bigEndian_), 16,
-								serverCache_.
-								getWindowAttributesClassCache, 3);
-						encodeBuffer.encodeCachedValue(buffer[14], 8,
-								serverCache_.
-								getWindowAttributesBitGravityCache);
-						encodeBuffer.encodeCachedValue(buffer[15], 8,
-								serverCache_.
-								getWindowAttributesWinGravityCache);
-						encodeBuffer.
-						encodeCachedValue(GetULONG(buffer + 16, bigEndian_),
-								32, serverCache_.
-								getWindowAttributesPlanesCache, 9);
-						encodeBuffer.
-						encodeCachedValue(GetULONG(buffer + 20, bigEndian_),
-								32, serverCache_.
-								getWindowAttributesPixelCache, 9);
-						encodeBuffer.
-						encodeValue((unsigned int) buffer[24], 1);
-						encodeBuffer.
-						encodeValue((unsigned int) buffer[25], 1);
-						encodeBuffer.
-						encodeValue((unsigned int) buffer[26], 2);
-						encodeBuffer.
-						encodeValue((unsigned int) buffer[27], 1);
-						encodeBuffer.
-						encodeCachedValue(GetULONG(buffer + 28, bigEndian_),
-								29, serverCache_.colormapCache, 9);
-						encodeBuffer.
-						encodeCachedValue(GetULONG(buffer + 32, bigEndian_),
-								32, serverCache_.
-								getWindowAttributesAllEventsCache);
-						encodeBuffer.
-						encodeCachedValue(GetULONG(buffer + 36, bigEndian_),
-								32, serverCache_.
-								getWindowAttributesYourEventsCache);
-						encodeBuffer.
-						encodeCachedValue(GetUINT(buffer + 40, bigEndian_), 16,
-								serverCache_.
-								getWindowAttributesDontPropagateCache);
 						if (PRINT_DEBUG) printMessage(buffer, size, 1, 1, 2, 4, 4, 2, 1, 1, 4,
 								4, 1, 1, 1, 1, 4, 4, 4, 2, -1);
 					}
 						break;
 					case X_GrabKeyboard:
 					case X_GrabPointer: {
-						encodeBuffer.encodeValue((unsigned int) buffer[1], 3);
 						if (PRINT_DEBUG) printMessage(buffer, size, 5, 1, 1, 2, 4, -1);
 					}
 						break;
@@ -634,20 +530,13 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 					}
 						break;
 					case X_ListExtensions: {
-						encodeBuffer.
-						encodeValue(GetULONG(buffer + 4, bigEndian_), 32, 8);
 						unsigned int numExtensions = (unsigned int) buffer[1];
-						encodeBuffer.encodeValue(numExtensions, 8);
 						const unsigned char *nextSrc = buffer + 32;
 
 						for (; numExtensions; numExtensions--) {
 							unsigned int length = (unsigned int) (*nextSrc++);
-							encodeBuffer.encodeValue(length, 8);
 							if (!strncmp((char *) nextSrc, "MIT-SHM", 7))
 								memcpy((unsigned char *) nextSrc, "NOT-SHM", 7);
-							for (; length; length--)
-								encodeBuffer.
-								encodeValue((unsigned int) (*nextSrc++), 8);
 							if (PRINT_DEBUG)
 								cout <<" not compressed, error message"<<endl;
 						}
@@ -655,21 +544,6 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 					}
 						break;
 					case X_ListFonts: {
-						encodeBuffer.
-						encodeValue(GetULONG(buffer + 4, bigEndian_), 32, 8);
-						unsigned int numFonts = GetUINT(buffer + 8, bigEndian_);
-						encodeBuffer.encodeValue(numFonts, 16, 6);
-						const unsigned char *nextSrc = buffer + 32;
-
-						for (; numFonts; numFonts--) {
-							unsigned int length = (unsigned int) (*nextSrc++);
-							encodeBuffer.encodeValue(length, 8);
-							serverCache_.getPropertyTextCompressor.
-							reset();
-							for (; length; length--)
-								serverCache_.getPropertyTextCompressor.
-								encodeChar(*nextSrc++, encodeBuffer);
-						}
 						if (PRINT_DEBUG) printMessage(buffer, size, 6, 1+MAGIC_SIZE, 1, 2, 4, 2,
 								22+MAGIC_SIZE);
 
@@ -677,24 +551,6 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 						break;
 					case X_LookupColor:
 					case X_AllocNamedColor: {
-						const unsigned char *nextSrc = buffer + 8;
-
-						if (nextOpcode == X_AllocNamedColor) {
-							encodeBuffer.
-							encodeValue(GetULONG(nextSrc, bigEndian_), 32, 9);
-							nextSrc += 4;
-						}
-						unsigned int count = 3;
-
-						do {
-							unsigned int exactColor = GetUINT(nextSrc,
-									bigEndian_);
-							encodeBuffer.encodeValue(exactColor, 16, 9);
-							unsigned int visualColor = GetUINT(nextSrc + 6,
-									bigEndian_) - exactColor;
-							encodeBuffer.encodeValue(visualColor, 16, 5);
-							nextSrc += 2;
-						} while (--count);
 						if (nextOpcode == X_LookupColor)
 							if (PRINT_DEBUG) printMessage(buffer, size, 11, 1, 1+MAGIC_SIZE, 2,
 									4, 2, 2, 2, 2, 2, 2, -1);
@@ -704,53 +560,50 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 					}
 						break;
 					case X_QueryBestSize: {
-						encodeBuffer.
-						encodeValue(GetUINT(buffer + 8, bigEndian_), 16, 8);
-						encodeBuffer.
-						encodeValue(GetUINT(buffer + 10, bigEndian_), 16, 8);
 						if (PRINT_DEBUG) printMessage(buffer, size, 7, 1, 1+MAGIC_SIZE, 2, 4, 2,
 								2, -1);
 					}
 						break;
 					case X_QueryColors: {
-						unsigned int numColors = ((size - 32) >> 3);
-						const unsigned char *nextSrc = buffer + 40;
-						unsigned char *nextDest = (unsigned char *) buffer + 38;
-						for (unsigned int c = 1; c < numColors; c++) {
-							for (unsigned int i = 0; i < 6; i++)
-								*nextDest++ = *nextSrc++;
-							nextSrc += 2;
-						}
-						unsigned int colorsLength = numColors * 6;
-
-						if (serverCache_.queryColorsLastReply.
-						compare(colorsLength, buffer + 32))
-							encodeBuffer.encodeValue(1, 1);
-						else {
-							const unsigned char *nextSrc = buffer + 32;
-
-							encodeBuffer.encodeValue(0, 1);
-							encodeBuffer.encodeValue(numColors, 16, 5);
-							for (numColors *= 3; numColors; numColors--) {
-								encodeBuffer.
-								encodeValue(GetUINT(nextSrc, bigEndian_), 16);
-								nextSrc += 2;
-							}
-						}
+						
 						if (requestData[0]) {
 							specialReply = 1;
 							if (!replay) {
 								if (PRINT_DEBUG)
 									cout <<"Special QueryColors reply."<<endl;
 								eventQueue_.recordReply(buffer, size);
+								/*unsigned int numColors = ((size - 32) >> 3);
+								const unsigned char *nextSrc = buffer + 40;
+								unsigned char *nextDest = (unsigned char *) buffer + 38;
+								for (unsigned int c = 1; c < numColors; c++) {
+									for (unsigned int i = 0; i < 6; i++)
+										*nextDest++ = *nextSrc++;
+									nextSrc += 2;
+								}
+								unsigned int colorsLength = numColors * 6;
+
+								if (serverCache_.queryColorsLastReply.
+										compare(colorsLength, buffer + 32))
+									encodeBuffer.encodeValue(1, 1);
+								else {
+									const unsigned char *nextSrc = buffer + 32;
+
+									encodeBuffer.encodeValue(0, 1);
+									encodeBuffer.encodeValue(numColors, 16, 5);
+									for (numColors *= 3; numColors; numColors--) {
+										encodeBuffer.
+											encodeValue(GetUINT(nextSrc, bigEndian_), 16);
+										nextSrc += 2;
+									}
+								}*/
 							} else {
 								unsigned int aSize;
 								aSize = eventQueue_.replayReply();
 #ifndef FILE_REPLAY
 								if ((unsigned int) SOCKWRITE (appFD, eventQueue_.getReplyBuffer(), aSize) != aSize)
 									cerr
-											<< "Cannot write to x app for special queryColor."
-											<<endl;
+										<< "Cannot write to x app for special queryColor."
+										<<endl;
 #endif
 								if (PRINT_DEBUG)
 									cout
@@ -785,49 +638,22 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 								bigEndian_);
 						unsigned int numCharInfos = GetULONG(buffer + 56,
 								bigEndian_);
-						encodeBuffer.encodeValue(numProperties, 16, 8);
-						encodeBuffer.encodeValue(numCharInfos, 32, 10);
-						encodeCharInfo_(buffer + 8, encodeBuffer);
-						encodeCharInfo_(buffer + 24, encodeBuffer);
-						encodeBuffer.
-						encodeValue(GetUINT(buffer + 40, bigEndian_), 16, 9);
-						encodeBuffer.
-						encodeValue(GetUINT(buffer + 42, bigEndian_), 16, 9);
-						encodeBuffer.
-						encodeValue(GetUINT(buffer + 44, bigEndian_), 16, 9);
-						encodeBuffer.
-						encodeValue((unsigned int) buffer[48], 1);
-						encodeBuffer.
-						encodeValue((unsigned int) buffer[49], 8);
-						encodeBuffer.
-						encodeValue((unsigned int) buffer[50], 8);
-						encodeBuffer.
-						encodeValue((unsigned int) buffer[51], 1);
-						encodeBuffer.
-						encodeValue(GetUINT(buffer + 52, bigEndian_), 16, 9);
-						encodeBuffer.
-						encodeValue(GetUINT(buffer + 54, bigEndian_), 16, 9);
 						unsigned char *nextSrc = buffer + 60;
 						unsigned int index;
 
-						if (ServerCache::queryFontFontCache.
+						/*if (ServerCache::queryFontFontCache.
 						lookup(numProperties * 8 + numCharInfos * 12, nextSrc,
 								index)) {
 							encodeBuffer.encodeValue(1, 1);
 							encodeBuffer.encodeValue(index, 4);
 							break;
-						}
-						encodeBuffer.encodeValue(0, 1);
+						}*/
 						for (; numProperties; numProperties--) {
 							if (replay)
 								//atom
 								PutULONG(idMap->atomMapToOld(GetULONG(nextSrc,
 										bigEndian_)), nextSrc, bigEndian_);
 							nextSrc += 8;
-						}
-						for (; numCharInfos; numCharInfos--) {
-							encodeCharInfo_(nextSrc, encodeBuffer);
-							nextSrc += 12;
 						}
 						if (PRINT_DEBUG) printMessage(buffer, size, 19, 1, 1+MAGIC_SIZE, 2, 4,
 								12, 4+MAGIC_SIZE, 12, 4+MAGIC_SIZE, 2, 2, 2, 2,
@@ -1096,8 +922,6 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 					}
 						break;
 					case XE_BIG_REQUESTS: {
-						encodeBuffer.encodeValue(GetULONG(buffer + 8,
-								bigEndian_), 32);
 						if (PRINT_DEBUG) printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 4, 4,
 								-1);
 					}
@@ -1172,11 +996,6 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 							<<sequenceNum <<" size:"<<size<<endl;
 					if (!PRINT_DEBUG)
 						printString(buffer, size);
-					encodeBuffer.encodeValue(buffer[1], 8);
-					encodeBuffer.encodeValue(GetULONG(buffer + 4, bigEndian_),
-							32);
-					for (unsigned int i = 8; i < size; i++)
-						encodeBuffer.encodeValue((unsigned int) buffer[i], 8);
 				}
 				if (!specialReply) {
 					//replay log
@@ -1199,8 +1018,8 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 					}
 				}
 				*outputLength_ += 1;
-				replyStats_.add(requestOpcode, size << 3,
-						encodeBuffer.getCumulativeBitsWritten());
+				//replyStats_.add(requestOpcode, size << 3,
+						//encodeBuffer.getCumulativeBitsWritten());
 			} else {
 				// event or error
 				unsigned int sequenceNum = GetUINT(buffer + 2, bigEndian_);
@@ -1209,13 +1028,14 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 				serverCache_.lastSequenceNum = sequenceNum;
 				unsigned int opcode = (unsigned int) *buffer;
 
-				encodeBuffer.encodeCachedValue(opcode, 8, serverCache_.
+				/*encodeBuffer.encodeCachedValue(opcode, 8, serverCache_.
 				opcodeCache[serverCache_.
-				lastOpcode]);
+				lastOpcode]);*/
 				serverCache_.lastOpcode = opcode;
-				encodeBuffer.encodeCachedValue(sequenceNumDiff, 16,
+				/*encodeBuffer.encodeCachedValue(sequenceNumDiff, 16,
 						serverCache_.
 						eventSequenceNumCache, 7);
+						*/
 
 				// check if this is an error that matches a sequence number for
 				// which we were expecting a reply
@@ -1295,7 +1115,7 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 					}
 					*outputLength_ += 1;
 				}
-
+/*
 				switch (*buffer) {
 				case 0: {
 					unsigned char code = buffer[1];
@@ -1421,9 +1241,9 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 							}
 						}
 					}
-					/*if (PRINT_DEBUG) printMessage (buffer, size, 14, 1, 1, 2, 4, 4, 
-					 4, 4, 2, 2, 2, 
-					 2, 2, 1, 1);*/
+					//if (PRINT_DEBUG) printMessage (buffer, size, 14, 1, 1, 2, 4, 4, 
+					// 4, 4, 2, 2, 2, 
+					// 2, 2, 1, 1);
 
 				}
 					break;
@@ -1459,9 +1279,9 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 						nextSrc += 2;
 					}
 					encodeBuffer.encodeValue(*nextSrc, 1);
-					/*if (PRINT_DEBUG) printMessage (buffer, size, 13, 1, 1+MAGIC_SIZE, 2, 4, 4, 
-					 4, 2, 2, 2, 2, 
-					 2, 1, -1);*/
+					//if (PRINT_DEBUG) printMessage (buffer, size, 13, 1, 1+MAGIC_SIZE, 2, 4, 4, 
+					// 4, 2, 2, 2, 2, 
+					// 2, 1, -1);
 				}
 					break;
 				case CreateNotify: {
@@ -1496,8 +1316,8 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 								exposeGeomCache[i], 6);
 						nextSrc += 2;
 					}
-					/*if (PRINT_DEBUG) printMessage (buffer, size, 10, 1, 1+MAGIC_SIZE, 2, 4, 2, 
-					 2, 2, 2, 2, -1);*/
+					//if (PRINT_DEBUG) printMessage (buffer, size, 10, 1, 1+MAGIC_SIZE, 2, 4, 2, 
+					// 2, 2, 2, 2, -1);
 				}
 					break;
 				case FocusIn:
@@ -1536,11 +1356,6 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 					if ((*buffer == MapNotify) || (*buffer == UnmapNotify))
 						encodeBuffer.
 						encodeValue((unsigned int) buffer[12], 1);
-					/*if (*buffer == UnmapNotify)
-					 if (PRINT_DEBUG) printMessage (buffer, size, 7, 1, 1+MAGIC_SIZE, 2, 4, 4, 
-					 1, -1);
-					 else if (*buffer == MapNotify)
-					 if (PRINT_DEBUG) printMessage (buffer, size, 4, 1, 1+MAGIC_SIZE, 2, -1);*/
 				}
 					break;
 				case NoExpose: {
@@ -1571,8 +1386,8 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 					serverCache_.lastTimestamp = timestamp;
 					encodeBuffer.encodeValue(timestampDiff, 32, 9);
 					encodeBuffer.encodeValue((unsigned int) buffer[16], 1);
-					/*if (PRINT_DEBUG) printMessage (buffer, size, 8, 1, 1+MAGIC_SIZE, 2, 4, 4, 
-					 4, 1, -1);*/
+					//if (PRINT_DEBUG) printMessage (buffer, size, 8, 1, 1+MAGIC_SIZE, 2, 4, 4, 
+					 //4, 1, -1);
 				}
 					break;
 				case ReparentNotify: {
@@ -1590,8 +1405,8 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 					encodeBuffer.
 					encodeValue(GetUINT(nextSrc + 2, bigEndian_), 16, 6);
 					encodeBuffer.encodeValue((unsigned int) buffer[20], 1);
-					/*if (PRINT_DEBUG) printMessage (buffer, size, 10, 1, 1+MAGIC_SIZE, 2, 4, 4, 
-					 4, 2, 2, 1, -1);*/
+					//if (PRINT_DEBUG) printMessage (buffer, size, 10, 1, 1+MAGIC_SIZE, 2, 4, 4, 
+					 4, 2, 2, 1, -1);//
 				}
 					break;
 				case SelectionClear: {
@@ -1652,8 +1467,9 @@ int ServerChannel::doRead(EncodeBuffer & encodeBuffer,
 						encodeBuffer.encodeValue((unsigned int) buffer[i], 8);
 				}
 				}
-				stats_.add(*buffer, size << 3,
-						encodeBuffer.getCumulativeBitsWritten());
+				//stats_.add(*buffer, size << 3,
+				//		encodeBuffer.getCumulativeBitsWritten());
+		*/
 			}
 		}
 		if (replay) {

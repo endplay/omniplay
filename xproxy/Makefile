@@ -30,7 +30,7 @@ TARGET=	xproxy$(EXEEXT)
 # The mingw build results in two targets, the console mode and windows mode
 # app.
 ifeq ($(MINGW32),true)
-SECONDTARGET = xproxy-win32$(EXEEXT)
+SECONDTARGET = dxpc-win32$(EXEEXT)
 else
 SECONDTARGET =
 endif
@@ -40,7 +40,7 @@ all: $(TARGET) $(SECONDTARGET)
 pure: pure_$(TARGET)
 quantify: quant_$(TARGET)
 
-SRCS=	main.C util.C constants.C Stats.C \
+SRCS=	util.H main.C util.C constants.C Stats.C \
 	Multiplexer.C ClientMultiplexer.C ServerMultiplexer.C \
 	ClientChannel.C ServerChannel.C ReadBuffer.C \
 	ProxyReadBuffer.C ClientReadBuffer.C ServerReadBuffer.C \
