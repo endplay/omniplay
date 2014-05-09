@@ -14,6 +14,7 @@
 //#define FILE_REPLAY
 //#define CONVERT
 #define PRINT_DEBUG 0
+//#define INVISIABLE
 extern unsigned int convert_log;
 
 extern unsigned int GetUINT(unsigned const char *, int bigEndian);
@@ -41,20 +42,20 @@ extern int wantBackingStore;
 
 //define extension opcode
 /*extension opcode for virtual machines*/
-#define XE_EVENT_EXTENSION 138
-#define XE_SHAPE 139
-#define XE_MIT_SHM 140
-#define XE_XInputExtension 141
-#define XE_BIG_REQUESTS 143
-#define XE_SYNC 144
-#define XE_XKEYBOARD 145
-#define XE_XFIXES 148
-#define XE_RENDER 149
-#define XE_RANDR 150
-#define XE_XINERAMA 151
-#define XE_Composite 152
-#define XE_DAMAGE 153
-#define XE_DRI2 137
+#define XE_EVENT_EXTENSION 129
+#define XE_SHAPE 130
+#define XE_MIT_SHM 131
+#define XE_XInputExtension 132
+#define XE_BIG_REQUESTS 134
+#define XE_SYNC 135
+#define XE_XKEYBOARD 136
+#define XE_XFIXES 139
+#define XE_RENDER 140
+#define XE_RANDR 141
+#define XE_XINERAMA 142
+#define XE_Composite 143
+#define XE_DAMAGE 144
+#define XE_DRI2 153
 #define XE_SGI_GLX 154
 
 
