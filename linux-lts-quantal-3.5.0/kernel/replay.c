@@ -13952,7 +13952,7 @@ record_futex_ignored (u32 __user *uaddr, int op, u32 val, struct timespec __user
 			change_log_special ();*/
 
 			atomic_set (&current->record_thrd->rp_group->rg_det_time.flag, 1);
-			printk ("Pid %d futex_wait timeout after waiting for %lu nsec, rc = %ld\n", current->pid, utime->tv_nsec, rc);
+			//printk ("Pid %d futex_wait timeout after waiting for %lu nsec, rc = %ld\n", current->pid, utime->tv_nsec, rc);
 		}
 	}
 	return rc;
