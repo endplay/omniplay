@@ -38,6 +38,9 @@ filemap: filemap.c libutil.a
 replay_pause: replay_pause.c
 	gcc replay_pause.c -o replay_pause -Wall -Werror --static -g
 
+find_record_time: find_record_time.c
+	gcc find_record_time.c -o find_record_time -Wall -Werror --static -g
+
 libutil.a: util.o
 	ar rv libutil.a util.o
 	ranlib libutil.a
