@@ -2,6 +2,7 @@
 #include <linux/encodebuffer.h>
 
 #define SEQUENCE_NUM_BUFFER_SIZE 10240
+#define xfds_size 32
 
 struct sequenceNumNode{
 	unsigned char opcode;
@@ -11,10 +12,11 @@ struct sequenceNumNode{
 
 struct x_struct {
 	//for x compression
-	int xfd;
-	int actual_xfd;
-	int xauth_fd;
-	int connected;
+	//int xfd;
+        int xfds[xfds_size];
+        int actual_xfds[xfds_size];
+        int xfds_length;
+        int last_fd;
 	int connection_times;
 	int firstMessage_req;
 	int firstMessage_reply;
@@ -62,3 +64,9 @@ int x_compress_reply (char* buf, int size, struct x_struct *x, struct clog_node*
 void x_decompress_reply (int size, struct x_struct *x, struct clog_node* node);
 inline void consume_decode_buffer (int size, struct x_struct *x);
 inline void validate_decode_buffer (char* buffer, int size, struct x_struct* x);
+inline int is_x_fd (struct x_struct *x, int fd);
+inline int is_x_fd_replay (struct x_struct *x, int fd);
+inline void add_x_fd (struct x_struct *x, int fd);
+inline void add_x_fd_replay (struct x_struct *x, int fd, int actual_fd);
+inline void remove_x_fd (struct x_struct* x, int fd);
+inline void remove_x_fd_replay (struct x_struct* x, int fd);

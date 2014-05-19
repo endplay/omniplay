@@ -154,13 +154,19 @@ int blockcacheset_lookup(struct BlockCacheSet* cache, unsigned int dataLength,
 
 
 inline void init_x_comp(struct x_struct *x) {
-	x->xfd = -1;
-	x->xauth_fd = -1;
+        int i = 0;
+        while (i<16) {
+            x->xfds[i] = -1;
+            x->actual_xfds[i] = -1;
+            ++i;
+        }
+        x->xfds_length = 0;
+	//x->xfd = -1;
+        x->last_fd = -1;
+	//x->xauth_fd = -1;
 	x->firstMessage_req = 1;
 	x->firstMessage_reply = 1;
-	x->actual_xfd = -1;
 	x->connection_times = 0;
-	x->connected = 0;
 
 	x->seq_num_start = 0;
 	x->seq_num_end = 0;
@@ -187,6 +193,62 @@ inline void init_x_comp(struct x_struct *x) {
 	x->decode_buffer_end = x->decode_buffer;
 
 	//init_caches (&x->serverCache_);
+}
+
+inline int is_x_fd (struct x_struct *x, int fd) {
+    int i = 0;
+    for (; i<x->xfds_length; ++i) {
+        if (x->xfds[i] == fd)
+            return 1;
+    }
+    return 0;
+}
+
+inline int is_x_fd_replay (struct x_struct *x, int fd) {
+    int i = 0;
+    for (; i<x->xfds_length; ++i) {
+        if (x->xfds[i] == fd)
+            return x->actual_xfds[i];
+    }
+    return 0;
+}
+
+inline void add_x_fd (struct x_struct *x, int fd) {
+    x->xfds[x->xfds_length] = fd;
+    ++ x->xfds_length;
+    BUG_ON (x->xfds_length == xfds_size);
+}
+
+inline void remove_x_fd (struct x_struct* x, int fd) {
+    int i = 0;
+    for (; i< x->xfds_length; ++i)
+        if (x->xfds[i] == fd)
+           break; 
+    x->xfds[i] = -1;
+    for (; i+1 < x->xfds_length; ++i)
+        x->xfds[i] = x->xfds[i+1];
+    --x->xfds_length;
+}
+
+inline void add_x_fd_replay (struct x_struct *x, int fd, int actual_fd) {
+    x->xfds[x->xfds_length] = fd;
+    x->actual_xfds[x->xfds_length] = actual_fd;
+    ++ x->xfds_length;
+    BUG_ON (x->xfds_length == xfds_size);
+}
+
+inline void remove_x_fd_replay (struct x_struct* x, int fd) {
+    int i = 0;
+    for (; i< x->xfds_length; ++i)
+        if (x->xfds[i] == fd)
+           break; 
+    x->xfds[i] = -1;
+    x->actual_xfds[i] = -1;
+    for (; i+1 < x->xfds_length; ++i) {
+        x->xfds[i] = x->xfds[i+1];
+        x->actual_xfds[i] = x->actual_xfds[i+1];
+    }
+    --x->xfds_length;
 }
 
 inline void free_x_comp(struct x_struct *x)

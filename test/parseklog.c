@@ -1054,6 +1054,9 @@ int main (int argc, char* argv[])
 				case 141: size = retval; break;
 				case 142: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size; break;
 				case 145: size = retval; break;
+#ifdef TRACE_PIPE_READ_WRITE
+				case 146: size = sizeof(u_int); break;
+#endif
 				case 149: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size; break;
 				case 155: size = sizeof(struct sched_param); break;
 				case 161: size = sizeof(struct timespec); break;
@@ -1070,47 +1073,68 @@ int main (int argc, char* argv[])
 				case 175: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size; break;
 				case 176: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size; break;
 				case 177: size = sizeof(siginfo_t); break;
-				//case 180: size = retval; break;
 				case 180: {
-					rc = read (fd, &is_cache_read, sizeof(u_int));
-					if (rc != sizeof(u_int)) {
-						printf ("cannot read is_cache value\n");
-						return rc;
-					}
-					if (convert) {
-						copy_to_convert_buffer (convert_buffer, &convert_offset, (char*) &is_cache_read, sizeof (u_int));
-					}
+						  rc = read (fd, &is_cache_read, sizeof(u_int));
+						  if (rc != sizeof(u_int)) {
+							  printf ("cannot read is_cache value\n");
+							  return rc;
+						  }
+						  if (convert) {
+							  copy_to_convert_buffer (convert_buffer, &convert_offset, (char*) &is_cache_read, sizeof (u_int));
+						  }
 
-					printf ("\tis_cache_file: %d\n", is_cache_read);
-					if (is_cache_read & CACHE_MASK) {
+						  printf ("\tis_cache_file: %d\n", is_cache_read);
+						  if (is_cache_read & CACHE_MASK) {
 
-						size = sizeof (loff_t);
+							  size = sizeof (loff_t);
 
 #ifdef TRACE_READ_WRITE
-						do {
-							off_t orig_pos;
-							struct replayfs_filemap_entry entry;
-							loff_t bleh;
+							  do {
+								  off_t orig_pos;
+								  struct replayfs_filemap_entry entry;
+								  loff_t bleh;
 
-							orig_pos = lseek(fd, 0, SEEK_CUR);
-							rc = read(fd, &bleh, sizeof(loff_t));
-							rc = read(fd, &entry, sizeof(struct replayfs_filemap_entry));
-							lseek(fd, orig_pos, SEEK_SET);
+								  orig_pos = lseek(fd, 0, SEEK_CUR);
+								  rc = read(fd, &bleh, sizeof(loff_t));
+								  rc = read(fd, &entry, sizeof(struct replayfs_filemap_entry));
+								  lseek(fd, orig_pos, SEEK_SET);
 
-							if (rc != sizeof(struct replayfs_filemap_entry)) {
-								printf ("cannot read entry\n");
-								return rc;
-							}
+								  if (rc != sizeof(struct replayfs_filemap_entry)) {
+									  printf ("cannot read entry\n");
+									  return rc;
+								  }
 
-							extra_bytes += sizeof(struct replayfs_filemap_entry) + entry.num_elms * sizeof(struct replayfs_filemap_value);
-							size += sizeof(struct replayfs_filemap_entry) + entry.num_elms * sizeof(struct replayfs_filemap_value);
-						} while (0);
+								  extra_bytes += sizeof(struct replayfs_filemap_entry) + entry.num_elms * sizeof(struct replayfs_filemap_value);
+								  size += sizeof(struct replayfs_filemap_entry) + entry.num_elms * sizeof(struct replayfs_filemap_value);
+							  } while (0);
 #endif
-					} else {
-						size = retval; 
-					}
-					break;
-				}
+#ifdef TRACE_PIPE_READ_WRITE
+						  } else if (is_cache_read & IS_PIPE) {
+							  if (is_cache_read & IS_PIPE_WITH_DATA) {
+								  off_t orig_pos;
+								  struct replayfs_filemap_entry entry;
+
+								  orig_pos = lseek(fd, 0, SEEK_CUR);
+								  rc = read(fd, &entry, sizeof(struct replayfs_filemap_entry));
+								  lseek(fd, orig_pos, SEEK_SET);
+
+								  if (rc != sizeof(struct replayfs_filemap_entry)) {
+									  printf ("cannot read entry\n");
+									  return rc;
+								  }
+
+								  size = sizeof(struct replayfs_filemap_entry) + entry.num_elms * sizeof(struct replayfs_filemap_value);
+							  } else {
+								  size = sizeof(uint64_t) + sizeof(int);
+							  }
+
+							  size += retval;
+#endif
+						  } else {
+							  size = retval; 
+						  }
+						  break;
+					  }
 				case 183: size = retval; break;
 				case 184: size = varsize(fd, stats, &psr, convert_buffer, &convert_offset); if (size < 0) return size; break;
 				case 185: size = sizeof(struct __user_cap_header_struct); break;
@@ -1343,7 +1367,7 @@ int main (int argc, char* argv[])
 							}
 						} else {
 							if (!graph_only) {
-								printf("\tFile is a pipe sourced by id %llu, %d\n",
+								printf("\tFile is a pipe sourced by id %llu, pipe id %d\n",
 										*((uint64_t *)buf), 
 										/* Yeah, I went there */
 										*((int *)((uint64_t *)buf + 1)));
@@ -1366,6 +1390,13 @@ int main (int argc, char* argv[])
 				} else {
 					always_print("%d, %ld, %lu, %d\n", *((int *)buf), retval,
 							start_clock, ndx);
+				}
+			}
+			if (psr.sysnum == 146 && (psr.flags & SR_HAS_RETPARAMS)) {
+				if (!pipe_write_only) {
+					printf("\tWritev is part of pipe: %d\n", *((int *)buf));
+				} else {
+					always_print("%d, %ld, %lu, %d\n", *((int *)buf), retval, start_clock, ndx);
 				}
 			}
 #endif
