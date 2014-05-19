@@ -957,6 +957,7 @@ struct repsignal_context {
 #define SR_HAS_NONZERO_RETVAL   0x10
 #define SR_HAS_SPECIAL_FIRST	0x20
 #define SR_HAS_SPECIAL_SECOND	0x40
+#define SR_HAS_SPECIAL_THIRD 	0x80
 
 // This structure records the result of a system call
 struct syscall_result {
@@ -977,6 +978,7 @@ struct pipe_fds
 	int* fds;
 	int length;
 	int size;
+	struct mutex lock;
 };
 #endif
 
@@ -1037,6 +1039,7 @@ struct record_group {
 
 #ifdef TIME_TRICK
 	struct det_time_struct rg_det_time; 
+	struct mutex rg_time_mutex;
 #endif
 	atomic_t rg_record_threads; // Number of active record threads
 	int rg_save_mmap_flag;		// If on, records list of mmap regions during record
@@ -1931,39 +1934,13 @@ inline void add_fake_time (long nsec, struct record_group* prg)
 		prg->rg_det_time.last_fake_nsec_accum -= 1000000000;
 		++ prg->rg_det_time.last_fake_sec_accum;
 	}
-	prg->rg_det_time.last_actual_nsec_accum += nsec;
-	if (prg->rg_det_time.last_actual_nsec_accum >= 1000000000) {
-		prg->rg_det_time.last_actual_nsec_accum -= 1000000000;
-		++ prg->rg_det_time.last_actual_sec_accum;
-	}
 }
 
 inline void add_fake_time_syscall (struct record_group* prg) {
-	++ prg->rg_det_time.syscall_count;
+	// prg->rg_det_time.syscall_count += (atomic_read (prg->rg_pkrecord_clock) - prg->rg_det_time.syscall_count);
+	//++ prg->rg_det_time.syscall_count;
 }
 
-inline void calc_diff_time (struct record_group* prg) {
-	prg->rg_det_time.last_fake_nsec_accum = prg->rg_det_time.last_actual_nsec_accum;
-	prg->rg_det_time.last_fake_sec_accum = prg->rg_det_time.last_actual_sec_accum;
-}
-
-inline void calc_fake_gettimeofday (struct timeval __user * tv, struct record_group* prg) {
-	tv->tv_usec = prg->rg_det_time.last_fake_nsec_accum/1000 + prg->rg_det_time.fake_init_tv.tv_usec;
-	tv->tv_sec = prg->rg_det_time.last_fake_sec_accum + prg->rg_det_time.fake_init_tv.tv_sec;
-	if (tv->tv_usec >= 1000000) {
-		tv->tv_usec -= 1000000;
-		++ tv->tv_sec;
-	}
-}
-
-inline void calc_fake_clock_gettime (struct timespec __user *tp, struct record_group* prg) {
-	tp->tv_nsec = prg->rg_det_time.last_fake_nsec_accum + prg->rg_det_time.fake_init_tp.tv_nsec;
-	tp->tv_sec = prg->rg_det_time.last_fake_sec_accum + prg->rg_det_time.fake_init_tp.tv_sec;
-	if (tp->tv_nsec >= 1000000000) {
-		tp->tv_nsec -= 1000000000;
-		++ tp->tv_sec;
-	}
-}
 #endif
 
 //long clock_predict = 0;
@@ -1982,6 +1959,7 @@ inline void pipe_fds_init(struct pipe_fds *fds, int size)
 	fds->fds = kmalloc(sizeof(int)*size*2, GFP_KERNEL);
 	fds->length = 0;
 	fds->size = size;
+	mutex_init (&fds->lock);
 }
 
 
@@ -1989,27 +1967,36 @@ inline void pipe_fds_init(struct pipe_fds *fds, int size)
 inline struct pipe_fds* pipe_fds_clone(struct pipe_fds* fds)
 {
 	struct pipe_fds* ret = kmalloc(sizeof(struct pipe_fds), GFP_KERNEL);
+	mutex_lock (&fds->lock);
 	printk("clone.\n");
 	ret->length = fds->length;
 	ret->size = fds->size;
 	ret->fds = kmalloc(sizeof(int)*fds->size*2, GFP_KERNEL);
 	memcpy(ret->fds, fds->fds, sizeof(int)*fds->size*2);
+	mutex_unlock (&fds->lock);
 	return ret;
 }
 
 inline void pipe_fds_free(struct pipe_fds *fds)
 {
-	if(fds==NULL)
+	mutex_lock (&fds->lock);
+	if(fds==NULL) {
+		mutex_unlock (&fds->lock);
 		return;
-	if(fds->fds==NULL)
+	}
+	if(fds->fds==NULL) {
+		mutex_unlock (&fds->lock);
 		return;
+	}
 	kfree(fds->fds);
+	mutex_unlock (&fds->lock);
 	//kfree(fds);
 }
 
 inline void pipe_fds_insert(struct pipe_fds* fds, int* file)
 {
 	int* tmp;
+	mutex_lock (&fds->lock);
 	fds->fds[fds->length*2] = file[0];
 	fds->fds[fds->length*2 + 1] = file[1];
 	++fds->length;
@@ -2021,16 +2008,11 @@ inline void pipe_fds_insert(struct pipe_fds* fds, int* file)
 		kfree(fds->fds);
 		fds->fds = tmp;
 	}
+	mutex_unlock (&fds->lock);
 }
 
 inline int pipe_fds_lookup(struct pipe_fds* fds, int fd)
 {
-	/*if(!fds)
-	{
-		printk("NULL for pipe fds.\n");
-		return -1;
-	}*/
-	//printk("pipe fds lookup, fd:%d, length:%d, first:%d\n", fd, fds->length, fds->fds?fds->fds[0]:0);
 	int i = 0;
 	for(;i<fds->length*2; ++i)
 	{
@@ -2054,6 +2036,7 @@ inline int pipe_fds_delete(struct pipe_fds* fds, int fd)
 
 inline void pipe_fds_copy (struct pipe_fds* to, struct pipe_fds* from)
 {
+	mutex_lock (&from->lock);
 	printk("free old pipe_fds.\n");
 	pipe_fds_free(to);
 	printk("copy pipe_fds_map.\n");
@@ -2061,6 +2044,7 @@ inline void pipe_fds_copy (struct pipe_fds* to, struct pipe_fds* from)
 	to->size = from->size;
 	to->fds = kmalloc (sizeof(int)*from->size*2, GFP_KERNEL);
 	memcpy(to->fds, from->fds, sizeof(int)*from->size*2);
+	mutex_unlock (&from->lock);
 }
 
 static void inline init_clog_struct (struct clog_struct* clog) {
@@ -2091,9 +2075,9 @@ inline int is_x_socket (unsigned long* a) {
 		struct sockaddr_in *tmp2;
 		int result = 0;
 
-		if(x_detail) printk ("Pid %d connect:%s,%lu, %d\n", current->pid, ((char*)(a[1])) + 3, a[2], tmp.sa_family);
+		if (x_detail) printk ("Pid %d connect:%s,%lu, %d\n", current->pid, ((char*)(a[1])) + 3, a[2], tmp.sa_family);
 		if (strstr(((char*)(a[1])) + 3,"tmp/.X11-unix/X") != NULL){
-			if (x_detail) printk ("Pid %d connect to the x server. socket fd:%lu\n", current->pid, a[0]);
+			printk ("Pid %d connect to the x server. socket fd:%lu\n", current->pid, a[0]);
 			result = 1;
 		}
 		else {
@@ -2162,6 +2146,15 @@ change_log_special_second(void)
 	psr->flags |= SR_HAS_SPECIAL_SECOND;
 }
 
+inline void
+change_log_special_third(void)
+{
+	struct syscall_result* psr;
+	struct record_thread* prt = current->record_thrd;
+	psr = &prt->rp_log[prt->rp_in_ptr];
+	psr->flags |= SR_HAS_SPECIAL_THIRD;
+}
+
 inline void init_evs(void)
 {
 #ifdef MULTI_GROUP
@@ -2169,7 +2162,6 @@ inline void init_evs(void)
 	struct shmat_rep_merge* tmp_rep = NULL;
 	pid_t *tmp_pid = NULL;
 #endif
-	//pipe_fds_init(&current->replay_thrd->rp_record_thread->pfds, 1);
 
 #ifdef MULTI_GROUP
 	if (test_thread_flag(TIF_RECORD)) {
@@ -2203,7 +2195,17 @@ inline long get_log_special(void)
 	struct syscall_result* psr;
 	struct record_thread* prt = current->replay_thrd->rp_record_thread;
 	psr = &prt->rp_log[current->replay_thrd->rp_out_ptr - 1];
+	BUG_ON (current->replay_thrd->rp_out_ptr == 0);
 	return psr->flags & SR_HAS_SPECIAL_FIRST;
+}
+
+inline long get_log_special_second (void)
+{
+	struct syscall_result* psr;
+	struct record_thread* prt = current->replay_thrd->rp_record_thread;
+	psr = &prt->rp_log[current->replay_thrd->rp_out_ptr - 1];
+	BUG_ON (current->replay_thrd->rp_out_ptr == 0);
+	return psr->flags & SR_HAS_SPECIAL_SECOND;
 }
 #endif
 
@@ -2277,6 +2279,10 @@ new_record_group (char* logdir)
 	mutex_init (&prg->rg_mutex);
 #endif	
 	atomic_set(&prg->rg_refcnt, 0);
+
+#ifdef TIME_TRICK
+	mutex_init (&prg->rg_time_mutex);
+#endif
 
 	if (create_shared_clock (prg) < 0) goto err_free;
 
@@ -4035,11 +4041,10 @@ new_syscall_enter (long sysnum)
 #endif
 
 #ifdef TIME_TRICK
-	//add_fake_time (5000, prt->rp_group);
-	add_fake_time_syscall (prt->rp_group);
-	//printk("the new fake time:%u, %u\n", fake_tv_sec, fake_tv_usec);
-#endif
+	return new_clock - 1;
+#else
 	return 0;
+#endif
 }
 
 long new_syscall_enter_external (long sysnum)
@@ -4064,7 +4069,7 @@ new_syscall_done (long sysnum, long retval)
 
 #ifdef TIME_TRICK
 	if (shift_clock)
-		current->record_thrd->rp_group->rg_det_time.flag = 1;
+		atomic_set (&current->record_thrd->rp_group->rg_det_time.flag, 1);
 #endif
 
 	if (retval) {
@@ -4938,7 +4943,7 @@ sys_wakeup_paused_process (pid_t pid)
 }
 
 #ifdef LOG_COMPRESS
-static inline long cget_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int syscall, char** ppretparams, struct syscall_result** ppsr, long prediction)
+static inline long cget_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int syscall, char** ppretparams, struct syscall_result** ppsr, long prediction, u_long* ret_start_clock)
 #else
 static inline long
 get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int syscall, char** ppretparams, struct syscall_result** ppsr)
@@ -4969,7 +4974,7 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 #endif
 #ifdef TIME_TRICK
 	//add_fake_time(5000, prg->rg_rec_group);
-	add_fake_time_syscall (prg->rg_rec_group);
+	//add_fake_time_syscall (prg->rg_rec_group);
 	//printk("the new fake time.%u, %u\n", fake_tv_sec, fake_tv_usec);
 #endif
 
@@ -5021,6 +5026,9 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 	prt->rp_expected_clock = start_clock + 1;
 	// Pin can interrupt, so we need to save the start clock in case we need to resume
 	prt->rp_start_clock_save = start_clock;
+#ifdef TIME_TRICK
+	if (ret_start_clock) *ret_start_clock = start_clock;
+#endif
 
 	if (unlikely(psr->sysnum != syscall)) {
 		if (psr->sysnum == SIGNAL_WHILE_SYSCALL_IGNORED && prect->rp_in_ptr == prt->rp_out_ptr+1) {
@@ -5152,7 +5160,7 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 }
 #ifdef LOG_COMPRESS
 static inline long get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int syscall, char** ppretparams, struct syscall_result** ppsr) {
-	return cget_next_syscall_enter (prt, prg, syscall, ppretparams, ppsr, 0);
+	return cget_next_syscall_enter (prt, prg, syscall, ppretparams, ppsr, 0, NULL);
 }
 #endif
 
@@ -5304,7 +5312,7 @@ get_next_syscall (int syscall, char** ppretparams)
 }
 #else
 static inline long
-cget_next_syscall (int syscall, char** ppretparams, long prediction)
+cget_next_syscall (int syscall, char** ppretparams, u_char* flag, long prediction, u_long* start_clock)
 {
 	struct replay_thread* prt = current->replay_thrd;
 	struct replay_group* prg = prt->rp_group;
@@ -5312,7 +5320,7 @@ cget_next_syscall (int syscall, char** ppretparams, long prediction)
 	long retval;
 	long exit_retval;
 
-	retval = cget_next_syscall_enter (prt, prg, syscall, ppretparams, &psr, prediction);
+	retval = cget_next_syscall_enter (prt, prg, syscall, ppretparams, &psr, prediction, start_clock);
 
 	// Needed to exit the threads in the correct order with Pin attached.
 	// Essentially, return to Pin after Pin interrupts the syscall with a SIGTRAP.
@@ -5339,11 +5347,12 @@ cget_next_syscall (int syscall, char** ppretparams, long prediction)
 		prt->rp_saved_rc = retval;
 		return exit_retval;
 	}
+	if (flag) *flag = psr->flags;
 
 	return retval;
 }
 static inline long get_next_syscall (int syscall, char** ppretparams) {
-	return cget_next_syscall (syscall, ppretparams, 0);
+	return cget_next_syscall (syscall, ppretparams, NULL, 0, NULL);
 }
 #endif
 
@@ -5792,6 +5801,45 @@ asmlinkage long sys_pthread_sysign (void)
 	SHIM_CALL_MAIN(number, record_##name(args), replay_##name(args),	\
 		       sys_##name(args))    \
 }
+
+//special SHIM function for ignored syscalls; currently, only used for futex, gettimeofday and clock_gettime
+#define SHIM_CALL_MAIN_IGNORE(number, F_RECORD, F_REPLAY, F_SYS, F_RECORD_IGNORED)	\
+{ \
+	int ignore_flag;						\
+	if (current->record_thrd) {					\
+		if (current->record_thrd->rp_ignore_flag_addr) {	\
+			get_user (ignore_flag, current->record_thrd->rp_ignore_flag_addr); \
+			if (ignore_flag) {  				\
+				return F_RECORD_IGNORED;		\
+			} 						\
+		}							\
+		return F_RECORD;					\
+	}								\
+	if (current->replay_thrd && test_app_syscall(number)) {		\
+		if (current->replay_thrd->rp_record_thread->rp_ignore_flag_addr) { \
+			get_user (ignore_flag, current->replay_thrd->rp_record_thread->rp_ignore_flag_addr); \
+			if (ignore_flag) { \
+				printk ("We should get here, ignored syscall %d\n", number); 			\
+				return F_SYS;				\
+			}						\
+		}							\
+		DPRINT("Pid %d, regular replay syscall %d\n", current->pid, number); \
+		return F_REPLAY;					\
+	}								\
+	else if (current->replay_thrd) {				\
+		if (*(current->replay_thrd->rp_preplay_clock) > pin_debug_clock) {	\
+			DPRINT("Pid %d, pin syscall %d\n", current->pid, number);	\
+		}							\
+	}								\
+	return F_SYS;							\
+}
+
+#define SHIM_CALL_IGNORE(name, number, args...)					\
+{ \
+	SHIM_CALL_MAIN_IGNORE(number, record_##name(args), replay_##name(args),\
+		       sys_##name(args), record_##name##_ignored(args))    \
+}
+//end special SHIM function
 
 #define SIMPLE_RECORD0(name, sysnum)		                        \
 	static asmlinkage long						\
@@ -7109,9 +7157,10 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 #endif
 
 #ifdef LOG_COMPRESS
-	if(rc == count && is_cache_file)
+	if(rc == count && is_cache_file) {
+		change_log_special ();
 		cnew_syscall_done (3, rc, count, shift_clock);
-	else
+	} else
 		new_syscall_done (3, rc);
 #else
 	new_syscall_done (3, rc);
@@ -7363,7 +7412,7 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 				return -EFAULT;
 			}							
 #ifdef X_COMPRESS
-			if (fd == current->record_thrd->rp_clog.x.xfd) {
+			if (is_x_fd (&current->record_thrd->rp_clog.x, fd)) {
 				change_log_special_second ();
 			}
 #endif
@@ -7386,7 +7435,7 @@ replay_read (unsigned int fd, char __user * buf, size_t count)
 #ifndef LOG_COMPRESS
 	long retval, rc = get_next_syscall (3, &retparams);
 #else
-	long retval, rc = cget_next_syscall (3, &retparams, (long)count);		
+	long retval, rc = cget_next_syscall (3, &retparams, NULL, (long)count, NULL);
 #endif
 	int cache_fd;
 
@@ -7516,10 +7565,11 @@ replay_read (unsigned int fd, char __user * buf, size_t count)
 		} else {
 #ifdef X_COMPRESS
 			if (rc > 0) {
-				if (fd == current->replay_thrd->rp_record_thread->rp_clog.x.xfd) {
+                int actual_fd = is_x_fd_replay (&current->replay_thrd->rp_record_thread->rp_clog.x, fd);
+				if (actual_fd > 0) {
 					if (x_detail) printk ("Pid %d read for x, fd:%d, buf:%p, count:%d, rc:%ld\n", current->pid, fd, buf, count, rc);
 					if (x_proxy) {
-						retval = sys_read (X_STRUCT_REP.actual_xfd, buf, count);
+						retval = sys_read (actual_fd, buf, count);
 						if (rc != retval)
 							printk ("pid %d read from x socket fails, expected:%ld, actual:%ld\n", current->pid, rc, retval);
 					}
@@ -7675,7 +7725,7 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 	size = sys_write (fd, buf, count);
 	DPRINT ("Pid %d records write returning %d\n", current->pid,size);
 #ifdef X_COMPRESS
-	if (fd == current->record_thrd->rp_clog.x.xfd && size > 0) {
+	if (is_x_fd (&current->record_thrd->rp_clog.x, fd) && size > 0) {
 		if (x_detail) printk ("Pid %d write for x\n", current->pid);
 		BUG_ON (size != count);
 		//x_compress_req (buf, size, &X_STRUCT_REC);
@@ -7861,11 +7911,14 @@ replay_write (unsigned int fd, const char __user * buf, size_t count)
 	ssize_t rc;
 	char *pretparams = NULL;
 	char kbuf[80];
+#ifdef X_COMPRESS
+        int actual_fd;
+#endif
 
 #ifndef LOG_COMPRESS
 	rc = get_next_syscall (4, &pretparams);
 #else
-	rc = cget_next_syscall (4, &pretparams, (long)count);
+	rc = cget_next_syscall (4, &pretparams, NULL, (long)count, NULL);
 #endif
 	if (fd == 99999) { // Hack that assists in debugging user-level code
 		memset (kbuf, 0, sizeof(kbuf));
@@ -7894,11 +7947,11 @@ replay_write (unsigned int fd, const char __user * buf, size_t count)
 #endif
 
 #ifdef X_COMPRESS
-	if (fd == current->replay_thrd->rp_record_thread->rp_clog.x.xfd && rc > 0) {
+	if ((actual_fd = is_x_fd_replay (&current->replay_thrd->rp_record_thread->rp_clog.x, fd)) > 0 && rc > 0) {
 		if (x_detail) printk ("Pid %d write for x\n", current->pid);
 		if (x_proxy) {
 			long retval;
-			retval = sys_write (X_STRUCT_REP.actual_xfd, buf, count);
+			retval = sys_write (actual_fd, buf, count);
 			if (rc != retval)
 				printk ("pid %d write to x socket fails, expected:%d, actual:%ld\n", current->pid, rc, retval);
 		}
@@ -8036,11 +8089,11 @@ record_close (int fd)
 	new_syscall_done (6, rc);
 	if (rc >= 0) clear_record_cache_file (current->record_thrd->rp_cache_files, fd);
 #ifdef X_COMPRESS
-	if (fd == current->record_thrd->rp_clog.x.xfd) {
+	if (is_x_fd (&current->record_thrd->rp_clog.x, fd)) {
 		// don't set it to be -1 after closed
 		// -1 is for initial state, -2 is for closed state; the socket to x server may be re-established again
 		printk ("Pid %d close x server socket %d.\n", current->pid, fd);
-		current->record_thrd->rp_clog.x.xfd = -2;
+        remove_x_fd (&X_STRUCT_REC, fd);
 	}
 #endif
 	new_syscall_exit (6, NULL);				
@@ -8054,6 +8107,9 @@ replay_close (int fd)
 {	
 	long rc;
 	int cache_fd; 
+#ifdef X_COMPRESS
+        int actual_fd;
+#endif
 
 	rc = get_next_syscall (6, NULL);
 	if (rc >= 0 && is_replay_cache_file (current->replay_thrd->rp_cache_files, fd, &cache_fd)) {
@@ -8062,9 +8118,9 @@ replay_close (int fd)
 		sys_close (cache_fd);
 	}
 #ifdef X_COMPRESS
-	if (fd == current->replay_thrd->rp_record_thread->rp_clog.x.xfd) {
-		sys_close (X_STRUCT_REP.actual_xfd);
-		current->replay_thrd->rp_record_thread->rp_clog.x.xfd = -2;
+	if ((actual_fd = is_x_fd_replay (&current->replay_thrd->rp_record_thread->rp_clog.x, fd)) > 0) {
+		sys_close (actual_fd);
+		remove_x_fd_replay (&current->replay_thrd->rp_record_thread->rp_clog.x, fd);
 	}
 #endif
 
@@ -9110,36 +9166,40 @@ record_gettimeofday (struct timeval __user *tv, struct timezone __user *tz)
 #ifdef TIME_TRICK
 	struct record_group *prg = current->record_thrd->rp_group;
 	int fake_time = 0;
-#endif
-
+	long long time_diff;
+	int is_shift = 0;
+	long current_clock = new_syscall_enter (78);
+#else 
 	new_syscall_enter (78);
+#endif
 	rc = sys_gettimeofday (tv, tz);
 	//note: now we need to put TIME_TRICK here as we update the flag in new_syscall_done
 	// note: this could be buggy, fix it later; about the retval of gettimeofday
 #ifdef TIME_TRICK
-	if (!tv)
-		printk("gettimeofday fails\n");
-	if (is_shift_gettimeofday (&prg->rg_det_time, tv) == 1 || prg->rg_det_time.flag) {
-		if (prg->rg_det_time.flag == 0) {
-			if (DET_TIME_STAT) printk ("gtd boundary\n");
-		} else {
-			if (DET_TIME_STAT) printk ("gtd DT\n");
+	if (!tv) BUG();
+	if (DET_TIME_DEBUG) printk ("Pid %d gettimeofday actual time %lu, %lu\n", current->pid, tv->tv_sec, tv->tv_usec);
+	mutex_lock (&prg->rg_time_mutex);	
+	//get the clock count since last update
+	if (atomic_read (&prg->rg_det_time.flag)) {
+		//return the actual time here
+		update_fake_accum_gettimeofday (&prg->rg_det_time, tv, current_clock);
+	} else {
+		time_diff = get_diff_gettimeofday (&prg->rg_det_time, tv, current_clock);
+		if ((is_shift = is_shift_time (&prg->rg_det_time, time_diff, current_clock))) {
 			change_log_special_second ();
+			update_step_time (time_diff, &prg->rg_det_time, current_clock);
+			update_fake_accum_gettimeofday (&prg->rg_det_time, tv, current_clock);
+		} else {
+			calc_det_gettimeofday (&prg->rg_det_time, tv, current_clock);
+			if (DET_TIME_DEBUG) printk ("Pid %d gettimeofday returns det time\n", current->pid);
+			fake_time = 1;
 		}
-		if (DET_TIME_DEBUG) printk("gettimeofday: return the actual time and shift the fake time.%u, %u (actual:%d, %d)\n", (unsigned int)(prg->rg_det_time.last_fake_sec_accum + prg->rg_det_time.fake_init_tv.tv_sec),(unsigned int) (prg->rg_det_time.last_fake_nsec_accum/1000 + prg->rg_det_time.fake_init_tv.tv_usec), (int)tv->tv_sec, (int)tv->tv_usec);
-		calc_diff_time (prg);
 	}
-	else {
-		if (DET_TIME_STAT) printk ("gtd det.\n");
-		if (DET_TIME_DEBUG) printk("gettimeofday: return the deterministic time here, actual:%d,%d, ", (int)tv->tv_sec, (int)tv->tv_usec);
-		calc_fake_gettimeofday (tv, prg);
-		if (DET_TIME_DEBUG) printk ("fake: %ld, %ld\n", tv->tv_sec, tv->tv_usec);
-		fake_time = 1;
-	}
-	prg->rg_det_time.flag = 0; //all time queries don't need to update the det time
+	if (DET_TIME_DEBUG) printk ("Pid %d gettimeofday finally returns %lu, %lu\n", current->pid, tv->tv_sec, tv->tv_usec);
+	atomic_set (&prg->rg_det_time.flag, 0); //all time queries don't need to update the det time
 	cnew_syscall_done (78, rc, -1, 0);
+	mutex_unlock (&prg->rg_time_mutex);
 #else
-	//printk ("gettimeofday.\n");
 	new_syscall_done (78, rc);
 #endif
 
@@ -9229,22 +9289,29 @@ static asmlinkage long
 replay_gettimeofday (struct timeval __user *tv, struct timezone __user *tz)
 {
 	struct gettimeofday_retvals* retparams = NULL;
+#ifdef TIME_TRICK
+	int fake_time = 0;
+	int is_shift = 0;
+	u_long start_clock;
+	long long time_diff;
+	struct record_group* prg = current->replay_thrd->rp_group->rg_rec_group;
+	u_char syscall_flag = 0;
+	long rc = cget_next_syscall (78, (char **) &retparams, &syscall_flag, 0, &start_clock);
+#else
 	long rc = get_next_syscall (78, (char **) &retparams);
+#endif
+
 #ifdef LOG_COMPRESS_1
 	struct clog_node * node;
 	int diff;
 	int value;
 	struct gettimeofday_retvals c_retparams;
 #endif
-#ifdef TIME_TRICK
-	int fake_time = 0;
-#endif
 
 	DPRINT ("Pid %d replays gettimeofday(tv=%p,tz=%p) returning %ld\n", current->pid, tv, tz, rc);
 #ifdef TIME_TRICK
-	if (get_log_special ())
-		fake_time = 1;
-	if (!fake_time) {
+	if (syscall_flag & SR_HAS_SPECIAL_FIRST) fake_time = 1;
+	if (syscall_flag & SR_HAS_SPECIAL_SECOND) is_shift = 1;
 #endif
 	if (retparams) {
 		if (retparams->has_tv && tv) {
@@ -9304,23 +9371,39 @@ replay_gettimeofday (struct timeval __user *tv, struct timezone __user *tz)
 		}
 		
 #endif
-		argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct gettimeofday_retvals));
-	}
 #ifdef TIME_TRICK
-	calc_diff_time (current->replay_thrd->rp_group->rg_rec_group);
-	if (DET_TIME_DEBUG) printk("gettimeofday returns actual time and shift the fake time. actual :%ld,%ld\n", tv->tv_sec, tv->tv_usec);
+		if (DET_TIME_DEBUG) printk("gettimeofday returns actual time. actual :%ld,%ld\n", tv->tv_sec, tv->tv_usec);
+		if (is_shift) {
+			time_diff = get_diff_gettimeofday (&prg->rg_det_time, &retparams->tv, start_clock);	
+			update_step_time (time_diff, &prg->rg_det_time, start_clock);
+		}
+		update_fake_accum_gettimeofday (&prg->rg_det_time, &retparams->tv, start_clock);
+#endif
+		argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct gettimeofday_retvals));
+	} 
+#ifdef TIME_TRICK
+	else {
+		//return det_time
+		calc_det_gettimeofday (&prg->rg_det_time, tv, start_clock);
+		if (DET_TIME_DEBUG) printk ("gettimeofday returns deterministic time\n");
 	}
-	else
-	{
-		calc_fake_gettimeofday (tv, current->replay_thrd->rp_group->rg_rec_group);
-		if (DET_TIME_DEBUG) printk ("gettimeofday returns deterministic time, %ld, %ld\n", tv->tv_sec, tv->tv_usec);
-		fake_time = 0;
-	}
+	if (DET_TIME_DEBUG) printk ("Pid %d gettimeofday finally returns %lu, %lu\n", current->pid, tv->tv_sec, tv->tv_usec);
 #endif
 	return rc;
 }
 
+#ifdef TIME_TRICK
+static asmlinkage long record_gettimeofday_ignored (struct timeval __user *tv, struct timezone __user *tz) {
+	long rc;
+	rc = sys_gettimeofday (tv, tz);
+	BUG ();//fix if needed
+	return rc;
+}
+
+asmlinkage long shim_gettimeofday (struct timeval __user *tv, struct timezone __user *tz) SHIM_CALL_IGNORE(gettimeofday, 78, tv, tz);
+#else
 asmlinkage long shim_gettimeofday (struct timeval __user *tv, struct timezone __user *tz) SHIM_CALL(gettimeofday, 78, tv, tz);
+#endif
 
 SIMPLE_SHIM2(settimeofday, 79, struct timeval __user *, tv, struct timezone __user *, tz);
 
@@ -9737,14 +9820,14 @@ record_socketcall(int call, unsigned long __user *args)
 		struct generic_socket_retvals* pretvals = NULL;
 #ifdef X_COMPRESS
 		//xdou
-		if (rc >= 0 && is_x_socket (a)) {
+		if (is_x_socket (a) && rc >= 0) {
 			int conn_times = X_STRUCT_REC.connection_times;
-			if (current->record_thrd->rp_clog.x.xfd != -1) {
+			/*if (current->record_thrd->rp_clog.x.xfd != -1) {
 				//connection to x server is already established, re-establishment requires reset
 				free_x_comp (&X_STRUCT_REC);
 				init_x_comp (&X_STRUCT_REC);
-			}
-			current->record_thrd->rp_clog.x.xfd = a[0];
+			}*/
+			add_x_fd (&current->record_thrd->rp_clog.x, a[0]);
 			X_STRUCT_REC.connection_times = ++ conn_times;
 			change_log_special ();
 			if (x_proxy) {
@@ -9990,15 +10073,15 @@ record_socketcall(int call, unsigned long __user *args)
 		struct recvfrom_retvals* pretvals = NULL;
 		if (rc >= 0) {
 #ifdef X_COMPRESS
-			if (a[0] == X_STRUCT_REC.xfd) {
+			if (is_x_fd (&X_STRUCT_REC, a[0])) {
 				change_log_special_second ();
 				if (x_detail) {
-					int i = 0;
+					//int i = 0;
 					printk ("Pid %d recv: fd:%ld, size:%ld\n", current->pid, a[0], rc);
-					for (i = 0; i < rc; ++i) {
+					/*for (i = 0; i < rc; ++i) {
 						printk ("%u,",  (unsigned int)(*((unsigned char*) a[1] + i)));
 					}
-					printk ("\n");
+					printk ("\n");*/
 				}
 			}
 #endif
@@ -10079,7 +10162,7 @@ record_socketcall(int call, unsigned long __user *args)
 			}
 #ifdef X_COMPRESS
 			if (x_detail) printk ("recvfrom: fd:%ld, size:%ld\n", a[0], a[1]);
-			BUG_ON (a[0] == X_STRUCT_REC.xfd); //if this assertion fails, both x compression and det time need to be modified
+			BUG_ON (is_x_fd (&X_STRUCT_REC, a[0])); //if this assertion fails, both x compression and det time need to be modified
 #endif
 			pretvals->call = call;
 
@@ -10168,16 +10251,7 @@ record_socketcall(int call, unsigned long __user *args)
 			}
 			if (rem_size != 0) printk ("record_socketcall(recvmsg): %ld bytes of data remain???\n", rem_size);
 #ifdef X_COMPRESS
-			if (a[0] == X_STRUCT_REC.xfd) {
-				/*struct clog_node* xnode = list_first_entry (&current->record_thrd->rp_xalloc_list, struct clog_node, list);
-				struct clog_node* cnode = clog_mark_done ();
-				int i;
-				
-				for (i=0; i<sizeof (struct recvfrom_retvals) + pmsghdr->msg_namelen + pmsghdr->msg_controllen; ++i)
-					encodeDirect ((unsigned int) ((char*)pretvals)[i], 8, cnode);
-
-				//x_compress_reply ((char *) pretvals + sizeof (struct recvmsg_retvals) + pmsghdr->msg_namelen + pmsghdr->msg_controllen, rc, &X_STRUCT_REC, xnode);
-				status_add (&current->record_thrd->rp_clog.syscall_status, 102, rc << 3, getCumulativeBitsWritten (xnode));*/
+			if (is_x_fd (&X_STRUCT_REC, a[0])) {
 				if (x_detail) printk ("Pid %d recvmsg: fd:%ld, size:%ld\n",current->pid,  a[0], rc);
 				change_log_special_second ();
 			}
@@ -10207,7 +10281,7 @@ record_socketcall(int call, unsigned long __user *args)
 		}
 
 #ifdef X_COMPRESS
-		BUG_ON (a[0] == X_STRUCT_REC.xfd);
+		BUG_ON (is_x_fd (&X_STRUCT_REC, a[0]));
 		if (x_detail) printk ("recvmmsg: fd:%ld, size:%ld\n", a[0], a[1]);
 #endif
 		new_syscall_exit (102, pretvals);
@@ -10351,8 +10425,8 @@ replay_socketcall (int call, unsigned long __user *args)
 
 	DPRINT ("Pid %d, replay_socketcall %d, rc is %ld\n", current->pid, call, rc);
 #ifdef X_COMPRESS
-	if (kargs[0] == X_STRUCT_REP.xfd)
-		if (x_detail) printk ("Pid %d socketcall for x server.\n", current->pid);
+	if (x_detail && is_x_fd (&X_STRUCT_REP, kargs[0]))
+		printk ("Pid %d socketcall for x server.\n", current->pid);
 #endif
 
 	switch (call) {
@@ -10366,25 +10440,22 @@ replay_socketcall (int call, unsigned long __user *args)
 		{
 			if (rc >= 0 && is_x_socket (kargs)) {
 				int conn_times = X_STRUCT_REP.connection_times;
-				int actual_xfd = X_STRUCT_REP.actual_xfd;
-				if (X_STRUCT_REP.xfd != -1) {
+				int actual_fd = X_STRUCT_REP.last_fd;
+				/*if (X_STRUCT_REP.xfd != -1) {
 					free_x_comp (&X_STRUCT_REP);
 					init_x_comp (&X_STRUCT_REP);
-				}
+				}*/
 				X_STRUCT_REP.connection_times = ++ conn_times;
-				X_STRUCT_REP.actual_xfd = actual_xfd;
-				X_STRUCT_REP.connected = 1;
-				current->replay_thrd->rp_record_thread->rp_clog.x.xfd = kargs[0];
+                add_x_fd_replay (&X_STRUCT_REP, kargs[0], actual_fd);
 				if (x_proxy) { 
 					long retval;
 					mm_segment_t old_fs = get_fs ();
 					//init messages
 					set_fs (KERNEL_DS);
-					kargs[0] = X_STRUCT_REP.actual_xfd;
+					kargs[0] = X_STRUCT_REP.last_fd;
 					retval = sys_socketcall (call, kargs);
 					if (retval != rc) { 
 						printk ("Pid %d connect from x fails, expected:%ld, actual:%ld\n", current->pid, rc, retval);
-						printk ("xfd is %d, xfd_actual is %d\n", X_STRUCT_REP.xfd, X_STRUCT_REP.actual_xfd);
 					}
 					if (x_proxy == 2) {
 						retval = sys_write (kargs[0], "2", 1);
@@ -10418,8 +10489,7 @@ replay_socketcall (int call, unsigned long __user *args)
 					printk ("Pid %d create socket fails, expected:%ld, actual:%ld\n", current->pid, rc, retval);
 				else {
 					if (x_detail) printk ("Pid %d create socket, recorded fd is %ld, actual fd is %ld\n", current->pid, rc, retval);
-					if (!X_STRUCT_REP.connected) 
-						X_STRUCT_REP.actual_xfd = retval;
+					X_STRUCT_REP.last_fd = retval;
 				}
 			}
 			if (retparams) argsconsume (current->replay_thrd->rp_record_thread, sizeof (struct generic_socket_retvals));
@@ -10494,8 +10564,9 @@ replay_socketcall (int call, unsigned long __user *args)
 		if (retparams) {
 #ifdef X_COMPRESS
 			struct recvfrom_retvals* retvals = (struct recvfrom_retvals *) retparams;
+                        int actual_fd;
 
-			if (kargs[0] == X_STRUCT_REP.xfd) {
+			if ((actual_fd = is_x_fd_replay (&X_STRUCT_REP, kargs[0])) > 0) {
 				mm_segment_t old_fs = get_fs ();
 				set_fs (KERNEL_DS);
 				if (x_detail) printk ("Pid %d recv (socketcall) for x\n", current->pid);
@@ -10504,7 +10575,7 @@ replay_socketcall (int call, unsigned long __user *args)
 					long count = 0;
 					int tries = 0;
 					kargs[2] = rc;
-					kargs[0] = X_STRUCT_REP.actual_xfd;
+					kargs[0] = actual_fd;
 					retval = sys_socketcall (call, kargs);	
 					if (retval > 0)
 						count += retval;
@@ -10600,7 +10671,7 @@ replay_socketcall (int call, unsigned long __user *args)
 			if (retvals->msg_controllen) {
 				long crc = copy_to_user ((char *) msg->msg_control, pdata, retvals->msg_controllen);
 				if (crc) {
-					printk ("Pid %d cannot copy msg_control %p to user %p len %d, rc=%ld\n", 
+					printk ("Pid %d cannot copy msg_control %p to user %p len %ld, rc=%ld\n", 
 						current->pid, msg->msg_control, pdata, retvals->msg_controllen, crc);
 					syscall_mismatch();
 				}
@@ -10627,7 +10698,7 @@ replay_socketcall (int call, unsigned long __user *args)
 				syscall_mismatch();
 			}
 #ifdef X_COMPRESS
-			if (kargs[0] == X_STRUCT_REP.xfd) {
+			if (is_x_fd (&X_STRUCT_REP, kargs[0])) {
 				if (x_detail) printk ("Pid %d recvmsg for x\n", current->pid);
 				//x_decompress_reply (iovlen, &X_STRUCT_REP, xnode);
 				//validate_decode_buffer (((char*) retvals) + sizeof (struct recvmsg_retvals) + retvals->msg_namelen + retvals->msg_controllen, iovlen, &X_STRUCT_REP);
@@ -11701,6 +11772,13 @@ record_select (int n, fd_set __user *inp, fd_set __user *outp, fd_set __user *ex
 			return -EFAULT;
 		}
 	}
+	
+#ifdef TIME_TRICK
+	if (rc == 0 && tvp) {
+		atomic_set (&current->record_thrd->rp_group->rg_det_time.flag, 1);
+		printk ("Pid %d select timeout after %lu, %lu\n", current->pid, tvp->tv_sec, tvp->tv_usec);
+	}
+#endif
 
 	new_syscall_exit (142, pretvals);
 	return rc;
@@ -11771,15 +11849,15 @@ record_readv (unsigned long fd, const struct iovec __user *vec, unsigned long vl
 #else
 	new_syscall_done (145, size);
 #endif
-
-	new_syscall_exit (145, copy_iovec_to_args(size, vec, vlen));
 #ifdef X_COMPRESS
-	if (fd == current->record_thrd->rp_clog.x.xfd && size > 0) {
+	if (is_x_fd (&current->record_thrd->rp_clog.x, fd) && size > 0) {
 		change_log_special_second ();
 		if (x_detail) printk ("Pid %d readv for x\n", current->pid);
 		//x_compress_reply (argshead(current->record_thrd) - size, size, &X_STRUCT_REC, node);
 	}
 #endif
+
+	new_syscall_exit (145, copy_iovec_to_args(size, vec, vlen));
 	return size;
 }
 
@@ -11795,7 +11873,7 @@ replay_readv (unsigned long fd, const struct iovec __user *vec, unsigned long vl
 		if (retval < 0) return retval;
 #ifdef X_COMPRESS
 		BUG_ON (retval != rc);
-		if (fd == current->replay_thrd->rp_record_thread->rp_clog.x.xfd) {
+		if (is_x_fd (&current->replay_thrd->rp_record_thread->rp_clog.x, fd)) {
 			BUG ();
 			//clog_mark_done_replay();
 			if (x_detail) printk ("Pid %d readv for x\n", current->pid);
@@ -11823,7 +11901,7 @@ asmlinkage long shim_readv (unsigned long fd, const struct iovec __user *vec, un
 static asmlinkage long
 record_writev (unsigned long fd, const struct iovec __user * vec, unsigned long vlen) {
 	long rc;				
-	int i = 0;
+	//int i = 0;
 
 	new_syscall_enter (146);		
 	/*
@@ -11839,7 +11917,7 @@ record_writev (unsigned long fd, const struct iovec __user * vec, unsigned long 
 	}
 	*/
 	rc = sys_writev (fd, vec, vlen);
-	if (rc > 0 && fd == current->record_thrd->rp_clog.x.xfd) {
+	if (rc > 0 && is_x_fd (&current->record_thrd->rp_clog.x, fd)) {
 		if (x_detail) printk ("Pid %d writev syscall for x proto:%ld, vlen:%lu\n",current->pid, rc, vlen);
 		change_log_special_second ();
 
@@ -11854,8 +11932,9 @@ replay_writev (unsigned long fd, const struct iovec __user * vec, unsigned long 
 	long size = get_next_syscall (146, NULL);
 	int i = 0;
 	int count = 0;
+        int actual_fd;
 
-	if (size > 0 && fd == X_STRUCT_REP.xfd) {
+	if (size > 0 && (actual_fd = is_x_fd_replay (&X_STRUCT_REP, fd)) > 0) {
 		if (x_detail) printk ("Pid %d writev syscall for x proto:%ld, vlen:%lu\n",current->pid, size, vlen);
 		for (i = 0; i < vlen && count < size; ++i) {
 			if (vec[i].iov_len > 0) {
@@ -11898,11 +11977,11 @@ replay_writev (unsigned long fd, const struct iovec __user * vec, unsigned long 
 					}
 				}
 				set_fs (KERNEL_DS);
-				retval = sys_writev (X_STRUCT_REP.actual_xfd, kvec, vlen);
+				retval = sys_writev (actual_fd, kvec, vlen);
 				set_fs (old_fs);
 
 			} else
-				retval = sys_writev (X_STRUCT_REP.actual_xfd, vec, vlen);
+				retval = sys_writev (actual_fd, vec, vlen);
 			if (retval != size) {
 				printk ("Pid %d writev from x fails, expected:%ld, actual:%ld\n", current->pid, size, retval);
 				BUG ();
@@ -12047,7 +12126,43 @@ asmlinkage long shim_sched_yield (void)
 SIMPLE_SHIM1(sched_get_priority_max, 159, int, policy);
 SIMPLE_SHIM1(sched_get_priority_min, 160, int, policy);
 RET1_SHIM2(sched_rr_get_interval, 161, struct timespec, interval, pid_t, pid, struct timespec __user *,interval);
+#ifdef TIME_TRICK
+static asmlinkage long
+record_nanosleep (struct timespec __user* rqtp, struct timespec __user* rmtp) {
+	long rc;
+	struct timespec* pretval = NULL;
+
+	new_syscall_enter (162);
+	rc = sys_nanosleep (rqtp, rmtp);
+	new_syscall_done (162, rc);
+	if (rc == -1 && rmtp) {
+		pretval = ARGSKMALLOC (sizeof (struct timespec), GFP_KERNEL);
+		if (pretval == NULL) {
+			printk ("record_nanosleep: can't alloc buffer\n");
+			return -ENOMEM;
+		}
+		if (copy_from_user (pretval, rmtp, sizeof (struct timespec))) {
+			printk ("record_nanosleep: can't copy to buffer\n");
+			ARGSKFREE (pretval, sizeof (struct timespec));
+			pretval = NULL;
+			rc = -EFAULT;
+		}
+	}
+	printk ("Pid %d nanosleep \n", current->pid);
+	if (rc == 0) {
+		printk ("Pid %d nanosleep for %lu, %lu\n", current->pid, rqtp->tv_sec, rqtp->tv_nsec);
+		atomic_set (&current->record_thrd->rp_group->rg_det_time.flag, 1);
+	}
+	new_syscall_exit (162, pretval);
+	return rc;
+}
+
+RET1_REPLAY (nanosleep, 162, struct timespec, rmtp, struct timespec __user* rqtp, struct timespec __user* rmtp); 
+
+asmlinkage long shim_nanosleep (struct timespec __user * rqtp, struct timespec __user* rmtp) SHIM_CALL(nanosleep, 162, rqtp, rmtp);
+#else
 RET1_SHIM2(nanosleep, 162, struct timespec, rmtp, struct timespec __user *, rqtp, struct timespec __user *, rmtp);
+#endif
 
 static asmlinkage unsigned long 
 record_mremap (unsigned long addr, unsigned long old_len, unsigned long new_len, unsigned long flags, unsigned long new_addr)
@@ -12089,7 +12204,15 @@ static asmlinkage unsigned long
 replay_mremap (unsigned long addr, unsigned long old_len, unsigned long new_len, unsigned long flags, unsigned long new_addr)
 {
 	u_long retval, rc = get_next_syscall (163, NULL);
+#ifdef LOG_COMPRESS
+	// xdou: this is for the correctness, not for compression
+	if (rc == addr)
+		retval = sys_mremap (addr, old_len, new_len, flags, new_addr);
+	else
+		retval = sys_mremap (addr, old_len, new_len, flags | MREMAP_FIXED | MREMAP_MAYMOVE, rc);
+#else
 	retval = sys_mremap (addr, old_len, new_len, flags, new_addr);
+#endif
 	DPRINT ("Pid %d replays mremap with address %lx returning %lx\n", current->pid, addr, retval);
 
 	if (rc != retval) {
@@ -12202,13 +12325,13 @@ record_poll (struct pollfd __user *ufds, unsigned int nfds, long timeout_msecs)
 #endif
 #ifdef TIME_TRICK
 	int shift_clock = 1;
+	struct record_group* prg = current->record_thrd->rp_group;
 #endif
-
 	new_syscall_enter (168);
+
 	rc = sys_poll (ufds, nfds, timeout_msecs);
 #ifdef TIME_TRICK
-	if (rc <= 0)  
-		shift_clock = 0;
+	if (rc <= 0) shift_clock = 0;
 	cnew_syscall_done (168, rc, -1, shift_clock);
 #else
 	new_syscall_done (168, rc);
@@ -12243,11 +12366,9 @@ record_poll (struct pollfd __user *ufds, unsigned int nfds, long timeout_msecs)
 	new_syscall_exit (168, pretvals);
 
 #ifdef TIME_TRICK
-	if (rc == 0) {
-		if (timeout_msecs > 0) {
-			add_fake_time(timeout_msecs*1000000, current->record_thrd->rp_group);
- 			printk ("semi-det time for poll: timeout %ld ms.\n", timeout_msecs);
-		}
+	if (rc == 0 && timeout_msecs > 0) {
+		atomic_set (&prg->rg_det_time.flag, 1);
+ 		printk ("Pid %d poll timeout %ld ms.\n", current->pid, timeout_msecs);
 	}
 #endif
 	return rc;
@@ -12309,9 +12430,6 @@ replay_poll (struct pollfd __user *ufds, unsigned int nfds, long timeout_msecs)
 		}
 	}
 	
-#ifdef TIME_TRICK
-	add_fake_time(timeout_msecs*1000000, current->replay_thrd->rp_group->rg_rec_group);
-#endif
 	return rc;
 }
 
@@ -12752,11 +12870,6 @@ record_pread64(unsigned int fd, char __user *buf, size_t count, loff_t pos)
 				ARGSKFREE(pretval, rc+sizeof(u_int));	
 				return -EFAULT;
 			}							
-#ifdef X_COMPRESS
-			if (fd == current->record_thrd->rp_clog.x.xfd) {
-				change_log_special_second ();
-			}
-#endif
 
 		}
 	} else if (is_cache_file) {
@@ -12773,11 +12886,7 @@ static asmlinkage long
 replay_pread64(unsigned int fd, char __user *buf, size_t count, loff_t pos)
 {
 	char *retparams = NULL;
-#ifndef LOG_COMPRESS
 	long retval, rc = get_next_syscall (180, &retparams);
-#else
-	long retval, rc = cget_next_syscall (180, &retparams, (long)count);		
-#endif
 	int cache_fd;
 
 	if (retparams) {
@@ -12806,29 +12915,6 @@ replay_pread64(unsigned int fd, char __user *buf, size_t count, loff_t pos)
 			} while (0);
 #endif
 		} else {
-#ifdef X_COMPRESS
-			if (rc > 0) {
-				if (fd == current->replay_thrd->rp_record_thread->rp_clog.x.xfd) {
-					if (x_detail) printk ("Pid %d read for x, fd:%d, buf:%p, count:%d, rc:%ld\n", current->pid, fd, buf, count, rc);
-					if (x_proxy) {
-						retval = sys_read (X_STRUCT_REP.actual_xfd, buf, count);
-						if (rc != retval)
-							printk ("pid %d read from x socket fails, expected:%ld, actual:%ld\n", current->pid, rc, retval);
-					}
-					if (record_x) {
-						if (copy_to_user (buf, retparams+sizeof(u_int), rc)) printk ("replay_read: pid %d cannot copy to user\n", current->pid);
-						consume_size = sizeof(u_int)+rc;
-						argsconsume (current->replay_thrd->rp_record_thread, consume_size); 
-					} else {
-						argsconsume (current->replay_thrd->rp_record_thread, sizeof(u_int)); 
-					}
-					//x_decompress_reply (rc, &X_STRUCT_REP, node); // this function should only computes the sequence number
-					//validate_decode_buffer (retparams+sizeof(u_int), rc, &X_STRUCT_REP);
-					//consume_decode_buffer (rc, &X_STRUCT_REP);
-					return rc;
-				}
-			}
-#endif
 			// uncached read
 			DPRINT ("uncached read of fd %u\n", fd);
 			if (copy_to_user (buf, retparams+sizeof(u_int), rc)) printk ("replay_read: pid %d cannot copy %ld bytes to user\n", current->pid, rc);
@@ -12851,13 +12937,6 @@ record_pwrite64(unsigned int fd, const char __user *buf, size_t count, loff_t po
 	size = sys_pwrite64 (fd, buf, count, pos);
 
 	DPRINT ("Pid %d records write returning %d\n", current->pid,size);
-#ifdef X_COMPRESS
-	if (fd == current->record_thrd->rp_clog.x.xfd && size > 0) {
-		if (x_detail) printk ("Pid %d write for x\n", current->pid);
-		BUG_ON (size != count);
-		//x_compress_req (buf, size, &X_STRUCT_REC);
-	}
-#endif
 #ifdef LOG_COMPRESS
 	cnew_syscall_done (181, size, count, 1);
 #else
@@ -12909,25 +12988,8 @@ replay_pwrite64(unsigned int fd, const char __user *buf, size_t count, loff_t po
 	ssize_t rc;
 	char *pretparams = NULL;
 
-#ifndef LOG_COMPRESS
 	rc = get_next_syscall (181, &pretparams);
-#else
-	rc = cget_next_syscall (181, &pretparams, (long)count);
-#endif
 	DPRINT ("Pid %d replays write returning %d\n", current->pid,rc);
-
-#ifdef X_COMPRESS
-	if (fd == current->replay_thrd->rp_record_thread->rp_clog.x.xfd && rc > 0) {
-		if (x_detail) printk ("Pid %d write for x\n", current->pid);
-		if (x_proxy) {
-			long retval;
-			retval = sys_write (X_STRUCT_REP.actual_xfd, buf, count);
-			if (rc != retval)
-				printk ("pid %d write to x socket fails, expected:%d, actual:%ld\n", current->pid, rc, retval);
-		}
-		//x_compress_req (buf, rc, &X_STRUCT_REP);
-	}
-#endif
 
 	return rc;
 }
@@ -13869,6 +13931,34 @@ SIMPLE_SHIM2(tkill, 238, int, pid, int, sig);
 
 RET1_SHIM4(sendfile64, 239, loff_t, offset, int, out_fd, int, in_fd, loff_t __user *, offset, size_t, count);
 
+#ifdef TIME_TRICK
+static inline long 
+record_futex_ignored (u32 __user *uaddr, int op, u32 val, struct timespec __user *utime, u32 __user *uaddr2, u32 val3)
+{
+	long rc;
+	rc = sys_futex (uaddr, op, val, utime, uaddr2, val3);
+	if ((op & 1) == FUTEX_WAIT && utime) {
+		if (rc == -ETIMEDOUT) {
+			//add a fake syscall here
+			/*
+			int need_fake_calls = 1;
+			new_syscall_enter (SIGNAL_WHILE_SYSCALL_IGNORED); 
+			new_syscall_done (SIGNAL_WHILE_SYSCALL_IGNORED, 0);
+			new_syscall_exit (SIGNAL_WHILE_SYSCALL_IGNORED, NULL);
+
+			get_user (need_fake_calls, &phead->need_fake_calls);
+			need_fake_calls ++;
+			put_user (need_fake_calls, &phead->need_fake_calls);
+			change_log_special ();*/
+
+			atomic_set (&current->record_thrd->rp_group->rg_det_time.flag, 1);
+			//printk ("Pid %d futex_wait timeout after waiting for %lu nsec, rc = %ld\n", current->pid, utime->tv_nsec, rc);
+		}
+	}
+	return rc;
+}
+#endif
+
 static asmlinkage long 
 record_futex (u32 __user *uaddr, int op, u32 val, struct timespec __user *utime, u32 __user *uaddr2, u32 val3)
 {
@@ -13897,7 +13987,11 @@ replay_futex (u32 __user *uaddr, int op, u32 val, struct timespec __user *utime,
 	return rc;
 }
 
+#ifdef TIME_TRICK
+asmlinkage long shim_futex (u32 __user *uaddr, int op, u32 val, struct timespec __user *utime, u32 __user *uaddr2, u32 val3) SHIM_CALL_IGNORE (futex, 240, uaddr, op, val, utime, uaddr2, val3);
+#else
 asmlinkage long shim_futex (u32 __user *uaddr, int op, u32 val, struct timespec __user *utime, u32 __user *uaddr2, u32 val3) SHIM_CALL (futex, 240, uaddr, op, val, utime, uaddr2, val3);
+#endif
 
 SIMPLE_SHIM3(sched_setaffinity, 241, pid_t, pid, unsigned int, len, unsigned long __user *, user_mask_ptr);
 
@@ -14141,6 +14235,53 @@ SIMPLE_SHIM2(clock_settime, 264, const clockid_t, which_clock, const struct time
 #ifndef LOG_COMPRESS 
 RET1_SHIM2(clock_gettime, 265, struct timespec, tp, const clockid_t, which_clock, struct timespec __user *, tp);
 #else
+
+#ifdef TIME_TRICK
+static asmlinkage long record_clock_gettime_ignored (const clockid_t which_clock, struct timespec __user* tp) {			
+	long rc;							
+	struct record_group* prg = current->record_thrd->rp_group;
+	long long time_diff;
+	int is_shift = 0;
+	unsigned long current_clock = atomic_read (prg->rg_pkrecord_clock);
+
+	rc = sys_clock_gettime (which_clock, tp);	
+
+	if (!tp) BUG ();/// fix if needed
+	if (DET_TIME_DEBUG) printk ("Pid %d clock_(ignored)_gettime_enter %lu, %lu\n", current->pid, tp->tv_sec, tp->tv_nsec);
+	if (which_clock != CLOCK_MONOTONIC && which_clock != CLOCK_REALTIME) {
+		printk ("Other clock_gettime? which_clock:%d\n", which_clock);
+		atomic_set (&prg->rg_det_time.flag, 1);
+		BUG ();
+	}
+	mutex_lock (&prg->rg_time_mutex);	
+	if (which_clock == CLOCK_REALTIME) {
+		struct timeval tv;
+		tv.tv_sec = tp->tv_sec;
+		tv.tv_usec = (tp->tv_nsec+999)/1000;//round up as time shouldn't go back
+		if (DET_TIME_DEBUG) printk ("Pid %d CLOCK_REALTIME converted to %lu, %lu\n", current->pid, tv.tv_sec, tv.tv_usec);
+		if (!atomic_read (&prg->rg_det_time.flag)) {
+			time_diff = get_diff_gettimeofday (&prg->rg_det_time, &tv, current_clock);
+			if (!(is_shift = is_shift_time (&prg->rg_det_time, time_diff, current_clock))) {
+				calc_det_gettimeofday (&prg->rg_det_time, &tv, current_clock);
+				tp->tv_sec = tv.tv_sec;
+				tp->tv_nsec = tv.tv_usec *1000;
+			}
+		}
+	} else {
+		if (!atomic_read (&prg->rg_det_time.flag)) {
+			time_diff = get_diff_clock_gettime (&prg->rg_det_time, tp, current_clock);
+			if (!(is_shift = is_shift_time (&prg->rg_det_time, time_diff, current_clock))) {
+				calc_det_clock_gettime (&prg->rg_det_time, tp, current_clock);
+			}
+		}
+	}
+	if (DET_TIME_DEBUG) printk ("Pid %d clock_(ignored)_gettime_exit %lu, %lu\n", current->pid, tp->tv_sec, tp->tv_nsec);
+	atomic_set (&prg->rg_det_time.flag, 0);
+	mutex_unlock (&prg->rg_time_mutex);
+	return rc;							
+}
+#endif
+
 static asmlinkage long record_clock_gettime (const clockid_t which_clock, struct timespec __user* tp) {			
 	long rc;							
 	struct timespec *pretval = NULL;						
@@ -14151,36 +14292,64 @@ static asmlinkage long record_clock_gettime (const clockid_t which_clock, struct
 #ifdef TIME_TRICK
 	int fake_time = 0;
 	struct record_group* prg = current->record_thrd->rp_group;
-#endif
-	new_syscall_enter (265);					
-	rc = sys_clock_gettime (which_clock, tp);	
-#ifdef TIME_TRICK
-	if (!tp) {
-		//printk ("clock_gettime fails.\n");
-		BUG ();
-	}
-	if (is_shift_clock_gettime (&prg->rg_det_time, tp) == 1 || prg->rg_det_time.flag) {
-		if (prg->rg_det_time.flag == 0) {
-			if (DET_TIME_STAT) printk ("cg boundary\n");
-		} else {
-			if (DET_TIME_STAT) printk ("cg DT\n");
-			change_log_special_second ();
-		}
-		if (DET_TIME_DEBUG) printk("clock_gettime: return the actual time and shift the fake time.%u, %u (actual:%d, %d)\n", (unsigned int)(prg->rg_det_time.last_fake_sec_accum + prg->rg_det_time.fake_init_tp.tv_sec),(unsigned int) (prg->rg_det_time.last_fake_nsec_accum + prg->rg_det_time.fake_init_tp.tv_nsec), (int)tp->tv_sec, (int)tp->tv_nsec);
-		calc_diff_time (prg);
-	} else {
-		if (DET_TIME_STAT) printk ("cg det.\n");
-		if (DET_TIME_DEBUG) printk ("clock_gettime: return the deterministic time, actual:%ld, %ld, ", tp->tv_sec, tp->tv_nsec);
-		calc_fake_clock_gettime (tp, prg);
-		if (DET_TIME_DEBUG) printk ("fake: %ld, %ld\n", tp->tv_sec, tp->tv_nsec);
-		fake_time = 1;
-	}
-	if (which_clock != CLOCK_MONOTONIC)
-		fake_time = 0;
-	prg->rg_det_time.flag = 0;
-	cnew_syscall_done (265, rc, -1, 0);
+	long long time_diff;
+	int is_shift = 0;
+	unsigned long current_clock = new_syscall_enter (265);
 #else
-	//printk ("clock_gettime.\n");
+	new_syscall_enter (265);					
+#endif
+
+	rc = sys_clock_gettime (which_clock, tp);	
+
+#ifdef TIME_TRICK
+	if (!tp) BUG ();/// fix if needed
+	if (DET_TIME_DEBUG) printk ("Pid %d clock_gettime actual time %lu, %lu\n", current->pid, tp->tv_sec, tp->tv_nsec);
+	if (which_clock != CLOCK_MONOTONIC && which_clock != CLOCK_REALTIME) {
+		printk ("Other clock_gettime? which_clock:%d\n", which_clock);
+		atomic_set (&prg->rg_det_time.flag, 1);
+	}
+	mutex_lock (&prg->rg_time_mutex);	
+	if (which_clock == CLOCK_REALTIME) {
+		struct timeval tv;
+		tv.tv_sec = tp->tv_sec;
+		tv.tv_usec = (tp->tv_nsec+999)/1000;//round up as time shouldn't go back
+		printk ("Pid %d CLOCK_REALTIME converted to %lu, %lu\n", current->pid, tv.tv_sec, tv.tv_usec);
+		if (!atomic_read (&prg->rg_det_time.flag)) {
+			time_diff = get_diff_gettimeofday (&prg->rg_det_time, &tv, current_clock);
+			if ((is_shift = is_shift_time (&prg->rg_det_time, time_diff, current_clock))) {
+				change_log_special_second ();
+				update_step_time (time_diff, &prg->rg_det_time, current_clock);
+				update_fake_accum_gettimeofday (&prg->rg_det_time, &tv, current_clock);
+			} else {
+				calc_det_gettimeofday (&prg->rg_det_time, &tv, current_clock);
+				tp->tv_sec = tv.tv_sec;
+				tp->tv_nsec = tv.tv_usec * 1000;
+				if (DET_TIME_DEBUG) printk ("Pid %d clock_gettime returns det time\n", current->pid);
+				fake_time = 1;
+			}
+		}
+	} else {
+		if (atomic_read (&prg->rg_det_time.flag)) {
+			//return the actual time here
+			update_fake_accum_clock_gettime (&prg->rg_det_time, tp, current_clock);
+		} else {
+			time_diff = get_diff_clock_gettime (&prg->rg_det_time, tp, current_clock);
+			if ((is_shift = is_shift_time (&prg->rg_det_time, time_diff, current_clock))) {
+				change_log_special_second ();
+				update_step_time (time_diff, &prg->rg_det_time, current_clock);
+				update_fake_accum_clock_gettime (&prg->rg_det_time, tp, current_clock);
+			} else {
+				calc_det_clock_gettime (&prg->rg_det_time, tp, current_clock);
+				if (DET_TIME_DEBUG) printk ("Pid %d clock_gettime returns det time\n", current->pid);
+				fake_time = 1;
+			}
+		}
+	}
+	if (DET_TIME_DEBUG) printk ("Pid %d clock_gettime finally returns %lu, %lu\n", current->pid, tp->tv_sec, tp->tv_nsec);
+	atomic_set (&prg->rg_det_time.flag, 0);
+	cnew_syscall_done (265, rc, -1, 0);
+	mutex_unlock (&prg->rg_time_mutex);
+#else
 	new_syscall_done (265, rc);			
 #endif
 	if (rc >= 0 && tp) {
@@ -14225,19 +14394,29 @@ static asmlinkage long record_clock_gettime (const clockid_t which_clock, struct
 	return rc;							
 }
 
-static asmlinkage long replay_clock_gettime (const clockid_t which_clock, struct timespec __user* tp) {						
+static asmlinkage long replay_clock_gettime (const clockid_t which_clock, struct timespec __user* tp) {		
 	struct timespec *retparams = NULL;						
+#ifdef TIME_TRICK
+	int fake_time = 0;
+	int is_shift = 0;
+	long long time_diff;
+	u_long start_clock;
+	u_char syscall_flag = 0;
+	struct record_group* prg = current->replay_thrd->rp_group->rg_rec_group;
+	long rc = cget_next_syscall (265, (char **) &retparams, &syscall_flag, 0, &start_clock);	
+#else
 	long rc = get_next_syscall (265, (char **) &retparams);	
+#endif
+
 #ifdef LOG_COMPRESS_1
 	struct clog_node* node;
 	struct timespec c_retparams;
 	unsigned int value;
 #endif
+
 #ifdef TIME_TRICK
-	int fake_time = 0;
-	if (get_log_special ())
-		fake_time = 1;
-	if (!fake_time) {
+	if (syscall_flag & SR_HAS_SPECIAL_FIRST) fake_time = 1;
+	if (syscall_flag & SR_HAS_SPECIAL_SECOND) is_shift = 1;
 #endif
 									
 	if (retparams) {						
@@ -14265,22 +14444,55 @@ static asmlinkage long replay_clock_gettime (const clockid_t which_clock, struct
 		if (copy_to_user (tp, &c_retparams, sizeof (struct timespec))) 
 			printk ("replay_clock_gettime: pid %d cannot copy to user\n", current->pid); 
 #endif
-		argsconsume (current->replay_thrd->rp_record_thread, sizeof (struct timespec)); 
-	}								
 #ifdef TIME_TRICK
-	calc_diff_time (current->replay_thrd->rp_group->rg_rec_group);
-	if (DET_TIME_DEBUG) printk ("clock_gettime returns actual time and shift the fake time. actual %ld, %ld\n", tp->tv_sec, tp->tv_nsec);
-	} else {
-		calc_fake_clock_gettime (tp, current->replay_thrd->rp_group->rg_rec_group);
-		if (DET_TIME_DEBUG) printk ("clock_gettime returns deterministic time.%ld, %ld\n", tp->tv_sec, tp->tv_nsec);
-		fake_time = 0;
+		if (DET_TIME_DEBUG) printk ("clock_gettime returns actual time. actual %ld, %ld\n", tp->tv_sec, tp->tv_nsec);
+		if (which_clock == CLOCK_MONOTONIC) {
+			if (is_shift) {
+				time_diff = get_diff_clock_gettime (&prg->rg_det_time, tp, start_clock);
+				update_step_time (time_diff, &prg->rg_det_time, start_clock);
+			}
+			update_fake_accum_clock_gettime (&prg->rg_det_time, tp, start_clock);
+		} else if (which_clock == CLOCK_REALTIME) {
+			struct timeval tv;
+			tv.tv_sec = tp->tv_sec;
+			tv.tv_usec = (tp->tv_nsec + 999) / 1000;
+
+			if (is_shift) {
+				time_diff = get_diff_gettimeofday (&prg->rg_det_time, &tv, start_clock);
+				update_step_time (time_diff, &prg->rg_det_time, start_clock);
+			}
+			update_fake_accum_gettimeofday (&prg->rg_det_time, &tv, start_clock);
+		}
+#endif
+		argsconsume (current->replay_thrd->rp_record_thread, sizeof (struct timespec)); 
+	} 
+#ifdef TIME_TRICK
+	else {
+		if (which_clock == CLOCK_MONOTONIC)
+			calc_det_clock_gettime (&prg->rg_det_time, tp, start_clock);
+		else if (which_clock == CLOCK_REALTIME) {
+				struct timeval tv;
+				tv.tv_sec = tp->tv_sec;
+				tv.tv_usec = (tp->tv_nsec +999) / 1000;
+				calc_det_gettimeofday (&prg->rg_det_time, &tv, start_clock);
+				tp->tv_sec = tv.tv_sec;
+				tp->tv_nsec = tv.tv_usec * 1000;
+
+		}
+		if (DET_TIME_DEBUG) printk ("clock_gettime returns deterministic time.\n");
 	}
+	if (DET_TIME_DEBUG) printk ("Pid %d clock_gettime finally returns %lu, %lu\n", current->pid, tp->tv_sec, tp->tv_nsec);
 #endif
 									
 	return rc;							
 }
 
+#ifdef TIME_TRICK
+asmlinkage long shim_clock_gettime (const clockid_t which_clock, struct timespec __user* tp) SHIM_CALL_IGNORE (clock_gettime, 265, which_clock, tp);
+#else
 asmlinkage long shim_clock_gettime (const clockid_t which_clock, struct timespec __user* tp) SHIM_CALL (clock_gettime, 265, which_clock, tp);
+#endif
+
 #endif
 RET1_SHIM2(clock_getres, 266, struct timespec, tp, const clockid_t, which_clock, struct timespec __user *, tp);
 RET1_SHIM4(clock_nanosleep, 267, struct timespec, rmtp, const clockid_t, which_clock, int, flags, const struct timespec __user *, rqtp, struct timespec __user *, rmtp);
@@ -14994,7 +15206,7 @@ record_recvmmsg(int fd, struct mmsghdr __user *msg, unsigned int vlen, unsigned 
 	new_syscall_enter (337);
 	rc = sys_recvmmsg (fd, msg, vlen, flags, timeout);
 #ifdef X_COPMRESS
-	BUG_ON (fd == current->record_thrd->rp_clog.x.xfd);
+	BUG_ON (is_x_fd (&current->record_thrd->rp_clog.x, fd));
 #endif
 	new_syscall_done (337, rc);
 	if (rc > 0) {
