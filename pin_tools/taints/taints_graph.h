@@ -218,8 +218,16 @@ inline int is_taint_equal(struct taint* first, struct taint* second) {
 }
 
 inline int is_taint_zero(struct taint* src) {
+#ifdef BINARY_FWD_TAINT
+    if ((u_long) src) {
+        return 1;
+    } else {
+        return 0;
+    }
+#else
     if (!src) return 0;
     return !src->id;
+#endif
 }
 
 inline void is_taint_full(struct taint* t) {
@@ -231,6 +239,7 @@ inline void set_taint_full (struct taint* t) {
 }
 
 inline void clear_taint(struct taint* t) {
+    if (!t) return;
     t->id = 0;
 #ifdef MERGE_STATS
     increment_taint_op(&merge_profile, STATS_OP_CLEAR);
@@ -261,6 +270,13 @@ inline void merge_taints(struct taint* dst, struct taint* src) {
     if (dst->id == src->id) {
         return;
     }
+#ifdef BINARY_FWD_TAINT
+    if (src->id) {
+        dst->id = src->id;
+        return;
+    }
+#endif
+
 #ifdef MERGE_PREDICTOR
     n = dst->id;
     if (n->prev_merged_with == src->id) {
@@ -334,7 +350,6 @@ void print_taint(FILE* fp, struct taint* src) {
 
             if (!n->parent1 && !n->parent2) { // leaf node
                 struct leafnode* ln = (struct leafnode *) n;
-                //g_hash_table_insert(seen_indices, n, GINT_TO_POINTER(1));
                 fprintf(fp, "%lu,", (unsigned long) ln->option);
             } else {
                 if (!g_hash_table_lookup(seen_indices, n->parent1)) {
@@ -353,11 +368,16 @@ void print_taint(FILE* fp, struct taint* src) {
 
 /* Compute the taints in the index */
 GList* get_non_zero_taints(struct taint* t) {
-    int queue_len = 0;
-    GHashTable* seen_indices = g_hash_table_new(g_direct_hash, g_direct_equal);
+    GHashTable* seen_indices;
     GList* list = NULL;
-    GQueue* queue = g_queue_new();
     struct node* n = t->id;
+    GQueue* queue;
+
+    if (!n) {
+        return NULL;
+    }
+    queue = g_queue_new();
+    seen_indices = g_hash_table_new(g_direct_hash, g_direct_equal);
 
     g_queue_push_tail(queue, n);
     while(!g_queue_is_empty(queue)) {
@@ -365,19 +385,18 @@ GList* get_non_zero_taints(struct taint* t) {
         if (g_hash_table_lookup(seen_indices, n)) {
             continue;
         }
-        g_hash_table_insert(seen_indices, GUINT_TO_POINTER(n), GINT_TO_POINTER(1));
+        g_hash_table_insert(seen_indices, n, GINT_TO_POINTER(1));
 
         if (!n->parent1 && !n->parent2) { // leaf node
             struct leafnode* ln = (struct leafnode *) n;
             list = g_list_prepend(list, GUINT_TO_POINTER(ln->option));
         } else {
-            if (!g_hash_table_lookup(seen_indices, GUINT_TO_POINTER(n->parent1))) {
+            if (!g_hash_table_lookup(seen_indices, n->parent1)) {
                 g_queue_push_tail(queue, n->parent1);
             }
-            if (g_hash_table_lookup(seen_indices, GUINT_TO_POINTER(n->parent2))) {
+            if (!g_hash_table_lookup(seen_indices, n->parent2)) {
                 g_queue_push_tail(queue, n->parent2);
             }
-            queue_len += 2;
         }
     }
 

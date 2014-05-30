@@ -42,6 +42,9 @@
 #include "xray_token.h"
 #include "taints_profile.h"
 
+#include <stack>
+#include <map>
+
 #ifdef LINKAGE_DATA
   #ifdef COPY_ONLY
     #include "taints/taints_copy.h"
@@ -102,6 +105,20 @@ struct image_infos* img_list;
 #define LOG_F log_f
 #define MEM_F log_f
 #define TRACE_F trace_f
+#define STACK_LOG_F stack_log_f
+#define STACK_F stack_f
+
+#define STACK_LOG_PRINT(args...)    \
+{                                   \
+    fprintf(STACK_LOG_F, args);     \
+    fflush(STACK_LOG_F);            \
+}
+
+#define STACK_PRINT(args...)        \
+{                                   \
+    fprintf(STACK_F, args);         \
+    fflush(STACK_F);                \
+}
 
 #define FANCY_ALLOC
 
@@ -494,6 +511,14 @@ struct thread_data {
 #endif
     struct thread_data*      next;
     struct thread_data*      prev;
+
+    // Callstack Stuff
+    char*               syscall_filename;
+    int                 socket_count;
+    std::stack<ADDRINT> call_stack;
+    std::stack<string>  string_stack;
+    std::map<string, string>    hash;
+
 };
 
 #define SYSNUM                      (ptdata->sysnum)
@@ -575,8 +600,13 @@ int fpu_reg_num = 105;
 struct taints_profile* global_profile;
 #endif
 
+// callstack Stuff
+bool call_stack_returned;
+
 FILE* log_f = NULL; // For debugging
 FILE* trace_f = NULL; // for tracing taints
+FILE* stack_log_f = NULL;
+FILE* stack_f = NULL;
 
 char* cleaned_idx = NULL; // cleaned indices
 int cleaned_idx_size = 0;
@@ -7163,6 +7193,31 @@ void print_summary_stats(FILE* fp, char* header)
 }
 #endif
 
+// Callstack Stuff
+void record_callstack(struct thread_data* ptdata, char* filename){
+    STACK_LOG_PRINT("Open Syscall. Recording Callstack Instance\n");
+    STACK_PRINT("File: %s\n", filename);
+    std::stack<string> tmp_stack;
+    tmp_stack = ptdata->string_stack;
+    while(!tmp_stack.empty()){
+        STACK_PRINT("%s\n", tmp_stack.top().c_str());
+        tmp_stack.pop();
+    }
+    STACK_PRINT("\n");
+
+    // Concatenate stack as single string
+    std::stack<string> tmp_string_stack;
+    tmp_string_stack = ptdata->string_stack;
+    string tmp_string = "";
+    while(!tmp_string_stack.empty()) {
+        tmp_string = tmp_string + tmp_string_stack.top();
+        tmp_string_stack.pop();
+    }
+    //ptdata->hash.insert(std::pair<string, string>(tmp_string, filename));
+    ptdata->hash.insert(std::pair<string, string>(tmp_string, filename));
+}
+
+
 void instrument_syscall(ADDRINT syscall_num, ADDRINT syscallarg1, ADDRINT syscallarg1_ref, ADDRINT syscallarg2, ADDRINT syscallarg3, ADDRINT syscallarg4, ADDRINT syscallarg5)
 {
     struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
@@ -7243,6 +7298,8 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT syscallarg1, ADDRINT syscal
         case SYS_open:
             {
                 char* filename = (char *) syscallarg1;
+                // Callstack Stuff
+                ptdata->syscall_filename = filename;
                 __sys_open_start(ptdata, filename, (int)syscallarg2);
                 break;
             }
@@ -7270,6 +7327,8 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT syscallarg1, ADDRINT syscal
                 switch (call) {
                     case SYS_SOCKET:
                         __sys_socket_start(ptdata, (int)args[0], (int)args[1], (int)args[2]);
+                        // Callstack Stuff
+                        ptdata->socket_count++;
                         break;
                     case SYS_CONNECT:
                         __sys_connect_start(ptdata, (int)args[0], (struct sockaddr *)args[1], (socklen_t)args[2]);
@@ -7349,6 +7408,10 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
         case SYS_open:
             {
                 __sys_open_stop(ptdata, (int) ret_value);
+                // Callstack Stuff
+                if ((int) ret_value >= 0) {
+                    record_callstack(ptdata, ptdata->syscall_filename);
+                }
                 break;
             } 
         case SYS_close:
@@ -7382,7 +7445,15 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
                 int call = ptdata->socketcall;
                 switch (call) {
                     case SYS_SOCKET:
+                        {
                         __sys_socket_stop(ptdata, (int) ret_value);
+                        // Callstack stuff
+                        string socket_name = "socket_";
+                        char socket_count[50];
+                        sprintf(socket_count, "%d", ptdata->socket_count);
+                        socket_name = socket_name + socket_count;
+                        record_callstack(ptdata, &socket_name[0]);
+                        }
                         break;
                     case SYS_CONNECT:
                         __sys_connect_stop(ptdata, (int) ret_value);
@@ -8601,8 +8672,111 @@ void instrument_inst(ADDRINT inst_ptr, ADDRINT next_addr, ADDRINT target, ADDRIN
 }
 #endif // LOGGING_ON
 
+// Callstack Stuff
+void mark_pop(ADDRINT ip)
+{
+    struct thread_data* ptdata = (struct thread_data*) PIN_GetThreadData(tls_key, PIN_ThreadId());
+    GRAB_GLOBAL_LOCK(ptdata);
+
+    ADDRINT static_ip = find_static_address(ip);
+    STACK_LOG_PRINT("Return seen at %#x.\n", static_ip);
+    call_stack_returned = 1; 
+    RELEASE_GLOBAL_LOCK(ptdata);
+}
+
+void pop_stack(ADDRINT ip)
+{
+    struct thread_data* ptdata = (struct thread_data*) PIN_GetThreadData(tls_key, PIN_ThreadId());
+    GRAB_GLOBAL_LOCK(ptdata);
+
+    ADDRINT static_ip = find_static_address(ip);
+
+    STACK_LOG_PRINT("instruction after ret = %#x.\n", static_ip);
+    call_stack_returned = 0;
+
+    std::stack<ADDRINT> tmp_addr_stack;
+    std::stack<string> tmp_string_stack;
+    tmp_addr_stack = ptdata->call_stack;
+    tmp_string_stack = ptdata->string_stack;
+
+    int matched = 0;
+    while(!tmp_addr_stack.empty()) {
+        if (static_ip == tmp_addr_stack.top()) {
+            matched = 1;
+            break;
+        }
+        tmp_addr_stack.pop();
+    }
+
+    if(matched){
+    while(!ptdata->call_stack.empty()){
+        if (ptdata->call_stack.top() == static_ip){
+            ptdata->call_stack.pop();
+            ptdata->string_stack.pop();
+            break;
+        }
+        else{
+            STACK_LOG_PRINT("popping more than 1.\n");
+            ptdata->call_stack.pop();
+            ptdata->string_stack.pop();
+        }
+    }
+    }
+
+    // Print stack
+    std::stack<ADDRINT> print_stack;
+    std::stack<string> print_string_stack;
+    print_stack = ptdata->call_stack;
+    print_string_stack = ptdata->string_stack;
+    STACK_LOG_PRINT("Stack = \n");
+    while(!print_stack.empty()){
+        STACK_LOG_PRINT("%#x\n", print_stack.top());
+        STACK_LOG_PRINT("%s\n", print_string_stack.top().c_str());
+        print_stack.pop();
+        print_string_stack.pop();
+    }
+    STACK_LOG_PRINT("========================\n");
+    
+    RELEASE_GLOBAL_LOCK(ptdata);
+}
+
+void push_stack(ADDRINT ip, ADDRINT ins_size)
+{
+    struct thread_data* ptdata = (struct thread_data*) PIN_GetThreadData(tls_key, PIN_ThreadId());
+    GRAB_GLOBAL_LOCK(ptdata);
+
+    ADDRINT static_ip;
+    PIN_LockClient();
+    IMG img = IMG_FindByAddress(ip);
+    string img_name;
+    if (IMG_Valid(img)) {
+         ADDRINT offset = IMG_LoadOffset(img);
+         img_name = IMG_Name(img);
+         static_ip = ip - offset;
+    }
+    else {
+        img_name = "Unknown_IMG";
+        static_ip = ip;
+    }
+   
+    STACK_LOG_PRINT("Call seen at %#x.\n", static_ip);
+    static_ip = static_ip + (int)ins_size;
+    STACK_LOG_PRINT("Pushing %#x.\n", static_ip);
+    STACK_LOG_PRINT("%s\n", RTN_FindNameByAddress(ip).c_str());
+    ptdata->call_stack.push(static_ip);
+    char buffer [50];
+    sprintf(buffer, "%#x", static_ip);
+    string push_string = img_name + ": " + RTN_FindNameByAddress(ip).c_str() + ": " + buffer;
+    ptdata->string_stack.push(push_string);
+
+    PIN_UnlockClient();
+    RELEASE_GLOBAL_LOCK(ptdata);
+}
+
+
 void track_file(INS ins, void *v) 
 {
+
     CALLBACK_PRINT(log_f, "CALLBACK_PRINT: track file starts\n");
     OPCODE opcode;
     UINT32 category;
@@ -9251,7 +9425,8 @@ void track_file(INS ins, void *v)
                 INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(instrument_call), IARG_INST_PTR, IARG_BRANCH_TARGET_ADDR, 
                         IARG_ADDRINT, INS_NextAddress(ins), IARG_END);
 #endif
-
+                // Callstack Stuff
+                INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) push_stack, IARG_INST_PTR, IARG_ADDRINT, INS_Size(ins), IARG_END);
                 break;
 
             case XED_ICLASS_RET_NEAR:
@@ -9260,6 +9435,8 @@ void track_file(INS ins, void *v)
                 INSTRUMENT_PRINT(log_f, "%#x: about to instrument ret instruction: %s\n", INS_Address(ins), INS_Mnemonic(ins).c_str());
                 INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(instrument_ret), IARG_INST_PTR, IARG_BRANCH_TARGET_ADDR, IARG_END);    
 #endif
+                // Callstack Stuff
+                INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) mark_pop, IARG_INST_PTR, IARG_END);
                 break;
             case XED_ICLASS_CWD:
             case XED_ICLASS_CDQ:
@@ -9387,6 +9564,12 @@ void track_file(INS ins, void *v)
         }
     } 
 
+    // Callstack Stuff
+    if(call_stack_returned==1) {
+        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) pop_stack, IARG_INST_PTR, IARG_END);
+        call_stack_returned = 0;
+    }
+
     if(INS_IsSyscall(ins)) {
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(instrument_syscall), IARG_SYSCALL_NUMBER,
                 IARG_SYSARG_VALUE, 0, 
@@ -9396,6 +9579,9 @@ void track_file(INS ins, void *v)
                 IARG_SYSARG_VALUE, 3, 
                 IARG_SYSARG_VALUE, 4, 
                 IARG_END);    
+        // Callstack Stuff
+        // Add set_address_one??
+
     } else {
 #ifdef HAVE_REPLAY
 #if 0
@@ -13412,7 +13598,9 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 
     LOG_PRINT ("Pid %d thread start with threadid %d\n", PIN_GetPid(), threadid);
 
-    ptdata = (struct thread_data *) malloc (sizeof(struct thread_data));
+    // CallStack Stuff TODO: new vs. malloc
+    //ptdata = (struct thread_data *) malloc (sizeof(struct thread_data));
+    ptdata = new struct thread_data;
     if (ptdata == NULL) {
         fprintf (stderr, "ptdata is NULL\n");
         assert (0);
@@ -13428,7 +13616,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
     ptdata->record_pid = get_record_pid();
 #ifdef HAVE_REPLAY
     get_record_group_id(dev_fd, &ptdata->rg_id);
-    fprintf(stderr, "record group is is %llu\n", ptdata->rg_id);
+    fprintf(stderr, "record group is %llu\n", ptdata->rg_id);
     ptdata->ignore_flag = 0; // set when syscall 31 is called
 #else
     ptdata->rg_id = get_record_pid();
@@ -13437,6 +13625,10 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
     gettimeofday(&(ptdata->syscall_start_time), NULL);
     gettimeofday(&(ptdata->syscall_end_time), NULL);
 #endif
+
+    // Callstack Stuff
+    ptdata->socket_count = 0;
+
     ptdata->app_syscall = 0;
     ptdata->brk_saved_loc = 0;
     SYSNUM = 0;
@@ -13559,7 +13751,13 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
             char** args;
             args = (char **) get_replay_args (dev_fd);
             LOG_PRINT ("replay args are %#lx\n", (unsigned long) args);
+            fprintf(stderr, "replay args are %#lx\n", (unsigned long) args);
+
+            
             while (1) {
+                if (!args) {
+                    break;
+                }
                 char* arg;
                 arg = *args;
                 // args ends with a NULL
@@ -13570,12 +13768,16 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
                 create_options_from_buffer (TOK_EXEC, global_syscall_cnt, arg, strlen(arg) + 1, acc, FILENO_NAME);
                 acc += strlen(arg) + 1;
                 args += 1;
+
             }
             // Retrieve the location of the env. var from the kernel
             args = (char **) get_env_vars (dev_fd);
             LOG_PRINT ("env. vars are %#lx\n", (unsigned long) args);
             while (1) {
-                char* arg;
+                if (!args) {
+                    break;
+                }
+                 char* arg;
                 arg = *args;
 
                 // args ends with a NULL
@@ -13652,6 +13854,28 @@ int setup_logs() {
     }
 #endif
 #endif
+
+    // Callstack Stuff
+    char stack_log_name[256];
+    if (stack_log_f) fclose(stack_log_f);
+    snprintf(stack_log_name, 256, "%s/stack_log_file.%d", group_directory, PIN_GetPid());
+    stack_log_f = fopen(stack_log_name, "a");
+    if(!stack_log_f) {
+        printf("ERROR: cannot open log file %s.\n", stack_log_name);
+        return -1;
+    }
+    fprintf(stderr, "Stack Log file name is %s.\n", stack_log_name);
+
+    char stack_file_name[256];
+    if (stack_f) fclose(stack_f);
+    snprintf(stack_file_name, 256, "%s/stack_file.%d", group_directory, PIN_GetPid());
+    stack_f = fopen(stack_file_name, "a");
+    if(!stack_f) {
+        printf("ERROR: cannot open stack file %s.\n", stack_file_name);
+        return -1;
+    }
+    fprintf(stderr, "Stack file name is %s.\n", stack_file_name);
+
 
     // now that files are created, change permissions
     rc = chmod(log_name, S_IRUSR | S_IWUSR | S_IROTH | S_IWOTH);
