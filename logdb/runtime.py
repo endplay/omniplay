@@ -88,6 +88,20 @@ class RunTimeInfo(object):
         process = subprocess.Popen(shlex.split(cmd), shell=False, stdout=pipe_output, stderr=pipe_output)
         return process
 
+    def attach_tool_extended(self, pid, tool_name, pipe_output, absolute_path=False, flags=''):
+        '''
+        Same as attach tool, but provides more options,
+          like specifying the flags or a tool that is not 
+          in the the tools location
+        '''
+        tool = tool_name
+        if not absolute_path:
+            tool = ''.join([self.tools_location, "/", tool])
+	    assert(os.path.exists(tool))
+        cmd = ''.join([self.pinbin, " -follow_execv -pid ", str(pid), " -t ", tool, " ", flags])
+        process = subprocess.Popen(shlex.split(cmd), shell=False, stdout=pipe_output)
+        return process
+
     def filemap(self, filename):
         filemap_output = "/tmp/filemap_output"
         cmd = ''.join([self.omniplay_location, "/test/filemap", " ", filename, " ", filemap_output])
