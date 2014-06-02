@@ -265,7 +265,6 @@ BOOL follow_child(CHILD_PROCESS child, void* data)
     fprintf(stderr, "returning from follow child\n");
     fprintf(stderr, "pin my pid is %d\n", PIN_GetPid());
     fprintf(stderr, "%d is application thread\n", PIN_IsApplicationThread());
-    getppid();
 
     return TRUE;
 }
