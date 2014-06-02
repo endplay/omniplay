@@ -929,6 +929,9 @@ int main (int argc, char* argv[])
 								}
 
 								size += sizeof(is_cached) + sizeof(writer) + sizeof(pipe_id);
+							} else {
+								/* Add sizeof is_cached... */
+								size += sizeof(u_int);
 							}
 
 							lseek(fd, orig_pos, SEEK_SET);
