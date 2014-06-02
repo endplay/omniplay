@@ -22,10 +22,12 @@ def main(args):
         print("Your OMNIPLAY_DIR environment variable is not setup")
         sys.exit(0)
     runtime_info = runtime.RunTimeInfo(omniplay_location=omniplay_path)
-	
+
+    '''
     if not os.path.exists(args.pin_tool):
         print("Pin tool %s does not exist, make sure this is the absolute path" %
                 args.pin_tool)
+    '''
     # assert os.path.exists(args.pin_tool)
     # assert os.path.exists(runtime_info.tools_location + "/" + args.pin_tool)
 
@@ -43,7 +45,7 @@ def main(args):
     start_time = time.time()
 
     attach_process = runtime_info.attach_tool_extended(replay_process.pid, args.pin_tool,
-                                                        tool_f, flags=flags, absolute_path=True)
+                                                        tool_f, flags=flags)
 
     attach_process.wait()
     replay_process.wait()
@@ -60,3 +62,4 @@ if __name__ == "__main__":
     parser.add_argument("-l", "--log", dest="stderr_log")
     args = parser.parse_args()
     main(args)
+
