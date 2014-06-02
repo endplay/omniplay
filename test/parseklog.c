@@ -1255,6 +1255,15 @@ int main (int argc, char* argv[])
 				}
 				printf ("\t%d bytes of return parameters included\n", size);
 				//printf ("\t%d syscall number in retparams\n", *(short *) buf);
+
+				if (psr.sysnum == 5) {
+					if ((psr.flags & SR_HAS_RETPARAMS) != 0) {
+						struct open_retvals *oret = (struct open_retvals *)buf;
+
+						/* dev, ino, mtime */
+						printf("\tOpen dev is %lX, ino %lX\n", oret->dev, oret->ino);
+					}
+				}
 				
 				if (psr.sysnum == 11) {
 					if ((psr.flags & SR_HAS_RETPARAMS) != 0) {

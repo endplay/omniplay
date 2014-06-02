@@ -454,7 +454,7 @@ void readv_stop(int rc)
             if (si->is_x) {
                 for (i = 0; i < rvi->count; i++) {
                     struct iovec* vi = (rvi->iov + i);
-                    fprintf(stream_fp, "%d READV %ld(%d) count %d size: %d to X\n", tdata->record_pid, global_syscall_cnt, SYSCALL_CNT, i, vi->iov_len);
+                    fprintf(stream_fp, "%d READV %ld(%ld) count %d size: %d to X\n", tdata->record_pid, global_syscall_cnt, SYSCALL_CNT, i, vi->iov_len);
                     fflush(stream_fp);
                 }
             }
@@ -603,7 +603,7 @@ void recvmsg_stop(int rc)
             if (si->is_x) {
                 for (i = 0; i < rmi->msg->msg_iovlen; i++) {
                     struct iovec* vi = (rmi->msg->msg_iov + i);
-                    fprintf(stream_fp, "%d RECVMSG %ld(%ld) count %d size: %d to X\n", tdata->record_pid, global_syscall_cnt, i, vi->iov_len);
+                    fprintf(stream_fp, "%d RECVMSG %ld(%ld) count %d size: %d to X\n", tdata->record_pid, global_syscall_cnt, SYSCALL_CNT, i, vi->iov_len);
                     fflush(stream_fp);
                 }
             }
