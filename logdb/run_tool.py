@@ -10,28 +10,56 @@ import time
 
 import runtime
 
-OMNIPLAY = "/home/mcchow/omniplay"
-pthread_lib = "/home/mcchow/omniplay/eglibc-2.15/prefix/lib"
-PIN = "/home/mcchow/pin-2.13"
-
 def main(args):
     rec_dir = args.replay_directory
+    flags = ""
+    if args.flags:
+        flags = args.flags
+        print(flags)
 
-    log_f = open("/tmp/stderr_log", "w")
+    omniplay_path = os.environ['OMNIPLAY_DIR']
+    if not 'OMNIPLAY_DIR' in os.environ:
+        print("Your OMNIPLAY_DIR environment variable is not setup")
+        sys.exit(0)
+    runtime_info = runtime.RunTimeInfo(omniplay_location=omniplay_path)
+
+    '''
+    if not os.path.exists(args.pin_tool):
+        print("Pin tool %s does not exist, make sure this is the absolute path" %
+                args.pin_tool)
+    '''
+    # assert os.path.exists(args.pin_tool)
+    # assert os.path.exists(runtime_info.tools_location + "/" + args.pin_tool)
+
+    print("Running replay: %s with tool %s" % (args.replay_directory, args.pin_tool))
+
+    stderr_log = "/tmp/stderr_log"
+    if args.stderr_log:
+        stderr_log = args.stderr_log
+    log_f = open(stderr_log, "w")
     tool_f = open("/tmp/tool_log", "w")
 
-    runtime_info = runtime.RunTimeInfo(omniplay_location=OMNIPLAY)
     replay_process = runtime_info.replay(rec_dir, log_f, pin=True)
 
     time.sleep(1)
+    start_time = time.time()
 
-    attach_process = runtime_info.attach_tool(replay_process.pid, "linkage_copy.so", "/tmp/tool_output", tool_f)
+    attach_process = runtime_info.attach_tool_extended(replay_process.pid, args.pin_tool,
+                                                        tool_f, flags=flags)
 
     attach_process.wait()
     replay_process.wait()
+    end_time = time.time()
+    
+    print("done, took %f secs" % (end_time - start_time))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("Run replay with tool script")
     parser.add_argument("replay_directory", help="Directory of the replay to start the query on")
+    parser.add_argument("pin_tool", help="Pin tool to run")
+    parser.add_argument("-f", "--flags", dest="flags")
+    parser.add_argument("-x", "--extended", dest="extended", action="store_true")
+    parser.add_argument("-l", "--log", dest="stderr_log")
     args = parser.parse_args()
     main(args)
+
