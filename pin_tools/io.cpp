@@ -603,7 +603,7 @@ void recvmsg_stop(int rc)
             if (si->is_x) {
                 for (i = 0; i < rmi->msg->msg_iovlen; i++) {
                     struct iovec* vi = (rmi->msg->msg_iov + i);
-                    fprintf(stream_fp, "%d RECVMSG %ld(%ld) count %d size: %d to X\n", tdata->record_pid, global_syscall_cnt, i, vi->iov_len);
+                    fprintf(stream_fp, "%d RECVMSG %ld(%ld) count %d size: %d to X\n", tdata->record_pid, global_syscall_cnt, SYSCALL_CNT, i, vi->iov_len);
                     fflush(stream_fp);
                 }
             }
@@ -734,7 +734,7 @@ void write_stop(int rc) {
                 char channel_name[256];
                 if (si->domain == AF_UNIX) {
                     // XXX Do we need to use the magic number here instead? There are weird path names with \0 in it
-                    snprintf(channel_name, 256, "%s", si->accept_info->path);
+                    snprintf(channel_name, 256, "%s", si->ci->path);
                 } else if (si->domain == AF_INET) {
                     int port;
                     char straddr[INET_ADDRSTRLEN];
@@ -1136,6 +1136,9 @@ void connect_stop(int rc)
             char straddr[INET6_ADDRSTRLEN];
             inet_ntop(AF_INET6, &ci->sin_addr6, straddr, INET6_ADDRSTRLEN);
             fprintf(stream_fp, "CONNECT %ld AF_INET6 addr: %s port %d\n", global_syscall_cnt, straddr, ci->port);
+            fflush(stream_fp);
+        } else {
+            fprintf(stream_fp, "CONNECT %ld domain: %d\n", global_syscall_cnt, si->domain);
             fflush(stream_fp);
         }
 #endif
