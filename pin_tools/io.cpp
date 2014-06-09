@@ -354,6 +354,10 @@ void read_start(int fd, void* buf, int read_size) {
     struct read_info* ri;
     ri = (struct read_info *) malloc(sizeof(struct read_info));
 
+		if (fd == 0) {
+			fprintf(stderr, "Have stdin\n");
+		}
+
     ri->fd = fd;
     ri->buf = buf;
     ri->read_size = read_size;
@@ -382,6 +386,9 @@ void read_stop(int rc) {
         int rcc;
         int has_fd = 0;
         struct read_info* ri = (struct read_info *) tdata->syscall_info;
+				if (ri->fd == 0) {
+					fprintf(stderr, "Have stdin\n");
+				}
         assert (ri);
         if (monitor_has_fd(open_fds, ri->fd)) {
             struct open_info* oi = (struct open_info *) monitor_get_fd_data(open_fds, ri->fd);
@@ -454,7 +461,7 @@ void readv_stop(int rc)
             if (si->is_x) {
                 for (i = 0; i < rvi->count; i++) {
                     struct iovec* vi = (rvi->iov + i);
-                    fprintf(stream_fp, "%d READV %ld(%d) count %d size: %d to X\n", tdata->record_pid, global_syscall_cnt, SYSCALL_CNT, i, vi->iov_len);
+                    fprintf(stream_fp, "%d READV %ld(%ld) count %d size: %d to X\n", tdata->record_pid, global_syscall_cnt, SYSCALL_CNT, i, vi->iov_len);
                     fflush(stream_fp);
                 }
             }

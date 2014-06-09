@@ -16192,8 +16192,10 @@ int do_is_record(struct ctl_table *table, int write, void __user *buffer,
 	}
 	*/
 
+	/*
 	printk("%s %d: Returning proc entry with lenp %u, ppos %lld\n", __func__,
 			__LINE__, *lenp, *ppos);
+			*/
 	return 0;
 }
 
