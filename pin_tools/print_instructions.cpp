@@ -93,6 +93,7 @@ void inst_syscall_end(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD std, V
 	fprintf (stderr, "inst_syscall_end: NULL tdata\n");
     }	
 
+    increment_syscall_cnt(tdata, tdata->sysnum);
     // reset the syscall number after returning from system call
     tdata->sysnum = 0;
 }
@@ -155,7 +156,6 @@ void syscall_after (ADDRINT ip)
     } else {
 	fprintf (stderr, "syscall_after: NULL tdata\n");
     }
-    increment_syscall_cnt(tdata, tdata->sysnum);
 }
 
 void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
