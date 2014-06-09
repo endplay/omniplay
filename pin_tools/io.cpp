@@ -354,6 +354,10 @@ void read_start(int fd, void* buf, int read_size) {
     struct read_info* ri;
     ri = (struct read_info *) malloc(sizeof(struct read_info));
 
+		if (fd == 0) {
+			fprintf(stderr, "Have stdin\n");
+		}
+
     ri->fd = fd;
     ri->buf = buf;
     ri->read_size = read_size;
@@ -382,6 +386,9 @@ void read_stop(int rc) {
         int rcc;
         int has_fd = 0;
         struct read_info* ri = (struct read_info *) tdata->syscall_info;
+				if (ri->fd == 0) {
+					fprintf(stderr, "Have stdin\n");
+				}
         assert (ri);
         if (monitor_has_fd(open_fds, ri->fd)) {
             struct open_info* oi = (struct open_info *) monitor_get_fd_data(open_fds, ri->fd);
@@ -734,7 +741,7 @@ void write_stop(int rc) {
                 char channel_name[256];
                 if (si->domain == AF_UNIX) {
                     // XXX Do we need to use the magic number here instead? There are weird path names with \0 in it
-                    snprintf(channel_name, 256, "%s", si->accept_info->path);
+                    snprintf(channel_name, 256, "%s", si->ci->path);
                 } else if (si->domain == AF_INET) {
                     int port;
                     char straddr[INET_ADDRSTRLEN];
