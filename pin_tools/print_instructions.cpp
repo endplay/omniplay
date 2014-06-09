@@ -15,7 +15,7 @@ long print_limit = 10;
 KNOB<string> KnobPrintLimit(KNOB_MODE_WRITEONCE, "pintool", "p", "10000000", "syscall print limit");
 long print_stop = 10;
 KNOB<string> KnobPrintStop(KNOB_MODE_WRITEONCE, "pintool", "s", "10000000", "syscall print stop");
-// #define DEBUG_FUNCTIONS
+#define DEBUG_FUNCTIONS
 #ifdef DEBUG_FUNCTIONS
 long function_print_limit = 10;
 long function_print_stop = 10;
@@ -96,6 +96,7 @@ void inst_syscall_end(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD std, V
     increment_syscall_cnt(tdata, tdata->sysnum);
     // reset the syscall number after returning from system call
     tdata->sysnum = 0;
+    increment_syscall_cnt(tdata, tdata->sysnum);
 }
 
 // called before every application system call
@@ -104,7 +105,7 @@ void set_address_one(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT tls_ptr, AD
 #else
 void set_address_one(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscallarg0, ADDRINT syscallarg1, ADDRINT syscallarg2)
 #endif
-{   
+{
 #ifdef USE_TLS_SCRATCH
     struct thread_data* tdata = (struct thread_data *) tls_ptr;
 #else
@@ -316,14 +317,14 @@ void thread_fini (THREADID threadid, const CONTEXT* ctxt, INT32 code, VOID* v)
 #ifdef DEBUG_FUNCTIONS
 void before_function_call(ADDRINT name, ADDRINT rtn_addr)
 {
-    if (global_syscall_cnt >= function_print_limit && global_syscall_cnt < print_stop) {
+    if (global_syscall_cnt >= function_print_limit && global_syscall_cnt < function_print_stop) {
         fprintf(stderr, "Before call to %s (%#x)\n", (char *) name, rtn_addr);
     }
 }
 
 void after_function_call(ADDRINT name, ADDRINT rtn_addr)
 {
-    if (global_syscall_cnt >= function_print_limit && global_syscall_cnt < print_stop) {
+    if (global_syscall_cnt >= function_print_limit && global_syscall_cnt < function_print_stop) {
         fprintf(stderr, "After call to %s (%#x)\n", (char *) name, rtn_addr);
     }
 }
@@ -401,6 +402,8 @@ int main(int argc, char** argv)
     print_stop = atoi(KnobPrintStop.Value().c_str());
     function_print_limit = atoi(KnobFunctionPrintLimit.Value().c_str());
     function_print_stop = atoi(KnobFunctionPrintStop.Value().c_str());
+		fprintf(stderr, "limit: %ld, stop %ld\n", function_print_limit,
+				function_print_stop);
 #endif
 
     PIN_AddThreadStartFunction(thread_start, 0);

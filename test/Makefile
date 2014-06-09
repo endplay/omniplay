@@ -1,49 +1,50 @@
+CC := gcc
+
 CFLAGS := -Wall -Werror -g 
-LDFLAGS := -Wall -Werror -g 
+
+#LDLIBS := libutil.a
 
 KERN_CONFIG := replay_headers/include/linux/replay_configs.h
 
-TARGETS=libutil.a parseklog parseulog parsemlog launcher resume parseckpt getstats filemap replay_pause
- # parseelog
+DEPS_DIR := .deps
 
+TARGETS=libutil.a parseklog parseulog parsemlog launcher resume parseckpt \
+	getstats filemap replay_pause parseklog_new 
+
+.PHONY: all
 all: $(TARGETS)
 
-parseklog: parseklog.c $(KERN_COFNIG)
-	gcc parseklog.c -o parseklog -Wall -Werror -g
+# Build dependencies + any extra flags
+launcher: libutil.a
+launcher: CFLAGS += --static -I../../eglibc-2.15/prefix/include -L../../eglibc-2.15/prefix/lib 
 
-parseulog: parseulog.c
-	gcc parseulog.c -o parseulog -Wall -Werror -g
+resume: libutil.a
+resume: CFLAGS += --static
 
-parsemlog: parsemlog.c
-	gcc parsemlog.c -o parsemlog -Wall -Werror -g
+getstats: libutil.a
+getstats: CFLAGS += --static
 
-parseelog: parseelog.c
-	gcc parseelog.c -o parseelog -Wall -Werror -g
+filemap: libutil.a 
+filemap: CFLAGS += --static
 
-parseckpt: parseckpt.c
-	gcc parseckpt.c -o parseckpt -Wall -Werror -g
+replay_pause: CFLAGS += --static
 
-launcher: launcher.c libutil.a
-	gcc launcher.c -o launcher libutil.a -Wall -Werror --static -g -I../../eglibc-2.15/prefix/include -L../../eglibc-2.15/prefix/lib
+find_record_time: CFLAGS += --static
 
-resume: resume.o libutil.a
-	gcc resume.c -o resume libutil.a -Wall -Werror --static -g
+parseklog: $(KERNEL_COFNIG)
 
-getstats: getstats.c libutil.a
-	gcc getstats.c -o getstats libutil.a -Wall -Werror --static -g
+parseklog_new: parseklib.o
 
-filemap: filemap.c libutil.a
-	gcc filemap.c -o filemap libutil.a -Wall -Werror --static -g
-
-replay_pause: replay_pause.c
-	gcc replay_pause.c -o replay_pause -Wall -Werror --static -g
-
-find_record_time: find_record_time.c
-	gcc find_record_time.c -o find_record_time -Wall -Werror --static -g
+rewriteklog: parseklib.o
 
 libutil.a: util.o
-	ar rv libutil.a util.o
-	ranlib libutil.a
+	ar rv $@ $<
+	ranlib $@
 
+parseklib.o: $(KENREL_CONFIG)
+
+.PHONY: clean
 clean:
 	rm -f *.a *.o $(TARGETS)
+
+
