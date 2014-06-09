@@ -580,6 +580,7 @@ int main (int argc, char* argv[])
 			
 
 			if ((psr.flags & SR_HAS_RETPARAMS) != 0) {
+				long loc;
 				switch (psr.sysnum) {
 				case 3: {
 					rc = read (fd, &is_cache_read, sizeof(u_int));
@@ -1201,6 +1202,7 @@ int main (int argc, char* argv[])
 						  printf ("write_log_data: unrecognized syscall %d\n", psr.sysnum);
 				}
 
+				loc = lseek(fd, 0, SEEK_CUR);
 				rc = read (fd, buf, size);
 				if (rc != size) {
 					printf ("read of retparams returns %d, errno = %d, size is %d\n", rc, errno, size);
@@ -1253,8 +1255,18 @@ int main (int argc, char* argv[])
 				if (stats) {
 					bytes[psr.sysnum] += size;
 				}
-				printf ("\t%d bytes of return parameters included\n", size);
+				printf ("\t%d bytes of return parameters included (from loc %ld)\n",
+						size, loc);
 				//printf ("\t%d syscall number in retparams\n", *(short *) buf);
+
+				if (psr.sysnum == 5) {
+					if ((psr.flags & SR_HAS_RETPARAMS) != 0) {
+						struct open_retvals *oret = (struct open_retvals *)buf;
+
+						/* dev, ino, mtime */
+						printf("\tOpen dev is %lX, ino %lX\n", oret->dev, oret->ino);
+					}
+				}
 				
 				if (psr.sysnum == 11) {
 					if ((psr.flags & SR_HAS_RETPARAMS) != 0) {
@@ -1286,6 +1298,7 @@ int main (int argc, char* argv[])
 					}
 					printf ("\n");
 				}
+
 				if (psr.sysnum == 195 || psr.sysnum == 196 || psr.sysnum == 197) {
 					struct stat64* pst = (struct stat64 *) buf;
 					printf ("stat64 size %Ld blksize %lx blocks %Ld ino %Ld\n", 
