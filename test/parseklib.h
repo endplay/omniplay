@@ -358,7 +358,7 @@ int parseklog_write_chunk(struct klogfile *log, int destfd);
 void parseklog_set_signalprint(struct klogfile *log,
 		void (*printfcn)(FILE *out, struct klog_result *));
 void parseklog_set_default_printfcn(struct klogfile *log,
-		void (*printfcn)(FILE *out, struct klog_result *), int sysnum);
+		void (*printfcn)(FILE *out, struct klog_result *));
 void parseklog_set_printfcn(struct klogfile *log,
 		void (*printfcn)(FILE *out, struct klog_result *), int sysnum);
 

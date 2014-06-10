@@ -8,6 +8,125 @@
 
 #include <assert.h>
 
+static void empty_printfcn(FILE *out, struct klog_result *res) {
+}
+
+static void print_write_pipe(FILE *out, struct klog_result *res) {
+	char *retparams = res->retparams;
+
+	if (retparams) {
+		fprintf(out, "%d, %ld, %lu, %lld\n", *((int *)retparams), res->retval,
+				res->start_clock, res->index);
+	}
+}
+
+static void print_socketcall_pipe(FILE *out, struct klog_result *res) {
+	char *retparams = res->retparams;
+
+	if (retparams) {
+		u_int shared;
+		int call = *((int *)retparams);
+		retparams += sizeof(int);
+
+		switch (call) {
+			case SYS_SEND:
+			case SYS_SENDTO:
+				shared = *((u_int *)retparams);
+				if (shared & IS_PIPE) {
+					int pipe_id;
+
+					pipe_id = *((int *)retparams);
+					retparams += sizeof(int);
+
+					fprintf(out, "%d, %ld, %lu, %lld\n", pipe_id, res->retval,
+							res->start_clock, res->index);
+					break;
+				}
+		}
+	}
+}
+
+static void do_print_graph(FILE *out, struct klog_result *res, char *retparams,
+		u_int is_cached) {
+	int i;
+
+	if (is_cached & CACHE_MASK) {
+		struct replayfs_filemap_entry *entry;
+		entry = (struct replayfs_filemap_entry *)retparams;
+
+		for (i = 0; i < entry->num_elms; i++) {
+			fprintf(out, "%lld %lld %d {%lld, %d, %lld, %d, %d}\n",
+					res->index, entry->elms[i].offset - entry->elms[0].offset, entry->elms[i].size,
+					(loff_t)entry->elms[i].bval.id.unique_id, entry->elms[i].bval.id.pid,
+					(loff_t)entry->elms[i].bval.id.sysnum,
+					entry->elms[i].read_offset, entry->elms[i].size);
+		}
+	} else if (is_cached & IS_PIPE_WITH_DATA) {
+		struct replayfs_filemap_entry *entry;
+		entry = (struct replayfs_filemap_entry *)retparams;
+
+
+		for (i = 0; i < entry->num_elms; i++) {
+			fprintf(out, "pipe: %lld %d %d {%lld, %d, %lld, %d, %ld}\n",
+					res->index, entry->elms[i].bval.buff_offs, entry->elms[i].size,
+					(loff_t)entry->elms[i].bval.id.unique_id, entry->elms[i].bval.id.pid,
+					(loff_t)entry->elms[i].bval.id.sysnum,
+					entry->elms[i].read_offset, res->retval);
+		}
+	} else if (is_cached & IS_PIPE) {
+		uint64_t writer;
+		int pipe_id;
+		writer = *((uint64_t *)retparams);
+		retparams += sizeof(uint64_t);
+		pipe_id = *((int *)retparams);
+		fprintf(out, "pipe: %lld, %d, %lld {%ld} {%lu}\n", writer, pipe_id,
+				res->index, res->retval, res->start_clock);
+	}
+}
+
+static void print_socketcall_graph(FILE *out, struct klog_result *res) {
+	char *retparams = res->retparams;
+
+	if (retparams) {
+		int call = *((int *)retparams);
+		u_int is_cached;
+		retparams += sizeof(int);
+
+		switch (call) {
+			case SYS_RECV:
+				retparams += sizeof(struct recvfrom_retvals) - sizeof(int) + res->retval;
+				is_cached = *((u_int *)retparams);
+				is_cached += sizeof(u_int);
+				do_print_graph(out, res, retparams, is_cached);
+				break;
+			case SYS_RECVFROM:
+				retparams += sizeof(struct recvfrom_retvals) - sizeof(int) + res->retval-1; 
+				is_cached = *((u_int *)retparams);
+				is_cached += sizeof(u_int);
+				do_print_graph(out, res, retparams, is_cached);
+				break;
+		}
+	}
+}
+
+static void print_read_graph(FILE *out, struct klog_result *res) {
+	char *retparams = res->retparams;
+
+	if (retparams) {
+		u_int is_cached;
+		is_cached = *((u_int *)retparams);
+		retparams += sizeof(u_int);
+
+		if (is_cached) {
+			/* Fast forward past offset */
+			if (is_cached & CACHE_MASK) {
+				retparams += sizeof (long long int);
+			}
+			do_print_graph(out, res, retparams, is_cached);
+		}
+	}
+}
+
 static void print_socketcall(FILE *out, struct klog_result *res) {
 	struct syscall_result *psr = &res->psr;
 
@@ -204,35 +323,88 @@ static void print_execve(FILE *out, struct klog_result *res) {
 	}
 }
 
+enum printtype {
+	BASE = 0,
+	PIPE,
+	GRAPH
+};
+
+void print_usage(FILE *out, char *progname) {
+	fprintf(out, "Usage: %s [-p] [-g] [-h] logfile\n", progname);
+}
+
+void print_help(char *progname) {
+	print_usage(stdout, progname);
+	printf(" -h       Prints this dialog\n");
+	printf(" -g       Only prints file graph information\n");
+	printf(" -p       Only prints pipe write information\n");
+}
+
 int main(int argc, char **argv) {
 	struct klogfile *log;
 	struct klog_result *res;
 
-	if (argc != 2) {
-		fprintf(stderr, "Usage: %s <logfile>\n", argv[0]);
+	enum printtype type = BASE;
+
+	int opt;
+
+	while ((opt = getopt(argc, argv, "gp")) != -1) {
+		switch (opt) {
+			case 'g':
+				type = GRAPH;
+				break;
+			case 'p':
+				type = PIPE;
+				break;
+			case 'h':
+				print_help(argv[0]);
+				exit(EXIT_SUCCESS);
+			default:
+				print_usage(stderr, argv[0]);
+				exit(EXIT_FAILURE);
+		}
+	}
+
+	if (argc - optind != 1) {
+		print_usage(stderr, argv[0]);
 		exit(EXIT_FAILURE);
 	}
 
-	log = parseklog_open(argv[1]);
+	log = parseklog_open(argv[optind]);
 	if (!log) {
 		fprintf(stderr, "%s doesn't appear to be a valid log file!\n", argv[0]);
 	}
 
-	parseklog_set_printfcn(log, print_read, 3);
-	parseklog_set_printfcn(log, print_write, 4);
-	parseklog_set_printfcn(log, print_waitpid, 7);
-	parseklog_set_printfcn(log, print_execve, 11);
-	parseklog_set_printfcn(log, print_pipe, 42);
-	parseklog_set_printfcn(log, print_gettimeofday, 78);
-	parseklog_set_printfcn(log, print_socketcall, 102);
-	parseklog_set_printfcn(log, print_write, 146);
-	parseklog_set_printfcn(log, print_rt_sigaction, 174);
-	parseklog_set_printfcn(log, print_getcwd, 182);
-	parseklog_set_printfcn(log, print_mmap, 192);
-	parseklog_set_printfcn(log, print_stat, 195);
-	parseklog_set_printfcn(log, print_stat, 196);
-	parseklog_set_printfcn(log, print_stat, 197);
-	parseklog_set_printfcn(log, print_clock_gettime, 265);
+	if (type == BASE) {
+		parseklog_set_printfcn(log, print_read, 3);
+		parseklog_set_printfcn(log, print_write, 4);
+		parseklog_set_printfcn(log, print_waitpid, 7);
+		parseklog_set_printfcn(log, print_execve, 11);
+		parseklog_set_printfcn(log, print_pipe, 42);
+		parseklog_set_printfcn(log, print_gettimeofday, 78);
+		parseklog_set_printfcn(log, print_socketcall, 102);
+		parseklog_set_printfcn(log, print_write, 146);
+		parseklog_set_printfcn(log, print_rt_sigaction, 174);
+		parseklog_set_printfcn(log, print_getcwd, 182);
+		parseklog_set_printfcn(log, print_mmap, 192);
+		parseklog_set_printfcn(log, print_stat, 195);
+		parseklog_set_printfcn(log, print_stat, 196);
+		parseklog_set_printfcn(log, print_stat, 197);
+		parseklog_set_printfcn(log, print_clock_gettime, 265);
+	} else if (type == GRAPH) {
+		parseklog_set_default_printfcn(log, empty_printfcn);
+		parseklog_set_signalprint(log, empty_printfcn);
+
+		parseklog_set_printfcn(log, print_read_graph, 3);
+		parseklog_set_printfcn(log, print_socketcall_graph, 102);
+	} else if (type == PIPE) {
+		parseklog_set_default_printfcn(log, empty_printfcn);
+		parseklog_set_signalprint(log, empty_printfcn);
+
+		parseklog_set_printfcn(log, print_write_pipe, 4);
+		parseklog_set_printfcn(log, print_write_pipe, 146);
+		parseklog_set_printfcn(log, print_socketcall_pipe, 102);
+	}
 
 	while ((res = parseklog_get_next_psr(log)) != NULL) {
 		klog_print(stdout, res);

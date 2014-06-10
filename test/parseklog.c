@@ -302,6 +302,21 @@ inline void copy_to_convert_buffer (char* convert_buffer, int *offset, void* src
 	*offset += size;
 }
 
+static int graph_only = 0;
+static int pipe_write_only = 0;
+	/* FIXME: Hacky... really hacky... I'll fix this later */
+#define printf(...) if (!graph_only && !pipe_write_only) printf(__VA_ARGS__);
+#define always_print(...) \
+	do { \
+		int graph_only_tmp = graph_only; \
+		int pipe_write_only_tmp = pipe_write_only; \
+		pipe_write_only = 0; graph_only = 0; \
+		\
+		printf(__VA_ARGS__); \
+		\
+		graph_only = graph_only_tmp; \
+		pipe_write_only = pipe_write_only_tmp;\
+	} while (0);
 static u_long varsize (int fd, int stats, struct syscall_result* psr, char* convert_buffer, int *offset)
 {
 	u_long val;
@@ -331,8 +346,6 @@ int main (int argc, char* argv[])
 	int count, i, ndx, rcv_total = 0;
 	int stats = 0;
 	int index = 0;
-	int graph_only = 0;
-	int pipe_write_only = 0;
 	u_long data_size, start_clock, stop_clock, clock, expected_clock = 0;
 	long retval;
 	int extra_bytes = 0;
@@ -345,19 +358,6 @@ int main (int argc, char* argv[])
 	struct timeval tv2;
 #endif
 
-	/* FIXME: Hacky... really hacky... I'll fix this later */
-#define printf(...) if (!graph_only && !pipe_write_only) printf(__VA_ARGS__);
-#define always_print(...) \
-	do { \
-		int graph_only_tmp = graph_only; \
-		int pipe_write_only_tmp = pipe_write_only; \
-		pipe_write_only = 0; graph_only = 0; \
-		\
-		printf(__VA_ARGS__); \
-		\
-		graph_only = graph_only_tmp; \
-		pipe_write_only = pipe_write_only_tmp;\
-	} while (0);
 
 	// hack to look at ipc retvals
 	int ipc_call = 0;

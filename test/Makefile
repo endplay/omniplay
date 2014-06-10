@@ -34,6 +34,8 @@ find_record_time: CFLAGS += --static
 parseklog: $(KERNEL_COFNIG)
 
 parseklog_new: parseklib.o
+parseklog_pipe: parseklib.o
+parseklog_graph: parseklib.o
 
 rewriteklog: parseklib.o
 
