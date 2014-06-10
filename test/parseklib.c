@@ -535,7 +535,7 @@ void parseklog_set_signalprint(struct klogfile *log,
 }
 
 void parseklog_set_default_printfcn(struct klogfile *log,
-		void (*printfcn)(FILE *, struct klog_result *), int sysnum) {
+		void (*printfcn)(FILE *, struct klog_result *)) {
 	log->default_printfcn = printfcn;
 }
 
