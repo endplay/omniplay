@@ -1,6 +1,7 @@
 CC := gcc
 
 CFLAGS := -Wall -Werror -g 
+LDFLAGS := -Wall -Werror -g 
 
 #LDLIBS := libutil.a
 
@@ -8,7 +9,7 @@ KERN_CONFIG := replay_headers/include/linux/replay_configs.h
 
 DEPS_DIR := .deps
 
-TARGETS=libutil.a parseklog parseulog parsemlog launcher resume parseckpt \
+TARGETS=parseklog parseulog parsemlog launcher resume parseckpt \
 	getstats filemap replay_pause parseklog_old 
 
 # For automatic .h dependency tracking... may not work perfectly for launcher as
