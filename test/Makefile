@@ -9,7 +9,12 @@ KERN_CONFIG := replay_headers/include/linux/replay_configs.h
 DEPS_DIR := .deps
 
 TARGETS=libutil.a parseklog parseulog parsemlog launcher resume parseckpt \
-	getstats filemap replay_pause parseklog_new 
+	getstats filemap replay_pause parseklog_old 
+
+# For automatic .h dependency tracking... may not work perfectly for launcher as
+#    the include path changes for it
+CFILES=$(wildcard *.c)
+DEPS=$(patsubst %.c, .deps/%.d, $(CFILES))
 
 .PHONY: all
 all: $(TARGETS)
@@ -31,9 +36,7 @@ replay_pause: CFLAGS += --static
 
 find_record_time: CFLAGS += --static
 
-parseklog: $(KERNEL_COFNIG)
-
-parseklog_new: parseklib.o
+parseklog: parseklib.o
 
 rewriteklog: parseklib.o
 
@@ -47,4 +50,16 @@ parseklib.o: $(KENREL_CONFIG)
 clean:
 	rm -f *.a *.o $(TARGETS)
 
+.deps/%.d: %.c .dep_dirs_made
+	@$(CC) $(CFLAGS) -M -o $@ $<
+
+.dep_dirs_made:
+	@touch .dep_dirs_made
+	@mkdir .deps
+
+-include $(DEPS)
+
+.PHONY: nuke
+nuke: clean
+	rm -rf .deps .dep_dirs_made
 
