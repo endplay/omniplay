@@ -369,3 +369,4 @@ static inline void parseklog_default_print(FILE *out, struct klog_result *res) {
 int klog_print(FILE *out, struct klog_result *result);
 
 #endif
+
