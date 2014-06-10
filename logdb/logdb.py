@@ -1,5 +1,4 @@
 import os
-import sys
 import sqlite3
 import subprocess
 import collections
@@ -8,36 +7,13 @@ import re
 # our modules
 import opinfo
 
-class GraphEdge(object):
-    def __init__(self, read_log, read_pid, read_sysnum, read_offset, read_size,
-		    write_log, write_pid, write_sysnum, write_offset, write_size, 
-		    exhausts_reader=0, exhausts_writer=0):
-        self.read_log = read_log
-        self.read_pid = read_pid
-        self.read_sysnum = read_sysnum
-        self.read_offset = read_offset
-        self.read_size = read_size
-        self.write_log = write_log
-        self.write_pid = write_pid
-        self.write_sysnum = write_sysnum
-        self.write_offset = write_offset
-        self.write_size = write_size
-        self.exhausts_reader = exhausts_reader
-        self.exhausts_writer = exhausts_writer
+GraphEdge = collections.namedtuple('GraphEdge', 
+        ['read_log', 'read_pid', 'read_sysnum', 'read_offset', 'read_size', 'write_log',
+        'write_pid', 'write_sysnum', 'write_offset', 'write_size', 'exhausts_reader', 'exhausts_writer'])
 
-    def __str__(self):
-        return str(self.__dict__)
+ParseInfo = collections.namedtuple('ParseInfo',
+        ['ctime', 'program_name', 'logid', 'record_pid', 'parent_groupid', 'program_args', 'replay_graph'])
    
-class ParseInfo(object):
-    def __init__(self, ctime=0, program_name="", log_id=0, record_pid=0, parent_groupid=0, program_args="", replay_graph=None):
-        self.ctime = ctime
-        self.program_name = program_name
-        self.logid = log_id
-        self.record_pid = record_pid
-        self.parent_groupid = parent_groupid
-        self.program_args = program_args
-        self.replay_graph = replay_graph
-
 class OrderedPipe(object):
     def __init__(self, log_id, pid, sysnum, size, pipe_offset, writer_id=0):
         self.log_id = log_id
@@ -58,7 +34,8 @@ class OrderedPipe(object):
     def get_graph_edge(self, writer_pipe):
         # Figure out which bytes this writer supplys by matching the pipe_size
         # Make sure this writer satisfies something from this reader
-        if writer_pipe.pipe_offset > self.pipe_offset + self.size or writer_pipe.pipe_offset + writer_pipe.size < self.pipe_offset:
+        if (writer_pipe.pipe_offset > self.pipe_offset + self.size or
+                writer_pipe.pipe_offset + writer_pipe.size < self.pipe_offset):
             return None
 
         # Now, find the overlapping range
@@ -77,7 +54,8 @@ class OrderedPipe(object):
         write_offset = max(min_offset - writer_pipe.pipe_offset, 0)
 
         # Now we create a graph edge from self to writer with offset min_offset and size size
-        edge = GraphEdge(self.log_id, self.pid, self.sysnum, read_offset, size, writer_pipe.log_id, writer_pipe.pid, writer_pipe.sysnum, write_offset, size, exhausts_reader, exhausts_writer)
+        edge = GraphEdge(self.log_id, self.pid, self.sysnum, read_offset, size, writer_pipe.log_id, writer_pipe.pid, 
+                writer_pipe.sysnum, write_offset, size, exhausts_reader, exhausts_writer)
         return edge
 
 class UnorderedPipe(object):
@@ -97,12 +75,12 @@ class UnorderedPipe(object):
             ", size=", str(self.size),
             ", start_clock=", str(self.start_clock), ")"])
 
-    def get_offset(self, prevPipe):
-        assert(prevPipe is None or self.log_id == prevPipe.log_id)
-        if (prevPipe is None):
+    def get_offset(self, prev_pipe):
+        assert(prev_pipe is None or self.log_id == prev_pipe.log_id)
+        if (prev_pipe is None):
             return OrderedPipe(self.log_id, self.pid, self.sysnum, self.size, 0)
         else:
-            return OrderedPipe(self.log_id, self.pid, self.sysnum, self.size, prevPipe.pipe_offset+prevPipe.size)
+            return OrderedPipe(self.log_id, self.pid, self.sysnum, self.size, prev_pipe.pipe_offset+prev_pipe.size)
 
 class PipeInfo(object):
     def __init__(self, logdb):
@@ -112,10 +90,15 @@ class PipeInfo(object):
         self.ordered_pipes = collections.defaultdict(list)
 
     def add_pipe(self, log_id, pipe_id, pid, sysnum, writer_id, size, start_clock):
-        pipe = UnorderedPipe(log_id, pid, sysnum, writer_id, size, start_clock)
-        self.pipes[pipe_id].append(pipe)
+        # If we don't know the writer (aka id 0) then we can't find the source of the data, ignore it
+        if writer_id != 0:
+            pipe = UnorderedPipe(log_id, pid, sysnum, writer_id, size, start_clock)
+            self.pipes[pipe_id].append(pipe)
+        else:
+            print "Warning, log {id} has an unknown writer at syscall {sysn}".format(id=str(log_id), sysn=str(sysnum))
         
-    def add_ordered_pipe(self, log_id, pid, read_sysnum, read_offset, read_size, write_id, write_pipe, write_offset, write_size): 
+    def add_ordered_pipe(self, log_id, pid, read_sysnum, read_size, write_id, 
+            write_pipe, write_offset): 
         pipe = OrderedPipe(log_id, pid, read_sysnum, read_size, write_offset, write_id)
         self.ordered_pipes[write_pipe].append(pipe)
 
@@ -153,7 +136,8 @@ class PipeInfo(object):
                 match = re.match("^([0-9]+), ([0-9]+), ([0-9]+), ([0-9]+)", line)
                 if match is not None:
                     if int(match.group(1)) == pipe_id:
-                        write_array.append(UnorderedPipe(log_id, pid, int(match.group(4)), log_id, int(match.group(2)), int(match.group(3))));
+                        write_array.append(UnorderedPipe(log_id, pid, int(match.group(4)), 
+                                log_id, int(match.group(2)), int(match.group(3))))
 
     def compute_pipes(self, graph_edges):
         '''
@@ -291,7 +275,9 @@ class ReplayLogDB(object):
     # XXX Bleh, probably need to have a file lock on the replay directory whenever I'm doing
     #  any sort of operation. But right now, assuming there's not enough concurrent access to the logdb directory as
     #  this is just a convenience DB anyways
-    def __init__(self, omniplay_path, logdb_name="replay.db", logdb_dir="/replay_logdb", replay_table_name="replays", graph_table_name="graph_edges"):
+    def __init__(self, omniplay_path, logdb_name="replay.db", logdb_dir="/replay_logdb",
+            replay_table_name="replays", graph_table_name="graph_edges"):
+
         # Path of the omniplay root directory
         self.omniplay_path = omniplay_path
 
@@ -346,17 +332,22 @@ class ReplayLogDB(object):
         # program: short program name, e.g. ls
         # args: arguments to the program, e.g. -l
         sql = '''CREATE TABLE IF NOT EXISTS {table_name} 
-        (date INT, id INT, record_pid INT, parent_id INT, program TEXT, args TEXT)'''.format(table_name=self.replay_table_name)
+        (date INT, id INT, record_pid INT, parent_id INT, program TEXT, args TEXT)'''
+        sql = sql.format(table_name=self.replay_table_name)
         c.execute(sql)
 
-        sql = '''CREATE TABLE IF NOT EXISTS {table_name} 
-        (write_id INT, write_pid INT, write_sysnum INT, write_offset INT, write_size INT, read_id INT, read_pid INT, read_sysnum INT, read_offset INT, read_size INT)'''.format(table_name=self.graph_table_name)
+        sql = ("CREATE TABLE IF NOT EXISTS {table_name} (write_id INT, write_pid INT, write_sysnum INT, " + 
+            "write_offset INT, write_size INT, read_id INT, read_pid INT, read_sysnum INT, " + 
+            "read_offset INT, read_size INT)")
+        sql = sql.format(table_name=self.graph_table_name)
         c.execute(sql)
 
-        sql = '''CREATE INDEX IF NOT EXISTS read_index on {table_name} (read_id, read_pid, read_sysnum)'''.format(table_name=self.graph_table_name)
+        sql = '''CREATE INDEX IF NOT EXISTS read_index on {table_name} (read_id, read_pid, read_sysnum)'''
+        sql = sql.format(table_name=self.graph_table_name)
         c.execute(sql)
         
-        sql = '''CREATE INDEX IF NOT EXISTS write_index on {table_name} (write_id, write_pid, write_sysnum)'''.format(table_name=self.graph_table_name)
+        sql = '''CREATE INDEX IF NOT EXISTS write_index on {table_name} (write_id, write_pid, write_sysnum)'''
+        sql = sql.format(table_name=self.graph_table_name)
         c.execute(sql)
 
         self.commit_transaction()
@@ -396,7 +387,8 @@ class ReplayLogDB(object):
         conn = sqlite3.connect(self.get_logdb_path())
         c = conn.cursor()
 
-        c.execute("SELECT parent_id from {table_name} WHERE id=?".format(table_name=self.replay_table_name), (replay_id, ))
+        c.execute("SELECT parent_id from {table_name} WHERE id=?".format(table_name=self.replay_table_name),
+            (replay_id, ))
         fetched = c.fetchone()
 
         conn.close()
@@ -426,10 +418,14 @@ class ReplayLogDB(object):
         Insert a replay into the DB
         '''
         for edge in graph_edges:
-            (read_id, read_pid, read_sysnum, read_offset, read_size, write_id, write_pid, write_sysnum, write_offset, write_size) = \
-                (edge.read_log, edge.read_pid, edge.read_sysnum, edge.read_offset, edge.read_size, edge.write_log, edge.write_pid, edge.write_sysnum, edge.write_offset, edge.write_size)
-            values = (write_id, write_pid, write_sysnum, write_offset, write_size, read_id, read_pid, read_sysnum, read_offset, read_size)
-            cursor.execute('''INSERT INTO {table_name} VALUES (?,?,?,?,?,?,?,?,?,?)'''.format(table_name=self.graph_table_name),
+            (read_id, read_pid, read_sysnum, read_offset, read_size, write_id, 
+                    write_pid, write_sysnum, write_offset, write_size) = \
+                (edge.read_log, edge.read_pid, edge.read_sysnum, edge.read_offset, edge.read_size, edge.write_log, 
+                    edge.write_pid, edge.write_sysnum, edge.write_offset, edge.write_size)
+            values = (write_id, write_pid, write_sysnum, write_offset, write_size,
+                read_id, read_pid, read_sysnum, read_offset, read_size)
+            cursor.execute(
+                    'INSERT INTO {table_name} VALUES (?,?,?,?,?,?,?,?,?,?)'.format(table_name=self.graph_table_name),
                     values)
 
     def populate(self):
@@ -458,7 +454,9 @@ class ReplayLogDB(object):
                 if directory != self.get_logdb_path() and directory != self.get_ndx_path():
                     print("could not parse %s" % directory)
                 continue
-            (ctime, program_name, log_id, record_pid, args, graph_edges) = (info.ctime, info.program_name, info.logid, info.record_pid, info.program_args, info.replay_graph)
+
+            (ctime, program_name, log_id, record_pid, args, graph_edges) = (info.ctime, info.program_name,
+                    info.logid, info.record_pid, info.program_args, info.replay_graph)
 
             # see if id in db
             if self.replay_id_exists(log_id):
@@ -474,9 +472,11 @@ class ReplayLogDB(object):
         return self.lookup_sourcing_writes(read_info.group_id, read_info.pid, read_info.syscall)
 
     def lookup_sourcing_writes(self, group_id, pid, syscall):
-        graph_table_name="graph_edges"
+        graph_table_name = "graph_edges"
         c = self.cursor
-        c.execute("SELECT write_id, write_pid, write_sysnum, write_offset, write_size, read_id, read_pid, read_sysnum, read_offset, read_size from {table_name} WHERE read_id=? AND read_pid=? AND read_sysnum=?".format(table_name=graph_table_name), (group_id, pid, syscall))
+        c.execute(("SELECT write_id, write_pid, write_sysnum, write_offset, write_size, read_id, read_pid, " + 
+                "read_sysnum, read_offset, read_size from {table_name} WHERE read_id=? AND read_pid=? " + 
+                "AND read_sysnum=?").format(table_name=graph_table_name), (group_id, pid, syscall))
         fetched = c.fetchall()
 
         links = {}
@@ -531,7 +531,7 @@ class ReplayLogDB(object):
         try:
             fields = logdb_dir.split("_")
             logid = int(fields[-1])
-        except:
+        except ValueError:
             # 0 for default
             logid = 0
 
@@ -552,19 +552,30 @@ class ReplayLogDB(object):
                 line = line.strip()
                 match = re.match("^([0-9]+) ([0-9]+) ([0-9]+) {([0-9]+), ([0-9]+), ([0-9]+), ([0-9]+), ([0-9]+)}", line)
                 if match is not None:
-                    graph_edges.append(GraphEdge(logid, pid, int(match.group(1)), int(match.group(2)), int(match.group(3)), int(match.group(4)), int(match.group(5)), int(match.group(6)), int(match.group(7)), int(match.group(8))));
+                    edge = GraphEdge(logid, pid, int(match.group(1)), int(match.group(2)),
+                            int(match.group(3)), int(match.group(4)), int(match.group(5)), int(match.group(6)),
+                            int(match.group(7)), int(match.group(8)), 0, 0)
+                    graph_edges.append(edge)
                 else:
-                    match = re.match("^pipe: ([0-9]+) ([0-9]+) ([0-9]+) {([0-9]+), ([0-9]+), ([0-9]+), ([0-9]+), ([0-9]+)}", line)
+                    match = re.match(
+                        "^pipe: ([0-9]+) ([0-9]+) ([0-9]+) {([0-9]+), ([0-9]+), ([0-9]+), ([0-9]+), ([0-9]+)}", line)
+
                     if match is not None:
                         if (int(match.group(5)) == 0):
-                            pipeInfo.add_ordered_pipe(logid, pid, int(match.group(1)), int(match.group(2)), int(match.group(3)), int(match.group(4)), int(match.group(6)), int(match.group(7)), int(match.group(8)));
+                            pipeInfo.add_ordered_pipe(logid, pid, int(match.group(1)),
+                                    int(match.group(3)), int(match.group(4)), int(match.group(6)),
+                                    int(match.group(7)))
                         else:
-                            graph_edges.append(GraphEdge(logid, pid, int(match.group(1)), int(match.group(2)), int(match.group(3)), int(match.group(4)), int(match.group(5)), int(match.group(6)), int(match.group(7)), int(match.group(8))));
+                            edge = GraphEdge(logid, pid, int(match.group(1)), int(match.group(2)),
+                                    int(match.group(3)), int(match.group(4)), int(match.group(5)),
+                                    int(match.group(6)), int(match.group(7)), int(match.group(8)), 0, 0)
+                            graph_edges.append(edge)
                     else:
                         match = re.match("^pipe: ([0-9]+), ([0-9]+), ([0-9]+) {([0-9]+)} {([0-9]+)}", line)
                         if match is not None:
                             #pipe: writer_id, pipe_id, sysnum {size} {start_clock}
-                            pipeInfo.add_pipe(logid, int(match.group(2)), pid,  int(match.group(3)), int(match.group(1)), int(match.group(4)), int(match.group(5)));
+                            pipeInfo.add_pipe(logid, int(match.group(2)), pid,  int(match.group(3)),
+                                    int(match.group(1)), int(match.group(4)), int(match.group(5)))
 
         pipeInfo.compute_pipes(graph_edges)
 
