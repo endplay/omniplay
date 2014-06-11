@@ -114,15 +114,19 @@ struct image_infos* img_list;
 
 // Logging
 // #define LOGGING_ON
+// #define PRINT_STACK
 #define LOG_F log_f
 #define MEM_F log_f
 #define TRACE_F trace_f
 #define STACK_F print_stack_f
+
+#ifdef PRINT_STACK
 #define STACK_PRINT(args...)        \
 {                                   \
     fprintf(STACK_F, args);         \
     fflush(STACK_F);                \
 }
+#endif
 #define FANCY_ALLOC
 
 #ifndef HAVE_REPLAY
@@ -150,11 +154,6 @@ struct image_infos* img_list;
 {                               \
     fprintf(LOG_F, args);       \
     fflush(LOG_F);              \
-}
-#define STACK_PRINT(args...)        \
-{                                   \
-    fprintf(STACK_F, args);         \
-    fflush(STACK_F);                \
 }
 //#define INSTRUMENT_PRINT fflush(log_f); fprintf
 //
@@ -8404,6 +8403,7 @@ void record_callstack(struct thread_data* ptdata, char* filename, int filenum){
     }
     write_filename_map_stack(stack_f, filenum, filename, stack_hash, ptdata->stack_count[stack_hash]);
 
+#ifdef PRINT_STACK
     STACK_PRINT("File: %s\n", filename);
     STACK_PRINT("Hash: %ld.\n", stack_hash);
     std::stack<string> tmp_stack;
@@ -8413,6 +8413,7 @@ void record_callstack(struct thread_data* ptdata, char* filename, int filenum){
         tmp_stack.pop();
     }
     STACK_PRINT("\n");
+#endif
     oi->stack_info.hash_val = stack_hash;
     oi->stack_info.stack_count = ptdata->stack_count[stack_hash];
     //ptdata->save_syscall_info = (void*) oi;
@@ -16362,6 +16363,7 @@ int setup_logs() {
 #endif
 
     // Callstack Stuff
+#ifdef PRINT_STACK
     char print_stack_file_name[256];
     if (print_stack_f) fclose(print_stack_f);
     snprintf(print_stack_file_name, 256, "%s/print_stack_file.%d", group_directory, PIN_GetPid());
@@ -16371,6 +16373,7 @@ int setup_logs() {
         return -1;
     }
     fprintf(stderr, "Stack file name is %s.\n", print_stack_file_name);
+#endif
 
 
     // now that files are created, change permissions
