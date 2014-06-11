@@ -28,6 +28,13 @@ ensure_can_launch "launcher"
 # Run launcher... calling which first, for good measure
 bin=`which $1`
 
+if [[ $bin == ./* ]]; then
+	echo "getting pwd"
+	path=$(pwd)
+	from_path=${bin:2}
+	bin="$path/$from_path"
+fi
+
 args=()
 whitespace="[[:space:]]"
 idx=0
