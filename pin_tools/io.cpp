@@ -1377,15 +1377,26 @@ void dup_start(int dup_type, int oldfd, int newfd, int flags)
     tdata->syscall_info = (void *) di;
 }
 
-void dup_stop(int rc)
+void dup_stop(int rc, int type)
 {
     struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
     struct dup_info* di;
     di = (struct dup_info *) tdata->syscall_info;
 
     if (rc > 0) { // successful dup
-        fprintf (stderr, "[DUP] dup returns %d, oldfd %d\n", rc, di->oldfd);
+        fprintf (stream_fp, "DUP returns %d, oldfd %d\n", rc, di->oldfd);
         if (monitor_has_fd(open_fds, di->oldfd)) {
+            struct open_info* dup_oi;
+            struct open_info* oi = (struct open_info *) monitor_get_fd_data(open_fds, di->oldfd);
+            assert(oi);
+
+            dup_oi = (struct open_info *) malloc(sizeof(struct open_info));
+            memcpy(dup_oi, oi, sizeof(struct open_info));
+            if (type == 3) {
+                monitor_add_fd(open_fds, rc, di->flags & O_CLOEXEC, dup_oi);
+            } else {
+                monitor_add_fd(open_fds, rc, 0, dup_oi);
+            }
         }
     }
 }
@@ -1487,12 +1498,15 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
             break;
         case SYS_pread64:
             pread_stop((int) ret_value);    
+            break;
         case SYS_dup:
-            dup_stop((int) ret_value);
+            dup_stop((int) ret_value, 1);
             break;
         case SYS_dup3:
+            dup_stop((int) ret_value, 3);
             break;
         case SYS_dup2:
+            dup_stop((int) ret_value, 2);
             break;
         case SYS_fcntl:
             break;
