@@ -15,6 +15,7 @@ struct record_data {
 	char __user *                    linkpath;
 	int                              fd;
 	char __user *                    logdir;
+	int                              pipe_fd;
 };
 
 struct wakeup_data {

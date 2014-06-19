@@ -12,7 +12,9 @@
 #include <linux/mm_types.h>
 
 /* Starts replay with a (possibly) multithreaded fork */
-int fork_replay (char __user * logdir, const char __user *const __user *args, const char __user *const __user *env, char* linker, int save_mmap, int fd);
+int fork_replay (char __user * logdir, const char __user *const __user *args,
+		const char __user *const __user *env, char* linker, int save_mmap, int fd,
+		int pipe_fd);
 
 /* Restore ckpt from disk - replaces AS of current process (like exec) */
 /* Linker may be NULL - otherwise points to special libc linker */
