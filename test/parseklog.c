@@ -186,6 +186,17 @@ static void print_mmap(FILE *out, struct klog_result *res) {
 	}
 }
 
+static void print_open(FILE *out, struct klog_result *res) {
+	struct syscall_result *psr = &res->psr;
+
+	parseklog_default_print(out, res);
+
+	if (psr->flags & SR_HAS_RETPARAMS) {
+		struct open_retvals *oret = res->retparams;
+		fprintf(out, "         Open dev is %lX, ino %lX\n", oret->dev, oret->ino);
+	}
+}
+
 static void print_write(FILE *out, struct klog_result *res) {
 	struct syscall_result *psr = &res->psr;
 
@@ -373,11 +384,13 @@ int main(int argc, char **argv) {
 	log = parseklog_open(argv[optind]);
 	if (!log) {
 		fprintf(stderr, "%s doesn't appear to be a valid log file!\n", argv[0]);
+		exit(EXIT_FAILURE);
 	}
 
 	if (type == BASE) {
 		parseklog_set_printfcn(log, print_read, 3);
 		parseklog_set_printfcn(log, print_write, 4);
+		parseklog_set_printfcn(log, print_open, 5);
 		parseklog_set_printfcn(log, print_waitpid, 7);
 		parseklog_set_printfcn(log, print_execve, 11);
 		parseklog_set_printfcn(log, print_pipe, 42);
