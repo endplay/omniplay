@@ -3,9 +3,6 @@
 import argparse
 import os
 import sys
-import subprocess
-import shlex
-import shutil
 import time
 
 import runtime
@@ -17,17 +14,27 @@ def main(args):
         flags = args.flags
         print(flags)
 
+    if args.args_pass:
+        argstr = args.args_pass
+
+        # Split the line at the ,'s
+        opts = argstr.split(',')
+
+        # Add the ,'s to the flags
+        for itm in opts:
+            flags += " -"
+            itm = itm.replace('=', ' ')
+            flags += itm
+
     omniplay_path = os.environ['OMNIPLAY_DIR']
     if not 'OMNIPLAY_DIR' in os.environ:
         print("Your OMNIPLAY_DIR environment variable is not setup")
         sys.exit(0)
     runtime_info = runtime.RunTimeInfo(omniplay_location=omniplay_path)
 
-    '''
-    if not os.path.exists(args.pin_tool):
-        print("Pin tool %s does not exist, make sure this is the absolute path" %
-                args.pin_tool)
-    '''
+    #if not os.path.exists(args.pin_tool):
+    #    print("Pin tool %s does not exist, make sure this is the absolute path" %
+    #            args.pin_tool)
     # assert os.path.exists(args.pin_tool)
     # assert os.path.exists(runtime_info.tools_location + "/" + args.pin_tool)
 
@@ -60,6 +67,8 @@ if __name__ == "__main__":
     parser.add_argument("-f", "--flags", dest="flags")
     parser.add_argument("-x", "--extended", dest="extended", action="store_true")
     parser.add_argument("-l", "--log", dest="stderr_log")
-    args = parser.parse_args()
-    main(args)
+    parser.add_argument("-o", dest="stderr_log")
+    parser.add_argument("-a", "--arg-pass", dest="args_pass")
+    main_args = parser.parse_args()
+    main(main_args)
 

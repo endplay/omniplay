@@ -628,6 +628,7 @@ class ReplayLogDB(object):
                     program_args = ''.join([program_args, " ", fields[3]])
 
         return ParseInfo(ctime, program_name, logid, record_pid, parent_id, program_args, graph_edges)
+
     def get_program_args(self, group_id):
         conn = sqlite3.connect(self.get_logdb_path())
         c = conn.cursor()
@@ -653,3 +654,4 @@ class ReplayLogDB(object):
             return program
         else:
             return program + args
+
