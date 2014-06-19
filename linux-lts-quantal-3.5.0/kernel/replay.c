@@ -15489,8 +15489,10 @@ struct file* init_log_write (struct record_thread* prect, loff_t* ppos, int* pfd
 			goto out;
 		}
 		*ppos = st.st_size;
+		/*
 		printk("%s %d: Attempting to re-open log %s\n", __func__, __LINE__,
 				filename);
+				*/
 		flags = O_WRONLY|O_APPEND|O_LARGEFILE;
 		*pfd = sys_open(filename, flags, 0777);
 		MPRINT ("Reopened log file %s, pos = %ld\n", filename, (long) *ppos);
@@ -15514,7 +15516,7 @@ struct file* init_log_write (struct record_thread* prect, loff_t* ppos, int* pfd
 #endif
 		flags = O_WRONLY|O_CREAT|O_TRUNC|O_LARGEFILE;
 		*pfd = sys_open(filename, flags, 0777);
-		printk("%s %d: Creating log %s\n", __func__, __LINE__, filename);
+		//printk("%s %d: Creating log %s\n", __func__, __LINE__, filename);
 		if (*pfd > 0) {
 			rc = sys_fchmod(*pfd, 0777);
 			if (rc == -1) {
@@ -15527,9 +15529,11 @@ struct file* init_log_write (struct record_thread* prect, loff_t* ppos, int* pfd
 	}
 	set_fs(old_fs);
 	if (*pfd < 0) {
+		/*
 		dump_stack();
 		printk ("%s %d: Cannot open log file %s, rc = %d flags = %d\n", __func__,
 				__LINE__, filename, *pfd, flags);
+				*/
 		ret = NULL;
 		goto out;
 	}
