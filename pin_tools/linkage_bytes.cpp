@@ -43,6 +43,10 @@
 #include "xray_token.h"
 #include "taints_profile.h"
 
+#include <stack>
+#include <map>
+#include <locale>
+
 #ifdef LINKAGE_DATA
   #ifdef COPY_ONLY
     #include "taints/taints_copy.h"
@@ -109,11 +113,20 @@ struct image_infos* img_list;
 #define STACK_SIZE 8388608
 
 // Logging
-//#define LOGGING_ON
+// #define LOGGING_ON
+// #define PRINT_STACK
 #define LOG_F log_f
 #define MEM_F log_f
 #define TRACE_F trace_f
+#define STACK_F print_stack_f
 
+#ifdef PRINT_STACK
+#define STACK_PRINT(args...)        \
+{                                   \
+    fprintf(STACK_F, args);         \
+    fflush(STACK_F);                \
+}
+#endif
 #define FANCY_ALLOC
 
 #ifndef HAVE_REPLAY
@@ -143,6 +156,7 @@ struct image_infos* img_list;
     fflush(LOG_F);              \
 }
 //#define INSTRUMENT_PRINT fflush(log_f); fprintf
+//
 #define INSTRUMENT_PRINT(x,...);
 #else
 #define WARN_PRINT(args...)
@@ -430,6 +444,7 @@ struct open_info {
     char name[OPEN_PATH_LEN];
     int flags;
     int fileno;
+    struct callstack_info stack_info; 
 };
 
 struct read_info {
@@ -566,6 +581,14 @@ struct thread_data {
 #endif
     struct thread_data*      next;
     struct thread_data*      prev;
+
+    // Callstack Stuff
+    char                syscall_filename[256];
+    int                 socket_count;
+    std::stack<ADDRINT> call_stack;
+    std::stack<string>  string_stack;
+    std::map<long, int> stack_count;
+
 };
 
 #define SYSNUM                      (ptdata->sysnum)
@@ -683,6 +706,8 @@ regex_t* input_message_regex = NULL; // Regex to match the start of input messag
 regex_t* output_message_regex = NULL; // Regex to match the start of input messages
 int count_syscall = 0; // count
 int global_syscall_cnt = 0;
+int global_push_stack = 0;
+int global_mark_pop = 0;
 /* Toggle between which syscall count to use */
 #define SYSCALL_CNT ptdata->syscall_cnt
 // #define SYSCALL_CNT global_syscall_cnt
@@ -702,6 +727,8 @@ struct taints_profile* global_profile;
 
 FILE* log_f = NULL; // For debugging
 FILE* trace_f = NULL; // for tracing taints
+FILE* print_stack_f = NULL;
+FILE* stack_f = NULL;
 
 char* cleaned_idx = NULL; // cleaned indices
 int cleaned_idx_size = 0;
@@ -712,6 +739,9 @@ int write_binary_taints = 0;
 int trace_x = 0;
 int found_xrender = 0;
 int filter_x = 1;
+
+// Callstack Stuff
+bool call_stack_returned;
 
 /* Command line Knobs */
 KNOB<string> KnobStaticAnalysisPath(KNOB_MODE_WRITEONCE, "pintool", "a", "/tmp/static", "static analysis path");
@@ -731,6 +761,7 @@ KNOB<string> KnobOutputFile(KNOB_MODE_WRITEONCE, "pintool", "o", "confaid.result
 #endif
 KNOB<string> KnobFilterInputRegex(KNOB_MODE_APPEND, "pintool", "r", "", "regex to filter input on, only valid with -i on");
 KNOB<string> KnobFilterInputSyscalls(KNOB_MODE_APPEND, "pintool", "s", "", "syscalls to filter input on, only valid with -i on");
+KNOB<string> KnobFilterInputCallstacks(KNOB_MODE_APPEND, "pintool", "c", "", "callstacks to filter input on");
 /* Writes the taints as either tainted or not tainted, as opposed to the byte-to-byte relationship */
 KNOB<bool> KnobWriteBinaryTaints(KNOB_MODE_WRITEONCE, "pintool", "w", "", "Write output as either tainted or not tainted");
 /* Interpose X output functions and write out the taints of the bitmaps/glyphs */
@@ -749,6 +780,12 @@ unsigned int num_filter_input_syscalls = 0;
 struct list_head filter_input_syscalls;
 struct filter_input_syscall {
     int syscall;
+    struct list_head list;
+};
+
+struct list_head filter_input_callstacks;
+struct filter_input_callstack {
+    struct callstack_info stack_info;
     struct list_head list;
 };
 
@@ -785,6 +822,17 @@ int filter_syscall(int syscall) {
     struct filter_input_syscall* fis;
     list_for_each_entry(fis, &filter_input_syscalls, list) {
         if (fis->syscall == syscall) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int filter_callstack(struct callstack_info* stack_info) {
+    struct filter_input_callstack* fic;
+    list_for_each_entry(fic, &filter_input_callstacks, list) {
+        if (fic->stack_info.hash_val == stack_info->hash_val && fic->stack_info.stack_count == stack_info->stack_count)
+        {
             return 1;
         }
     }
@@ -8332,6 +8380,46 @@ void check_function_args(ADDRINT name, ADDRINT arg0, ADDRINT arg1, ADDRINT arg2,
 }
 #endif
 
+// Callstack stuff
+void record_callstack(struct thread_data* ptdata, char* filename, int filenum){
+    struct open_info* oi = (struct open_info*)ptdata->save_syscall_info;
+    // Concatenate stack as single string
+    std::stack<string> tmp_string_stack;
+    tmp_string_stack = ptdata->string_stack;
+    string tmp_string = "";
+    while(!tmp_string_stack.empty()) {
+        tmp_string = tmp_string + tmp_string_stack.top();
+        tmp_string_stack.pop();
+    }
+
+    std::locale loc;
+    const std::collate<char>& coll = std::use_facet<std::collate<char> >(loc);
+    long stack_hash = coll.hash(tmp_string.data(), tmp_string.data() + tmp_string.length());
+
+    std::pair<std::map<long, int>::iterator, bool> ret;
+    ret = ptdata->stack_count.insert(std::pair<long, int>(stack_hash, 1));
+    if (!ret.second) {
+        ptdata->stack_count[stack_hash] = ptdata->stack_count[stack_hash] + 1;
+    }
+    write_filename_map_stack(stack_f, filenum, filename, stack_hash, ptdata->stack_count[stack_hash]);
+
+#ifdef PRINT_STACK
+    STACK_PRINT("File: %s\n", filename);
+    STACK_PRINT("Hash: %ld.\n", stack_hash);
+    std::stack<string> tmp_stack;
+    tmp_stack = ptdata->string_stack;
+    while(!tmp_stack.empty()){
+        STACK_PRINT("%s\n", tmp_stack.top().c_str());
+        tmp_stack.pop();
+    }
+    STACK_PRINT("\n");
+#endif
+    oi->stack_info.hash_val = stack_hash;
+    oi->stack_info.stack_count = ptdata->stack_count[stack_hash];
+    //ptdata->save_syscall_info = (void*) oi;
+}
+
+
 /* In cases where we can't intercept at the glibc wrapper (e.g. it doesn't exist or debug symbols have been stripped),
  * we need to handle how taint propagates through system calls here.
  * */
@@ -8462,6 +8550,7 @@ inline void __sys_open_stop(struct thread_data* ptdata, int rc) {
     if (rc > 0) {
         MYASSERT (ptdata->save_syscall_info);
         struct open_info* oi = (struct open_info *) ptdata->save_syscall_info;
+        record_callstack(ptdata, ptdata->syscall_filename, oi->fileno);
         monitor_add_fd(open_fds, rc, 0, ptdata->save_syscall_info);
         ptdata->save_syscall_info = 0;
         write_filename_mapping(filenames_f, oi->fileno, oi->name);
@@ -8496,7 +8585,7 @@ inline void __sys_read_stop(struct thread_data* ptdata, int rc) {
         oi = (struct open_info *)monitor_get_fd_data(open_fds, ri->fd);
         read_fileno = oi->fileno;
         LOG_PRINT ("read into %#lx, size %d, file is %s, option cnt is %d\n", (unsigned long) ri->buf, rc, oi->name, option_cnt);
-        fprintf (stderr, "%d read into %#lx, size %d, file is %s, option cnt is %d\n", SYSCALL_CNT, (unsigned long) ri->buf, rc, oi->name, option_cnt);
+        //fprintf (stderr, "%d read into %#lx, size %d, file is %s, option cnt is %d\n", SYSCALL_CNT, (unsigned long) ri->buf, rc, oi->name, option_cnt);
 #ifdef TAINT_IMPL_INDEX
         LOG_PRINT ("  index cnt is %lu\n", get_unique_taint_count());
         //LOG_PRINT ("  index cnt is %lu\n", (unsigned long) idx_cnt);
@@ -8504,13 +8593,13 @@ inline void __sys_read_stop(struct thread_data* ptdata, int rc) {
     } else if(ri->fd == fileno(stdin)) {
         read_fileno = 0;
     } else {
-        fprintf (stderr, "%d read into %#lx, size %d, option cnt is %d\n", SYSCALL_CNT, (unsigned long) ri->buf, rc, option_cnt);
+        //fprintf (stderr, "%d read into %#lx, size %d, option cnt is %d\n", SYSCALL_CNT, (unsigned long) ri->buf, rc, option_cnt);
     }
 
     if (filter_inputs()) { // filter inputs
         // we do our filter checks from least strict to most strict, so we don't
         // duplicate making options
-        if ((oi && filter_filename(oi->name)) || filter_syscall(SYSCALL_CNT)) {
+        if ((oi && filter_filename(oi->name)) || filter_syscall(SYSCALL_CNT) || (oi && filter_callstack(&oi->stack_info))) {
             create_options_from_buffer (TOK_READ, SYSCALL_CNT, (void *) ri->buf, rc, 0, read_fileno);
         }
         else if (filter_regex((char *) ri->buf, rc)) {
@@ -8584,6 +8673,7 @@ inline void __sys_read_stop(struct thread_data* ptdata, int rc) {
     //free(ri);
     memset(&ptdata->read_info_cache, 0, sizeof(struct read_info*));
     ptdata->save_syscall_info = 0;
+    fprintf(stderr, "read_stop: syscall cnt: %d\n", SYSCALL_CNT);
 }
 
 inline void __sys_pread_start(struct thread_data* ptdata, int fd, char* buf, int size) {
@@ -8859,7 +8949,7 @@ inline void __sys_recvmsg_stop(struct thread_data* ptdata, int rc) {
                 create_options_from_buffer (TOK_RECVMSG, SYSCALL_CNT, (void *) vi->iov_base, vi->iov_len, offset, read_fileno);
             }
             offset += vi->iov_len;
-            fprintf (stderr, "syscall cnt: %d recvmsg (%u) at %#lx, size %d\n",
+            LOG_PRINT( "syscall cnt: %d recvmsg (%u) at %#lx, size %d\n",
                     SYSCALL_CNT, i, (unsigned long) vi->iov_base, vi->iov_len);
         }
     }
@@ -8925,7 +9015,6 @@ inline void __sys_write_stop(struct thread_data* ptdata, int rc) {
         MYASSERT(oi);
         channel_fileno = oi->fileno;
         LOG_PRINT ("syscall cnt: %d write at %#lx, size %d, file is %s\n", SYSCALL_CNT, (unsigned long) wi->buf, rc, oi->name);
-        fprintf (stderr, "syscall cnt: %d write at %#lx, size %d, file is %s\n", SYSCALL_CNT, (unsigned long) wi->buf, rc, oi->name);
     } else if (wi->fd == fileno(stdout)) {
         channel_fileno = FILENO_STDOUT;
     } else if (wi->fd == fileno(stderr)) {
@@ -8938,6 +9027,7 @@ inline void __sys_write_stop(struct thread_data* ptdata, int rc) {
     }
     output_buffer_result (TOK_WRITE, channel_fileno, wi->buf, rc, 0);
 #endif
+    fprintf(stderr, "write: syscall cnt: %d\n", SYSCALL_CNT);
     //free(wi);
     memset(&ptdata->write_info_cache, 0, sizeof(struct write_info));
 }
@@ -9076,7 +9166,7 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT syscallarg1, ADDRINT syscal
 #ifdef LOGGING_ON
     SYSCALL_PRINT ("%d(%d): Pid %d calling syscall %d, inst count %llu\n", global_syscall_cnt, ptdata->syscall_cnt, PIN_GetPid(), SYSNUM, inst_count);
 #endif
-    fprintf (stderr, "%d(%d): Pid %d (recpid %d) calling syscall %d, inst count %llu\n", global_syscall_cnt, ptdata->syscall_cnt, PIN_GetPid(), ptdata->record_pid, SYSNUM, inst_count);
+    //fprintf (stderr, "%d(%d): Pid %d (recpid %d) calling syscall %d, inst count %llu\n", global_syscall_cnt, ptdata->syscall_cnt, PIN_GetPid(), ptdata->record_pid, SYSNUM, inst_count);
 
 #ifdef PROFILE_TIMING
     {
@@ -9153,6 +9243,14 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT syscallarg1, ADDRINT syscal
         case SYS_open:
             {
                 char* filename = (char *) syscallarg1;
+                // Callstack Stuff
+                int filename_len = strlen((char*)syscallarg1);
+                if (filename_len >= OPEN_PATH_LEN) {
+                    strncpy(ptdata->syscall_filename, filename, OPEN_PATH_LEN-1);
+                    ptdata->syscall_filename[OPEN_PATH_LEN-1] = '\0';
+                } else {
+                    strcpy(ptdata->syscall_filename, filename);
+                }
                 __sys_open_start(ptdata, filename, (int)syscallarg2);
                 break;
             }
@@ -9233,6 +9331,8 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT syscallarg1, ADDRINT syscal
 void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD std, VOID* v)
 {
     struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+
+    fprintf(stderr, "syscall count %d\n", SYSCALL_CNT);
 
     if (ptdata && ptdata->app_syscall != 999) {
         ptdata->app_syscall = 0;
@@ -9347,7 +9447,7 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
                         }
                         if (!(mmi->prot & PROT_EXEC)) {
                             if (filter_inputs()) {
-                                if ((oi && filter_filename(oi->name)) || filter_syscall(SYSCALL_CNT)) {
+                                if ((oi && filter_filename(oi->name)) || filter_syscall(SYSCALL_CNT) || (oi && filter_callstack(&oi->stack_info))) {
                                     create_options_from_buffer (TOK_READ, SYSCALL_CNT, (void *) mmi->addr, mmi->length, 0, read_fileno);
                         }
                             } else {
@@ -10519,6 +10619,90 @@ void instrument_inst(ADDRINT inst_ptr, ADDRINT next_addr, ADDRINT target, ADDRIN
 }
 #endif // LOGGING_ON
 
+// Callstack Stuff
+void mark_pop(ADDRINT ip)
+{
+    struct thread_data* ptdata = (struct thread_data*) PIN_GetThreadData(tls_key, PIN_ThreadId());
+    GRAB_GLOBAL_LOCK(ptdata);
+
+    global_mark_pop++;
+    call_stack_returned = 1; 
+    RELEASE_GLOBAL_LOCK(ptdata);
+}
+
+void pop_stack(ADDRINT ip)
+{
+    struct thread_data* ptdata = (struct thread_data*) PIN_GetThreadData(tls_key, PIN_ThreadId());
+    GRAB_GLOBAL_LOCK(ptdata);
+
+    ADDRINT static_ip = find_static_address(ip);
+
+    call_stack_returned = 0;
+
+    std::stack<ADDRINT> tmp_addr_stack;
+    std::stack<string> tmp_string_stack;
+    tmp_addr_stack = ptdata->call_stack;
+    tmp_string_stack = ptdata->string_stack;
+
+    int matched = 0;
+    while(!tmp_addr_stack.empty()) {
+        if (static_ip == tmp_addr_stack.top()) {
+            matched = 1;
+            break;
+        }
+        tmp_addr_stack.pop();
+    }
+
+    if(matched){
+    while(!ptdata->call_stack.empty()){
+        if (ptdata->call_stack.top() == static_ip){
+            ptdata->call_stack.pop();
+            ptdata->string_stack.pop();
+            break;
+        }
+        else{
+            ptdata->call_stack.pop();
+            ptdata->string_stack.pop();
+        }
+    }
+    }
+
+    RELEASE_GLOBAL_LOCK(ptdata);
+}
+
+void push_stack(ADDRINT ip, ADDRINT ins_size)
+{
+    struct thread_data* ptdata = (struct thread_data*) PIN_GetThreadData(tls_key, PIN_ThreadId());
+    GRAB_GLOBAL_LOCK(ptdata);
+
+    global_push_stack++;
+
+    ADDRINT static_ip;
+    PIN_LockClient();
+    IMG img = IMG_FindByAddress(ip);
+    string img_name;
+    if (IMG_Valid(img)) {
+         ADDRINT offset = IMG_LoadOffset(img);
+         img_name = IMG_Name(img);
+         static_ip = ip - offset;
+    }
+    else {
+        img_name = "Unknown_IMG";
+        static_ip = ip;
+    }
+   
+    static_ip = static_ip + (int)ins_size;
+    ptdata->call_stack.push(static_ip);
+    char buffer [50];
+    sprintf(buffer, "%#x", static_ip);
+    string push_string = img_name + ": " + RTN_FindNameByAddress(ip).c_str() + ": " + buffer;
+    ptdata->string_stack.push(push_string);
+
+    PIN_UnlockClient();
+    RELEASE_GLOBAL_LOCK(ptdata);
+}
+
+
 #ifdef HEARTBLEED
 void instrument_before_badmemcpy(void) {
     //fprintf(stderr, "instrument bad heartbeat!\n");
@@ -10725,8 +10909,25 @@ void track_file(INS ins, void *v)
         return;
     }
 
+    switch(opcode) {
+        case XED_ICLASS_CALL_NEAR:
+        case XED_ICLASS_CALL_FAR:
+            // Callstack Stuff
+            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) push_stack, IARG_INST_PTR, IARG_ADDRINT, INS_Size(ins), IARG_END);
+
+            break;
+
+        case XED_ICLASS_RET_NEAR:
+        case XED_ICLASS_RET_FAR:
+            // Callstack Stuff
+            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) mark_pop, IARG_INST_PTR, IARG_END);
+            break;
+    }
+    
+ 
 #ifdef USE_CODEFLUSH_TRICK
     if (option_cnt != 0) {
+           
 #else
     if (1) {
 #endif
@@ -11397,6 +11598,11 @@ void track_file(INS ins, void *v)
         }
     } 
     } // option cnt
+
+    if(call_stack_returned == 1) {
+        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) pop_stack, IARG_INST_PTR, IARG_END);
+        call_stack_returned = 0;
+    }
     if(INS_IsSyscall(ins)) {
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(instrument_syscall), IARG_SYSCALL_NUMBER,
                 IARG_SYSARG_VALUE, 0, 
@@ -15821,6 +16027,7 @@ void fini(INT32 code, void* v) {
 #endif
     cleanup_bblocks_instbbls();
 
+
     fclose(log_f);
 }
 
@@ -15849,7 +16056,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 
     LOG_PRINT ("Pid %d thread start with threadid %d\n", PIN_GetPid(), threadid);
 
-    ptdata = (struct thread_data *) malloc (sizeof(struct thread_data));
+    ptdata = new struct thread_data;
     if (ptdata == NULL) {
         fprintf (stderr, "ptdata is NULL\n");
         assert (0);
@@ -15984,6 +16191,17 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
                 exit(-1);
             }
         }
+       
+        // Callstack Stuff
+        if (!stack_f) {
+            char stack_file[256];
+            snprintf(stack_file, 256, "%s/stack_file_%llu", group_directory, ptdata->rg_id);
+            stack_f = fopen(stack_file, "w");
+            if(!stack_f) {
+                fprintf(stderr, "Could not open stack file %s.\n", stack_file);
+                exit(-1);
+            }
+        }
 
         if (trace_x) {
             if (xoutput_fd < 0) {
@@ -16069,7 +16287,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
                 }
                 LOG_PRINT ("arg is %s\n", arg);
                 create_options_from_buffer (TOK_EXEC, SYSCALL_CNT, arg, strlen(arg) + 1, acc, FILENO_ARGS);
-                fprintf(stderr, "option cnt is %d\n", option_cnt);
+                //fprintf(stderr, "option cnt is %d\n", option_cnt);
                 acc += strlen(arg) + 1;
                 args += 1;
             }
@@ -16143,6 +16361,20 @@ int setup_logs() {
     }
 #endif
 #endif
+
+    // Callstack Stuff
+#ifdef PRINT_STACK
+    char print_stack_file_name[256];
+    if (print_stack_f) fclose(print_stack_f);
+    snprintf(print_stack_file_name, 256, "%s/print_stack_file.%d", group_directory, PIN_GetPid());
+    print_stack_f = fopen(print_stack_file_name, "a");
+    if(!print_stack_f) {
+        printf("ERROR: cannot open stack file %s.\n", print_stack_file_name);
+        return -1;
+    }
+    fprintf(stderr, "Stack file name is %s.\n", print_stack_file_name);
+#endif
+
 
     // now that files are created, change permissions
     rc = chmod(log_name, S_IRUSR | S_IWUSR | S_IROTH | S_IWOTH);
@@ -16317,6 +16549,7 @@ int main(int argc, char** argv)
         INIT_LIST_HEAD(&filter_input_syscalls);
         INIT_LIST_HEAD(&filter_input_regexes);
         INIT_LIST_HEAD(&filter_byte_ranges);
+        INIT_LIST_HEAD(&filter_input_callstacks);
 
         if (filter_inputs()) {
             for (unsigned i = 0; i < KnobFilterInputFiles.NumberOfValues(); i++) {
@@ -16335,6 +16568,13 @@ int main(int argc, char** argv)
                 list_add_tail(&fis->list, &filter_input_syscalls);
             }
             num_filter_input_syscalls = KnobFilterInputSyscalls.NumberOfValues();
+
+            for (unsigned i = 0; i < KnobFilterInputCallstacks.NumberOfValues(); i++) {
+                struct filter_input_callstack* fic;
+                fic = (struct filter_input_callstack*) malloc(sizeof(struct filter_input_callstack));
+                sscanf(KnobFilterInputCallstacks.Value(i).c_str(), "%ld,%d", &fic->stack_info.hash_val, &fic->stack_info.stack_count);
+                list_add_tail(&fic->list, &filter_input_callstacks);
+            }
 
             for (unsigned i = 0; i < KnobFilterInputRegex.NumberOfValues(); i++)
             {
