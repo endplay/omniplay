@@ -92,7 +92,8 @@
 
 /* BEGIN REPLAY */
 extern int debug_flag;
-#define DEBUGK(...) if (debug_flag) printk(__VA_ARGS__);
+//#define DEBUGK(...) if (debug_flag) printk(__VA_ARGS__);
+#define DEBUGK(...) 
 /* END REPLAY */
 
 /* [Feb-Apr 2000 AV] Complete rewrite. Rules for symlinks:
