@@ -384,6 +384,7 @@ int main(int argc, char **argv) {
 	log = parseklog_open(argv[optind]);
 	if (!log) {
 		fprintf(stderr, "%s doesn't appear to be a valid log file!\n", argv[0]);
+		exit(EXIT_FAILURE);
 	}
 
 	if (type == BASE) {
