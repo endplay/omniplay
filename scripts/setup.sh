@@ -65,6 +65,7 @@ fi
 
 echo "Creating/updating setup file: $setupfile"
 echo "export OMNIPLAY_DIR=$omniplay_dir" > $setupfile
+echo "export PYTHONPATH=\$PYTHONPATH:\$OMNIPLAY_DIR/python_environ" >> $setupfile
 
 if [[ "$do_spec" -eq "1" ]]; then
 	echo "$omniplay_dir/scripts/insert_spec.sh" >> $setupfile
