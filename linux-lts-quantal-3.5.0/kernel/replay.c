@@ -76,6 +76,9 @@
 #include "../kernel/replay_graph/replayfs_syscall_cache.h"
 #include "../kernel/replay_graph/replayfs_perftimer.h"
 
+/* For debugging failing fs operations */
+int debug_flag = 0;
+
 // mcc: fix this later
 //#define MULTI_COMPUTER
 
@@ -3734,8 +3737,11 @@ libpath_env_free (char** env)
 }
 
 /* This function forks off a separate process which replays the foreground task.*/
-int fork_replay (char __user* logdir, const char __user *const __user *args, const char __user *const __user *env, char* linker, int save_mmap, int fd)
+int fork_replay (char __user* logdir, const char __user *const __user *args,
+		const char __user *const __user *env, char* linker, int save_mmap, int fd,
+		int pipe_fd)
 {
+	mm_segment_t old_fs;
 	struct record_group* prg;
 	long retval;
 	char ckpt[MAX_LOGDIR_STRLEN+10];
@@ -3810,6 +3816,19 @@ int fork_replay (char __user* logdir, const char __user *const __user *args, con
 		retval = sys_close (fd);
 		if (retval < 0) printk ("fork_replay: unable to close fd %d, rc=%ld\n", fd, retval);
 	}
+
+	if (pipe_fd >= 0) {
+		char str[40];
+		old_fs = get_fs();
+		set_fs(KERNEL_DS);
+
+		sprintf(str, "%s\n", prg->rg_logdir);
+
+		sys_write(pipe_fd, str, strlen(str));
+
+		set_fs(old_fs);
+	}
+
 
 	sprintf (ckpt, "%s/ckpt", prg->rg_logdir);
 	argbuf = copy_args (args, env, &argbuflen);
@@ -11228,6 +11247,7 @@ record_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 	MPRINT ("Pid %d records clone with flags %lx fork %d returning %ld\n", current->pid, clone_flags, (clone_flags&CLONE_VM) ? 0 : 1, rc);
 
 	rg_lock(prg);
+	printk("%s %d: Rercording cloned pid %ld\n", __func__, __LINE__, rc);
 	new_syscall_done (120, rc);
 	new_syscall_exit (120, NULL);
 
@@ -11324,6 +11344,8 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 		(*(int*)(current->replay_thrd->app_syscall_addr)) = 999;
 	} else {
 		rc = get_next_syscall_enter (current->replay_thrd, prg, 120, NULL, &psr);
+		printk("%s %d: next_syscall_enter returned an rc of %ld\n", __func__,
+				__LINE__, rc);
 	}
 
 	if (rc > 0) {
@@ -11365,7 +11387,7 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 
 		// if Pin is attached the record_thread could already exist (via preallocate_mem) so we need to check
 		// to see if it exists first before creating
-		if (prt == 0 || prt->rp_record_pid != rc) {	
+		if (prt == NULL || prt->rp_record_pid != rc) {	
 			/* For replays resumed form disk checkpoint, there will be no record thread.  We should create it here. */
 			prt = new_record_thread (prg->rg_rec_group, rc, NULL);
 			// Since there is no recording going on, we need to dec record_thread's refcnt
@@ -15450,6 +15472,10 @@ struct file* init_log_write (struct record_thread* prect, loff_t* ppos, int* pfd
 	struct stat64 st;
 	mm_segment_t old_fs;
 	int rc;
+	struct file *ret = NULL;
+	int flags;
+
+	debug_flag = 0;
 
 	sprintf (filename, "%s/klog.id.%d", prect->rp_group->rg_logdir, prect->rp_record_pid);
 
@@ -15459,10 +15485,14 @@ struct file* init_log_write (struct record_thread* prect, loff_t* ppos, int* pfd
 		rc = sys_stat64(filename, &st);
 		if (rc < 0) {
 			printk ("Stat of file %s failed\n", filename);
-			return NULL;
+			ret = NULL;
+			goto out;
 		}
 		*ppos = st.st_size;
-		*pfd = sys_open(filename, O_WRONLY|O_APPEND|O_LARGEFILE, 0777);
+		printk("%s %d: Attempting to re-open log %s\n", __func__, __LINE__,
+				filename);
+		flags = O_WRONLY|O_APPEND|O_LARGEFILE;
+		*pfd = sys_open(filename, flags, 0777);
 		MPRINT ("Reopened log file %s, pos = %ld\n", filename, (long) *ppos);
 	} else {
 #ifdef LOG_COMPRESS_1
@@ -15476,12 +15506,15 @@ struct file* init_log_write (struct record_thread* prect, loff_t* ppos, int* pfd
 		}
 		MPRINT ("Opened log file %s\n", filename);
 		if (*pfd < 0) {
-			printk ("Cannot open log file %s", filename);
-			return NULL;
+			printk ("%s %d: Cannot open log file %s", __func__, __LINE__, filename);
+			ret = NULL;
+			goto out;
 		}
 		sprintf (filename, "%s/klog.id.%d", prect->rp_group->rg_logdir, prect->rp_record_pid);
 #endif
-		*pfd = sys_open(filename, O_WRONLY|O_CREAT|O_TRUNC|O_LARGEFILE, 0777);
+		flags = O_WRONLY|O_CREAT|O_TRUNC|O_LARGEFILE;
+		*pfd = sys_open(filename, flags, 0777);
+		printk("%s %d: Creating log %s\n", __func__, __LINE__, filename);
 		if (*pfd > 0) {
 			rc = sys_fchmod(*pfd, 0777);
 			if (rc == -1) {
@@ -15494,11 +15527,19 @@ struct file* init_log_write (struct record_thread* prect, loff_t* ppos, int* pfd
 	}
 	set_fs(old_fs);
 	if (*pfd < 0) {
-		printk ("Cannot open log file %s, rc = %d\n", filename, *pfd);
-		return NULL;
+		dump_stack();
+		printk ("%s %d: Cannot open log file %s, rc = %d flags = %d\n", __func__,
+				__LINE__, filename, *pfd, flags);
+		ret = NULL;
+		goto out;
 	}
 
-	return (fget(*pfd));
+	ret = fget(*pfd);
+
+out:
+	debug_flag = 0;
+
+	return ret;
 }
 
 void term_log_write (struct file* file, int fd)

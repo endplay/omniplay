@@ -73,6 +73,16 @@ static void default_printfcn(FILE *out, struct klog_result *res) {
 	*/
 }
 
+static void default_signal_printfcn(FILE *out, struct klog_result *res) {
+	struct repsignal *sig;
+	sig = &res->signal->sig;
+
+	while (sig) {
+		fprintf(out, "         !!-- Has signal %d --!!\n", sig->signr);
+		sig = sig->next;
+	}
+}
+
 static void free_active_psrs(struct klogfile *log) {
 	int i;
 	for (i = 0; i < log->active_num_psrs; i++) {
@@ -324,6 +334,7 @@ struct klogfile *parseklog_open(const char *filename) {
 	/* Set up the print functions */
 	memset(ret->printfcns, 0, sizeof(ret->printfcns));
 	ret->default_printfcn = default_printfcn;
+	ret->signal_print = default_signal_printfcn;
 
 	/* Open the file and initialize the fd */
 	ret->fd = open(filename, O_RDONLY);
@@ -546,7 +557,7 @@ void parseklog_set_printfcn(struct klogfile *log,
 
 int klog_print(FILE *out, struct klog_result *result) {
 	result->printfcn(out, result);
-	if (result->signal) {
+	if (result->signal && result->log->signal_print) {
 		result->log->signal_print(out, result);
 	}
 	return 0;
