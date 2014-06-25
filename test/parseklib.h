@@ -9,7 +9,9 @@
 #include <sys/timex.h>
 #include <sys/quota.h>
 #include <signal.h>
-#define __USE_LARGEFILE64
+#ifndef __USE_LARGEFILE64
+#  define __USE_LARGEFILE64
+#endif
 #include <sys/stat.h>
 
 #include <signal.h>
@@ -30,11 +32,15 @@
 #include <sys/statfs.h>
 #include <linux/capability.h>
 #include <asm/ldt.h>
-#define __USE_LARGEFILE64
-#include <fcntl.h>
 #include <sys/resource.h>
 
 #include "replay_headers/include/linux/replay_configs.h"
+
+#ifndef __USE_LARGEFILE64
+#  define __USE_LARGEFILE64
+#endif
+//#include <limits.h>
+#include <fcntl.h>
 
 #define NR_SYSCALLS 511
 
@@ -262,7 +268,7 @@ struct get_robust_list_retvals {
 	size_t                    len;
 };
 
-struct file_handle
+struct file_handle_internal
 {
   unsigned int handle_bytes;
   int handle_type;
@@ -271,7 +277,7 @@ struct file_handle
 };
 
 struct name_to_handle_at_retvals {
-	struct file_handle handle;
+	struct file_handle_internal handle;
 	int                mnt_id;
 };
 
