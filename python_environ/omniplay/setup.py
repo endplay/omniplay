@@ -6,14 +6,14 @@ try:
 except KeyError:
     testdir = ''
 
-parseklog = Extension('parseklog',
+parseklograw = Extension('parseklograw',
                 include_dirs = [testdir],
                 libraries = ['util'],
                 library_dirs = [testdir],
-                sources = ['parseklogmodule.c'])
+                sources = ['parseklograwmodule.c'])
 
-setup (name = "Parseklog",
+setup (name = "ParseklogRaw",
     version = '1.0',
     description = "Extension to parseklib, to parse replay kernel logs from python",
-    ext_modules = [parseklog])
+    ext_modules = [parseklograw])
 
