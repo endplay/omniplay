@@ -1,3 +1,9 @@
+"""
+Module managing the replay logdb used to query for high level information about logs.
+For example, what is the recording of the last instance of firefox I've launced?
+What are all the recordings of "sshd" I've launched?
+What are all of the dependencys of this execution of sshd?
+"""
 import os
 import sqlite3
 import subprocess
@@ -21,6 +27,7 @@ class ReplayLogDB(object):
     Using sqlite3 for now...we might want to change the backing db store later.
     Need to change create_table, replay_id_exists, and insert_replay then.
     '''
+
     # XXX Bleh, probably need to have a file lock on the replay directory whenever I'm doing
     #  any sort of operation. But right now, assuming there's not enough concurrent access to the logdb directory as
     #  this is just a convenience DB anyways
@@ -29,6 +36,8 @@ class ReplayLogDB(object):
 
         # Path of the omniplay root directory
         self.omniplay_path = omniplay_env.omniplay_location
+
+        self.env = omniplay_env
 
         # name of the logdb
         self.logdb_name = logdb_name
@@ -46,10 +55,19 @@ class ReplayLogDB(object):
         self.conn = None
 
     def _init_cursor(self):
+        """
+        INTERNAL FUNCTION:
+        Initialized the logdb's sqlite database cursor
+        """
         self.conn = sqlite3.connect(self._get_logdb_path())
         self.cursor = self.conn.cursor()
 
     def _close_cursor(self):
+        """
+        INTERNAL FUNCTION
+        Commits any outstanding database transaction, and closes the logdb
+        database cursor
+        """
         self.conn.commit()
         self.conn.close()
 
@@ -57,18 +75,36 @@ class ReplayLogDB(object):
         self.cursor = None
 
     def _commit_transaction(self):
+        """
+        INTERNAL FUNCTION
+        Commits any outstanding transactions
+        """
         self.conn.commit()
 
     def _get_logdb_path(self):
+        """
+        INTERNAL FUNCTION
+        Returns the path to the logdb sqlite file being used
+        """
         return ''.join([self.logdb_dir, "/", self.logdb_name])
 
     def _get_ndx_path(self):
+        """
+        INTERNAL FUNCTION
+        Gets the ndx file used by the kernel in generating the record directories
+        @note this is just used for filtering the file from scanned files
+        """
         return ''.join([self.logdb_dir, "/", "ndx"])
 
-    def _get_replay_directory(self, group_id):
-        return ''.join([self.logdb_dir, "/rec_", str(group_id)])
-
     def get_most_recent_replay(self, program_name):
+        """
+        Gets the most recent replay with a program name matching the program_name argument
+        This uses a partial match, so /bin/sshd will match "sshd"
+
+        @param program_name The name of the program to find
+        @returns The group_id of the program
+        @note The group_id can be converted to a record directory by omniplay.OmniplayEnvironment.get_record_dir()
+        """
         self._init_cursor()
         cursor = self.cursor
         assert cursor
@@ -91,6 +127,13 @@ class ReplayLogDB(object):
         return None
 
     def get_all_replays_program(self, program_name):
+        """
+        Finds all processes that match program_name
+
+        @param program_name The name of the program to find
+        @returns A list of group_id's for all processes that match program_name
+        @note The group_id can be converted to a record directory by omniplay.OmniplayEnvironment.get_record_dir()
+        """
         self._init_cursor()
         cursor = self.cursor
         assert cursor
@@ -115,6 +158,7 @@ class ReplayLogDB(object):
 
     def _create_table(self):
         '''
+        INTERNAL FUNCTION
         Create a new table in the db for replays
         '''
         c = self.cursor
@@ -145,10 +189,10 @@ class ReplayLogDB(object):
         c.execute(sql)
 
         self._commit_transaction()
-        #print("Created db %s, with tables %s, %s" % (self.logdb_name, self.replay_table_name, self.graph_table_name))
 
     def _get_ids(self):
         '''
+        INTERNAL FUNCTION
         Returns a list of IDs in the db
         '''
         ids = []
@@ -162,6 +206,7 @@ class ReplayLogDB(object):
 
     def _max_id(self):
         '''
+        INTERNAL FUNCTION
         Returns a list of IDs in the db
         '''
         conn = sqlite3.connect(self._get_logdb_path())
@@ -175,6 +220,7 @@ class ReplayLogDB(object):
 
     def _replay_id_exists(self, replay_id):
         '''
+        INTERNAL FUNCTION
         Returns True if replay_id exists in the db, False otherwise
         '''
         conn = sqlite3.connect(self._get_logdb_path())
@@ -191,6 +237,12 @@ class ReplayLogDB(object):
         return True
 
     def get_parent_id(self, replay_id):
+        """
+        Gets the parent id for a given replay id
+
+        @param replay_id Replay to find the parent of
+        @return The parent's group_id
+        """
         conn = sqlite3.connect(self._get_logdb_path())
         c = conn.cursor()
 
@@ -206,6 +258,7 @@ class ReplayLogDB(object):
 
     def _insert_replay(self, cursor, ctime, program_name, log_id, record_pid, parent_id, args):
         '''
+        INTERNAL FUNCTION
         Insert a replay into the DB
         '''
         values = (ctime, log_id, record_pid, parent_id, program_name, args)
@@ -213,6 +266,10 @@ class ReplayLogDB(object):
                 values)
 
     def _remove_replay(self, replay_id):
+        """
+        INTERNAL FUNCTION
+        Removes a replay from the database
+        """
         conn = sqlite3.connect(self._get_logdb_path())
         c = conn.cursor()
         c.execute('''DELETE FROM {table_name} WHERE id?'''.format(table_name=self.replay_table_name),
@@ -222,6 +279,7 @@ class ReplayLogDB(object):
 
     def _insert_graph(self, cursor, graph_edges):
         '''
+        INTERNAL FUNCTION
         Insert a replay into the DB
         '''
         for edge in graph_edges:
@@ -237,6 +295,7 @@ class ReplayLogDB(object):
 
     def _populate(self):
         '''
+        INTERNAL FUNCTION
         Goes through the replay_logdb directory and inserts a record for replays that
         it already hasn't inserted.
         '''
@@ -275,12 +334,23 @@ class ReplayLogDB(object):
             assert(graph_edges is not None)
             self._insert_replay(self.cursor, ctime, program_name, log_id, record_pid, info.parent_groupid, args)
             self._insert_graph(self.cursor, graph_edges)
-            #print("Inserted replay id %d, parent %d" % (log_id, info.parent_groupid))
 
     def lookup_writes(self, read_info):
+        """
+        Finds all writes related to a given read info
+
+        @param read_info The information about the writes
+        @return A map for read info to write info related to this read_info
+        """
         return self.lookup_sourcing_writes(read_info.group_id, read_info.pid, read_info.syscall)
 
     def lookup_sourcing_writes(self, group_id, pid, syscall):
+        """
+        Finds all writes related to a given group_id, pid, syscall
+
+        @param read_info The information about the writes
+        @return A map for read info to write info related to this read_info
+        """
         graph_table_name = "graph_edges"
         c = self.cursor
         c.execute(("SELECT write_id, write_pid, write_sysnum, write_offset, write_size, read_id, read_pid, " + 
@@ -299,6 +369,7 @@ class ReplayLogDB(object):
 
     def _parse_directory(self, logdb_dir):
         '''
+        INTERNAL FUNCTION
         Calls the parseckpt program and parses its output.
 
         Returns a tuple (program_name, log_id, record_pid, args)
@@ -439,6 +510,12 @@ class ReplayLogDB(object):
         return _ParseInfo(ctime, program_name, logid, record_pid, parent_id, program_args, graph_edges)
 
     def get_program_args(self, group_id):
+        """
+        Finds and returns the arguments of a recording
+
+        @param group_id The group_id to get the arguments from
+        @returns A string containing the program + arguments passed to the recording
+        """
         conn = sqlite3.connect(self._get_logdb_path())
         c = conn.cursor()
         c.execute("SELECT program from {table_name} WHERE id=?".format(table_name=self.replay_table_name), (group_id,))
@@ -465,12 +542,20 @@ class ReplayLogDB(object):
             return program + args
 
     def updatedb(self):
+        """
+        Updates the database, ensuring it contains all current recordings.
+        This should be called before using the database
+        """
         self._init_cursor()
         self._create_table()
         self._populate()
         self._close_cursor()
 
 class _OrderedPipe(object):
+    """
+    INTERNAL CLASS
+    Representings an ordered pipe within a replay, used for dependency tracking
+    """
     def __init__(self, log_id, pid, sysnum, size, pipe_offset, writer_id=0):
         self.log_id = log_id
         self.sysnum = sysnum
@@ -488,6 +573,10 @@ class _OrderedPipe(object):
             ", write_id=", str(self.write_id), ")"])
    
     def get_graph_edge(self, writer_pipe):
+        """
+        INTERNAL FUNCTION
+        Converts a pipe into a graph edge
+        """
         # Figure out which bytes this writer supplys by matching the pipe_size
         # Make sure this writer satisfies something from this reader
         if (writer_pipe.pipe_offset > self.pipe_offset + self.size or
@@ -516,6 +605,11 @@ class _OrderedPipe(object):
         return edge
 
 class _UnorderedPipe(object):
+    """
+    INTERNAL CLASS
+    Manages an unordered pipe within the replay log, used to get file dependeny
+    information.
+    """
     def __init__(self, log_id, pid, sysnum, writer_id, size, start_clock):
         self.log_id = log_id
         self.size = size
@@ -533,6 +627,10 @@ class _UnorderedPipe(object):
             ", start_clock=", str(self.start_clock), ")"])
 
     def get_offset(self, prev_pipe):
+        """
+        INTERNAL FUNCTION
+        Finds the offset of a pipe, given its previous use
+        """
         assert(prev_pipe is None or self.log_id == prev_pipe.log_id)
         if (prev_pipe is None):
             return _OrderedPipe(self.log_id, self.pid, self.sysnum, self.size, 0)
@@ -541,6 +639,10 @@ class _UnorderedPipe(object):
                     self.size, prev_pipe.pipe_offset+prev_pipe.size)
 
 class _PipeInfo(object):
+    """
+    INTERNAL CLASS
+    Wrapper for information about a pipe, used to track dependency information
+    """
     def __init__(self, logdb):
         self.db = logdb
         # Dictionary, [id] = pipe(reader) array 
@@ -548,6 +650,10 @@ class _PipeInfo(object):
         self.ordered_pipes = collections.defaultdict(list)
 
     def add_pipe(self, log_id, pipe_id, pid, sysnum, writer_id, size, start_clock):
+        """
+        INTERNAL FUNCTION
+        Adds a pipe to the list of pipe_info
+        """
         # If we don't know the writer (aka id 0) then we can't find the source of the data, ignore it
         if writer_id != 0:
             pipe = _UnorderedPipe(log_id, pid, sysnum, writer_id, size, start_clock)
@@ -559,17 +665,23 @@ class _PipeInfo(object):
         
     def add_ordered_pipe(self, log_id, pid, read_sysnum, read_size, write_id, 
             write_pipe, write_offset): 
+        """
+        INTERNAL FUNCTION
+        Adds a pipe where ordering is important (for example a 1:1 reader/writer pipe)
+        """
         pipe = _OrderedPipe(log_id, pid, read_sysnum, read_size, write_offset, write_id)
         self.ordered_pipes[write_pipe].append(pipe)
 
     def get_writes(self, log_id, write_array, pipe_id):
-        '''
-        Find the rec directory for log_id
-        foreach klog in directory
-            parseklog with -p
-            regex parse
-            Add the data to a write_array
-        '''
+        """
+        INTERNAL FUNCTION
+        Finds all of the writes associated with a given pipe
+        """
+        #Find the rec directory for log_id
+        #foreach klog in directory
+        #    parseklog with -p
+        #    regex parse
+        #    Add the data to a write_array
         logdb_dir = self.db.logdb_dir
 
         # get a list of replay directories
@@ -600,15 +712,17 @@ class _PipeInfo(object):
                                 log_id, int(match.group(2)), int(match.group(3))))
 
     def compute_pipes(self, graph_edges):
-        '''
-        For each pipe_id 
-            Sort the pipe_reader array by start_time
-            Now, calculate the offsets
-            Now, get the writer info (based on log_id)
-            Sort that by start_time
-            Calculate those offsets
-            Now, match, then insert those into the graph edges
-        '''
+        """
+        INTERNAL FUNCTION
+        """
+
+        #For each pipe_id 
+        #    Sort the pipe_reader array by start_time
+        #    Now, calculate the offsets
+        #    Now, get the writer info (based on log_id)
+        #    Sort that by start_time
+        #    Calculate those offsets
+        #    Now, match, then insert those into the graph edges
         for (pipe_id, pipe_readers) in self.pipes.iteritems():
             sorted_readers = sorted(pipe_readers, key=lambda pipe_reader: pipe_reader.start_clock)
             prev_pipe = None
