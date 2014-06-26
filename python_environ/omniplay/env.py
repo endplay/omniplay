@@ -1,3 +1,7 @@
+"""@package env
+Omniplay Environment support.  Supports standard operations like recording 
+a process, replaying a process, and attaching a pin tool to a replay.
+"""
 import os
 import re
 import time
@@ -10,6 +14,14 @@ LogCkpt = collections.namedtuple('LogCheckpoint',
         ['pid', 'group_id', 'parent_group_id', 'exe', 'args', 'env'])
 
 def run_shell(cmd, stin=None, outp=None, err=None):
+    """ Utility tool for launching a bash command and waiting for it to finish, optional input/output redirection
+
+    @param cmd The command to be launched
+    @param stin File to redirect standard in from
+    @param outp File to redirect standard out from
+    @param err File to redirect stderr from
+    @return The subprocess of the bash shell
+    """
     outp_needs_close = False
     err_needs_close = False
     stin_needs_close = False
@@ -43,6 +55,10 @@ def run_shell(cmd, stin=None, outp=None, err=None):
     return proc
 
 class OmniplayEnvironment(object):
+    """
+    Encapsulates complete omniplay environment.  Used for recording/replaying/log parsing/running pin tools
+    """
+    
     def __init__(self, omniplay_location=None, pthread_lib=None, pin_root=None,
                     verbose=False):
         self.record_dir = "/replay_logdb"
@@ -128,9 +144,26 @@ class OmniplayEnvironment(object):
             assert os.path.exists(script)
 
     def insert_spec(self):
+        """
+        Inserts the spec module into the system, may require a password
+
+        No args
+        returns None
+        """
         run_shell(self.scripts.insert)
         
     def record(self, cmd, stin=None, stout=None, sterr=None):
+        """
+        Spawns a new process and records it
+
+        @param cmd  The full command to run with options. 
+              Does not need to be an absolute path
+        @param stin File to be used for stdin redirection
+        @param stout File to be used for stdout redirection
+        @param sterr File to be used for stderr redirection
+
+        @returns the LogCkpt of the recorded process
+        """
         # Get the binary
         args = shlex.split(cmd)
         args.reverse()
@@ -187,8 +220,14 @@ class OmniplayEnvironment(object):
 
     def replay(self, replay_dir, pipe_log=None, pin=False, follow=False):
         '''
-        @param replay_dir - replay directory
-        @param pipe_log - open file handle
+        Replays a recording, returning the replaying subprocess - Does NOT wait for the process to finish
+
+        @param replay_dir Directory of recording
+        @param pipe_log Output redirection for stdout/stderr
+        @param pin will pin be attached?
+        @param follow Follow the execution?
+
+        @returns the subprocess of the replaying process
         '''
         cmd = ' '.join([self.bins.replay, "--pthread", self.pthread_resume, replay_dir])
 
@@ -207,6 +246,18 @@ class OmniplayEnvironment(object):
         return process
 
     def attach_tool(self, pid, tool_name, pipe_output, flags=''):
+        """
+        Attaches a pin tool to a replaying process.  NOTE: you probably want to use the run_tool wrapper instead
+        Does not wait for the process to finish
+
+        @param pid The pid of the process to be attached to
+        @param tool_name The name of the tool to be attached.  Either an 
+            absolute path, or the toolname if it exists in the standard tool directory
+        @param pipe_output File to be used for standard out redirection
+        @param flags Flags to be passed to the pin tool
+
+        @returns the pin subprocess
+        """
         tool = tool_name
         # Check if tool_name exists...
         if not os.path.exists(tool):
@@ -221,7 +272,16 @@ class OmniplayEnvironment(object):
 
     def run_tool(self, binary, tool, flags="", output="/tmp/stderr_log", toolout="/tmp/tool_log"):
         '''
-        Uses replay and attach_tool to run the pin tool
+        Starts a replay, then attaches a pin tool with flags
+
+        @param binary The recording to run (ex "/replay_logdb/rec_1")
+        @param tool The pin tool to run, accepts absolute path, relative path,
+            or name of tool if its in the standard tool directory
+        @param flags Flags to be passed to the pin tool
+        @param output Path to use for output redirection for the attached process
+        @param toolout Path to use as otuput redirection for the pin tool
+
+        @returns None
         '''
 
         log_f = open(output, "w")
@@ -238,12 +298,29 @@ class OmniplayEnvironment(object):
         replay_process.wait()
 
     def filemap(self, filename, filemap_output="/tmp/filemap_output"):
+        """
+        Reports filemap (file dependency) information about a given file.
+
+        @warning This spawns a subprocess to generate the info, and does not wait for it to finish
+
+        @param filename The file to get filemap information for
+        @param filemap_output The file where the information will be saved
+
+        @returns The subprocess generating he output
+        """
         cmd = ' '.join([self.bins.filemap, filename, filemap_output])
 
         process = subprocess.Popen(shlex.split(cmd), shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return process
 
     def parseckpt(self, filename):
+        """
+        Parses a given record log, and returns a LogCkpt structure representing it
+
+        @param filename The checkpoint to be parsed (ex. /replay_logdb/rec_1/ckpt
+
+        @returns LogCkpt representing the parsed checkpoint
+        """
         cmd = ' '.join([self.bins.parseckpt, filename])
 
         proc = run_shell(cmd, outp=subprocess.PIPE)
@@ -283,9 +360,7 @@ class OmniplayEnvironment(object):
                     match = re.match("([-_a-zA-Z0-9]+)=(.*)", match.group(1))
                     env[match.group(1)] = match.group(2)
                     continue
-                
-                #print "Non matching line: " + line
-                    
+
         return LogCkpt(
                 pid = pid,
                 group_id = group_id,
@@ -296,11 +371,26 @@ class OmniplayEnvironment(object):
             )
 
     def parseklog(self, klog, output):
+        """
+        Does a simple parsing of a kernel log using the parseklog tool (in OMNIPLAY_DIR/test)
+        More complex klog parsing may be done with the parseklog module
+
+        @param klog The path to the klog to be parsed
+        @param output The path where the klog output should be saved
+
+        @returns None
+        """
         with open(output, 'w+') as f:
             print "Opened output " + output
             run_shell(' '.join([self.bins.parseklog, klog]), outp=f)
 
     def get_record_dir(self, record_group):
+        """
+        Given a record group id, translates it into the record group's directory
+
+        @param record_group the group id of a record group
+        @return A string representing the directory where the recording is stored
+        """
         subdir = ''.join([self.recording_suffix, str(record_group)])
         return '/'.join([self.record_dir, subdir])
 

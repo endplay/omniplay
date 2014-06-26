@@ -1,6 +1,6 @@
 
 .PHONY: all install clean
-all: parseklogmodule.c setup.py
+all: parseklograwmodule.c setup.py ${OMNIPLAY_DIR}/test/libutil.a
 	python setup.py build
 
 install: setup.py
