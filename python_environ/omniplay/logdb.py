@@ -151,7 +151,7 @@ class ReplayLogDB(object):
         for row in fetched:
             (replay_id,) = row
             try:
-                return replay_ids.append(int(replay_id))
+                replay_ids.append(int(replay_id))
             except ValueError:
                 continue
         return replay_ids
