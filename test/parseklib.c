@@ -305,6 +305,8 @@ static int read_psr_chunk(struct klogfile *log) {
 				}
 				apsr->signal->sig.signr = *(int *)apsr->signal->raw;
 			} while (*(char **)(apsr->signal->raw+168));
+		} else {
+			apsr->signal = NULL;
 		}
 	}
 
@@ -342,6 +344,8 @@ struct klogfile *parseklog_open(const char *filename) {
 		perror("open: ");
 		goto out_free;
 	}
+
+	ret->active_psrs = NULL;
 
 	ret->active_start_idx = 0;
 	ret->active_num_psrs = 0;
@@ -398,7 +402,6 @@ struct klog_result *parseklog_get_psr(struct klogfile *log, loff_t idx) {
 
 int parseklog_read_next_chunk(struct klogfile *log) {
 	return read_psr_chunk(log);
-	log->cur_idx = 0;
 }
 
 int parseklog_cur_chunk_size(struct klogfile *log) {
