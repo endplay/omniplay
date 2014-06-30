@@ -360,6 +360,7 @@ struct klog_result *parseklog_get_psr(struct klogfile *log, loff_t idx);
 int parseklog_read_next_chunk(struct klogfile *log);
 int parseklog_cur_chunk_size(struct klogfile *log);
 int parseklog_write_chunk(struct klogfile *log, int destfd);
+int parseklog_do_write_chunk(int count, struct klog_result *psrs, int destfd);
 
 void parseklog_set_signalprint(struct klogfile *log,
 		void (*printfcn)(FILE *out, struct klog_result *));
