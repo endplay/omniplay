@@ -408,38 +408,11 @@ int parseklog_cur_chunk_size(struct klogfile *log) {
 	return log->active_num_psrs;
 }
 
-int parseklog_write_chunk(struct klogfile *log, int destfd) {
-	long rc;
-	int count;
+int parseklog_do_write_chunk(int count, struct klog_result *psrs, int destfd) {
 	int i;
+	int rc;
 	u_long data_size;
-
-	/* Write the header */
-#ifdef USE_HPC
-	rc = write(destfd, &hpc1, sizeof(unsigned long long));
-	if (rc != sizeof(unsigned long long)) {
-		fprintf(stderr, "Couldn't record hpc1\n");
-		return -1;
-	}
-	rc = write(destfd, &log->tv1, sizeof(struct timeval));
-	if (rc != sizeof(struct timeval)) {
-		fprintf(stderr, "Couldn't record tv1\n");
-		return -1;
-	}
-	rc = write(destfd, &log->hpc2, sizeof(unsigned long long));
-	if (rc != sizeof(unsigned long long)) {
-		fprintf(stderr, "Couldn't record hpc2\n");
-		return -1;
-	}
-	rc = write(destfd, &log->tv2, sizeof(struct timeval));
-	if (rc != sizeof(struct timeval)) {
-		fprintf(stderr, "Couldn't record tv2\n");
-		return -1;
-	}
-#endif
-
 	/* Write the count */
-	count = log->active_num_psrs;
 	rc = write(destfd, &count, sizeof(int));
 	if (rc != sizeof(int)) {
 		fprintf(stderr, "Couldn't record count\n");
@@ -450,7 +423,7 @@ int parseklog_write_chunk(struct klogfile *log, int destfd) {
 	/* Write the psrs */
 	/* Calculate the data size... */
 	for (i = 0; i < count; i++) {
-		struct syscall_result *apsr = &log->active_psrs[i].psr;
+		struct syscall_result *apsr = &psrs[i].psr;
 		rc = write(destfd, apsr, sizeof(struct syscall_result));
 		if (rc != sizeof(struct syscall_result)) {
 			fprintf(stderr, "Couldn't syscall_result\n");
@@ -467,13 +440,13 @@ int parseklog_write_chunk(struct klogfile *log, int destfd) {
 			data_size += sizeof(u_long);
 		}
 		if (apsr->flags & SR_HAS_SIGNAL) {
-			struct klog_signal *n = log->active_psrs[i].signal;
+			struct klog_signal *n = psrs[i].signal;
 			do {
 				data_size += 172;
 			} while (n->next);
 		}
 
-		data_size += log->active_psrs[i].retparams_size;
+		data_size += psrs[i].retparams_size;
 	}
 
 	rc = write(destfd, &data_size, sizeof(data_size));
@@ -486,8 +459,8 @@ int parseklog_write_chunk(struct klogfile *log, int destfd) {
 	for (i = 0; i < count; i++) {
 		u_long prev_start_clock;
 		u_long prev_stop_clock;
-		struct syscall_result *apsr = &log->active_psrs[i].psr;
-		struct klog_result *res = &log->active_psrs[i];
+		struct syscall_result *apsr = &psrs[i].psr;
+		struct klog_result *res = &psrs[i];
 
 		/* If (has clock) write clock */
 		if (apsr->flags & SR_HAS_START_CLOCK_SKIP) {
@@ -543,6 +516,38 @@ int parseklog_write_chunk(struct klogfile *log, int destfd) {
 	return 0;
 }
 
+int parseklog_write_chunk(struct klogfile *log, int destfd) {
+	long rc;
+
+	/* Write the header */
+#ifdef USE_HPC
+	rc = write(destfd, &log->hpc1, sizeof(unsigned long long));
+	if (rc != sizeof(unsigned long long)) {
+		fprintf(stderr, "Couldn't record hpc1\n");
+		return -1;
+	}
+	rc = write(destfd, &log->tv1, sizeof(struct timeval));
+	if (rc != sizeof(struct timeval)) {
+		fprintf(stderr, "Couldn't record tv1\n");
+		return -1;
+	}
+	rc = write(destfd, &log->hpc2, sizeof(unsigned long long));
+	if (rc != sizeof(unsigned long long)) {
+		fprintf(stderr, "Couldn't record hpc2\n");
+		return -1;
+	}
+	rc = write(destfd, &log->tv2, sizeof(struct timeval));
+	if (rc != sizeof(struct timeval)) {
+		fprintf(stderr, "Couldn't record tv2\n");
+		return -1;
+	}
+#endif
+
+	rc = parseklog_do_write_chunk(log->active_num_psrs, log->active_psrs, destfd);
+
+	return rc;
+}
+
 void parseklog_set_signalprint(struct klogfile *log,
 		void (*printfcn)(FILE *, struct klog_result *)) {
 	log->signal_print = printfcn;
@@ -592,6 +597,8 @@ static u_long getretparams_retval(struct klogfile *klog,
 	return res->retval;
 }
 
+/* Exceptions */
+/*{{{*/
 static u_long getretparams_read(struct klogfile *log,
 		struct klog_result *res) {
 	long rc;
@@ -975,7 +982,10 @@ static u_long getretparams_socketcall(struct klogfile *log,
 
 	return size;
 }
+/*}}}*/
 
+/* Rules for klog parsing */
+/*{{{*/
 #define _DEFRULE(sysnr, default, fcn) \
 	static struct parse_rules exception_##sysnr = { \
 		.get_retparamsize = (fcn), \
@@ -986,7 +996,6 @@ static u_long getretparams_socketcall(struct klogfile *log,
 #define DEFRULE_FCN(sysnr, fcn) _DEFRULE(sysnr, 0, fcn)
 
 #define ADDRULE(sysnr, log) log->parse_rules[sysnr]=&exception_##sysnr
-
 DEFRULE_FCN(3, getretparams_read);
 DEFRULE_FCN(4, getretparams_write);
 DEFRULE(5, sizeof(struct open_retvals));
@@ -1105,8 +1114,10 @@ DEFRULE_FCN(337, varsize);
 DEFRULE(340, sizeof(struct rlimit64));
 DEFRULE(341, sizeof(struct name_to_handle_at_retvals));
 DEFRULE(343, sizeof(struct timex));
+/*}}}*/
 
-
+/* Adding rules to the excepiton list */
+/*{{{*/
 static void add_default_parse_rule_exceptions(struct klogfile *log) {
 	ADDRULE(3, log);
 	ADDRULE(4, log);
@@ -1227,7 +1238,10 @@ static void add_default_parse_rule_exceptions(struct klogfile *log) {
 	ADDRULE(341, log);
 	ADDRULE(343, log);
 }
+/*}}}*/
 
+/* Parsing syscall number to syscall name */
+/*{{{*/
 static __attribute__((const)) char *syscall_name(int nr) {
 	char *ret;
 
@@ -1586,3 +1600,4 @@ static __attribute__((const)) char *syscall_name(int nr) {
 
 	return ret;
 }
+/*}}}*/

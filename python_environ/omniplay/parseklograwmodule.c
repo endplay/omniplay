@@ -38,6 +38,7 @@ typedef struct {
 	PyObject_HEAD
 	int number;
 	PyObject *next;
+	char raw[172];
 } ParseklogSignal;
 
 static PyObject *ParseklogSignal_new(PyTypeObject *type, PyObject *args,
@@ -50,7 +51,7 @@ static PyObject *ParseklogSignal_new(PyTypeObject *type, PyObject *args,
 	}
 
 	self->number = -1;
-	self->next = NULL;
+	self->next = Py_None;;
 
 out:
 	return (PyObject *)self;
@@ -85,13 +86,8 @@ static void ParseklogSignal_dealloc(ParseklogSignal *self) {
 }
 
 static PyObject *ParseklogSignal_str(ParseklogSignal *str) {
-	if (str->next != NULL) {
-		return PyString_FromFormat("ParseklogSignal[number: %d, next: %s])",
-				str->number, PyString_AsString(PyObject_Str(str->next)));
-	} else {
-		return PyString_FromFormat("ParseklogSignal[number: %d, next: None])",
-			str->number);
-	}
+	return PyString_FromFormat("ParseklogSignal[number: %d, next: %s])",
+			str->number, PyString_AsString(PyObject_Str(str->next)));
 }
 
 static PyMemberDef ParseklogSignal_members[] = {
@@ -158,6 +154,19 @@ static PyObject *ParseklogEntry_new(PyTypeObject *type, PyObject *args,
 	self->klog = NULL;
 	self->raw = NULL;
 
+	self->sysnum = 0;
+	self->flags = 0;
+	self->index = -1;
+
+	self->retparams = Py_None;
+
+	self->start_clock = 0;
+	self->stop_clock = 0;
+
+	self->retval = 0;
+	
+	self->signal = Py_None;
+
 out:
 	return (PyObject *)self;
 }
@@ -220,21 +229,12 @@ static PyMemberDef ParseklogEntry_members[] = {
 	{NULL}
 };
 
-static PyObject *ParseklogEntry_dirty(ParseklogEntry *self, PyObject *args) {
-	self->raw->psr.flags = self->flags;
-	self->raw->psr.sysnum = self->sysnum;
-	self->raw->index = self->index;
-	/* Ugh... need to convert object to data... */
-	self->raw->start_clock = self->start_clock;
-	self->raw->stop_clock = self->stop_clock;
-	self->raw->retval = self->retval;
-	/* Ugh... need to convert signal to... signal */
-	return PyInt_FromLong(0);
-}
 
 static PyMethodDef ParseklogEntry_methods[] = {
+	/*
 	{"dirty", (PyCFunction)ParseklogEntry_dirty, METH_NOARGS,
 		"Updates the raw representation of the klog to match the represented one"},
+		*/
 	{NULL}
 };
 
@@ -354,7 +354,9 @@ static PyObject *repsig_to_pysig(struct klog_signal *sig) {
 			goto out;
 		}
 
-		base_signal->next = NULL;
+		memcpy(base_signal->raw, sig->raw, 172);
+
+		base_signal->next = Py_None;
 		base_signal->number = sig->sig.signr;
 
 		cur_signal = base_signal;
@@ -363,13 +365,14 @@ static PyObject *repsig_to_pysig(struct klog_signal *sig) {
 			ParseklogSignal *next_signal;
 			next_sig = sig->next;
 
-			next_signal = NULL;
+			next_signal = (ParseklogSignal*)Py_None;
 			if (next_sig) {
 				next_signal = (ParseklogSignal *)
 					PyObject_CallObject((PyObject *)&ParseklogSignalType, none);
 			}
 			cur_signal->next = (PyObject *)next_signal;
 			cur_signal->number = cur_sig->sig.signr;
+			memcpy(cur_signal->raw, cur_sig->raw, 172);
 
 			cur_signal = next_signal;
 			cur_sig = next_sig;
@@ -377,8 +380,7 @@ static PyObject *repsig_to_pysig(struct klog_signal *sig) {
 
 		Py_XDECREF(none);
 	} else {
-		/* Ugh... hacky... */
-		base_signal = (void *)Py_BuildValue("");
+		base_signal = (void *)Py_None;
 	}
 
 out:
@@ -395,16 +397,106 @@ static void populate_entry(ParseklogEntry *entry) {
 	entry->stop_clock = res->stop_clock;
 	entry->retval = res->retval;
 	entry->sysnum = res->psr.sysnum;
+	entry->flags = res->psr.flags;
 
 	if (res->retparams) {
 		entry->retparams = PyByteArray_FromStringAndSize(res->retparams,
 				res->retparams_size);
 		assert(res->retparams_size == PyByteArray_Size(entry->retparams));
 	} else {
-		entry->retparams = Py_BuildValue("");
+		entry->retparams = Py_None;
 	}
 
 	entry->signal = repsig_to_pysig(res->signal);
+}
+
+
+struct klog_signal *pysig_to_repsig(ParseklogSignal *signal) {
+	struct klog_signal *ret;
+
+	if (signal == (ParseklogSignal *)Py_None) {
+		return NULL;
+	}
+
+	ret = malloc(sizeof(struct klog_signal));
+	if (ret == NULL) {
+		/* FIXME: error handling */
+		assert(0);
+	}
+
+	/* Setup the data */
+	memcpy(ret->raw, signal->raw, 172);
+	ret->sig.signr = signal->number;
+
+	/* Get the next */
+	ret->next = pysig_to_repsig((ParseklogSignal *)signal->next);
+	/* Update the next pointers as needed */
+	if (ret->next) {
+		ret->sig.next = &ret->next->sig;
+	} else {
+		ret->sig.next = NULL;
+	}
+
+	return ret;
+}
+
+void create_psr(struct klog_result *psr, ParseklogEntry *entry) {
+	/* NOTE: Does not deal with signals at all! they are just passed through */
+
+	/* Poopulate the raw values */
+	psr->psr.flags = entry->flags;
+	psr->psr.sysnum = entry->sysnum;
+	psr->index = entry->index;
+	psr->start_clock = entry->start_clock;
+	psr->stop_clock = entry->stop_clock;
+	psr->retval = entry->retval;
+
+	/* Ugh... need to convert object to data... */
+	if (entry->retparams != Py_None) {
+		psr->retparams_size = PyByteArray_Size(entry->retparams);
+		psr->retparams = PyByteArray_AsString(entry->retparams);
+	/* If the new retparams are null and the old not, free the old */
+	} else {
+		psr->retparams = NULL;
+		psr->retparams_size = 0;
+	}
+
+	psr->signal = pysig_to_repsig((ParseklogSignal *)entry->signal);
+}
+
+static PyObject *Parseklog_do_write(Parseklog *self, PyObject *args) {
+	struct klog_result *psrs = NULL;
+	ParseklogEntry *entry = NULL;
+	PyObject *list;
+	PyObject *itr;
+	int fd;
+	int rc;
+	int i;
+
+	rc = PyArg_ParseTuple(args, "Oi", &list, &fd);
+	if (!rc) {
+		PyErr_SetString(PyExc_ValueError, "Invalid Argument");
+		return NULL;
+	}
+
+	psrs = malloc(PyList_Size(list) * sizeof(struct klog_result));
+	/* Iterate the list */
+	itr = PyList_Type.tp_iter(list);
+	
+	i = 0;
+	while ((entry = (ParseklogEntry *)PyObject_CallMethod(itr, "next", "()")) != NULL) {
+		psrs[i].log = self->log;
+		create_psr(&psrs[i], entry);
+		i++;
+	}
+	PyErr_Clear();
+
+	parseklog_do_write_chunk(PyList_Size(list), psrs, fd);
+
+	Py_XDECREF(itr);
+
+
+	return Py_None;
 }
 
 static PyObject *Parseklog_get_next_psr(Parseklog *self, PyObject *args) {
@@ -415,7 +507,7 @@ static PyObject *Parseklog_get_next_psr(Parseklog *self, PyObject *args) {
 	res = parseklog_get_next_psr(self->log);
 
 	if (!res) {
-		entry = (void *)Py_BuildValue("");
+		entry = (void *)Py_None;
 		goto out;
 	}
 
@@ -440,7 +532,7 @@ out:
 
 static PyObject *Parseklog_read_next_chunk(Parseklog *self, PyObject *args) {
 	parseklog_read_next_chunk(self->log);
-	return PyInt_FromLong(0);
+	return Py_None;
 }
 
 static PyObject *Parseklog_cur_chunk_size(Parseklog *self, PyObject *args) {
@@ -465,7 +557,7 @@ static PyObject *Parseklog_write_chunk(Parseklog *self, PyObject *args) {
 		return NULL;
 	}
 
-	return PyInt_FromLong(0);
+	return Py_None;
 }
 
 static PyMemberDef Parseklog_members[] = {
@@ -474,6 +566,8 @@ static PyMemberDef Parseklog_members[] = {
 };
 
 static PyMethodDef Parseklog_methods[] = {
+	{"do_write", (PyCFunction)Parseklog_do_write, METH_VARARGS,
+		"Writes a list of psrs passed in to a list"},
 	{"get_next_psr", (PyCFunction)Parseklog_get_next_psr, METH_NOARGS,
 		"Returns the next psr from the log"},
 	{"read_next_chunk", (PyCFunction)Parseklog_read_next_chunk, METH_NOARGS,
@@ -527,6 +621,7 @@ static PyTypeObject ParseklogType = {
     Parseklog_new,                 /* tp_new */
 };
 
+
 static PyMethodDef module_methods[] = {
 	{NULL}
 };
@@ -560,6 +655,16 @@ initparseklograw(void) {
 	Py_INCREF(&ParseklogType);
 	Py_INCREF(&ParseklogEntryType);
 	Py_INCREF(&ParseklogSignalType);
+	PyObject_SetAttrString(m, "SR_HAS_RETPARAMS",
+			PyInt_FromLong(SR_HAS_RETPARAMS));
+	PyObject_SetAttrString(m, "SR_HAS_SIGNAL",
+			PyInt_FromLong(SR_HAS_SIGNAL));
+	PyObject_SetAttrString(m, "SR_HAS_START_CLOCK_SKIP",
+			PyInt_FromLong(SR_HAS_START_CLOCK_SKIP));
+	PyObject_SetAttrString(m, "SR_HAS_STOP_CLOCK_SKIP",
+			PyInt_FromLong(SR_HAS_STOP_CLOCK_SKIP));
+	PyObject_SetAttrString(m, "SR_HAS_NONZERO_RETVAL",
+			PyInt_FromLong(SR_HAS_NONZERO_RETVAL));
 	PyModule_AddObject(m, "ParseklogRaw", (PyObject *)&ParseklogType);
 	PyModule_AddObject(m, "ParseklogEntryRaw", (PyObject *)&ParseklogEntryType);
 	PyModule_AddObject(m, "ParseklogSignal", (PyObject *)&ParseklogSignalType);
