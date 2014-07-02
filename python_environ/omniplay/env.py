@@ -90,11 +90,13 @@ class OmniplayEnvironment(object):
             # default is $(HOME)/pin-2.13
             self.pin_root = '/'.join([home, "pin-2.13"])
 
+        #FIXME: Should I just build the pin tools if they don't exist?
         self.tools_location = '/'.join([self.omniplay_location, "pin_tools/obj-ia32"])
 
         self.logdb_dir = "/replay_logdb/"
 
-        binaries = collections.namedtuple('Binary', ["record", "parseklog", "filemap", "replay", "parseckpt", "pin"])
+        binaries = collections.namedtuple('Binary', ["record", "parseklog",
+                "filemap", "replay", "parseckpt", "getstats", "pin"])
         scripts = collections.namedtuple('Scripts', ["setup", "record", "insert", "run_pin"])
 
         self.scripts_dir = ''.join([self.omniplay_location, "/scripts"])
@@ -114,6 +116,7 @@ class OmniplayEnvironment(object):
                 parseklog = '/'.join([self.test_dir, "parseklog"]),
                 filemap = '/'.join([self.test_dir, "filemap"]),
                 parseckpt = '/'.join([self.test_dir, "parseckpt"]),
+                getstats = '/'.join([self.test_dir, "getstats"]),
                 pin = '/'.join([self.pin_root, "pin"])
             )
 
@@ -381,7 +384,6 @@ class OmniplayEnvironment(object):
         @returns None
         """
         with open(output, 'w+') as f:
-            print "Opened output " + output
             run_shell(' '.join([self.bins.parseklog, klog]), outp=f)
 
     def get_record_dir(self, record_group):
@@ -394,3 +396,17 @@ class OmniplayEnvironment(object):
         subdir = ''.join([self.recording_suffix, str(record_group)])
         return '/'.join([self.record_dir, subdir])
 
+    def get_stats(self):
+        p = subprocess.Popen (self.bins.getstats, stdout=subprocess.PIPE)
+        lines = p.stdout.read().split("\n")
+        m = re.search(" ([0-9]+)$", lines[0])
+        if m:
+            started = int(m.groups()[0])
+        else:
+            print "bad output from stats:", lines[0]
+            exit (0)
+        m = re.search(" ([0-9]+)$", lines[1])
+        finished = int(m.groups()[0])
+        m = re.search(" ([0-9]+)$", lines[2])
+        mismatched = int(m.groups()[0])
+        return (started, finished, mismatched)

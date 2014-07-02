@@ -1,0 +1,7 @@
+echo "test"
+cd $OMNIPLAY_DIR/test && make clean && make
+cd micro_test/socket_test/test && make clean all
+cd micro_test/socket_test/ && ./socketrdwrtest.sh
+cd micro_test/socket_test/ && ./sockettest.sh
+cd micro_test/writev && make clean all
+cd micro_test/writev && ./writev
