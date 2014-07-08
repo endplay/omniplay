@@ -117,4 +117,6 @@ long get_record_group_id(__u64 __user * prg_id);
 long get_num_filemap_entries(int fd, loff_t offset, int size);
 long get_filemap(int fd, loff_t offset, int size, void __user * entries, int num_entries);
 
+long reset_replay_ndx(void);
+
 #endif
