@@ -50,6 +50,8 @@ int get_record_group_id (int fd_spec, uint64_t* rg_id);
 int get_num_filemap_entries (int fd_spec, int fd, loff_t offset, int size);
 int get_filemap(int fd_spec, int fd, loff_t offset, int size, void* entries, int num_entries);
 
+long reset_replay_ndx(int fd_spec);
+
 #ifdef __cplusplus
 }
 #endif

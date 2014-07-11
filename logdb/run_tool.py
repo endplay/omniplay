@@ -13,6 +13,9 @@ def main(args):
     if args.flags:
         flags = args.flags
         print(flags)
+    replay_follow = False
+    if args.replay_follow:
+        replay_follow = True
 
     if args.args_pass:
         argstr = args.args_pass
@@ -32,9 +35,11 @@ def main(args):
         sys.exit(0)
     runtime_info = runtime.RunTimeInfo(omniplay_location=omniplay_path)
 
-    #if not os.path.exists(args.pin_tool):
-    #    print("Pin tool %s does not exist, make sure this is the absolute path" %
-    #            args.pin_tool)
+    if args.pin_tool[0] == "/" and not os.path.exists(args.pin_tool):
+        if not os.path.exists(runtime_info.tools_location + "/" + args.pin_tool):
+            print("Pin tool %s does not exist")
+            sys.exit(0)
+
     # assert os.path.exists(args.pin_tool)
     # assert os.path.exists(runtime_info.tools_location + "/" + args.pin_tool)
 
@@ -46,7 +51,9 @@ def main(args):
     log_f = open(stderr_log, "w")
     tool_f = open("/tmp/tool_log", "w")
 
-    replay_process = runtime_info.replay(rec_dir, log_f, pin=True)
+    replay_process = runtime_info.replay(rec_dir, log_f, pin=True,
+                                                follow=replay_follow)
+    replay_pid = replay_process.pid
 
     time.sleep(1)
     start_time = time.time()
@@ -59,6 +66,7 @@ def main(args):
     end_time = time.time()
     
     print("done, took %f secs" % (end_time - start_time))
+    print("replay pid was %d" % replay_pid)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("Run replay with tool script")
@@ -69,6 +77,7 @@ if __name__ == "__main__":
     parser.add_argument("-l", "--log", dest="stderr_log")
     parser.add_argument("-o", dest="stderr_log")
     parser.add_argument("-a", "--arg-pass", dest="args_pass")
+    parser.add_argument("-w", "--follow", dest="replay_follow", action="store_true")
     main_args = parser.parse_args()
     main(main_args)
 

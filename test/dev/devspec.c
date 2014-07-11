@@ -170,6 +170,8 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 			return -EFAULT;
 		}
 		return get_filemap(fedata.fd, fedata.offset, fedata.size, fedata.entries, fedata.num_entries);
+	case SPECI_RESET_REPLAY_NDX:
+		return reset_replay_ndx();
 	default:
 		return -EINVAL;
 	}
