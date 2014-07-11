@@ -157,3 +157,8 @@ int get_filemap (int fd_spec, int fd, loff_t offset, int size, void* entries, in
     fentry.num_entries = num_entries;
     return ioctl (fd_spec, SPECI_GET_FILEMAP, &fentry);
 }
+
+long reset_replay_ndx(int fd_spec)
+{
+    return ioctl (fd_spec, SPECI_RESET_REPLAY_NDX);
+}
