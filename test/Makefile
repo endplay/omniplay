@@ -28,14 +28,8 @@ resume: libutil.a
 resume: CFLAGS += --static
 
 getstats: libutil.a
-getstats: CFLAGS += --static
 
 filemap: libutil.a 
-filemap: CFLAGS += --static
-
-replay_pause: CFLAGS += --static
-
-find_record_time: CFLAGS += --static
 
 parseklog: parseklib.o
 
@@ -48,7 +42,6 @@ libutil.a: util.o parseklib.o
 parseklib.o: $(KENREL_CONFIG)
 
 reset_ndx: libutil.a
-reset_ndx: CFLAGS += --static
 
 .PHONY: clean
 clean:

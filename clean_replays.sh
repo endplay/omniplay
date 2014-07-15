@@ -28,6 +28,8 @@ if [[ "$cache_size" -ne "0" ]]; then
 	exit 1
 fi
 
+$OMNIPLAY_DIR/test/reset_ndx
+
 #if [[ "$do_logrotate" -ne "0" ]]; then
 	#$OMNIPLAY_DIR/rotate_logs.sh
 #fi
