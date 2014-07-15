@@ -1,7 +1,5 @@
 #!/bin/bash
 
-#do_logrotate=1
-
 if [[ -z $OMNIPLAY_DIR ]]; then
 	echo "OMNIPLAY_DIR not set, please run <omniplay_dir>/scripts/setup.sh"
 	exit 0

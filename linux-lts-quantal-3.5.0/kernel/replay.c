@@ -7291,7 +7291,21 @@ replay_write (unsigned int fd, const char __user * buf, size_t count)
 		printk ("Pid %d (recpid %d) clock %ld log_clock %ld replays: %s", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid, *(current->replay_thrd->rp_preplay_clock), current->replay_thrd->rp_expected_clock - 1, kbuf);
 	}
 	DPRINT ("Pid %d replays write returning %d\n", current->pid,rc);
-#ifdef TRACE_PIPE_READ_WRITE
+#ifdef REPLAY_COMPRESS_READS
+	if (pretparams != NULL) {
+		struct replayfs_syscache_id id;
+		id.sysnum = current->replay_thrd->rp_out_ptr - 1;
+		id.unique_id = current->replay_thrd->rp_record_thread->rp_group->rg_id;
+		id.pid = current->replay_thrd->rp_record_thread->rp_record_pid;
+
+		printk("%s %d: Adding syscache with id {%lld, %lld, %lld}\n", __func__,
+				__LINE__, (loff_t)id.sysnum, (loff_t)id.unique_id, (loff_t)id.pid);
+		replayfs_syscache_add(&syscache, &id, rc, buf);
+
+		/* We don't actually allocate any space! <insert evil laugh here> */
+		//argsconsume (current->replay_thrd->rp_record_thread, sizeof(int));
+	}
+#elif defined(TRACE_PIPE_READ_WRITE)
 	if (pretparams != NULL) {
 		argsconsume (current->replay_thrd->rp_record_thread, sizeof(int));
 	}
