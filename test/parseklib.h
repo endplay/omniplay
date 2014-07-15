@@ -80,6 +80,8 @@ struct replayfs_filemap_entry {
 #  define IS_PIPE 2
 #  define IS_PIPE_WITH_DATA 4
 #endif
+#define IS_RECORDED_FILE (1<<3)
+#define READ_NEW_CACHE_FILE (1<<4)
 
 struct repsignal {
 	int signr;
