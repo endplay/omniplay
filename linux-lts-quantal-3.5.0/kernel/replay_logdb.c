@@ -1,4 +1,6 @@
 // replay_logdb.c: manages the organization of replay logs on disk
+#include <linux/kernel.h>
+#include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/syscalls.h>
 #include <linux/replay.h>
@@ -15,6 +17,14 @@ __u64 max_logid = 0;
 
 #define RID_LOCK mutex_lock(&replay_id_mutex); 
 #define RID_UNLOCK mutex_unlock(&replay_id_mutex);
+
+long reset_replay_ndx (void)
+{
+	last_logid = 0;
+	max_logid = 0;
+	return 0;
+}
+EXPORT_SYMBOL(reset_replay_ndx);
 
 // Returns the next logid - may need to get a range allocated first
 __u64 
