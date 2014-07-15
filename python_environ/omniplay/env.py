@@ -483,7 +483,9 @@ class OmniplayEnvironment(object):
 
         @group_id The group_id to be parsed
         @outdir The output directory for all of the parsed info
+        @returns A list of all children
         """
+        count = 0
 
         # First parse the ckpt for the group (in group/ckpt)
         ckpt_output = ''.join([outdir, "/ckpt"])
@@ -497,7 +499,7 @@ class OmniplayEnvironment(object):
             os.mkdir(klogdir)
 
         # Gets and parses all childrens klogs into the specified directory
-        self.get_all_children(group_id, klogdir)
+        return self.get_all_children(group_id, klogdir)
 
 
     def get_record_dir(self, record_group):
