@@ -5,3 +5,6 @@ cd micro_test/socket_test/ && ./socketrdwrtest.sh
 cd micro_test/socket_test/ && ./sockettest.sh
 cd micro_test/writev && make clean all
 cd micro_test/writev && ./writev
+cd papers/sosp11.xray.poster && make clean all
+cd arnold_tests/cvs_co && ./time_test.sh
+cd arnold_tests/cvs_co && rm -rf omniplay co.time test.out tmp
