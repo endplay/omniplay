@@ -1,0 +1,21 @@
+#!/usr/bin/python run_tests.py -t 
+
+#Simple tests
+echo "test"
+cd $OMNIPLAY_DIR/test && make clean && make
+cd micro_test/socket_test/test && make clean all
+cd micro_test/socket_test/ && ./socketrdwrtest.sh
+cd micro_test/socket_test/ && ./sockettest.sh
+cd micro_test/writev && make clean all
+cd micro_test/writev && ./writev
+
+#Slightly more complex
+cd papers/sosp11.xray.poster && make clean all
+
+#Python filemap tests
+%import pytests.test_filemap
+
+#FIXME: Broken tests
+#cd arnold_tests/cvs_co && ./time_test.sh
+#cd arnold_tests/cvs_co && rm -rf omniplay co.time test.out tmp
+
