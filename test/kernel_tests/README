@@ -1,0 +1,66 @@
+REGRESSION TESTER
+
+1) Pre-run setup
+
+The regression tester monitors dmesg, and has to clear the dmesg ring buffer to
+ensure that the data its monitoring is fresh.  To do this it needs root
+privleges.  It accomplishes this by "sudo"ing it has to run this many times from
+new shells, so you'll have to ensure that sudo can be run without a password
+(either by running this as root, or disabling root passwords for sudo dmesg in
+your sudoers file)
+
+2) Run the tests
+
+The primary python file for the test system is run_tests.py. By default
+run_tests will run all commands in the "tests" file.  A new "tests"
+file can be specified with --testfile or -t.
+
+Additional test strings may be run with --with-test="Test format string"
+
+If you want to make a new set of unit tests that arnt included in the standard
+"tests" folder you may consider making your own test file with the interpreter
+line:
+
+#!/usr/bin/python run_tests.py -t
+
+Then executing that file directly.  "tests" is setup so that it may be run
+directly if desired.
+
+3) Test format files
+
+The test format string is parsed as follows
+
+all leading/trailing whitespace is ignored
+One command is given per line
+
+Lines beginning with # are ignored
+
+'%import pymodulename' imports a python test
+
+  - Python tests are useful for more complex tests.  These may include testing
+    pin tools or running some form of microbenchmark for the kernel
+  - Python test modules must define 4 functions:
+      - record(env) - must run the record portion of the test.  May return a
+          "state" object which will be passed into all subsequent calls.  Takes
+          argument "env" being an omniplay environment.
+      - parse(state) - does any static checking of the recording, like parsing klog
+          messages.  NOTE: This function must return the number of record groups
+          recorded by "record()"
+      - replay(state) - Does any dynamic checking of the recorded program, like
+          running the pin-tool race detector, or running any pin tools.
+      - dump(state, outdir) - Called when an error happens, and this module must dump its
+          contents to the test_dump directory.  "state" is the variable returned
+          from record, outdir is an output directory
+
+Lines without # or % prefixes will be evaluated as bash commands and run within
+their own bash shell.  They will be recorded, have their klogs parsed to ensure
+they are valid, and replayed.
+
+4) On failure
+
+When a test failes a directory named test_dump will be created if it does not
+already exist.  Within test_dump a filder named the processes record_group_id
+will be created, and all information about the process execution (like record
+and replay dmesg output, klog parses, and child groups of the record group, and
+standard error/output) will be populated within that directory.
+
