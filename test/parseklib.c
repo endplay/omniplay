@@ -616,6 +616,10 @@ static u_long getretparams_read(struct klogfile *log,
 	}
 	size += sizeof(u_int);
 
+	if (is_cache_read & READ_NEW_CACHE_FILE) {
+		size += sizeof(struct open_retvals);
+	}
+
 	debugf("\tis_cache_file: %d\n", is_cache_read);
 	if (is_cache_read & CACHE_MASK) {
 		size += sizeof(loff_t);
