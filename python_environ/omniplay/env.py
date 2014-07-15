@@ -13,7 +13,7 @@ import collections
 LogCkpt = collections.namedtuple('LogCheckpoint',
         ['pid', 'group_id', 'parent_group_id', 'exe', 'args', 'env'])
 
-def run_shell(cmd, stin=None, outp=None, err=None):
+def run_shell(cmd, stin=None, outp=None, err=None, do_wait=True):
     """ Utility tool for launching a bash command and waiting for it to finish, optional input/output redirection
 
     @param cmd The command to be launched
@@ -40,8 +40,9 @@ def run_shell(cmd, stin=None, outp=None, err=None):
     cmd = ''.join(['bash -c "', cmd, '"'])
 
     proc = subprocess.Popen(shlex.split(cmd), shell=False, stdin=stin, stdout=outp, stderr=err)
-    if proc.wait() != 0:
-        raise RuntimeError("Child exited with unexpected return code")
+    if do_wait:
+        if proc.wait() != 0:
+            raise RuntimeError("Child exited with unexpected return code")
 
     if outp_needs_close:
         outp.close()
@@ -53,6 +54,23 @@ def run_shell(cmd, stin=None, outp=None, err=None):
         stin.close()
 
     return proc
+
+
+def _find_children(klog_filp):
+    """
+    Finds all record groups spawned from a klog
+
+    @klog_filp the file of the klog (python file object, not string)
+    @returns a list of integers, containing group_ids
+    """
+    ret = []
+    for line in klog_filp.readlines():
+        match = re.match("\tnew group id: ([0-9]+)", line)
+        if match is not None:
+            #print "\t\talso scanning child with id: " + match.group(1)
+            ret.append(int(match.group(1)))
+
+    return ret
 
 class OmniplayEnvironment(object):
     """
@@ -90,11 +108,13 @@ class OmniplayEnvironment(object):
             # default is $(HOME)/pin-2.13
             self.pin_root = '/'.join([home, "pin-2.13"])
 
+        #FIXME: Should I just build the pin tools if they don't exist?
         self.tools_location = '/'.join([self.omniplay_location, "pin_tools/obj-ia32"])
 
         self.logdb_dir = "/replay_logdb/"
 
-        binaries = collections.namedtuple('Binary', ["record", "parseklog", "filemap", "replay", "parseckpt", "pin"])
+        binaries = collections.namedtuple('Binary', ["record", "parseklog",
+                "filemap", "replay", "parseckpt", "getstats", "pin"])
         scripts = collections.namedtuple('Scripts', ["setup", "record", "insert", "run_pin"])
 
         self.scripts_dir = ''.join([self.omniplay_location, "/scripts"])
@@ -114,6 +134,7 @@ class OmniplayEnvironment(object):
                 parseklog = '/'.join([self.test_dir, "parseklog"]),
                 filemap = '/'.join([self.test_dir, "filemap"]),
                 parseckpt = '/'.join([self.test_dir, "parseckpt"]),
+                getstats = '/'.join([self.test_dir, "getstats"]),
                 pin = '/'.join([self.pin_root, "pin"])
             )
 
@@ -313,11 +334,13 @@ class OmniplayEnvironment(object):
         process = subprocess.Popen(shlex.split(cmd), shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return process
 
-    def parseckpt(self, filename):
+
+    def parseckpt(self, filename, outfile=None):
         """
         Parses a given record log, and returns a LogCkpt structure representing it
 
-        @param filename The checkpoint to be parsed (ex. /replay_logdb/rec_1/ckpt
+        @param filename The recording checkpoint to be parsed (ex. /replay_logdb/rec_1)
+        @param outfile Optionally a file to save the ckpt to
 
         @returns LogCkpt representing the parsed checkpoint
         """
@@ -330,6 +353,10 @@ class OmniplayEnvironment(object):
 
         with os.fdopen(os.dup(proc.stdout.fileno())) as f:
             for line in f:
+
+                if outfile is not None:
+                    outfile.write(line)
+
                 match = re.match("record pid: ([0-9]+)", line)
                 if match is not None:
                     pid = int(match.group(1))
@@ -381,16 +408,125 @@ class OmniplayEnvironment(object):
         @returns None
         """
         with open(output, 'w+') as f:
-            print "Opened output " + output
             run_shell(' '.join([self.bins.parseklog, klog]), outp=f)
+
+    def _klogs_for_id(self, group_id):
+        """
+        Returns a list of tuples (path, pid) to klogs for a given record group
+
+        @param group_id The group to get the klogs for
+        @returns A list of (string, int) tuples
+        """
+        ret = []
+
+        directory = self.get_record_dir(group_id)
+
+        for f in os.listdir(directory):
+            match = re.match("klog.id.([0-9]+)", f)
+            if match is not None:
+                ret.append(('/'.join([directory, f]), int(match.group(1))))
+
+        return ret
+
+    def get_all_children(self, group_id, parsedir=None):
+        """
+        Finds all of the children for a specific record group.  This requires
+        parsing the klogs, so it may take a little while
+
+        @param group_id the group to find children for
+        @param parsedir The location to put the klog parsings.  They will be stored
+            temporarily (and deleted) if not specified
+
+        @returns A list of group_ids
+        """
+        # Now find all children groups of this recording
+        to_scan = collections.deque([group_id])
+
+        ret = []
+        
+        while to_scan:
+            n = to_scan.popleft()
+
+            klogs = self._klogs_for_id(n)
+            for (fullname, pid) in klogs:
+
+                print "\t\tRunning parseklog on " + fullname
+
+                if parsedir is None:
+                    (fd, tmpdir) = tempfile.mkstemp()
+                    self.parseklog(fullname, tmpdir)
+
+                    with os.fdopen(fd, "r") as f:
+                        chillins = _find_children(f)
+                        to_scan.extend(chillins)
+                        ret.extend(chillins)
+                    os.remove(tmpdir)
+                else:
+                    klogdir = ''.join([parsedir, "/", str(n)])
+                    if (not os.path.isdir(klogdir)):
+                        os.mkdir(klogdir)
+                    klogloc = ''.join([klogdir, "/klog.id.", str(pid)])
+                    self.parseklog(fullname, klogloc)
+
+                    with open(klogloc, "r") as f:
+                        chillins = _find_children(f)
+                        to_scan.extend(chillins)
+                        ret.extend(chillins)
+
+        return ret
+
+
+    def parsegroup(self, group_id, outdir):
+        """
+        Parses all klogs for all children of a record group.  Specify a record
+        group ID and the directory to put all of the outputs
+
+        @group_id The group_id to be parsed
+        @outdir The output directory for all of the parsed info
+        @returns A list of all children
+        """
+        count = 0
+
+        # First parse the ckpt for the group (in group/ckpt)
+        ckpt_output = ''.join([outdir, "/ckpt"])
+        ckpt_file = self.get_record_dir(group_id)
+        with open(ckpt_output, "w") as f:
+            self.parseckpt(ckpt_file, outfile=f)
+
+        # Now parse the klogs in the checkpoint
+        klogdir = '/'.join([outdir, "klogs"])
+        if (not os.path.isdir(klogdir)):
+            os.mkdir(klogdir)
+
+        # Gets and parses all childrens klogs into the specified directory
+        return self.get_all_children(group_id, klogdir)
+
 
     def get_record_dir(self, record_group):
         """
         Given a record group id, translates it into the record group's directory
 
         @param record_group the group id of a record group
-        @return A string representing the directory where the recording is stored
+
+        @returns A string representing the directory where the recording is stored
         """
         subdir = ''.join([self.recording_suffix, str(record_group)])
         return '/'.join([self.record_dir, subdir])
 
+    def get_stats(self):
+        """
+        Returns the record/replay/mismatch stats for this boot
+        """
+        p = subprocess.Popen (self.bins.getstats, stdout=subprocess.PIPE)
+        lines = p.stdout.read().split("\n")
+        m = re.search(" ([0-9]+)$", lines[0])
+        if m:
+            started = int(m.groups()[0])
+        else:
+            print "bad output from stats:", lines[0]
+            exit (0)
+        m = re.search(" ([0-9]+)$", lines[1])
+        finished = int(m.groups()[0])
+        m = re.search(" ([0-9]+)$", lines[2])
+        mismatched = int(m.groups()[0])
+        return (started, finished, mismatched)

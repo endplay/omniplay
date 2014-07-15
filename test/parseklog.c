@@ -219,6 +219,12 @@ static void print_read(FILE *out, struct klog_result *res) {
 
 		int is_cache_read = *((int *)buf);
 
+		if (is_cache_read & READ_NEW_CACHE_FILE) {
+			struct open_retvals *orets = (void *)(buf + sizeof(int) + sizeof(loff_t));
+			fprintf(out, "         Updating cache file to {%lu, %lu, (%ld, %ld)}",
+					orets->dev, orets->ino, orets->mtime.tv_sec, orets->mtime.tv_nsec);
+		}
+
 		if (is_cache_read & CACHE_MASK) {
 			fprintf(out, "         offset is %llx\n", *((long long int *) buf));
 #ifdef TRACE_READ_WRITE
@@ -226,14 +232,14 @@ static void print_read(FILE *out, struct klog_result *res) {
 					struct replayfs_filemap_entry *entry;
 					int i;
 					entry = (struct replayfs_filemap_entry *)(buf + sizeof(long long int));
-						fprintf(out, "         Number of writes sourcing this read: %d\n",
-								entry->num_elms);
+					fprintf(out, "         Number of writes sourcing this read: %d\n",
+							entry->num_elms);
 
-						for (i = 0; i < entry->num_elms; i++) {
-							fprintf(out, "         \tSource %d is {id, pid, syscall_num} {%lld %d %lld}\n", i,
-									(loff_t)entry->elms[i].bval.id.unique_id, entry->elms[i].bval.id.pid,
-									(loff_t)entry->elms[i].bval.id.sysnum);
-						}
+					for (i = 0; i < entry->num_elms; i++) {
+						fprintf(out, "         \tSource %d is {id, pid, syscall_num} {%lld %d %lld}\n", i,
+								(loff_t)entry->elms[i].bval.id.unique_id, entry->elms[i].bval.id.pid,
+								(loff_t)entry->elms[i].bval.id.sysnum);
+					}
 				} while (0);
 #endif
 #ifdef TRACE_PIPE_READ_WRITE
