@@ -2,8 +2,9 @@
 
 import omniplay
 import argparse
+import sys
 
-def main():
+def main(args):
     start_id = 0
     if args.start:
         try:
