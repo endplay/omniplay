@@ -9,6 +9,7 @@ import sqlite3
 import subprocess
 import collections
 import re
+import sys
 
 ## our modules
 import opinfo
@@ -32,7 +33,8 @@ class ReplayLogDB(object):
     #  any sort of operation. But right now, assuming there's not enough concurrent access to the logdb directory as
     #  this is just a convenience DB anyways
     def __init__(self, omniplay_env, logdb_name="replay.db",
-            replay_table_name="replays", graph_table_name="graph_edges"):
+            replay_table_name="replays", graph_table_name="graph_edges",
+            start_id=0, end_id=sys.maxint):
 
         # Path of the omniplay root directory
         self.omniplay_path = omniplay_env.omniplay_location
@@ -53,6 +55,9 @@ class ReplayLogDB(object):
         # stateful state
         self.cursor = None
         self.conn = None
+
+        self.start_id = start_id
+        self.end_id = end_id
 
     def _init_cursor(self):
         """
@@ -304,8 +309,17 @@ class ReplayLogDB(object):
         # only get the replay directories
         replay_directories = filter(lambda x: x.startswith("rec_"), replay_directories)
 
-        # Gets the full path
-        replay_directories = map(lambda x: ''.join([self.logdb_dir, "/", x]), replay_directories)
+        # Filter out groups not in range and not already in the logdb
+        group_ids = [int(x.split("_")[1]) for x in replay_directories if x.startswith("rec_")]
+        max_id = self._max_id()
+        # only get the directories that we havne't already inserted
+        group_ids = sorted(filter(lambda x: x > max_id, group_ids))
+        # Only populate between a certain range
+        group_ids = sorted(filter(lambda x: x >= self.start_id, group_ids))
+        group_ids = sorted(filter(lambda x: x < self.end_id, group_ids))
+        replay_directories = []
+        for group_id in group_ids:
+            replay_directories.append(''.join([self.logdb_dir, "/rec_", str(group_id)]))
         # filter out everything that is not a directory
         replay_directories = filter(lambda x: os.path.isdir(x), replay_directories)
 
@@ -313,7 +327,6 @@ class ReplayLogDB(object):
             print("Error: cursor is not inited, could not populate db")
             return
 
-        max_id = self._max_id()
         for directory in replay_directories:
             log_id = int(re.match(''.join([self.logdb_dir, "/rec_([0-9]+)"]), directory).group(1))
             # see if id in db
