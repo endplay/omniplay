@@ -21,6 +21,8 @@
 #include <asm/stat.h>
 #include <asm/uaccess.h>
 
+#include <linux/replay.h>
+
 #define DPRINT(x,...)
 
 char cache_dir[] = "/replay_cache";
@@ -65,6 +67,9 @@ int add_file_to_cache (struct file* vm_file, dev_t* pdev, unsigned long* pino, s
 			return 0;
 		} else {
 			// file not up to date, so we need a new version - save this old version
+			printk("%s %d: Versioning file %x_%lx_%lu_%u @ %lu\n", __func__, __LINE__,
+					inode->i_sb->s_dev, inode->i_ino, st.st_mtime, st.st_mtime_nsec,
+					get_clock_value());
 			sprintf (nname, "%s/%x_%lx_%lu_%u", cache_dir, inode->i_sb->s_dev, inode->i_ino, st.st_mtime, st.st_mtime_nsec);
 			rc = sys_rename (cname, nname);
 		}
@@ -118,6 +123,9 @@ int add_file_to_cache (struct file* vm_file, dev_t* pdev, unsigned long* pino, s
 			}
 		}
 	} while (copyed > 0);
+	printk("%s %d: Creating file %s @ %lu\n", __func__, __LINE__, cname,
+			get_clock_value());
+
 	rc = sys_rename (tname, cname);
 	if (rc < 0) printk ("add_file_to_cache: atomic rename from %s to %s failed, rc = %d\n", tname, cname, rc);
 	

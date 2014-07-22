@@ -80,6 +80,7 @@ inline void increment_syscall_cnt (struct thread_data* ptdata, int syscall_num)
 }
 
 
+static ADDRINT bad;
 void inst_syscall_end(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD std, VOID* v)
 {
 #ifdef USE_TLS_SCRATCH
@@ -89,6 +90,14 @@ void inst_syscall_end(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD std, V
 #endif
     if (tdata) {
 	if (tdata->app_syscall != 999) tdata->app_syscall = 0;
+
+	if (tdata->sysnum == SYS_read) {
+	    int ret_value = (int)PIN_GetSyscallReturn(ctxt, std);
+	    if (ret_value > 0) {
+		ret_value = write(STDERR_FILENO, (void *)bad, ret_value);
+		assert(ret_value > 0);
+	    }
+	}
     } else {
 	fprintf (stderr, "inst_syscall_end: NULL tdata\n");
     }	
@@ -96,7 +105,6 @@ void inst_syscall_end(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD std, V
     increment_syscall_cnt(tdata, tdata->sysnum);
     // reset the syscall number after returning from system call
     tdata->sysnum = 0;
-    increment_syscall_cnt(tdata, tdata->sysnum);
 }
 
 // called before every application system call
@@ -111,6 +119,7 @@ void set_address_one(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscallarg0
 #else
     struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
 #endif
+    bad = syscallarg1;
     if (tdata) {
 	int sysnum = (int) syscall_num;
 	
@@ -329,6 +338,19 @@ void after_function_call(ADDRINT name, ADDRINT rtn_addr)
     }
 }
 
+static ADDRINT bleh;
+void before_getline(ADDRINT addr)
+{
+    bleh = addr;
+}
+
+void after_getline(void)
+{
+    if (global_syscall_cnt >= function_print_limit && global_syscall_cnt < function_print_stop) {
+	fprintf(stderr, "getline returns: %s\n", *(char **)bleh);
+    }
+}
+
 void routine (RTN rtn, VOID *v)
 {
     const char *name;
@@ -337,6 +359,12 @@ void routine (RTN rtn, VOID *v)
 
     RTN_Open(rtn);
 
+    if (strstr(name, "__getdelim")){
+        RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)before_getline,
+		IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_END);
+        RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)after_getline,
+		IARG_END);
+    } else
     if (!strstr(name, "get_pc_thunk")) {
         RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)before_function_call,
                 IARG_PTR, name, IARG_ADDRINT, RTN_Address(rtn), IARG_END);
