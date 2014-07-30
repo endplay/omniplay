@@ -473,35 +473,6 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
     tdata->record_pid = record_pid;
 }
 
-void change_getpid(ADDRINT reg_ref)
-{
-    int pid = get_record_pid();
-    *(int*)reg_ref = pid;
-}
-
-void routine (RTN rtn, VOID *v)
-{
-    const char *name;
-
-    name = RTN_Name(rtn).c_str();
-
-    RTN_Open(rtn);
-
-    /* 
-     * On replay we can't return the replayed pid from the kernel because Pin
-     * needs the real pid too. (see kernel/replay.c replay_clone).
-     * To account for glibc caching of the pid, we have to account for the 
-     * replay pid in the pintool itself.
-     * */
-    if (!strcmp(name, "getpid") || !strcmp(name, "__getpid")) {
-        RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)change_getpid, 
-                IARG_REG_REFERENCE, LEVEL_BASE::REG_EAX, IARG_END);
-    }
-
-    RTN_Close(rtn);
-}
-
-
 INT32 Usage()
 {
     PIN_ERROR("Error Message, Explain Usage.\n");
@@ -567,7 +538,6 @@ int main(int argc, char** argv)
     PIN_AddForkFunction(FPOINT_AFTER_IN_CHILD, AfterForkInChild, 0);
 
     TRACE_AddInstrumentFunction (track_trace, 0);
-    RTN_AddInstrumentFunction (routine, 0);
 
     PIN_AddFiniFunction(Fini, 0);
     PIN_AddSyscallExitFunction(instrument_syscall_ret, 0);
