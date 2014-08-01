@@ -6,6 +6,7 @@
 #include <syscall.h>
 #include "reentry_lock.h"
 #include <map>
+#include <locale>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <linux/net.h>
@@ -26,31 +27,28 @@ struct thread_data {
     struct thread_data*  next;
     struct thread_data*  prev;
     int                  syscall_num;
+
     char*                syscall_filename;
     int                  socket_call;
     int                  socket_count;
     int                  pipe_count;
     std::stack<ADDRINT>  call_stack; 
     std::stack<string>   string_stack;
-    std::map<string, string> hash;
+    std::map<long, int> stack_count;
 
     u_long app_syscall;
     int record_pid;
 };
 
 
-FILE* log_f = NULL;
 FILE* stack_f = NULL;
+FILE* debug_f = NULL;
 
 int child = 0;
 int fd;
 
-#define LOG_F log_f
-#define LOG_PRINT(args...) \
-{                           \
-    fprintf(LOG_F, args);   \
-    fflush(LOG_F);          \
-}
+int global_push_stack = 0;
+int global_mark_pop = 0;
 
 #define STACK_F stack_f
 #define STACK_PRINT(args...) \
@@ -58,6 +56,17 @@ int fd;
     fprintf(STACK_F, args);  \
     fflush(STACK_F);         \
 }
+
+//#define DEBUG
+#ifdef DEBUG
+#define DEBUG_F debug_f
+#define DEBUG_PRINT(args...) \
+{                            \
+    fprintf(DEBUG_F, args);  \
+    fflush(DEBUG_F);         \
+}
+#endif
+
 
 // Lock Stuf__________________________________________________________
 REENTRY_LOCK relock;
@@ -119,6 +128,17 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
     set_pin_addr (fd, (u_long) &ptdata->app_syscall);
 }
 
+void mark_pop(ADDRINT ip)
+{
+    struct thread_data* ptdata = (struct thread_data*) PIN_GetThreadData(tls_key, PIN_ThreadId());
+    GRAB_GLOBAL_LOCK(ptdata);
+
+    global_mark_pop++;
+    ptdata->returned = 1; 
+    RELEASE_GLOBAL_LOCK(ptdata);
+
+}
+
 void pop_stack(ADDRINT ip)
 {
     struct thread_data* ptdata = (struct thread_data*) PIN_GetThreadData(tls_key, PIN_ThreadId());
@@ -136,30 +156,6 @@ void pop_stack(ADDRINT ip)
     }
     PIN_UnlockClient();
    
-    LOG_PRINT("Return seen at %#x.\n", static_ip);
-    ptdata->returned = 1; 
-    RELEASE_GLOBAL_LOCK(ptdata);
-
-}
-
-void pop_stack2(ADDRINT ip)
-{
-    struct thread_data* ptdata = (struct thread_data*) PIN_GetThreadData(tls_key, PIN_ThreadId());
-    GRAB_GLOBAL_LOCK(ptdata);
-
-    ADDRINT static_ip;
-    PIN_LockClient();
-    IMG img = IMG_FindByAddress(ip);
-    if (IMG_Valid(img)) {
-         ADDRINT offset = IMG_LoadOffset(img);
-         static_ip = ip - offset;
-    }
-    else {
-        static_ip = ip;
-    }
-    PIN_UnlockClient();
-   
-    LOG_PRINT("instruction after ret = %#x.\n", static_ip);
     ptdata->returned = 0;
 
     std::stack<ADDRINT> tmp_addr_stack;
@@ -176,6 +172,16 @@ void pop_stack2(ADDRINT ip)
         tmp_addr_stack.pop();
     }
 
+#ifdef DEBUG
+    std::stack<string> tmp_stack;
+    tmp_stack = ptdata->string_stack;
+    DEBUG_PRINT("Pop_Stack_Before\n");
+    while(!tmp_stack.empty()) {
+        DEBUG_PRINT("%s", tmp_stack.top().c_str());
+        tmp_stack.pop();
+    }
+#endif
+ 
     if(matched){
     while(!ptdata->call_stack.empty()){
         if (ptdata->call_stack.top() == static_ip){
@@ -184,27 +190,21 @@ void pop_stack2(ADDRINT ip)
             break;
         }
         else{
-            LOG_PRINT("popping more than 1.\n");
             ptdata->call_stack.pop();
             ptdata->string_stack.pop();
         }
     }
     }
-
-    // Print stack
-    std::stack<ADDRINT> print_stack;
-    std::stack<string> print_string_stack;
-    print_stack = ptdata->call_stack;
-    print_string_stack = ptdata->string_stack;
-    LOG_PRINT("Stack = \n");
-    while(!print_stack.empty()){
-        LOG_PRINT("%#x\n", print_stack.top());
-        LOG_PRINT("%s\n", print_string_stack.top().c_str());
-        print_stack.pop();
-        print_string_stack.pop();
+ 
+#ifdef DEBUG
+    tmp_stack = ptdata->string_stack;
+    DEBUG_PRINT("Pop_Stack_After\n");
+    while(!tmp_stack.empty()) {
+        DEBUG_PRINT("%s", tmp_stack.top().c_str());
+        tmp_stack.pop();
     }
-    LOG_PRINT("========================\n");
-    
+#endif
+ 
     RELEASE_GLOBAL_LOCK(ptdata);
 }
 
@@ -212,6 +212,8 @@ void push_stack(ADDRINT ip, ADDRINT ins_size)
 {
     struct thread_data* ptdata = (struct thread_data*) PIN_GetThreadData(tls_key, PIN_ThreadId());
     GRAB_GLOBAL_LOCK(ptdata);
+
+    global_push_stack++;
 
     ADDRINT static_ip;
     PIN_LockClient();
@@ -223,60 +225,64 @@ void push_stack(ADDRINT ip, ADDRINT ins_size)
          static_ip = ip - offset;
     }
     else {
-        LOG_PRINT("Should I be here??\n");
         img_name = "[ERROR: Unknown IMG]";
         static_ip = ip;
     }
-   
-    LOG_PRINT("Call seen at %#x.\n", static_ip);
+
     static_ip = static_ip + (int)ins_size;
-    LOG_PRINT("Pushing %#x.\n", static_ip);
-    LOG_PRINT("%s\n", RTN_FindNameByAddress(ip).c_str());
     ptdata->call_stack.push(static_ip);
     char buffer [50];
     sprintf(buffer, "%#x", static_ip);
-    string push_string = img_name + ": " + RTN_FindNameByAddress(ip).c_str() + ": " + buffer;
+    string push_string = img_name + ": " + RTN_FindNameByAddress(ip).c_str() + ": " + buffer + "\n";
     ptdata->string_stack.push(push_string);
-
+ 
+#ifdef DEBUG
+    std::stack<string> tmp_stack;
+    tmp_stack = ptdata->string_stack;
+    DEBUG_PRINT("Push_Stack\n");
+    while(!tmp_stack.empty()) {
+        DEBUG_PRINT("%s", tmp_stack.top().c_str());
+        tmp_stack.pop();
+    }
+#endif
+   
     PIN_UnlockClient();
     RELEASE_GLOBAL_LOCK(ptdata);
 }
 
 void record_callstack(struct thread_data* ptdata, char* filename){
-    LOG_PRINT("Open Syscall. Recording Callstack Instance\n");
-    STACK_PRINT("Input File: %s\n", filename);
+#ifdef DEBUG
+    DEBUG_PRINT("Record Callstack\n");
+#endif
     std::stack<string> tmp_stack;
     tmp_stack = ptdata->string_stack;
+    string tmp_string = "";
     while(!tmp_stack.empty()){
-        STACK_PRINT("%s\n", tmp_stack.top().c_str());
+        tmp_string = tmp_string + tmp_stack.top();
         tmp_stack.pop();
     }
-    STACK_PRINT("\n");
 
-    // Concatenate stack as single string
-    std::stack<string> tmp_string_stack;
-    tmp_string_stack = ptdata->string_stack;
-    string tmp_string = "";
-    while(!tmp_string_stack.empty()) {
-        tmp_string = tmp_string + tmp_string_stack.top();
-        tmp_string_stack.pop();
+    std::locale loc;
+    const std::collate<char>& coll = std::use_facet<std::collate<char> >(loc);
+    long stack_hash = coll.hash(tmp_string.data(), tmp_string.data() + tmp_string.length());
+
+    std::pair<std::map<long, int>::iterator, bool> ret;
+    ret = ptdata->stack_count.insert(std::pair<long, int>(stack_hash, 1));
+    if (!ret.second) {
+        ptdata->stack_count[stack_hash] = ptdata->stack_count[stack_hash] + 1;
     }
-    //ptdata->hash.insert(std::pair<string, string>(tmp_string, filename));
-    ptdata->hash.insert(std::pair<string, string>(tmp_string, filename));
 }
 
 void instrument_syscall(ADDRINT syscall_num, ADDRINT syscallarg1, ADDRINT syscallarg2)
 {
     struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
     GRAB_GLOBAL_LOCK (ptdata);
-    LOG_PRINT("Instrument_syscall.\n");
 
     ptdata->syscall_cnt++;
     ptdata->syscall_num = (int)syscall_num;
     switch(ptdata->syscall_num) {
         case SYS_open:
             ptdata->syscall_filename = (char*) syscallarg1;
-            LOG_PRINT("Open Start, file %s.\n", ptdata->syscall_filename);
             break;
         case SYS_socketcall:
             ptdata->socket_call = (int)syscallarg1;
@@ -310,7 +316,6 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
     }	
 
     int ret_val = (int) PIN_GetSyscallReturn(ctxt, std);
-    LOG_PRINT("ret_val = %d.\n", ret_val);
     switch (ptdata->syscall_num) {
         case SYS_open:
         {
@@ -371,7 +376,7 @@ void trace(INS ins, void* v)
     switch(opcode) {
         case XED_ICLASS_RET_NEAR:
         case XED_ICLASS_RET_FAR:
-            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) pop_stack, IARG_INST_PTR, IARG_END);
+            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) mark_pop, IARG_INST_PTR, IARG_END);
             break;
 
         case XED_ICLASS_CALL_NEAR:
@@ -383,12 +388,11 @@ void trace(INS ins, void* v)
     }
 
     if(ptdata->returned==1) {
-        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) pop_stack2, IARG_INST_PTR, IARG_END);
+        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) pop_stack, IARG_INST_PTR, IARG_END);
         ptdata->returned = 0;
     }
 
     if(INS_IsSyscall(ins)) {
-        LOG_PRINT("syscall: %s.\n", INS_Mnemonic(ins).c_str());
          INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(instrument_syscall), IARG_SYSCALL_NUMBER,
                 IARG_SYSARG_VALUE, 0, 
                 IARG_SYSARG_VALUE, 1, 
@@ -481,6 +485,9 @@ INT32 Usage()
 
 void Fini(INT32 code, void* v)
 {
+	fprintf(stderr, "push_stack_count = %d\n", global_push_stack);
+	fprintf(stderr, "mark_pop count = %d\n", global_mark_pop);
+	
     fprintf(stdout, "End.\n");
 }
 
@@ -506,25 +513,28 @@ int main(int argc, char** argv)
     rc = devspec_init (&fd);
     if (rc < 0) return rc;
 
-    char log_name[256];
-    if (log_f) fclose(log_f);
-    snprintf(log_name, 256, "./log_file.%d", PIN_GetPid());
-    log_f = fopen(log_name, "a");
-    if(!log_f) {
-        printf("ERROR: cannot open log file %s.\n", log_name);
-        return -1;
-    }
-    fprintf(stderr, "Log file name is %s.\n", log_name);
-
     char stack_file_name[256];
     if (stack_f) fclose(stack_f);
-    snprintf(stack_file_name, 256, "./stack_file.%d", PIN_GetPid());
+    snprintf(stack_file_name, 256, "/tmp/stack_file.%d", PIN_GetPid());
     stack_f = fopen(stack_file_name, "a");
     if(!stack_f) {
         printf("ERROR: cannot open stack file %s.\n", stack_file_name);
         return -1;
     }
     fprintf(stderr, "Stack file name is %s.\n", stack_file_name);
+
+#ifdef DEBUG
+    char debug_file_name[256];
+    if (debug_f) fclose(debug_f);
+    snprintf(debug_file_name, 256, "/tmp/debug_file.%d", PIN_GetPid());
+    debug_f = fopen(debug_file_name, "a");
+    if(!debug_f) {
+        printf("ERROR: cannot open debug file %s.\n", debug_file_name);
+        return -1;
+    }
+    fprintf(stderr, "Debug file name is %s.\n", debug_file_name);
+#endif
+
 
 
     // Initialize Thread
