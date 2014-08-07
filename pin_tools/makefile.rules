@@ -104,10 +104,10 @@ $(OBJDIR)parse_xoutput$(EXE_SUFFIX): parse_xoutput.c trace_x.h xray_token.h
 
 # Pintools
 $(OBJDIR)print_instructions$(OBJ_SUFFIX): print_instructions.cpp
-	$(CXX) $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
+	$(CXX) $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $< 
 
 $(OBJDIR)print_instructions$(PINTOOL_SUFFIX): $(OBJDIR)print_instructions$(OBJ_SUFFIX)
-	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS)
+	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) -lglib-2.0
 
 $(OBJDIR)io$(OBJ_SUFFIX): io.cpp xray_monitor.h
 	$(CXX) $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
