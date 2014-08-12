@@ -126,7 +126,7 @@ static int read_psr_chunk(struct klogfile *log) {
 	int count;
 	u_long data_size;
 	int i;
-	long rc;
+	long rc, bytes_read;
 	struct syscall_result *psrs;
 
 	/* Read header */
@@ -270,16 +270,21 @@ static int read_psr_chunk(struct klogfile *log) {
 
 			rc = lseek(log->fd, 0, SEEK_CUR);
 			debugf("Reading retparams (%d) from %ld\n", apsr->retparams_size, rc);
-			rc = read(log->fd, apsr->retparams, apsr->retparams_size);
-			if (rc != apsr->retparams_size) {
-				fprintf(stderr, "could not read apsr->retparams!\n");
-
-				apsr->retparams_size = 0;
-				klog_print(stderr, apsr);
-
-				free_active_psrs(log);
-				goto out_free;
-			}
+			bytes_read = 0;
+			do {
+				rc = read(log->fd, apsr->retparams+bytes_read, apsr->retparams_size-bytes_read);
+				if (rc != apsr->retparams_size) {
+					fprintf(stderr, "could not read apsr->retparams (rc=%ld, size=%d)!\n", rc, apsr->retparams_size);
+					if (rc <= 0) {
+						apsr->retparams_size = 0;
+						klog_print(stderr, apsr);
+						
+						free_active_psrs(log);
+						goto out_free;
+					}
+				}
+				bytes_read += rc;
+			} while (bytes_read != apsr->retparams_size);
 		}
 
 		if (apsr->psr.flags & SR_HAS_SIGNAL) {
@@ -615,10 +620,6 @@ static u_long getretparams_read(struct klogfile *log,
 		return -1;
 	}
 	size += sizeof(u_int);
-
-	if (is_cache_read & READ_NEW_CACHE_FILE) {
-		size += sizeof(struct open_retvals);
-	}
 
 	debugf("\tis_cache_file: %d\n", is_cache_read);
 	if (is_cache_read & CACHE_MASK) {
@@ -986,6 +987,58 @@ static u_long getretparams_socketcall(struct klogfile *log,
 
 	return size;
 }
+
+static u_long getretparams_pread64 (struct klogfile *log, struct klog_result *res) 
+{
+	long rc;
+	u_long size = 0;
+	int extra_bytes = 0;
+	long return_pos;
+	u_int is_cache_read;
+
+	return_pos = lseek(log->fd, 0, SEEK_CUR);
+
+	rc = read(log->fd, &is_cache_read, sizeof(u_int));
+	if (rc != sizeof(u_int)) {
+		fprintf (stderr, "cannot read is_cache value\n");
+		return -1;
+	}
+	size += sizeof(u_int);
+
+	debugf(stderr, "\tis_cache_file: %d\n", is_cache_read);
+	if (is_cache_read & CACHE_MASK) {
+		size += sizeof(loff_t);
+
+#ifdef TRACE_READ_WRITE
+		do {
+			off_t orig_pos;
+			struct replayfs_filemap_entry entry;
+			loff_t bleh;
+
+			orig_pos = lseek(log->fd, 0, SEEK_CUR);
+			rc = read(log->fd, &bleh, sizeof(loff_t));
+			rc = read(log->fd, &entry, sizeof(struct replayfs_filemap_entry));
+			lseek(log->fd, orig_pos, SEEK_SET);
+
+			if (rc != sizeof(struct replayfs_filemap_entry)) {
+				fprintf(stderr, "cannot read entry\n");
+				return -1;
+			}
+
+			extra_bytes += sizeof(struct replayfs_filemap_entry) + entry.num_elms * sizeof(struct replayfs_filemap_value);
+			size += sizeof(struct replayfs_filemap_entry) + entry.num_elms * sizeof(struct replayfs_filemap_value);
+		} while (0);
+#endif
+	} else {
+		size += res->retval; 
+	}
+
+	lseek(log->fd, return_pos, SEEK_SET);
+
+	return size;
+}
+
+
 /*}}}*/
 
 /* Rules for klog parsing */
@@ -1059,7 +1112,7 @@ DEFRULE(174, 20); /* sizeof(struct sigaction)*/
 DEFRULE_FCN(175, varsize);
 DEFRULE_FCN(176, varsize);
 DEFRULE(177, sizeof(siginfo_t));
-DEFRULE_FCN(180, getretparams_retval);
+DEFRULE_FCN(180, getretparams_pread64);
 DEFRULE_FCN(183, getretparams_retval);
 DEFRULE_FCN(184, varsize);
 DEFRULE(185, sizeof(struct __user_cap_header_struct));
