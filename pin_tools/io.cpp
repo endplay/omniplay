@@ -354,10 +354,6 @@ void read_start(int fd, void* buf, int read_size) {
     struct read_info* ri;
     ri = (struct read_info *) malloc(sizeof(struct read_info));
 
-		if (fd == 0) {
-			fprintf(stderr, "Have stdin\n");
-		}
-
     ri->fd = fd;
     ri->buf = buf;
     ri->read_size = read_size;
@@ -386,9 +382,6 @@ void read_stop(int rc) {
         int rcc;
         int has_fd = 0;
         struct read_info* ri = (struct read_info *) tdata->syscall_info;
-				if (ri->fd == 0) {
-					fprintf(stderr, "Have stdin\n");
-				}
         assert (ri);
         if (monitor_has_fd(open_fds, ri->fd)) {
             struct open_info* oi = (struct open_info *) monitor_get_fd_data(open_fds, ri->fd);
@@ -1472,8 +1465,8 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
         fprintf (stderr, "instrument_syscall_ret: NULL tdata\n");
     }
     fprintf (stderr, "%ld Pid %d, tid %d, (record pid %d), %ld: syscall ret is %d\n", global_syscall_cnt, PIN_GetPid(), PIN_GetTid(), tdata->record_pid, tdata->syscall_cnt, tdata->sysnum);
-    ADDRINT ret_value = PIN_GetSyscallReturn(ctxt, std);
 
+    ADDRINT ret_value = PIN_GetSyscallReturn(ctxt, std);
     switch (tdata->sysnum) {
         case SYS_open:
             open_stop((int) ret_value);
@@ -1577,7 +1570,7 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscalla
             check_clock_before_syscall (dev_fd, (int) syscall_num);
         }
         tdata->sysnum = syscall_num;
-	tdata->syscall_info = NULL;
+        tdata->syscall_info = NULL;
 
         switch(sysnum) {
         case 31:
@@ -1587,8 +1580,8 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscalla
         {
             char* program_name = (char *) syscallarg0;
             fprintf(stderr, "Trying to exec %s\n", program_name);
-	    // need to increment here because exec does not return
-	    increment_syscall_cnt(tdata, sysnum);
+            // need to increment here because exec does not return
+            increment_syscall_cnt(tdata, sysnum);
             break;
         }
         case SYS_open:
@@ -1679,10 +1672,8 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscalla
                     fprintf(stderr, "Unknown socket call %d\n", call);
             };
             break;
-	}
-
-	tdata->app_syscall = syscall_num;
-
+        }
+        tdata->app_syscall = syscall_num;
     } else {
         fprintf (stderr, "instrumente_syscall: NULL tdata\n");
     }
@@ -1738,34 +1729,6 @@ void track_trace(TRACE trace, void* data)
     // So we can instrument every trace (instead of every instruction) to check to see if
     // the beginning of the trace is the first instruction after a system call.
     TRACE_InsertCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_after, IARG_INST_PTR, IARG_END);
-}
-
-void change_getpid(ADDRINT reg_ref)
-{
-    int pid = get_record_pid();
-    *(int*)reg_ref = pid;
-}
-
-void routine (RTN rtn, VOID *v)
-{
-    const char *name;
-
-    name = RTN_Name(rtn).c_str();
-
-    RTN_Open(rtn);
-
-    /* 
-     * On replay we can't return the replayed pid from the kernel because Pin
-     * needs the real pid too. (see kernel/replay.c replay_clone).
-     * To account for glibc caching of the pid, we have to account for the 
-     * replay pid in the pintool itself.
-     * */
-    if (!strcmp(name, "getpid") || !strcmp(name, "__getpid")) {
-        RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)change_getpid, 
-                IARG_REG_REFERENCE, LEVEL_BASE::REG_EAX, IARG_END);
-    }
-
-    RTN_Close(rtn);
 }
 
 BOOL follow_child(CHILD_PROCESS child, void* data)
@@ -1946,7 +1909,7 @@ int main(int argc, char** argv)
 
     // Obtain a key for TLS storage
     tls_key = PIN_CreateThreadDataKey(0);
-
+    
     PIN_AddThreadStartFunction(thread_start, 0);
     PIN_AddThreadFiniFunction(thread_fini, 0);
 
@@ -1960,7 +1923,6 @@ int main(int argc, char** argv)
     PIN_AddForkFunction(FPOINT_AFTER_IN_CHILD, AfterForkInChild, 0);
 
     TRACE_AddInstrumentFunction (track_trace, 0);
-    RTN_AddInstrumentFunction (routine, 0);
 
     PIN_AddSyscallExitFunction(instrument_syscall_ret, 0);
     PIN_StartProgram();
