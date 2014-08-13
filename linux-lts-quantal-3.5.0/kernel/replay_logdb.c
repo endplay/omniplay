@@ -139,7 +139,6 @@ make_logdir_for_replay_id (__u64 id, char* buf)
 	get_logdir_for_replay_id (id, buf);
 
 	set_fs(KERNEL_DS);
-	printk("%s %d: Making directory %s\n", __func__, __LINE__, buf);
 	rc = sys_mkdir (buf, 0777);
 	if (rc < 0) {
 		printk ("get_logdir_for_replayid: cannot create directory %s, rc=%d\n", buf, rc);
