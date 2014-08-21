@@ -123,6 +123,7 @@ void *serverThread(void *args) {
 	char replyFileNameDebug [256];
 	char errorFileName [256];
 	char convertFileName [256];
+	char eventCompressFileName[256];
 
 #ifndef FILE_REPLAY
 	char tmp_buffer [256];
@@ -182,6 +183,7 @@ void *serverThread(void *args) {
 			pid, connTimes);
 	sprintf(eventFileName, "/replay_logdb/%s/event.log.id.%u.%d", tmp_buffer + 13, pid,
 			connTimes);
+	sprintf(eventCompressFileName, "/replay_logdb/%s/event.compress.log.id.%u.%d", tmp_buffer + 13, pid, connTimes);
 	sprintf(errorFileName, "/replay_logdb/%s/error.log.id.%u.%d", tmp_buffer + 13, pid,
 			connTimes);
 	sprintf(replyFileNameDebug, "/replay_logdb/%s/reply.log.id.debug.%u.%d",
@@ -251,7 +253,7 @@ void *serverThread(void *args) {
 			cout <<"select in thread fails."<<endl;
 			Cleanup();
 		} else {
-			encodeBuffer.reset();
+			//encodeBuffer.reset();
 			if (FD_ISSET (xServerFD, &rfds)) {
 				if (thread_debug)
 				cout <<"reply and event messages from x server"<<endl;
@@ -259,6 +261,11 @@ void *serverThread(void *args) {
 				if (!serverChannel.doRead(encodeBuffer, sequence, eventQueue,
 								xAppFD, xServerFD, replay_mode)) {
 					cout <<"x server connection closed."<<endl;
+					//cerr << "encoded message size is "<<encodeBuffer.getDataLength()<<endl;
+					/*fstream os;
+					os.open (eventCompressFileName, ios::out | ios::binary | ios::trunc);
+					os.write ((char*)encodeBuffer.getData(), encodeBuffer.getDataLength());
+					os.close ();*/
 					SOCKCLOSE (xAppFD);
 					SOCKCLOSE (xServerFD);
 					break;
@@ -277,6 +284,11 @@ void *serverThread(void *args) {
 					SOCKCLOSE (xAppFD);
 					SOCKCLOSE (xServerFD);
 					cout <<"quiting the thread now."<<endl;
+					//cerr << "encoded message size is "<<encodeBuffer.getDataLength()<<endl;
+					/*fstream os;
+					os.open (eventCompressFileName, ios::out | ios::binary | ios::trunc);
+					os.write ((char*)encodeBuffer.getData(), encodeBuffer.getDataLength());
+					os.close ();*/
 					break;
 				}
 #ifndef FILE_REPLAY

@@ -34,7 +34,7 @@ struct filemap_entry {
 };
 
 int devspec_init (int* fd_spec);
-int replay_fork (int fd_spec, const char** args, const char** env, char* linkpath, char* logdir, int save_mmap);
+int replay_fork (int fd_spec, const char** args, const char** env, char* linkpath, char* logdir, int save_mmap, int output_fd);
 int resume (int fd_spec, int attach_pin, int follow_splits, int save_mmap, char* logdir, char* linker);
 int set_pin_addr (int fd_spec, u_long app_syscall_addr);
 int check_clock_before_syscall (int fd_spec, int syscall);
@@ -49,6 +49,8 @@ int get_record_group_id (int fd_spec, uint64_t* rg_id);
 
 int get_num_filemap_entries (int fd_spec, int fd, loff_t offset, int size);
 int get_filemap(int fd_spec, int fd, loff_t offset, int size, void* entries, int num_entries);
+
+long reset_replay_ndx(int fd_spec);
 
 #ifdef __cplusplus
 }

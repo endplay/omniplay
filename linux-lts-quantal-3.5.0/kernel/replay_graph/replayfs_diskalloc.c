@@ -1251,9 +1251,6 @@ void replayfs_diskalloc_sync(struct replayfs_diskalloc *alloc) {
 }
 
 void replayfs_diskalloc_destroy(struct replayfs_diskalloc *alloc) {
-	struct page_data *data;
-	struct page_data *_t;
-
 	allocref_debugk("%s %d: About to put alloc %p\n", __func__, __LINE__,
 			alloc);
 

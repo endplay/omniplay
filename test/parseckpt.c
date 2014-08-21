@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <stdint.h>
 #include <sys/resource.h>
+#include <time.h>
 
 // redefined from the kernel
 #define _NSIGS 64
@@ -26,6 +27,7 @@ int main (int argc, char* argv[])
     uint64_t parent_rg_id;
     struct rlimit rlimits[RLIM_NLIMITS];
     struct k_sigaction sighands[_NSIGS];
+    struct timespec time;
 
     if (argc != 2) {
 	printf ("format: parseckpt <dir>\n");
@@ -65,6 +67,7 @@ int main (int argc, char* argv[])
 	printf ("parseckpt: tried to read filename size, got rc %ld\n", copyed);
 	return -1;
     }
+
     copyed = read(fd, filename, len);
     if (copyed != len) {
 	printf ("parseckpt: tried to read filename size, got rc %ld\n", copyed);
@@ -129,6 +132,14 @@ int main (int argc, char* argv[])
 	}
 	printf ("Env. var. %d is %s\n", i, buf);
     }
+
+    copyed = read(fd, (char *) &time, sizeof(time));
+    if (copyed != sizeof(time)) {
+        printf ("parseckpt: tried to read time, got %ld\n", copyed);
+	printf ("This might be an older recording that doesn't have this time\n");
+	return -1;
+    }
+    printf ("time of replay is: %ld sec %ld nsec\n", time.tv_sec, time.tv_nsec);
 
     close (fd);
     return 0;

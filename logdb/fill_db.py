@@ -1,27 +1,45 @@
 #!/usr/bin/python
 
+import omniplay
+import argparse
 import sys
-import logdb
 
-def main():
+def main(args):
+    start_id = 0
+    if args.start:
+        try:
+            start_id = int(args.start)
+        except ValueError:
+            print("could not parse start group id, %s, needs to be an int" % 
+                    args.start)
+            sys.exit(0)
 
-    if len(sys.argv) != 2:
-        print("Please provide your omniplay path")
+    end_id = sys.maxint
+    if args.end:
+        try:
+            end_id = int(args.end)
+        except ValueError:
+            print("could not parse end group id, %s, needs to be an int" %
+                    args.end)
+            sys.exit(0)
+
+    if args.verbose:
+        print("Starting from group id %d, going to %d" % 
+                (start_id, end_id))
+
+    # bounds check
+    if end_id < start_id:
+        print("Invalid ID bounds, end_id < start_id")
         sys.exit(-1)
 
-    # pass in path for omniplay
-    omniplay_path = sys.argv[1]
-
-    # See logdb.py, but the defaul location for the db is /replay_logdb/replay.db
-    #  and creates the table 'replays'
-    rldb = logdb.ReplayLogDB(omniplay_path, logdb_name="replay.db", logdb_dir="/replay_logdb", replay_table_name="replays")
-    rldb.init_cursor()
-    rldb.create_table()
-
-    # looks in logdb_dir and populates the DB from this directory.
-    # Ignores replays already in the DB
-    rldb.populate()
-    rldb.close_cursor()
+    env = omniplay.OmniplayEnvironment()
+    rldb = omniplay.logdb.ReplayLogDB(env, start_id=start_id, end_id=end_id)
+    rldb.updatedb()
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser("Runs a single linkage on a replay group")
+    parser.add_argument("-s", "--start", help="Group ID to start at")
+    parser.add_argument("-e", "--end", help="Group ID to end at")
+    parser.add_argument("-v", "--verbose", help="verbose output")
+    args = parser.parse_args()
+    main(args)

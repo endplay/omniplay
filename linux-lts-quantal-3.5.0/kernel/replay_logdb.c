@@ -1,4 +1,6 @@
 // replay_logdb.c: manages the organization of replay logs on disk
+#include <linux/kernel.h>
+#include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/syscalls.h>
 #include <linux/replay.h>
@@ -15,6 +17,14 @@ __u64 max_logid = 0;
 
 #define RID_LOCK mutex_lock(&replay_id_mutex); 
 #define RID_UNLOCK mutex_unlock(&replay_id_mutex);
+
+long reset_replay_ndx (void)
+{
+	last_logid = 0;
+	max_logid = 0;
+	return 0;
+}
+EXPORT_SYMBOL(reset_replay_ndx);
 
 // Returns the next logid - may need to get a range allocated first
 __u64 
@@ -122,6 +132,7 @@ make_logdir_for_replay_id (__u64 id, char* buf)
 {
 	mm_segment_t old_fs = get_fs();
 	int rc;
+	int fd;
 
 	if (id == 0) return -1;
 
@@ -129,9 +140,29 @@ make_logdir_for_replay_id (__u64 id, char* buf)
 
 	set_fs(KERNEL_DS);
 	rc = sys_mkdir (buf, 0777);
-	if (rc < 0) printk ("get_logdir_for_replayid: cannot create directory %s, rc=%d\n", buf, rc);
+	if (rc < 0) {
+		printk ("get_logdir_for_replayid: cannot create directory %s, rc=%d\n", buf, rc);
+		goto out;
+	}
+	fd = sys_open(buf, O_DIRECTORY, 0777);
+	if (rc < 0) {
+		printk( "get_logdir_for_replayid: cannot open directory %s, rc=%d\n", buf, rc);
+		goto out;
+	}
+	rc = sys_fchmod(fd, 0777);
+	if (rc < 0) {
+		printk("get_logdir_for_replayid: cannot fchmod directory %s, rc=%d\n", buf, rc);
+		goto out;
+	}
+	rc = sys_close(fd);
+	if (rc < 0) {
+		printk("get_logdir_for_replayid: cannot close directory %s, rc=%d\n", buf, rc);
+		goto out;
+	}
+
 	set_fs(old_fs);
 
+out:
 	return rc;
 }
 

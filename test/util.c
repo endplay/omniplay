@@ -59,7 +59,8 @@ int devspec_init (int* fd_spec)
     return 0;
 }
 
-int replay_fork (int fd_spec, const char** args, const char** env, char* linkpath, char* logdir, int save_mmap)
+int replay_fork (int fd_spec, const char** args, const char** env,
+    char* linkpath, char* logdir, int save_mmap, int pipe_fd)
 {
     struct record_data data;
     data.args = args;
@@ -68,6 +69,7 @@ int replay_fork (int fd_spec, const char** args, const char** env, char* linkpat
     data.save_mmap = save_mmap;
     data.fd = fd_spec;
     data.logdir = logdir;
+    data.pipe_fd = pipe_fd;
     return ioctl (fd_spec, SPECI_REPLAY_FORK, &data);
 }
 
@@ -154,4 +156,9 @@ int get_filemap (int fd_spec, int fd, loff_t offset, int size, void* entries, in
     fentry.entries = entries;
     fentry.num_entries = num_entries;
     return ioctl (fd_spec, SPECI_GET_FILEMAP, &fentry);
+}
+
+long reset_replay_ndx(int fd_spec)
+{
+    return ioctl (fd_spec, SPECI_RESET_REPLAY_NDX);
 }

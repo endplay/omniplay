@@ -75,7 +75,16 @@
 
 #define CLOEXEC 1
 
+/* Number of registers and their sizes*/
 #define NUM_REGS 128
+#define REG_SIZE 4
+#define NUM_MM_REGS 8
+#define MM_REG_SIZE 16
+#define NUM_XMM_REGS 8
+#define XMM_REG_SIZE 32
+#define NUM_FPU_REGS 8
+#define FPU_REG_SIZE 10
+
 #define FIRST_TABLE_SIZE 131072
 #define SECOND_TABLE_SIZE 1024
 #define THIRD_TABLE_SIZE 32

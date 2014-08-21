@@ -90,6 +90,12 @@
  * [10-Sep-98 Alan Modra] Another symlink change.
  */
 
+/* BEGIN REPLAY */
+extern int debug_flag;
+//#define DEBUGK(...) if (debug_flag) printk(__VA_ARGS__);
+#define DEBUGK(...) 
+/* END REPLAY */
+
 /* [Feb-Apr 2000 AV] Complete rewrite. Rules for symlinks:
  *	inside the path - always follow.
  *	in the last component in creation/removal/renaming - never follow.
@@ -1337,18 +1343,26 @@ static inline int walk_component(struct nameidata *nd, struct path *path,
 		return handle_dots(nd, type);
 	err = lookup_fast(nd, name, path, &inode);
 	if (unlikely(err)) {
-		if (err < 0)
+		DEBUGK("%s %d: lookup_fast failed\n", __func__, __LINE__);
+		if (err < 0) {
+			DEBUGK("%s %d: FAILURE: %d\n", __func__, __LINE__, err);
 			goto out_err;
+		}
 
 		err = lookup_slow(nd, name, path);
-		if (err < 0)
+		if (err < 0) {
+			DEBUGK("%s %d: FAILURE: %d\n", __func__, __LINE__, err);
 			goto out_err;
+		}
 
 		inode = path->dentry->d_inode;
 	}
 	err = -ENOENT;
-	if (!inode)
+	if (!inode) {
+		DEBUGK("%s %d: name is %s\n", __func__, __LINE__, name->name);
+		DEBUGK("%s %d: FAILURE: %d\n", __func__, __LINE__, err);
 		goto out_path_put;
+	}
 
 	if (should_follow_link(inode, follow)) {
 		if (nd->flags & LOOKUP_RCU) {
@@ -1577,8 +1591,10 @@ static int link_path_walk(const char *name, struct nameidata *nd)
 		int type;
 
 		err = may_lookup(nd);
- 		if (err)
+ 		if (err) {
+			DEBUGK("%s %d: FAILURE: %d\n", __func__, __LINE__, err);
 			break;
+		}
 
 		len = hash_name(name, &this.hash);
 		this.name = name;
@@ -1601,8 +1617,10 @@ static int link_path_walk(const char *name, struct nameidata *nd)
 			if (unlikely(parent->d_flags & DCACHE_OP_HASH)) {
 				err = parent->d_op->d_hash(parent, nd->inode,
 							   &this);
-				if (err < 0)
+				if (err < 0) {
+					DEBUGK("%s %d: FAILURE: %d\n", __func__, __LINE__, err);
 					break;
+				}
 			}
 		}
 
@@ -1620,17 +1638,22 @@ static int link_path_walk(const char *name, struct nameidata *nd)
 		name += len;
 
 		err = walk_component(nd, &next, &this, type, LOOKUP_FOLLOW);
-		if (err < 0)
+		if (err < 0) {
+			DEBUGK("%s %d: FAILURE: %d\n", __func__, __LINE__, err);
 			return err;
+		}
 
 		if (err) {
 			err = nested_symlink(&next, nd);
-			if (err)
+			if (err) {
+				DEBUGK("%s %d: FAILURE: %d\n", __func__, __LINE__, err);
 				return err;
+			}
 		}
 		if (can_lookup(nd->inode))
 			continue;
 		err = -ENOTDIR; 
+		DEBUGK("%s %d: FAILURE: %d\n", __func__, __LINE__, err);
 		break;
 		/* here ends the main loop */
 
@@ -2468,13 +2491,17 @@ static struct file *path_openat(int dfd, const char *pathname,
 	nd->intent.open.create_mode = op->mode;
 
 	error = path_init(dfd, pathname, flags | LOOKUP_PARENT, nd, &base);
-	if (unlikely(error))
+	if (unlikely(error)) {
+		DEBUGK("%s %d: FAILURE: %d\n", __func__, __LINE__, error);
 		goto out_filp;
+	}
 
 	current->total_link_count = 0;
 	error = link_path_walk(pathname, nd);
-	if (unlikely(error))
+	if (unlikely(error)) {
+		DEBUGK("%s %d: FAILURE: %d\n", __func__, __LINE__, error);
 		goto out_filp;
+	}
 
 	filp = do_last(nd, &path, op, pathname);
 	while (unlikely(!filp)) { /* trailing symlink */
@@ -2489,10 +2516,13 @@ static struct file *path_openat(int dfd, const char *pathname,
 		nd->flags |= LOOKUP_PARENT;
 		nd->flags &= ~(LOOKUP_OPEN|LOOKUP_CREATE|LOOKUP_EXCL);
 		error = follow_link(&link, nd, &cookie);
-		if (unlikely(error))
+		if (unlikely(error)) {
+			DEBUGK("%s %d: FAILURE: %d\n", __func__, __LINE__, error);
 			filp = ERR_PTR(error);
-		else
+		}
+		else {
 			filp = do_last(nd, &path, op, pathname);
+		}
 		put_link(nd, &link, cookie);
 	}
 out:
@@ -2531,7 +2561,12 @@ struct file *do_filp_open(int dfd, const char *pathname,
  		extern void replayfs_file_opened(struct file *filp);
  		replayfs_file_opened(filp);
  	} while (0);
+	if (IS_ERR(filp)) {
+		DEBUGK("%s %d: FAILURE: %ld flags are %d\n", __func__, __LINE__,
+				PTR_ERR(filp), flags);
+	}
  /* End REPLAY */
+
 
 	return filp;
 }

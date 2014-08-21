@@ -483,14 +483,13 @@ int replayfs_filemap_write(struct replayfs_filemap *map, loff_t unique_id,
 
 extern atomic_t vals_kmalloc;
 extern atomic_t vals_kfree;
-extern atomic_t entry_kmalloc;
 struct replayfs_filemap_entry *replayfs_filemap_read(struct replayfs_filemap *map,
 		loff_t offset, int size) {
 	loff_t ret;
 	int vals_index;
 	int vals_size = 1<<4;
 	struct replayfs_filemap_value *vals;
-	struct replayfs_filemap_entry *entry;
+	struct replayfs_filemap_entry *entry = NULL;
 
 	loff_t end_addr = offset+size;
 	loff_t cur_addr = offset;
@@ -628,7 +627,6 @@ struct replayfs_filemap_entry *replayfs_filemap_read(struct replayfs_filemap *ma
 		ret = -ENOMEM;
 		goto out;
 	}
-	atomic_inc(&entry_kmalloc);
 
 
 	debugk("%s %d: about to alloc/copy with vals_index of %d!\n", __func__, __LINE__, vals_index);

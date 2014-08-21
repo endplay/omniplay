@@ -1,46 +1,62 @@
+CC := gcc
+
 CFLAGS := -Wall -Werror -g 
 LDFLAGS := -Wall -Werror -g 
 
+#LDLIBS := libutil.a
+
 KERN_CONFIG := replay_headers/include/linux/replay_configs.h
 
-TARGETS=libutil.a parseklog parseulog parsemlog launcher resume parseckpt getstats filemap replay_pause
- # parseelog
+DEPS_DIR := .deps
 
+TARGETS=parseklog parseulog parsemlog launcher resume parseckpt \
+	getstats filemap replay_pause parseklog_old reset_ndx
+
+# For automatic .h dependency tracking... may not work perfectly for launcher as
+#    the include path changes for it
+CFILES=$(wildcard *.c)
+DEPS=$(patsubst %.c, .deps/%.d, $(CFILES))
+
+.PHONY: all
 all: $(TARGETS)
 
-parseklog: parseklog.c $(KERN_COFNIG)
-	gcc parseklog.c -o parseklog -Wall -Werror -g
+# Build dependencies + any extra flags
+launcher: libutil.a
+launcher: CFLAGS += --static -I../../eglibc-2.15/prefix/include -L../../eglibc-2.15/prefix/lib 
 
-parseulog: parseulog.c
-	gcc parseulog.c -o parseulog -Wall -Werror -g
+resume: libutil.a
+resume: CFLAGS += --static
 
-parsemlog: parsemlog.c
-	gcc parsemlog.c -o parsemlog -Wall -Werror -g
+getstats: libutil.a
 
-parseelog: parseelog.c
-	gcc parseelog.c -o parseelog -Wall -Werror -g
+filemap: libutil.a 
 
-parseckpt: parseckpt.c
-	gcc parseckpt.c -o parseckpt -Wall -Werror -g
+parseklog: parseklib.o
 
-launcher: launcher.c libutil.a
-	gcc launcher.c -o launcher libutil.a -Wall -Werror --static -g -I../../eglibc-2.15/prefix/include -L../../eglibc-2.15/prefix/lib
+rewriteklog: parseklib.o
 
-resume: resume.o libutil.a
-	gcc resume.c -o resume libutil.a -Wall -Werror --static -g
+libutil.a: util.o parseklib.o
+	ar rv $@ $^
+	ranlib $@
 
-getstats: getstats.c libutil.a
-	gcc getstats.c -o getstats libutil.a -Wall -Werror --static -g
+parseklib.o: $(KENREL_CONFIG)
 
-filemap: filemap.c libutil.a
-	gcc filemap.c -o filemap libutil.a -Wall -Werror --static -g
+reset_ndx: libutil.a
 
-replay_pause: replay_pause.c
-	gcc replay_pause.c -o replay_pause -Wall -Werror --static -g
-
-libutil.a: util.o
-	ar rv libutil.a util.o
-	ranlib libutil.a
-
+.PHONY: clean
 clean:
 	rm -f *.a *.o $(TARGETS)
+
+.deps/%.d: %.c .dep_dirs_made
+	@$(CC) $(CFLAGS) -M -o $@ $<
+
+.dep_dirs_made:
+	@touch .dep_dirs_made
+	@mkdir .deps
+
+-include $(DEPS)
+
+.PHONY: nuke
+nuke: clean
+	rm -rf .deps .dep_dirs_made
+

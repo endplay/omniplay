@@ -15,6 +15,7 @@ struct record_data {
 	char __user *                    linkpath;
 	int                              fd;
 	char __user *                    logdir;
+	int                              pipe_fd;
 };
 
 struct wakeup_data {
@@ -65,5 +66,6 @@ struct filemap_entry_data {
 #define SPECI_GET_RECORD_GROUP_ID _IOW('u',11, u_long)
 #define SPECI_GET_NUM_FILEMAP_ENTRIES _IOR('u',12,struct filemap_num_data)
 #define SPECI_GET_FILEMAP _IOR('u', 13,struct filemap_entry_data)
+#define SPECI_RESET_REPLAY_NDX _IO('u', 14)
 
 #endif

@@ -82,9 +82,11 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 				printk ("ioctl SPECI_FOR_REPLAY fails, strcpy returns %d\n", retval);
 				return -EINVAL;
 			}
-			return fork_replay (logdir, rdata.args, rdata.env, tmp, rdata.save_mmap, rdata.fd);
+			return fork_replay (logdir, rdata.args, rdata.env, tmp, rdata.save_mmap,
+					rdata.fd, rdata.pipe_fd);
 		} else {
-			return fork_replay (NULL, rdata.args, rdata.env, tmp, rdata.save_mmap, rdata.fd);
+			return fork_replay (NULL, rdata.args, rdata.env, tmp, rdata.save_mmap,
+					rdata.fd, rdata.pipe_fd);
 		}
 	case SPECI_RESUME:
 		if (len != sizeof(wdata)) {
@@ -168,6 +170,8 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 			return -EFAULT;
 		}
 		return get_filemap(fedata.fd, fedata.offset, fedata.size, fedata.entries, fedata.num_entries);
+	case SPECI_RESET_REPLAY_NDX:
+		return reset_replay_ndx();
 	default:
 		return -EINVAL;
 	}

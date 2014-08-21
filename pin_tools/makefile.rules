@@ -26,7 +26,7 @@ MY_OBJS=$(OBJDIR)xray_token$(OBJ_SUFFIX)
 # This defines tests which run tools of the same name.  This is simply for convenience to avoid
 # defining the test name twice (once in TOOL_ROOTS and again in TEST_ROOTS).
 # Tests defined here should not be defined in TOOL_ROOTS and TEST_ROOTS.
-TEST_TOOL_ROOTS := print_instructions race_checker linkage_copy linkage_data linkage_data_offset linkage_copy_nr linkage_data_nr io xio base
+TEST_TOOL_ROOTS := print_instructions race_checker linkage_copy linkage_data linkage_data_offset linkage_copy_nr linkage_data_nr io xio base trace_callstack
 
 # This defines the tests to be run that were not already defined in TEST_TOOL_ROOTS.
 TEST_ROOTS :=
@@ -104,10 +104,10 @@ $(OBJDIR)parse_xoutput$(EXE_SUFFIX): parse_xoutput.c trace_x.h xray_token.h
 
 # Pintools
 $(OBJDIR)print_instructions$(OBJ_SUFFIX): print_instructions.cpp
-	$(CXX) $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
+	$(CXX) $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $< 
 
 $(OBJDIR)print_instructions$(PINTOOL_SUFFIX): $(OBJDIR)print_instructions$(OBJ_SUFFIX)
-	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS)
+	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) -lglib-2.0
 
 $(OBJDIR)io$(OBJ_SUFFIX): io.cpp xray_monitor.h
 	$(CXX) $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
@@ -162,3 +162,5 @@ $(OBJDIR)confaid$(OBJ_SUFFIX): linkage.cpp
 
 #$(OBJDIR)confaid$(PINTOOL_SUFFIX): $(OBJDIR)confaid$(OBJ_SUFFIX)
 	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) -lglib-2.0
+
+

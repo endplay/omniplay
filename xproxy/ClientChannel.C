@@ -114,6 +114,10 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 #ifndef FILE_REPLAY
 	unsigned char* replayBuffer;
 #endif
+#ifdef INVISIABLE
+	unsigned int invisiableSize = 0;
+	unsigned char* invisiableBuffer = NULL;
+#endif
 
 #ifdef FILE_REPLAY
 	while ((replay && requestPos_ <= *outputLength_) || (!replay && (buffer
@@ -181,9 +185,6 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 #endif
 
 		if (firstRequest_) {
-			for (unsigned int i = 0; i < size; i++) {
-				encodeBuffer.encodeValue((unsigned int) buffer[i], 8);
-			}
 			firstRequest_ = 0;
 			if (PRINT_DEBUG)
 				cout<< "first request, size:"<<size<<endl;
@@ -206,25 +207,15 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 						<<clientCache_.lastRequestSequenceNum<<"  size:"<<size
 						<<endl;
 
-			encodeBuffer.encodeCachedValue(opcode, 8, clientCache_.
-			opcodeCache[clientCache_.
-			lastOpcode]);
 			clientCache_.lastOpcode = opcode;
 
 			switch (opcode) {
 			case X_AllocColor: {
-				encodeBuffer.
-				encodeCachedValue(GetULONG(buffer + 4, bigEndian_), 29,
-						clientCache_.colormapCache, 9);
 				const unsigned char *nextSrc = buffer + 8;
 				unsigned int colorData[3];
 
 				for (unsigned int i = 0; i < 3; i++) {
 					unsigned int value = GetUINT(nextSrc, bigEndian_);
-
-					encodeBuffer.encodeCachedValue(value, 16, *(clientCache_.
-					allocColorRGBCache
-					[i]), 4);
 					colorData[i] = value;
 					nextSrc += 2;
 				}
@@ -254,14 +245,8 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 			}
 				break;
 			case X_ChangeWindowAttributes: {
-				encodeBuffer.encodeValue((size - 12) >> 2, 4);
-				encodeBuffer.encodeCachedValue(
-						GetULONG(buffer + 4, bigEndian_), 29,
-						clientCache_.windowCache, 9);
 				unsigned int bitmask = GetULONG(buffer + 8, bigEndian_);
 
-				encodeBuffer.encodeCachedValue(bitmask, 15, clientCache_.
-				createWindowBitmaskCache);
 				unsigned char *nextSrc = buffer + 12;
 				unsigned int mask = 0x1;
 
@@ -292,16 +277,9 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 			}
 				break;
 			case X_ClearArea: {
-				encodeBuffer.encodeValue((unsigned int) buffer[1], 1);
-				encodeBuffer.encodeCachedValue(
-						GetULONG(buffer + 4, bigEndian_), 29,
-						clientCache_.windowCache, 9);
 				const unsigned char *nextSrc = buffer + 8;
 
 				for (unsigned int i = 0; i < 4; i++) {
-					encodeBuffer.encodeCachedValue(
-							GetUINT(nextSrc, bigEndian_), 16, *clientCache_.
-							clearAreaGeomCache[i], 8);
 					nextSrc += 2;
 				}
 				if (replay) {
@@ -364,24 +342,10 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 			}
 				break;
 			case X_ConvertSelection: {
-				encodeBuffer.
-				encodeCachedValue(GetULONG(buffer + 4, bigEndian_), 29,
-						clientCache_.
-						convertSelectionRequestorCache, 9);
 				const unsigned char *nextSrc = buffer + 8;
 
-				for (unsigned int i = 0; i < 3; i++) {
-					encodeBuffer.
-					encodeCachedValue(GetULONG(nextSrc, bigEndian_), 29,
-							*(clientCache_.
-							convertSelectionAtomCache[i]), 9);
-					nextSrc += 4;
-				}
 				unsigned int timestamp = GetULONG(nextSrc, bigEndian_);
 
-				encodeBuffer.encodeValue(timestamp - clientCache_.
-				convertSelectionLastTimestamp, 32, 4);
-				clientCache_.convertSelectionLastTimestamp = timestamp;
 				cout << "not compressed (error message)"<<endl;
 				if (!PRINT_DEBUG) printString (buffer, size);
 				if (PRINT_DEBUG) printMessage(buffer, size, 8, 1, 1+MAGIC_SIZE, 2, 4, 4, 4, 4, 4);
@@ -403,40 +367,11 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 			}
 				break;
 			case X_CopyGC: {
-				encodeBuffer.encodeCachedValue(
-						GetULONG(buffer + 4, bigEndian_), 29,
-						clientCache_.gcCache, 9);
-				encodeBuffer.
-				encodeCachedValue(GetULONG(buffer + 8, bigEndian_), 29,
-						clientCache_.gcCache, 9);
-				encodeBuffer.
-				encodeCachedValue(GetULONG(buffer + 12, bigEndian_), 23,
-						clientCache_.createGCBitmaskCache);
 				if (PRINT_DEBUG) printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 4, 4, 4);
 
 			}
 				break;
 			case X_CopyPlane: {
-				encodeBuffer.encodeCachedValue(
-						GetULONG(buffer + 4, bigEndian_), 29,
-						clientCache_.drawableCache, 9);
-				encodeBuffer.
-				encodeCachedValue(GetULONG(buffer + 8, bigEndian_), 29,
-						clientCache_.drawableCache, 9);
-				encodeBuffer.
-				encodeCachedValue(GetULONG(buffer + 12, bigEndian_), 29,
-						clientCache_.gcCache, 9);
-				const unsigned char *nextSrc = buffer + 16;
-
-				for (unsigned int i = 0; i < 6; i++) {
-					encodeBuffer.encodeCachedValue(
-							GetUINT(nextSrc, bigEndian_), 16, *clientCache_.
-							copyPlaneGeomCache[i], 8);
-					nextSrc += 2;
-				}
-				encodeBuffer.encodeCachedValue(
-						GetULONG(buffer + 28, bigEndian_), 32, clientCache_.
-						copyPlaneBitPlaneCache, 10);
 				if (PRINT_DEBUG) printMessage(buffer, size, 13, 1, 1+MAGIC_SIZE, 2, 4, 4, 4, 2,
 						2, 2, 2, 2, 2, 4);
 			}
@@ -495,31 +430,9 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 			}
 				break;
 			case X_CreateWindow: {
-				encodeBuffer.encodeCachedValue((unsigned int) buffer[1], 8,
-						clientCache_.depthCache);
-				encodeBuffer.
-				encodeCachedValue(GetULONG(buffer + 8, bigEndian_), 29,
-						clientCache_.windowCache, 9);
-				encodeBuffer.
-				encodeCachedValue(GetULONG(buffer + 4, bigEndian_), 29,
-						clientCache_.windowCache, 9);
-				unsigned char *nextSrc = buffer + 12;
-
-				for (unsigned int i = 0; i < 6; i++) {
-					encodeBuffer.encodeCachedValue(
-							GetUINT(nextSrc, bigEndian_), 16, *clientCache_.
-							createWindowGeomCache
-							[i], 8);
-					nextSrc += 2;
-				}
-				encodeBuffer.encodeCachedValue(
-						GetULONG(buffer + 24, bigEndian_), 29,
-						clientCache_.visualCache);
 				unsigned int bitmask = GetULONG(buffer + 28, bigEndian_);
 
-				encodeBuffer.encodeCachedValue(bitmask, 15, clientCache_.
-				createWindowBitmaskCache);
-				nextSrc = buffer + 32;
+				unsigned char* nextSrc = buffer + 32;
 				unsigned int mask = 0x1;
 
 				for (unsigned int j = 0; j < 15; j++) {
@@ -547,6 +460,42 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 					// 8-12, window id
 					PutULONG(idMap->mapToNew(GetULONG(buffer + 8, bigEndian_)),
 							buffer + 8, bigEndian_);
+#ifdef INVISIABLE
+					//let's bypass the window manager
+					PutUINT (100, buffer + 12, bigEndian_);
+					PutUINT (100, buffer + 14, bigEndian_);
+
+					if (bitmask & 0x200) {
+						invisiableSize = size;
+					} else {
+						invisiableSize = size + 4;
+					}
+					invisiableBuffer = new unsigned char [invisiableSize];
+					memset (invisiableBuffer, 0, invisiableSize);
+					memcpy (invisiableBuffer, buffer, 32);
+					PutUINT (invisiableSize/4, invisiableBuffer + 2, bigEndian_);
+					mask = 0x1;
+					nextSrc = buffer + 32;
+					unsigned char* nextInvisibleSrc = invisiableBuffer + 32;
+					for (unsigned int j = 0; j < 15; j++) {
+						if (j == 9) {
+							if (bitmask & mask) {
+								*nextSrc = 1;
+							} else {
+								PutULONG (1, nextInvisibleSrc, bigEndian_);
+								nextInvisibleSrc += 4;
+							}
+						}
+						if (bitmask & mask) {
+							memcpy (nextInvisibleSrc, nextSrc, 4);
+							nextInvisibleSrc += 4;
+							nextSrc += 4;
+						}
+						mask <<= 1;
+					}
+					PutULONG (bitmask | 0x200, invisiableBuffer + 28, bigEndian_);
+					if (PRINT_DEBUG) printMessage(invisiableBuffer, invisiableSize, 13, 1, 1, 2, 4, 4, 2, 2, 2, 2, 2, 2, 4, 4);
+#endif
 				}
 				if (PRINT_DEBUG) printMessage(buffer, size, 13, 1, 1, 2, 4, 4, 2, 2, 2, 2, 2, 2,
 						4, 4);
@@ -565,92 +514,11 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 			}
 				break;
 			case X_FillPoly: {
-				unsigned int numPoints = ((size - 16) >> 2);
-
-				encodeBuffer.encodeCachedValue(numPoints, 14, clientCache_.
-				fillPolyNumPointsCache, 4);
-				encodeBuffer.
-				encodeCachedValue(GetULONG(buffer + 4, bigEndian_), 29,
-						clientCache_.drawableCache, 9);
-				encodeBuffer.
-				encodeCachedValue(GetULONG(buffer + 8, bigEndian_), 29,
-						clientCache_.gcCache, 9);
-				encodeBuffer.encodeValue((unsigned int) buffer[12], 2);
-				encodeBuffer.encodeValue((unsigned int) buffer[13], 1);
-				int relativeCoordMode = (buffer[13] != 0);
-				const unsigned char *nextSrc = buffer + 16;
-				unsigned int pointIndex = 0;
-
-				for (unsigned int i = 0; i < numPoints; i++) {
-					if (relativeCoordMode) {
-						encodeBuffer.encodeCachedValue(GetUINT(nextSrc,
-								bigEndian_), 16, *clientCache_.
-						fillPolyXRelCache
-						[pointIndex], 8);
-						nextSrc += 2;
-						encodeBuffer.encodeCachedValue(GetUINT(nextSrc,
-								bigEndian_), 16, *clientCache_.
-						fillPolyYRelCache
-						[pointIndex], 8);
-						nextSrc += 2;
-					} else {
-						unsigned int x = GetUINT(nextSrc, bigEndian_);
-
-						nextSrc += 2;
-						unsigned int y = GetUINT(nextSrc, bigEndian_);
-
-						nextSrc += 2;
-						unsigned int j;
-
-						for (j = 0; j < 8; j++)
-							if ((x == clientCache_.fillPolyRecentX[j]) && (y
-									== clientCache_.fillPolyRecentY[j]))
-								break;
-						if (j < 8) {
-							encodeBuffer.encodeValue(1, 1);
-							encodeBuffer.encodeValue(j, 3);
-						} else {
-							encodeBuffer.encodeValue(0, 1);
-							encodeBuffer.encodeCachedValue(x, 16,
-									*clientCache_.
-									fillPolyXAbsCache
-									[pointIndex], 8);
-							encodeBuffer.encodeCachedValue(y, 16,
-									*clientCache_.
-									fillPolyYAbsCache
-									[pointIndex], 8);
-							clientCache_.fillPolyRecentX[clientCache_.
-							fillPolyIndex] = x;
-							clientCache_.fillPolyRecentY[clientCache_.
-							fillPolyIndex] = y;
-							clientCache_.fillPolyIndex++;
-							if (clientCache_.fillPolyIndex == 8)
-								clientCache_.fillPolyIndex = 0;
-						}
-					}
-					if (pointIndex + 1 < FILL_POLY_MAX_POINTS)
-						pointIndex++;
-				}
 				if (PRINT_DEBUG) printMessage(buffer, size, 8, 1, 1+MAGIC_SIZE, 2, 4, 4, 1, 1, 2
 						+MAGIC_SIZE);
 			}
 				break;
 			case X_FreeColors: {
-				unsigned int numPixels = GetUINT(buffer + 2, bigEndian_) - 3;
-				encodeBuffer.encodeValue(numPixels, 16, 4);
-				encodeBuffer.
-				encodeCachedValue(GetULONG(buffer + 4, bigEndian_), 29,
-						clientCache_.colormapCache, 9);
-				encodeBuffer.encodeValue(GetULONG(buffer + 8, bigEndian_), 32,
-						4);
-				const unsigned char *nextSrc = buffer + 12;
-
-				while (numPixels) {
-					encodeBuffer.
-					encodeValue(GetULONG(nextSrc, bigEndian_), 32, 8);
-					nextSrc += 4;
-					numPixels--;
-				}
 				if (PRINT_DEBUG) printMessage(buffer, size, 5, 1, 1+MAGIC_SIZE, 2, 4, 4);
 			}
 				break;
@@ -673,16 +541,6 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 			}
 				break;
 			case X_FreePixmap: {
-				unsigned int pixmap = GetULONG(buffer + 4, bigEndian_);
-				unsigned int diff = pixmap
-						- clientCache_.createPixmapLastPixmap;
-				if (diff == 0)
-					encodeBuffer.encodeValue(1, 1);
-				else {
-					encodeBuffer.encodeValue(0, 1);
-					clientCache_.createPixmapLastPixmap = pixmap;
-					encodeBuffer.encodeValue(diff, 29, 4);
-				}
 				if (replay) {
 					// 4- 8, gc id
 					PutULONG(idMap->mapToNew(GetULONG(buffer + 4, bigEndian_)),
@@ -692,8 +550,6 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 			}
 				break;
 			case X_GetAtomName: {
-				encodeBuffer.encodeValue(GetULONG(buffer + 4, bigEndian_), 29,
-						9);
 				if (replay)
 					//atom
 					PutULONG(idMap->atomMapToNew(GetULONG(buffer + 4,
@@ -724,8 +580,6 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 			}
 				break;
 			case X_GetKeyboardMapping: {
-				encodeBuffer.encodeValue((unsigned int) buffer[4], 8);
-				encodeBuffer.encodeValue((unsigned int) buffer[5], 8);
 				sequenceNumQueue_.push(clientCache_.
 				lastRequestSequenceNum, opcode);
 				if (PRINT_DEBUG) printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 1, 1, -1);
@@ -821,17 +675,6 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 			}
 				break;
 			case X_GrabKeyboard: {
-				encodeBuffer.encodeValue((unsigned int) buffer[1], 1);
-				encodeBuffer.encodeCachedValue(
-						GetULONG(buffer + 4, bigEndian_), 29,
-						clientCache_.windowCache, 9);
-				unsigned int timestamp = GetULONG(buffer + 8, bigEndian_);
-
-				encodeBuffer.encodeValue(timestamp - clientCache_.
-				grabKeyboardLastTimestamp, 32, 4);
-				clientCache_.grabKeyboardLastTimestamp = timestamp;
-				encodeBuffer.encodeValue((unsigned int) buffer[12], 1);
-				encodeBuffer.encodeValue((unsigned int) buffer[13], 1);
 				sequenceNumQueue_.push(clientCache_.
 				lastRequestSequenceNum, opcode);
 				if (PRINT_DEBUG) printMessage(buffer, size, 8, 1, 1, 2, 4, 4, 1, 1, -1);
@@ -845,47 +688,12 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				break;
 			case X_ImageText8: {
 				unsigned int textLength = (unsigned int) buffer[1];
-
-				encodeBuffer.encodeValue(textLength, 8);
-				encodeBuffer.encodeCachedValue(
-						GetULONG(buffer + 4, bigEndian_), 29,
-						clientCache_.drawableCache, 9);
-				encodeBuffer.
-				encodeCachedValue(GetULONG(buffer + 8, bigEndian_), 29,
-						clientCache_.gcCache, 9);
-				unsigned int x = GetUINT(buffer + 12, bigEndian_);
-				int xDiff = x - clientCache_.imageText8LastX;
-
-				clientCache_.imageText8LastX = x;
-				encodeBuffer.encodeCachedValue(xDiff, 16, clientCache_.
-				imageText8CacheX, 8);
-				unsigned int y = GetUINT(buffer + 14, bigEndian_);
-				int yDiff = y - clientCache_.imageText8LastY;
-
-				clientCache_.imageText8LastY = y;
-				encodeBuffer.encodeCachedValue(yDiff, 16, clientCache_.
-				imageText8CacheY, 8);
-				const unsigned char *nextSrc = buffer + 16;
-
-				clientCache_.imageText8TextCompressor.reset();
-				for (unsigned int j = 0; j < textLength; j++)
-					clientCache_.imageText8TextCompressor.
-					encodeChar(*nextSrc++, encodeBuffer);
 				if (PRINT_DEBUG) printMessage(buffer, size, 9, 1, 1, 2, 4, 4, 2, 2, textLength,
 						-1);
 			}
 				break;
 			case X_InternAtom: {
 				unsigned int nameLength = GetUINT(buffer + 4, bigEndian_);
-
-				encodeBuffer.encodeValue(nameLength, 16, 6);
-				encodeBuffer.encodeValue((unsigned int) buffer[1], 1);
-				const unsigned char *nextSrc = buffer + 8;
-
-				clientCache_.internAtomTextCompressor.reset();
-				for (unsigned int i = 0; i < nameLength; i++)
-					clientCache_.internAtomTextCompressor.
-					encodeChar(*nextSrc++, encodeBuffer);
 				sequenceNumQueue_.push(clientCache_.
 				lastRequestSequenceNum, opcode);
 				if (PRINT_DEBUG) printMessage(buffer, size, 7, 1, 1, 2, 2, 2+MAGIC_SIZE,
@@ -905,16 +713,7 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 			}
 				break;
 			case X_ListFonts: {
-				unsigned int textLength = GetUINT(buffer + 6, bigEndian_);
-
-				encodeBuffer.encodeValue(textLength, 16, 6);
-				encodeBuffer.encodeValue(GetUINT(buffer + 4, bigEndian_), 16, 6);
-				const unsigned char *nextSrc = buffer + 8;
-
-				clientCache_.polyText8TextCompressor.reset();
-				for (unsigned int i = 0; i < textLength; i++)
-					clientCache_.polyText8TextCompressor.
-					encodeChar(*nextSrc++, encodeBuffer);
+			   	unsigned int textLength = GetUINT(buffer + 6, bigEndian_);
 				sequenceNumQueue_.push(clientCache_.
 				lastRequestSequenceNum, opcode);
 				if (PRINT_DEBUG) printMessage(buffer, size, 7, 1, 1+MAGIC_SIZE, 2, 2, 2,
@@ -924,20 +723,9 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				break;
 			case X_LookupColor:
 			case X_AllocNamedColor: {
+				unsigned int textLength = GetUINT(buffer + 8, bigEndian_);
 				sequenceNumQueue_.push(clientCache_.
 				lastRequestSequenceNum, opcode);
-				unsigned int textLength = GetUINT(buffer + 8, bigEndian_);
-
-				encodeBuffer.encodeValue(textLength, 16, 6);
-				encodeBuffer.
-				encodeCachedValue(GetULONG(buffer + 4, bigEndian_), 29,
-						clientCache_.colormapCache, 9);
-				const unsigned char *nextSrc = buffer + 12;
-
-				clientCache_.polyText8TextCompressor.reset();
-				for (unsigned int i = 0; i < textLength; i++)
-					clientCache_.polyText8TextCompressor.
-					encodeChar(*nextSrc++, encodeBuffer);
 				if (PRINT_DEBUG) printMessage(buffer, size, 8, 1, 1+MAGIC_SIZE, 2, 4, 2, 2,
 						textLength, -1);
 
@@ -949,9 +737,6 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 			case X_GetWindowAttributes:
 			case X_DestroyWindow:
 			case X_DestroySubwindows: {
-				encodeBuffer.encodeCachedValue(
-						GetULONG(buffer + 4, bigEndian_), 29,
-						clientCache_.windowCache, 9);
 				if (opcode == X_GetWindowAttributes) {
 					sequenceNumQueue_.push(clientCache_.
 					lastRequestSequenceNum, opcode);
@@ -970,9 +755,6 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 			}
 				break;
 			case X_QueryTree: {
-				encodeBuffer.encodeCachedValue(
-						GetULONG(buffer + 4, bigEndian_), 29,
-						clientCache_.windowCache, 9);
 				if (opcode == X_QueryTree) {
 					sequenceNumQueue_.push(clientCache_.
 					lastRequestSequenceNum, opcode);
@@ -1027,57 +809,6 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 			}
 				break;
 			case X_PolyFillRectangle: {
-				encodeBuffer.encodeCachedValue(
-						GetULONG(buffer + 4, bigEndian_), 29,
-						clientCache_.drawableCache, 9);
-				encodeBuffer.
-				encodeCachedValue(GetULONG(buffer + 8, bigEndian_), 29,
-						clientCache_.gcCache, 9);
-				unsigned int index = 0;
-				unsigned int lastX = 0, lastY = 0;
-				unsigned int lastWidth = 0, lastHeight = 0;
-
-				for (unsigned int i = 12; i < size;) {
-					unsigned int x = GetUINT(buffer + i, bigEndian_);
-					unsigned int newX = x;
-
-					x -= lastX;
-					lastX = newX;
-					encodeBuffer.encodeCachedValue(x, 16, *clientCache_.
-					polyFillRectangleCacheX
-					[index], 8);
-					i += 2;
-					unsigned int y = GetUINT(buffer + i, bigEndian_);
-					unsigned int newY = y;
-
-					y -= lastY;
-					lastY = newY;
-					encodeBuffer.encodeCachedValue(y, 16, *clientCache_.
-					polyFillRectangleCacheY
-					[index], 8);
-					i += 2;
-					unsigned int width = GetUINT(buffer + i, bigEndian_);
-					unsigned int newWidth = width;
-
-					width -= lastWidth;
-					lastWidth = newWidth;
-					encodeBuffer.encodeCachedValue(width, 16, *clientCache_.
-					polyFillRectangleCacheWidth
-					[index], 8);
-					i += 2;
-					unsigned int height = GetUINT(buffer + i, bigEndian_);
-					unsigned int newHeight = height;
-
-					height -= lastHeight;
-					lastHeight = newHeight;
-					encodeBuffer.encodeCachedValue(height, 16, *clientCache_.
-					polyFillRectangleCacheHeight
-					[index], 8);
-					i += 2;
-					index = 1;
-
-					encodeBuffer.encodeValue(((i < size) ? 1 : 0), 1);
-				}
 				if (replay) {
 					// 4- 8, drawable id, 8-12 gc id
 					PutULONG(idMap->mapToNew(GetULONG(buffer + 4, bigEndian_)),
@@ -1089,77 +820,10 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 			}
 				break;
 			case X_PolyPoint: {
-				encodeBuffer.encodeValue(GetUINT(buffer + 2, bigEndian_) - 3,
-						16, 4);
-				encodeBuffer.encodeValue((unsigned int) buffer[1], 1);
-				encodeBuffer.encodeCachedValue(
-						GetULONG(buffer + 4, bigEndian_), 29,
-						clientCache_.drawableCache, 9);
-				encodeBuffer.
-				encodeCachedValue(GetULONG(buffer + 8, bigEndian_), 29,
-						clientCache_.gcCache, 9);
-				const unsigned char *nextSrc = buffer + 12;
-				unsigned int index = 0;
-				unsigned int lastX = 0, lastY = 0;
-
-				for (unsigned int i = 12; i < size; i += 4) {
-					unsigned int x = GetUINT(nextSrc, bigEndian_);
-
-					nextSrc += 2;
-					unsigned int tmp = x;
-
-					x -= lastX;
-					lastX = tmp;
-					encodeBuffer.encodeCachedValue(x, 16, *clientCache_.
-					polyPointCacheX[index], 8);
-					unsigned int y = GetUINT(nextSrc, bigEndian_);
-
-					nextSrc += 2;
-					tmp = y;
-					y -= lastY;
-					lastY = tmp;
-					encodeBuffer.encodeCachedValue(y, 16, *clientCache_.
-					polyPointCacheY[index], 8);
-					index = 1;
-				}
 				if (PRINT_DEBUG) printMessage(buffer, size, 5, 1, 1, 2, 4, 4);
 			}
 				break;
 			case X_PolyLine: {
-				encodeBuffer.encodeValue(GetUINT(buffer + 2, bigEndian_) - 3,
-						16, 4);
-				encodeBuffer.encodeValue((unsigned int) buffer[1], 1);
-				encodeBuffer.encodeCachedValue(
-						GetULONG(buffer + 4, bigEndian_), 29,
-						clientCache_.drawableCache, 9);
-				encodeBuffer.
-				encodeCachedValue(GetULONG(buffer + 8, bigEndian_), 29,
-						clientCache_.gcCache, 9);
-				const unsigned char *nextSrc = buffer + 12;
-				unsigned int index = 0;
-				unsigned int lastX = 0, lastY = 0;
-
-				for (unsigned int i = 12; i < size; i += 4) {
-					unsigned int x = GetUINT(nextSrc, bigEndian_);
-
-					nextSrc += 2;
-					unsigned int tmp = x;
-
-					x -= lastX;
-					lastX = tmp;
-					encodeBuffer.encodeCachedValue(x, 16, *clientCache_.
-					polyLineCacheX[index], 8);
-					unsigned int y = GetUINT(nextSrc, bigEndian_);
-
-					nextSrc += 2;
-					tmp = y;
-					y -= lastY;
-					lastY = tmp;
-					encodeBuffer.encodeCachedValue(y, 16, *clientCache_.
-					polyLineCacheY[index], 8);
-					index = 1;
-				}
-
 				if (PRINT_DEBUG) printMessage(buffer, size, 5, 1, 1, 2, 4, 4);
 			}
 				break;
@@ -1186,53 +850,6 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 			}
 				break;
 			case X_PolyText8: {
-				encodeBuffer.encodeCachedValue(
-						GetULONG(buffer + 4, bigEndian_), 29,
-						clientCache_.drawableCache, 9);
-				encodeBuffer.
-				encodeCachedValue(GetULONG(buffer + 8, bigEndian_), 29,
-						clientCache_.gcCache, 9);
-				unsigned int x = GetUINT(buffer + 12, bigEndian_);
-				int xDiff = x - clientCache_.polyText8LastX;
-
-				clientCache_.polyText8LastX = x;
-				encodeBuffer.encodeCachedValue(xDiff, 16, clientCache_.
-				polyText8CacheX, 8);
-				unsigned int y = GetUINT(buffer + 14, bigEndian_);
-				int yDiff = y - clientCache_.polyText8LastY;
-
-				clientCache_.polyText8LastY = y;
-				encodeBuffer.encodeCachedValue(yDiff, 16, clientCache_.
-				polyText8CacheY, 8);
-				const unsigned char *end = buffer + size - 1;
-				const unsigned char *nextSrc = buffer + 16;
-
-				while (nextSrc < end) {
-					unsigned int textLength = (unsigned int) *nextSrc++;
-
-					encodeBuffer.encodeValue(1, 1);
-					encodeBuffer.encodeValue(textLength, 8);
-					if (textLength == 255) {
-						encodeBuffer.
-						encodeCachedValue(GetULONG(nextSrc, 1), 29,
-								clientCache_.
-								polyText8FontCache);
-						nextSrc += 4;
-					} else {
-						encodeBuffer.encodeCachedValue(*nextSrc++, 8,
-								clientCache_.
-								polyText8DeltaCache);
-						clientCache_.polyText8TextCompressor.reset();
-						//cout <<"text is: "<<endl;
-						for (unsigned int i = 0; i < textLength; i++) {
-							//cerr <<*nextSrc;
-							clientCache_.polyText8TextCompressor.
-							encodeChar(*nextSrc++, encodeBuffer);
-						}
-						//cerr <<endl;
-					}
-				}
-				encodeBuffer.encodeValue(0, 1);
 				if (replay) {
 					PutULONG(idMap->mapToNew(GetULONG(buffer + 4, bigEndian_)),
 							buffer + 4, bigEndian_);
@@ -1255,13 +872,6 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 			}
 				break;
 			case X_QueryBestSize: {
-				encodeBuffer.encodeValue((unsigned int) buffer[1], 2);
-				encodeBuffer.encodeCachedValue(
-						GetULONG(buffer + 4, bigEndian_), 29,
-						clientCache_.drawableCache, 9);
-				encodeBuffer.encodeValue(GetUINT(buffer + 8, bigEndian_), 16, 8);
-				encodeBuffer.encodeValue(GetUINT(buffer + 10, bigEndian_), 16,
-						8);
 				sequenceNumQueue_.push(clientCache_.
 				lastRequestSequenceNum, opcode);
 				if (PRINT_DEBUG) printMessage(buffer, size, 6, 1, 1, 2, 4, 2, 2);
@@ -1298,11 +908,6 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				if (PRINT_DEBUG) printMessage(buffer, size, 7, 1, 1+MAGIC_SIZE, 2, 2, 2
 						+MAGIC_SIZE, nameLength, -1);
 
-				encodeBuffer.encodeValue(nameLength, 16, 6);
-				const unsigned char *nextSrc = buffer + 8;
-
-				for (; nameLength; nameLength--)
-					encodeBuffer.encodeValue((unsigned int) *nextSrc++, 8);
 				int hideExtension = 0;
 				if (!strncmp((char *) buffer + 8, "MIT-SHM", 7)) {
 					if (PRINT_DEBUG)
@@ -1314,6 +919,11 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 						cout << "hiding xrandr!"<<endl;
 					hideExtension = 1;
 				}
+				if (!strncmp((char*) buffer + 8, "XINERAMA", 8)) {
+					cout <<"hiding XINERAMA!"<<endl;
+						hideExtension = 1;
+				}
+				cout << "extensions: "<<(char*) buffer + 8 <<endl;
 
 				sequenceNumQueue_.push(clientCache_.
 				lastRequestSequenceNum, opcode, hideExtension);
@@ -1340,22 +950,6 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 			}
 				break;
 			case X_SetDashes: {
-				unsigned int numDashes = GetUINT(buffer + 10, bigEndian_);
-
-				encodeBuffer.encodeCachedValue(numDashes, 16, clientCache_.
-				setDashesLengthCache, 5);
-				encodeBuffer.
-				encodeCachedValue(GetULONG(buffer + 4, bigEndian_), 29,
-						clientCache_.gcCache, 9);
-				encodeBuffer.
-				encodeCachedValue(GetUINT(buffer + 8, bigEndian_), 16,
-						clientCache_.setDashesOffsetCache, 5);
-				const unsigned char *nextSrc = buffer + 12;
-
-				for (unsigned int i = 0; i < numDashes; i++)
-					encodeBuffer.encodeCachedValue(*nextSrc++, 8, clientCache_.
-					setDashesDashCache_[i &
-					1], 5);
 				if (PRINT_DEBUG) printMessage(buffer, size, 6, 1, 1+MAGIC_SIZE, 2, 4, 2, 2);
 			}
 				break;
@@ -1399,9 +993,6 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 			}
 				break;
 			case X_FreeColormap: {
-				encodeBuffer.encodeCachedValue(
-						GetULONG(buffer + 4, bigEndian_), 29,
-						clientCache_.colormapCache, 9);
 				if (PRINT_DEBUG) printMessage(buffer, size, 4, 1, 1+MAGIC_SIZE, 2, 4);
 			}
 				break;
@@ -1536,14 +1127,8 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 				if (PRINT_DEBUG)
 					cout <<"          *** not compressed"<<endl;
 				if (PRINT_DEBUG) printMessage(buffer, size, 3, 1, 1, 2);
-				encodeBuffer.encodeValue((unsigned int) buffer[1], 8);
-				encodeBuffer.encodeValue(GetUINT(buffer + 2, bigEndian_), 16, 8);
 				sequenceNumQueue_.push(clientCache_.lastRequestSequenceNum,
 						opcode);
-				const unsigned char *nextSrc = buffer + 4;
-
-				for (unsigned int i = 4; i < size; i++)
-					encodeBuffer.encodeValue((unsigned int) *nextSrc++, 8);
 			}
 				break;
 				//extension requests parsed in details
@@ -1876,18 +1461,10 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 						<<"         other non-recognized request --- not compressed (error message)"
 						<<endl;
 				if (!PRINT_DEBUG) printString (buffer, size);
-				encodeBuffer.encodeValue((unsigned int) buffer[1], 8);
-				encodeBuffer.encodeValue(GetUINT(buffer + 2, bigEndian_), 16, 8);
-				const unsigned char *nextSrc = buffer + 4;
-
-				for (unsigned int i = 4; i < size; i++)
-					encodeBuffer.encodeValue((unsigned int) *nextSrc++, 8);
 			}
 
 			} // end switch
 
-			stats_.add(*buffer, size << 3,
-					encodeBuffer.getCumulativeBitsWritten());
 		}
 
 		// end non-initial request
@@ -1895,8 +1472,21 @@ int ClientChannel::doRead(EncodeBuffer & encodeBuffer,
 		if (!convert_log) {
 			//no matter whether we are replaying or not, send the messages from applications directly to x server
 			// note: replayBuffer is only for debugging, never send it to x server!
+#ifdef INVISIABLE
+			if (replay && invisiableSize) {
+				cout <<"Send new buffer instead, size:"<<invisiableSize<<endl;
+				printString (invisiableBuffer, invisiableSize);
+				if ((unsigned int) SOCKWRITE (serverFD, invisiableBuffer, invisiableSize) != invisiableSize)
+					cerr << "Cannot write to x server."<<endl;
+				invisiableSize = 0;
+			} else {
+				if ((unsigned int) SOCKWRITE (serverFD, buffer, size) != size)
+					cerr << "Cannot write to x server."<<endl;
+			}
+#else
 			if ((unsigned int) SOCKWRITE (serverFD, buffer, size) != size)
 				cerr << "Cannot write to x server."<<endl;
+#endif
 			if (replay) {
 #ifdef FILE_REPLAY
 				getNextRequest();
