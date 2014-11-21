@@ -1291,20 +1291,24 @@ void replayfs_diskalloc_destroy(struct replayfs_diskalloc *alloc) {
 #ifndef REPLAYFS_DISKALLOC_NO_SYNCS
 	mutex_lock(&crappy_pagecache_lock);
 
-	list_for_each_entry_safe(data, _t, &alloc->alloced_pages, alloc_list) {
-		BUG_ON(data->alloc != alloc);
-		if (data->count == 1) {
-			debugk("%s %d: Deleting page %lu from alloc %d!\n", __func__, __LINE__,
-					data->page->index, alloc->allocnum);
-			delete_from_cache(data, alloc);
-			list_del_init(&data->alloc_list);
-		} else if (data->count == 0) {
-			debugk("%s %d: Got data %p page %lu (%p) with count 0???\n", __func__,
-					__LINE__, data, data->page->index, data->page);
-		} else {
-			printk("%s %d: Got data %p page %lu (%p) with count %d???\n", __func__,
-					__LINE__, data, data->page->index, data->page, data->count);
-			BUG();
+	{
+		struct page_data *data;
+		struct page_data *_t;
+		list_for_each_entry_safe(data, _t, &alloc->alloced_pages, alloc_list) {
+			BUG_ON(data->alloc != alloc);
+			if (data->count == 1) {
+				debugk("%s %d: Deleting page %lu from alloc %d!\n", __func__, __LINE__,
+						data->page->index, alloc->allocnum);
+				delete_from_cache(data, alloc);
+				list_del_init(&data->alloc_list);
+			} else if (data->count == 0) {
+				debugk("%s %d: Got data %p page %lu (%p) with count 0???\n", __func__,
+						__LINE__, data, data->page->index, data->page);
+			} else {
+				printk("%s %d: Got data %p page %lu (%p) with count %d???\n", __func__,
+						__LINE__, data, data->page->index, data->page, data->count);
+				BUG();
+			}
 		}
 	}
 
@@ -2368,7 +2372,7 @@ static void make_new_meta_page(struct replayfs_diskalloc *alloc) {
 	alloc->meta_page = meta_page;
 }
 
-static int meta_page_empty(struct page *meta_page) {
+int meta_page_empty(struct page *meta_page) {
 	struct meta_page *header;
 	int ret = 1;
 	int i;
