@@ -678,11 +678,34 @@ static u_long getretparams_read(struct klogfile *log,
 
 static u_long getretparams_write(struct klogfile *klog,
 		struct klog_result *res) {
-#ifdef TRACE_PIPE_READ_WRITE
-	return 4;
-#else
-	return 0;
-#endif
+	long return_pos;
+	long rc;
+	u_long size = 0;
+	int is_shared;
+
+	return_pos = lseek(klog->fd, 0, SEEK_CUR);
+
+	size += sizeof(int);
+	rc = read(klog->fd, &is_shared, sizeof(int));
+	if (rc != sizeof(int)) {
+		fprintf(stderr, "cannot read \"write\" value\n");
+		return -1;
+	}
+
+	switch (is_shared) {
+		case NORMAL_FILE:
+			size += sizeof(int64_t);
+			break;
+		default:
+			size += sizeof(int);;
+	}
+
+	if (lseek(klog->fd, return_pos, SEEK_SET) == (off_t)-1) {
+		fprintf(stderr, "lseek failed to go to return_pos in write\n");
+		return -1;
+	}
+
+	return size;
 }
 
 static u_long getretparams_getgroups(struct klogfile *klog,

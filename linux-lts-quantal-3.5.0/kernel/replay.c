@@ -188,13 +188,24 @@ struct perftimer *close_intercept_timer;
 /* Keep track of open inodes */
 
 DEFINE_MUTEX(filp_opened_mutex);
+DEFINE_MUTEX(write_tree_lock);
 static struct btree_head64 inode_tree;
+
+/* Defined in replayfs_diskalloc.c... not sure if thats the right spot, but its
+ * there for now
+ */
+extern struct replayfs_btree128_head write_data_tree;
 
 struct inode_data {
 	atomic_t refcnt;
 	struct mutex replay_inode_lock;
 	int read_opens;
 	int write_opens;
+#ifdef ORDER_WRITES
+	struct replayfs_btree128_key write_key;
+	atomic64_t write_count;
+	int synced;
+#endif
 	u64 key;
 	loff_t version;
 };
@@ -207,11 +218,49 @@ struct filemap_data {
 	loff_t last_version;
 };
 
+#ifdef ORDER_WRITES
+static inline void inode_to_inode_data_key(struct inode *inode,
+		struct replayfs_btree128_key *key) {
+	key->id1 = inode->i_ino;
+	key->id2 = inode->i_sb->s_dev;
+}
+
+static void inode_write_data_sync(struct inode_data *idata) {
+	struct page *page;
+	struct replayfs_btree128_value *v;
+
+	mutex_lock(&write_tree_lock);
+	idata->synced = 1;
+
+	v = replayfs_btree128_lookup(&write_data_tree, &idata->write_key, &page);
+	BUG_ON(v == NULL);
+
+	v->id = atomic64_read(&idata->write_count);
+
+	replayfs_diskalloc_sync_page(write_data_tree.allocator, page);
+
+	replayfs_btree128_put_page(&write_data_tree, page);
+
+	mutex_unlock(&write_tree_lock);
+}
+
+static inline long long inode_data_next_write(struct inode_data *idata) {
+	idata->synced = 0;
+	return atomic64_inc_return(&idata->write_count);
+}
+#endif
+
 static void __inode_data_put(struct inode_data *idata) {
 	mutex_lock(&filp_opened_mutex);
 	btree_remove64(&inode_tree, idata->key);
 	mutex_unlock(&filp_opened_mutex);
 	mutex_destroy(&idata->replay_inode_lock);
+#ifdef ORDER_WRITES
+	if (!idata->synced) {
+		printk("%s, %s %d: WARNING: it appears the write data wasn't synced properly\n",
+				__FILE__, __func__, __LINE__);
+	}
+#endif
 	kfree(idata);
 }
 
@@ -221,7 +270,7 @@ static inline void inode_data_put(struct inode_data *idata) {
 	}
 }
 
-static struct inode_data *inode_data_create(u64 key) {
+static struct inode_data *inode_data_create(u64 key, struct inode *inode) {
 	struct inode_data *ret = kmalloc(sizeof(struct inode_data), GFP_KERNEL);
 
 	BUG_ON(ret == NULL);
@@ -232,6 +281,35 @@ static struct inode_data *inode_data_create(u64 key) {
 	ret->version = 0;
 	ret->key = key;
 	mutex_init(&ret->replay_inode_lock);
+
+
+	// Get the rval here
+#ifdef ORDER_WRITES
+	ret->synced = 1;
+	glbl_diskalloc_init();
+	{
+		struct page *data_page;
+		struct replayfs_btree128_value *val;
+
+		mutex_lock(&write_tree_lock);
+		inode_to_inode_data_key(inode, &ret->write_key);
+		val = replayfs_btree128_lookup(&write_data_tree, &ret->write_key, &data_page);
+
+		if (val != NULL) {
+			atomic64_set(&ret->write_count, val->id);
+
+			replayfs_diskalloc_sync_page(write_data_tree.allocator, data_page);
+
+			replayfs_btree128_put_page(&write_data_tree, data_page);
+		} else {
+			struct replayfs_btree128_value v;
+			v.id = 0;
+
+			replayfs_btree128_insert(&write_data_tree, &ret->write_key, &v, GFP_NOFS);
+		}
+		mutex_unlock(&write_tree_lock);
+	}
+#endif
 
 	btree_insert64(&inode_tree, key, ret, GFP_KERNEL);
 
@@ -255,7 +333,7 @@ static struct inode_data *inode_data_get(struct file *filp) {
 
 	ret = btree_lookup64(&inode_tree, key);
 	if (ret == NULL) {
-		ret = inode_data_create(key);
+		ret = inode_data_create(key, inode);
 	}
 
 	mutex_unlock(&filp_opened_mutex);
@@ -264,6 +342,12 @@ static struct inode_data *inode_data_get(struct file *filp) {
 
 	return ret;
 }
+
+#ifdef ORDER_WRITES
+static void inode_data_ref(struct inode_data *data) {
+	atomic_inc(&data->refcnt);
+}
+#endif
 
 void replay_filp_close(struct file *filp) {
 	if (current->record_thrd != NULL) {
@@ -349,8 +433,6 @@ void replayfs_file_opened(struct file *filp) {
 	}
 }
 
-#define IS_RECORDED_FILE (1<<3)
-#define READ_NEW_CACHE_FILE (1<<4)
 
 #ifdef TRACE_PIPE_READ_WRITE
 extern const struct file_operations read_pipefifo_fops;
@@ -374,8 +456,11 @@ struct pipe_track {
 	struct replayfs_btree128_key key;
 };
 
-#define READ_PIPE_WITH_DATA (1<<2)
 #define READ_IS_PIPE (1<<1)
+#define READ_PIPE_WITH_DATA (1<<2)
+#define IS_RECORDED_FILE (1<<3)
+#define READ_NEW_CACHE_FILE (1<<4)
+#define NORMAL_WRITE (1<<5)
 
 DEFINE_MUTEX(pipe_tree_mutex);
 static struct btree_head32 pipe_tree;
@@ -850,6 +935,10 @@ struct record_thread {
 	struct list_head rp_argsalloc_list;	// kernel linked list head pointing to linked list of argsalloc_nodes
 #ifdef LOG_COMPRESS_1
 	struct list_head rp_clog_list; 		// the linked list for compressed log, written to another file
+#endif
+
+#ifdef ORDER_WRITES
+	struct btree_head64 write_ids;
 #endif
 
 	u_long rp_user_log_addr;        // Where the user log info is stored 
@@ -2049,6 +2138,11 @@ new_record_thread (struct record_group* prg, u_long recpid, struct record_cache_
 #ifdef TRACE_READ_WRITE
 	memset(prp->recorded_filemap_valid, 0, sizeof(char) * RECORD_FILE_SLOTS);
 #endif
+
+#ifdef ORDER_WRITES
+	btree_init64(&prp->write_ids);
+#endif
+
 #ifdef LOG_COMPRESS_1
 	INIT_LIST_HEAD (&prp->rp_clog_list);
 #endif
@@ -4026,6 +4120,26 @@ int replay_has_pending_signal (void) {
 	return 0;
 }
 
+#ifdef ORDER_WRITES
+static void sync_write_inode_data(struct record_thread *prect) {
+	u64 key;
+	struct inode_data *idata;
+
+	/* Iterate all the write_ids used by this record thread,
+	 * sync their contents to disk,
+	 * clear the tree
+	 * Remove the data
+	 */
+	btree_for_each_safe64(&prect->write_ids, key, idata) {
+		inode_write_data_sync(idata);
+		btree_remove64(&prect->write_ids, key);
+		inode_data_put(idata);
+	}
+}
+#else
+#define sync_write_inode_data(...)
+#endif
+
 static void
 write_and_free_kernel_log(struct record_thread *prect)
 {
@@ -4033,8 +4147,10 @@ write_and_free_kernel_log(struct record_thread *prect)
 	struct syscall_result* write_psr;
 	loff_t pos;
 	struct file* file = NULL;
+	mm_segment_t old_fs;
 
-	mm_segment_t old_fs = get_fs();
+	sync_write_inode_data(prect);
+	old_fs = get_fs();
 	set_fs(KERNEL_DS);
 	file = init_log_write (prect, &pos, &fd);
 	if (file) {
@@ -4083,6 +4199,7 @@ write_and_free_handler (struct work_struct *work)
 
 	MPRINT ("Pid %d write_and_free_handler called for record pid %d\n", current->pid, prect->rp_record_pid);
 
+	sync_write_inode_data(prect);
 	set_fs(KERNEL_DS);
 	file = init_log_write (prect, &pos, &fd);
 	if (file) {
@@ -7135,6 +7252,7 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 		filp = fget (fd);
 		inode = filp->f_dentry->d_inode;
 
+
 		/*if (inode->i_rdev == 0 && MAJOR(inode->i_sb->s_dev) != 0 && filp->)*/
 		if (filp->replayfs_filemap) {
 			loff_t fpos;
@@ -7147,6 +7265,29 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 
 			BUG_ON(map == NULL);
 			//replayfs_filemap_init(&map, replayfs_alloc, filp);
+
+			/* Overwrite the pipe nature to that of a normal write */
+#ifdef ORDER_WRITES
+			{
+				long long *write_id;
+				int *is_shared;
+				struct inode_data *idata;
+				is_shared = ARGSKMALLOC(sizeof(int), GFP_KERNEL);
+				pretparams = (void *)is_shared;
+				*is_shared = NORMAL_WRITE;
+				idata = ((struct filemap_data *)filp->replayfs_filemap)->idata;
+
+				write_id = ARGSKMALLOC(sizeof(long long), GFP_KERNEL);
+				*write_id = inode_data_next_write(idata);
+				/* Add this write_id to our sync tree */
+				if (btree_lookup64(&current->record_thrd->write_ids, idata->key) == NULL) {
+					/* Insert this into the sync tree */
+					inode_data_ref(idata);
+					btree_insert64(&current->record_thrd->write_ids, idata->key,
+							idata, GFP_KERNEL);
+				}
+			}
+#endif
 
 			fpos = filp->f_pos - size;
 			if (fpos >= 0) { 
@@ -7164,12 +7305,16 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 		} else if (is_pipe(filp)) {
 			u64 rg_id = current->record_thrd->rp_group->rg_id;
 			struct pipe_track *info;
+			int *is_shared;
 			/* Wohoo, we have a pipe.  Lets track its writer */
 
 			/* We have to lock our pipe tree externally */
 			mutex_lock(&pipe_tree_mutex);
 
 			info = btree_lookup32(&pipe_tree, (u32)filp->f_dentry->d_inode->i_pipe);
+
+				is_shared = ARGSKMALLOC(sizeof(int), GFP_KERNEL);
+				*is_shared = READ_IS_PIPE;
 
 			/* The pipe is not in the tree, this is its first write (by a recorded process) */
 			if (info == NULL) {
@@ -7267,7 +7412,7 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 				struct sock *peer;
 				struct sock *sk = sock->sk;
 				peer = unix_peer_get(sk);
-				ret = track_usually_pt2pt_write(peer, size, filp, 0);
+				ret = track_usually_pt2pt_write(peer, size, filp, 1);
 				sock_put(peer);
 				if (ret) {
 					//ARGSKFREE(pretvals, sizeof(struct generic_socket_retvals));
@@ -7312,25 +7457,20 @@ replay_write (unsigned int fd, const char __user * buf, size_t count)
 		printk ("Pid %d (recpid %d) clock %ld log_clock %ld replays: %s", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid, *(current->replay_thrd->rp_preplay_clock), current->replay_thrd->rp_expected_clock - 1, kbuf);
 	}
 	DPRINT ("Pid %d replays write returning %d\n", current->pid,rc);
-#ifdef REPLAY_COMPRESS_READS
 	if (pretparams != NULL) {
-		struct replayfs_syscache_id id;
-		id.sysnum = current->replay_thrd->rp_out_ptr - 1;
-		id.unique_id = current->replay_thrd->rp_record_thread->rp_group->rg_id;
-		id.pid = current->replay_thrd->rp_record_thread->rp_record_pid;
-
-		printk("%s %d: Adding syscache with id {%lld, %lld, %lld}\n", __func__,
-				__LINE__, (loff_t)id.sysnum, (loff_t)id.unique_id, (loff_t)id.pid);
-		replayfs_syscache_add(&syscache, &id, rc, buf);
-
-		/* We don't actually allocate any space! <insert evil laugh here> */
-		//argsconsume (current->replay_thrd->rp_record_thread, sizeof(int));
+		int *is_shared = (int *)pretparams;
+		/*
+		 * From TRACE_PIPE/SOCKET_READ_WRITE, should work w/ or w/o the #define
+		 * though 
+		 */
+		if (*is_shared == READ_IS_PIPE) {
+			argsconsume(current->replay_thrd->rp_record_thread, 2*sizeof(int));
+		/* From ORDER_WRITES, should work w/ or w/o the #define though */
+		} else if (*is_shared == NORMAL_WRITE) {
+			argsconsume(current->replay_thrd->rp_record_thread, 
+					sizeof(int) + sizeof(long long));
+		}
 	}
-#elif defined(TRACE_PIPE_READ_WRITE)
-	if (pretparams != NULL) {
-		argsconsume (current->replay_thrd->rp_record_thread, sizeof(int));
-	}
-#endif
 
 #ifdef X_COMPRESS
 	if ((actual_fd = is_x_fd_replay (&current->replay_thrd->rp_record_thread->rp_clog.x, fd)) > 0 && rc > 0) {
