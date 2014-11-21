@@ -1,5 +1,11 @@
 #!/bin/bash
 
+function do_make() {
+	local rc;
+	make -j$build_parallel 2>&1 | tee errlog
+	return ${PIPESTATUS[0]}
+}
+
 sudo /usr/bin/lspci | grep VMware &> /dev/null
 is_vm=$?
 
@@ -16,7 +22,7 @@ fi
 
 num_cores=`cat /proc/cpuinfo | grep processor | wc -l`
 build_parallel=$(($num_cores+1))
-make -j$build_parallel
+do_make
 
 rc=$?
 

@@ -50,9 +50,9 @@
 #include "replayfs_diskalloc.h"
 #include "replayfs_kmap.h"
 
-/*
-#define REPLAYFS_BTREE128_DEBUG
+//#define REPLAYFS_BTREE128_DEBUG
 
+/*
 #define REPLAYFS_BTREE128_VERIFY
 */
 
@@ -535,10 +535,12 @@ void replayfs_btree128_init_allocator(struct replayfs_btree128_head *head,
 
 static void update_meta128(struct replayfs_btree128_head *head) {
 	struct page *page;
+	char *cpage;
 	struct replayfs_btree_meta *meta;
 
 	page = replayfs_diskalloc_get_page(head->allocator, head->meta_loc);
-	meta = replayfs_kmap(page);
+	cpage = replayfs_kmap(page);
+	meta = (void *)(cpage + (head->meta_loc % PAGE_SIZE));
 
 	if (head->node_page != NULL) {
 		meta->node_page = head->node_page->index * PAGE_SIZE;
@@ -561,6 +563,7 @@ int replayfs_btree128_init(struct replayfs_btree128_head *head,
 		struct replayfs_diskalloc *alloc, loff_t meta_loc)
 {
 	struct page *page;
+	char *cpage;
 	struct replayfs_btree_meta *meta;
 
 	__btree_init(head);
@@ -574,7 +577,9 @@ int replayfs_btree128_init(struct replayfs_btree128_head *head,
 
 	BUG_ON((meta_loc % PAGE_SIZE) != 0);
 	page = replayfs_diskalloc_get_page(alloc, meta_loc);
-	meta = replayfs_kmap(page);
+	cpage = replayfs_kmap(page);
+
+	meta = (void *)(cpage + (meta_loc % PAGE_SIZE));
 
 	if (meta->node_page != 0) {
 		head->node_page = replayfs_diskalloc_get_page(alloc, meta->node_page);

@@ -21,6 +21,8 @@ struct group_header {
 
 struct list_head group_list;
 
+extern atomic_t other_kmallocs;
+
 static struct group_header *get_group_header(const char *group) {
 	int found;
 	struct group_header *header;
@@ -35,6 +37,7 @@ static struct group_header *get_group_header(const char *group) {
 
 	if (!found) {
 		header = kmalloc(sizeof(struct group_header), GFP_KERNEL);
+		atomic_inc(&other_kmallocs);
 
 		if (header == NULL) {
 			BUG();
@@ -63,6 +66,7 @@ static void perftimer_reset(struct perftimer *tmr) {
 static struct perftimer *create_perf_timer(struct group_header *header,
 		const char *name) {
 	struct perftimer *tmr = kmalloc(sizeof(struct perftimer), GFP_KERNEL);
+	atomic_inc(&other_kmallocs);
 
 	if (tmr == NULL) {
 		BUG();
@@ -155,6 +159,7 @@ static void *c_start(struct seq_file *m, loff_t *pos) {
 	
 	holder = kmalloc(sizeof(struct list_info_holder),
 			GFP_KERNEL);
+	atomic_inc(&other_kmallocs);
 
 	holder->state = STATE_START;
 

@@ -82,6 +82,7 @@ struct replayfs_filemap_entry {
 #endif
 #define IS_RECORDED_FILE (1<<3)
 #define READ_NEW_CACHE_FILE (1<<4)
+#define NORMAL_FILE (1<<5)
 
 
 struct repsignal {
