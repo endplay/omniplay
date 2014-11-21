@@ -32,11 +32,11 @@
 #define REPLAYFS_DISKALLOC_DEBUG_CACHE
 
 #define REPLAYFS_DISKALLOC_ALLOC_DEBUG
-*/
 
 #define REPLAYFS_DISKALLOC_MONITOR_LISTS
 
 #define REPLAYFS_DISKALLOC_STANDARD_CHECKS
+*/
 
 #if defined(REPLAYFS_DISKALLOC_DEBUG) && !defined(REPLAYFS_DISKALLOC_DEBUG_MIN)
 #  define REPLAYFS_DISKALLOC_DEBUG_MIN
@@ -134,6 +134,12 @@ atomic_t initd = {0};
 atomic_t init_done = {0};
 struct replayfs_diskalloc *replayfs_alloc;
 struct replayfs_btree128_head filemap_meta_tree;
+
+/* FIXME: #define somewhere? */
+static struct replayfs_btree128_key write_data_key = {0, 1};
+
+struct replayfs_btree128_head write_data_tree;
+
 struct replayfs_syscall_cache syscache;
 static int crappy_pagecache_size;
 static int crappy_pagecache_allocated_pages;
@@ -234,7 +240,7 @@ void check_page_allocated(struct replayfs_diskalloc *alloc, loff_t index) {
 	alloc_put_page_nocheck(alloc, page);
 }
 #else
-#define check_allocated(...)
+#define check_page_allocated(...)
 #endif
 
 #ifdef REPLAYFS_DISKALLOC_MONITOR_LISTS
@@ -428,6 +434,18 @@ int glbl_diskalloc_init(void) {
 			replayfs_btree128_create(&filemap_meta_tree, replayfs_alloc, index);
 
 			replayfs_syscache_init(&syscache, replayfs_alloc, pos, 1);
+
+			/* FIXME: Put this in some library function or something... */
+			{
+				struct replayfs_btree128_value v;
+				page = replayfs_diskalloc_alloc_page(replayfs_alloc);
+				v.id = (loff_t)page->index * PAGE_SIZE;
+				replayfs_btree128_create(&write_data_tree, replayfs_alloc, v.id);
+
+				replayfs_btree128_insert(&filemap_meta_tree, &write_data_key, &v, GFP_NOFS);
+			}
+
+			replayfs_diskalloc_put_page(replayfs_alloc, page);
 		} else {
 			replayfs_alloc = replayfs_diskalloc_init(filp);
 			page = replayfs_diskalloc_get_page(replayfs_alloc, FIRST_PAGEALLOC_PAGE);
@@ -442,6 +460,18 @@ int glbl_diskalloc_init(void) {
 			replayfs_btree128_init(&filemap_meta_tree, replayfs_alloc,
 					(loff_t)FIRST_PAGEALLOC_PAGE);
 			replayfs_syscache_init(&syscache, replayfs_alloc, pos, 0);
+
+			/* FIXME: Put this in some library function or something... */
+			{
+				struct replayfs_btree128_value *val;
+				struct page *page;
+
+				val = replayfs_btree128_lookup(&filemap_meta_tree, &write_data_key, &page);
+
+				replayfs_btree128_init(&write_data_tree, replayfs_alloc, val->id);
+
+				replayfs_diskalloc_put_page(replayfs_alloc, page);
+			}
 		}
 
 		filp_close(filp, NULL);

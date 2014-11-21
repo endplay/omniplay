@@ -11,11 +11,14 @@
 static void empty_printfcn(FILE *out, struct klog_result *res) {
 }
 
+
 static void print_write_pipe(FILE *out, struct klog_result *res) {
 	char *retparams = res->retparams;
+	int *is_shared = (int *)retparams;
 
-	if (retparams) {
-		fprintf(out, "%d, %ld, %lu, %lld\n", *((int *)retparams), res->retval,
+	if (retparams && *is_shared != NORMAL_FILE) {
+		int id = *(is_shared+1);
+		fprintf(out, "%d, %ld, %lu, %lld\n", id, res->retval,
 				res->start_clock, res->index);
 	}
 }
@@ -202,11 +205,18 @@ static void print_write(FILE *out, struct klog_result *res) {
 
 	parseklog_default_print(out, res);
 
-#ifdef TRACE_PIPE_READ_WRITE
 	if (psr->flags & SR_HAS_RETPARAMS) {
-		fprintf(out, "         Write is part of pipe: %d\n", *((int *)res->retparams));
+		char *retparams = res->retparams;
+		int *is_shared = (int *)retparams;
+
+		if (*is_shared == NORMAL_FILE) {
+			long long *id = (long long *)(is_shared+1);
+			fprintf(out, "         With write_id of %lld\n", *id);
+		} else {
+			int *id = (int *)(is_shared+1);
+			fprintf(out, "         Write is part of pipe: %d\n", *(id));
+		}
 	}
-#endif
 }
 
 static void print_read(FILE *out, struct klog_result *res) {
