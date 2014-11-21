@@ -129,7 +129,7 @@ int verify_debug = 0;
    */
 #define LOG_COMPRESS //log compress level 0
 //#define LOG_COMPRESS_1 //log compress level 1
-#define X_COMPRESS  // note: x_compress should be defined at least along with log_compress level 0
+//#define X_COMPRESS  // note: x_compress should be defined at least along with log_compress level 0
 #define USE_SYSNUM
 //#define REPLAY_PAUSE
 #define DET_TIME_DEBUG 0
@@ -2070,7 +2070,7 @@ new_record_thread (struct record_group* prg, u_long recpid, struct record_cache_
 
 	do {
 		int i;
-		for (i = 0; i < INIT_RECPLAY_CACHE_SIZE; i++) {
+		for (i = 0; i < RECORD_FILE_SLOTS; i++) {
 			prp->prev_file_version[i] = -1;
 		}
 	} while (0);
@@ -4491,7 +4491,7 @@ get_next_clock (struct replay_thread* prt, struct replay_group* prg, long wait_c
 					msleep(1000);
 					break;
 				}
-				printk ("Pid %d (recpid %d): Crud! no elgible thread to run\n", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid);
+				printk ("Pid %d (recpid %d): Crud! no eligible thread to run\n", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid);
 				printk ("current clock value is %ld waiting for %lu\n", *(prt->rp_preplay_clock), wait_clock_value);
 				dump_stack(); // how did we get here?
 				// cycle around again and print
@@ -4548,7 +4548,7 @@ sys_wakeup_paused_process (pid_t pid)
 			}
 			tmp = tmp->rp_next_thread;
 			if (tmp == prt) {
-				printk ("Replay_pause: Pid %d (recpid %d): Crud! no elgible thread to run on syscall entry\n", current->pid, prt->rp_record_thread->rp_record_pid);
+				printk ("Replay_pause: Pid %d (recpid %d): Crud! no eligible thread to run on syscall entry\n", current->pid, prt->rp_record_thread->rp_record_pid);
 				printk ("current clock value is %ld looking for %lu\n", *(prt->rp_preplay_clock), *(prt->rp_preplay_clock + 1));
 				dump_stack(); // how did we get here?
 				// cycle around again and print
@@ -4646,6 +4646,7 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 		pclock = (u_long *) argshead(prect);
 		argsconsume(prect, sizeof(u_long));
 		start_clock += *pclock;
+		if (start_clock > 100000000) printk ("start_clock %ld, pclock %ld, prt->rp_expected_clock %ld\n", start_clock, *pclock, prt->rp_expected_clock); 
 	}
 	prt->rp_expected_clock = start_clock + 1;
 	// Pin can interrupt, so we need to save the start clock in case we need to resume
@@ -4713,7 +4714,7 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 			}
 			tmp = tmp->rp_next_thread;
 			if (tmp == prt) {
-				printk ("Pid %d (recpid %d): Crud! no elgible thread to run on syscall entry\n", current->pid, prect->rp_record_pid);
+				printk ("Pid %d (recpid %d): Crud! no eligible thread to run on syscall entry\n", current->pid, prect->rp_record_pid);
 				printk ("current clock value is %ld waiting for %lu\n", *(prt->rp_preplay_clock), start_clock);
 				dump_stack(); // how did we get here?
 				// cycle around again and print
@@ -5293,7 +5294,7 @@ sys_pthread_block (u_long clock)
 			}
 			tmp = tmp->rp_next_thread;
 			if (tmp == prt) {
-				printk ("Pid %d: Crud! no elgible thread to run on user-level block\n", current->pid);
+				printk ("Pid %d: Crud! no eligible thread to run on user-level block\n", current->pid);
 				printk ("Replay pid %d is waiting for user clock value %ld but current clock value is %ld\n", current->pid, clock, *(prt->rp_preplay_clock));
 				tmp = prt->rp_next_thread;
 				do {
@@ -6041,7 +6042,7 @@ recplay_exit_middle(void)
 			}
 			tmp = tmp->rp_next_thread;
 			if (tmp == current->replay_thrd && num_blocked) {
-				printk ("Pid %d (recpid %d): Crud! no elgible thread to run on exit, clock is %ld\n", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid, clock);
+				printk ("Pid %d (recpid %d): Crud! no eligible thread to run on exit, clock is %ld\n", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid, clock);
 				dump_stack(); // how did we get here?
 				// cycle around again and print
 				tmp = tmp->rp_next_thread;
@@ -6559,10 +6560,13 @@ long file_cache_check_version(int fd, struct file *filp,
 		current->record_thrd->prev_file_version[fd] = data->idata->version;
 	} else {
 		if (current->record_thrd->prev_file_version[fd] < data->idata->version) {
-			printk("%s %d: !!!!!!HAVE Out of data file!!!!!!!!\n", __func__, __LINE__);
+			printk("%s %d: !!!!!! Warning - HAVE Out of date file version pid %d fd %d versions %lld %lld !!!!!!!!\n", __func__, __LINE__, 
+			       current->pid, fd, current->record_thrd->prev_file_version[fd], data->idata->version);
+#if 0
 			ret = READ_NEW_CACHE_FILE;
 			/* Stat the file and add it to the cache... */
 			add_file_to_cache(filp, &retvals->dev, &retvals->ino, &retvals->mtime);
+#endif
 		}
 		current->record_thrd->prev_file_version[fd] = data->idata->version;
 	}
@@ -7291,7 +7295,21 @@ replay_write (unsigned int fd, const char __user * buf, size_t count)
 		printk ("Pid %d (recpid %d) clock %ld log_clock %ld replays: %s", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid, *(current->replay_thrd->rp_preplay_clock), current->replay_thrd->rp_expected_clock - 1, kbuf);
 	}
 	DPRINT ("Pid %d replays write returning %d\n", current->pid,rc);
-#ifdef TRACE_PIPE_READ_WRITE
+#ifdef REPLAY_COMPRESS_READS
+	if (pretparams != NULL) {
+		struct replayfs_syscache_id id;
+		id.sysnum = current->replay_thrd->rp_out_ptr - 1;
+		id.unique_id = current->replay_thrd->rp_record_thread->rp_group->rg_id;
+		id.pid = current->replay_thrd->rp_record_thread->rp_record_pid;
+
+		printk("%s %d: Adding syscache with id {%lld, %lld, %lld}\n", __func__,
+				__LINE__, (loff_t)id.sysnum, (loff_t)id.unique_id, (loff_t)id.pid);
+		replayfs_syscache_add(&syscache, &id, rc, buf);
+
+		/* We don't actually allocate any space! <insert evil laugh here> */
+		//argsconsume (current->replay_thrd->rp_record_thread, sizeof(int));
+	}
+#elif defined(TRACE_PIPE_READ_WRITE)
 	if (pretparams != NULL) {
 		argsconsume (current->replay_thrd->rp_record_thread, sizeof(int));
 	}
@@ -7343,7 +7361,7 @@ record_open (const char __user * filename, int flags, int mode)
 			fput(file);
 		} while (0);
 		*/
-		MPRINT ("record_open of name %s with flags %x\n", filename, flags);
+		MPRINT ("record_open of name %s with flags %x returns fd %ld\n", filename, flags, rc);
 		if ((flags&O_ACCMODE) == O_RDONLY && !(flags&(O_CREAT|O_DIRECTORY))) {
 			file = fget (rc);
 			inode = file->f_dentry->d_inode;
@@ -7769,7 +7787,7 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 					}
 					tmp = tmp->rp_next_thread;
 					if (tmp == prt && num_blocked) {
-						printk ("Pid %d (recpid %d): Crud! no elgible thread to run on exit, clock is %ld\n", current->pid, prt->rp_record_thread->rp_record_pid, clock);
+						printk ("Pid %d (recpid %d): Crud! no eligible thread to run on exit, clock is %ld\n", current->pid, prt->rp_record_thread->rp_record_pid, clock);
 						dump_stack(); // how did we get here?
 						// cycle around again and print
 						tmp = tmp->rp_next_thread;
@@ -9571,7 +9589,7 @@ replay_socketcall (int call, unsigned long __user *args)
 		syscall_mismatch();
 	}
 
-	DPRINT ("Pid %d, replay_socketcall %d, rc is %ld\n", current->pid, call, rc);
+	DPRINT ("Pid %d, replay_socketcall %d, rc is %ld, retparams is %p\n", current->pid, call, rc, retparams);
 #ifdef X_COMPRESS
 	if (x_detail && is_x_fd (&X_STRUCT_REP, kargs[0]))
 		printk ("Pid %d socketcall for x server.\n", current->pid);
@@ -9594,7 +9612,7 @@ replay_socketcall (int call, unsigned long __user *args)
 					init_x_comp (&X_STRUCT_REP);
 				}*/
 				X_STRUCT_REP.connection_times = ++ conn_times;
-                add_x_fd_replay (&X_STRUCT_REP, kargs[0], actual_fd);
+				add_x_fd_replay (&X_STRUCT_REP, kargs[0], actual_fd);
 				if (x_proxy) { 
 					long retval;
 					mm_segment_t old_fs = get_fs ();
@@ -9651,8 +9669,10 @@ replay_socketcall (int call, unsigned long __user *args)
 		if (retparams) {
 			argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct generic_socket_retvals));
 			retparams += sizeof(struct generic_socket_retvals);
-			/* We need to allocate something on write regardless, then use it to determine how much to free... ugh */
-			consume_socket_args_write(retparams);
+			if (rc >= 0) {
+				/* We need to allocate something on write regardless, then use it to determine how much to free... ugh */
+				consume_socket_args_write(retparams);
+			}
 		}
 		return rc;
 #else
@@ -10376,7 +10396,6 @@ record_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 	MPRINT ("Pid %d records clone with flags %lx fork %d returning %ld\n", current->pid, clone_flags, (clone_flags&CLONE_VM) ? 0 : 1, rc);
 
 	rg_lock(prg);
-	printk("%s %d: Rercording cloned pid %ld\n", __func__, __LINE__, rc);
 	new_syscall_done (120, rc);
 	new_syscall_exit (120, NULL);
 
@@ -10473,8 +10492,6 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 		(*(int*)(current->replay_thrd->app_syscall_addr)) = 999;
 	} else {
 		rc = get_next_syscall_enter (current->replay_thrd, prg, 120, NULL, &psr);
-		printk("%s %d: next_syscall_enter returned an rc of %ld\n", __func__,
-				__LINE__, rc);
 	}
 
 	if (rc > 0) {
@@ -11265,7 +11282,7 @@ asmlinkage long shim_sched_yield (void)
 			}
 			tmp = tmp->rp_next_thread;
 			if (tmp == current->replay_thrd) {
-				printk ("Pid %d: Crud! no elgible thread to run on sched_yield\n", current->pid);
+				printk ("Pid %d: Crud! no eligible thread to run on sched_yield\n", current->pid);
 				printk ("This is probably really bad...sleeping\n");
 				msleep (1000);
 			}

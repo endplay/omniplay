@@ -8,13 +8,21 @@
 #include "util.h"
 #include <sys/wait.h>
 #include <sys/time.h>
+#include <glib-2.0/glib.h>
+#include <iostream>
 
-// #define TIMING_ON
+//#define PLUS_TWO
+//#define TIMING_ON
 
 long print_limit = 10;
 KNOB<string> KnobPrintLimit(KNOB_MODE_WRITEONCE, "pintool", "p", "10000000", "syscall print limit");
 long print_stop = 10;
 KNOB<string> KnobPrintStop(KNOB_MODE_WRITEONCE, "pintool", "s", "10000000", "syscall print stop");
+char* addr_save = NULL;
+KNOB<string> KnobSaveSyscallAddrs(KNOB_MODE_WRITEONCE, "pintool", "addr_save", "", "save syscall addrs to file");
+char* addr_load = NULL;
+KNOB<string> KnobLoadSyscallAddrs(KNOB_MODE_WRITEONCE, "pintool", "addr_load", "", "save syscall addrs to file");
+
 #define DEBUG_FUNCTIONS
 #ifdef DEBUG_FUNCTIONS
 long function_print_limit = 10;
@@ -48,6 +56,8 @@ int child = 0;
 int fd; // File descriptor for the replay device
 TLS_KEY tls_key; // Key for accessing TLS. 
 
+GHashTable* sysexit_addr_table; 
+
 int get_record_pid(void);
 
 ADDRINT find_static_address(ADDRINT ip)
@@ -80,7 +90,6 @@ inline void increment_syscall_cnt (struct thread_data* ptdata, int syscall_num)
 }
 
 
-static ADDRINT bad;
 void inst_syscall_end(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD std, VOID* v)
 {
 #ifdef USE_TLS_SCRATCH
@@ -90,14 +99,6 @@ void inst_syscall_end(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD std, V
 #endif
     if (tdata) {
 	if (tdata->app_syscall != 999) tdata->app_syscall = 0;
-
-	if (tdata->sysnum == SYS_read) {
-	    int ret_value = (int)PIN_GetSyscallReturn(ctxt, std);
-	    if (ret_value > 0) {
-		ret_value = write(STDERR_FILENO, (void *)bad, ret_value);
-		assert(ret_value > 0);
-	    }
-	}
     } else {
 	fprintf (stderr, "inst_syscall_end: NULL tdata\n");
     }	
@@ -105,11 +106,16 @@ void inst_syscall_end(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD std, V
     increment_syscall_cnt(tdata, tdata->sysnum);
     // reset the syscall number after returning from system call
     tdata->sysnum = 0;
+    increment_syscall_cnt(tdata, tdata->sysnum);
 }
 
 // called before every application system call
 #ifdef USE_TLS_SCRATCH
+#ifdef PLUS_TWO
+void set_address_one(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT tls_ptr, ADDRINT syscallarg0, ADDRINT syscallarg1, ADDRINT syscallarg2, ADDRINT ip)
+#else
 void set_address_one(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT tls_ptr, ADDRINT syscallarg0, ADDRINT syscallarg1, ADDRINT syscallarg2)
+#endif
 #else
 void set_address_one(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscallarg0, ADDRINT syscallarg1, ADDRINT syscallarg2)
 #endif
@@ -119,7 +125,6 @@ void set_address_one(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscallarg0
 #else
     struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
 #endif
-    bad = syscallarg1;
     if (tdata) {
 	int sysnum = (int) syscall_num;
 	
@@ -132,6 +137,12 @@ void set_address_one(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscallarg0
 	    tdata->ignore_flag = (u_long) syscallarg1;
     }
 
+#ifdef PLUS_TWO
+	    g_hash_table_add(sysexit_addr_table, GINT_TO_POINTER(ip+2));
+	    fprintf (stderr, "Add address %x\n", ip+2);
+	    g_hash_table_add(sysexit_addr_table, GINT_TO_POINTER(ip+11));
+	    fprintf (stderr, "Add address %x\n", ip+11);
+#endif	    
 	if (sysnum == 45 || sysnum == 91 || sysnum == 120 || sysnum == 125 || sysnum == 174 || sysnum == 175 || sysnum == 190 || sysnum == 192) {
 	//if (sysnum == 91 || sysnum == 120 || sysnum == 125 || sysnum == 175 || sysnum == 190 || sysnum == 192) {
 	    check_clock_before_syscall (fd, (int) syscall_num);
@@ -156,7 +167,8 @@ void syscall_after (ADDRINT ip)
 #endif
     if (tdata) {
 	if (tdata->app_syscall == 999) {
-	    // fprintf (stderr, "Pid %d Waiting for clock after syscall,ip=%lx\n", PIN_GetPid(), (u_long) ip);
+	    //fprintf (stderr, "Pid %d Waiting for clock after syscall,ip=%lx\n", PIN_GetPid(), (u_long) ip);
+	    if (addr_save) g_hash_table_add(sysexit_addr_table, GINT_TO_POINTER(ip));
 	    if (check_clock_after_syscall (fd) == 0) {
 	    } else {
 		fprintf (stderr, "Check clock failed\n");
@@ -205,12 +217,15 @@ void track_inst(INS ins, void* data)
 #ifdef USE_TLS_SCRATCH
     if(INS_IsSyscall(ins)) {
 	    INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(set_address_one), IARG_SYSCALL_NUMBER, 
-                    IARG_REG_VALUE, LEVEL_BASE::REG_EBX, 
-		    IARG_REG_VALUE, tls_reg,
-		    IARG_SYSARG_VALUE, 0, 
-		    IARG_SYSARG_VALUE, 1,
-		    IARG_SYSARG_VALUE, 2,
-		    IARG_END);
+			   IARG_REG_VALUE, LEVEL_BASE::REG_EBX, 
+			   IARG_REG_VALUE, tls_reg,
+			   IARG_SYSARG_VALUE, 0, 
+			   IARG_SYSARG_VALUE, 1,
+			   IARG_SYSARG_VALUE, 2,
+#ifdef PLUS_TWO
+			   IARG_INST_PTR,
+#endif
+			   IARG_END);
     }
 #else
     if(INS_IsSyscall(ins)) {
@@ -242,11 +257,22 @@ void track_trace(TRACE trace, void* data)
 
     //TRACE_InsertIfCall(trace, IPOINT_BEFORE, (AFUNPTR) check_syscall_after, IARG_REG_VALUE, tls_reg, IARG_END);
     //TRACE_InsertThenCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_after, IARG_INST_PTR, IARG_END);
+#ifdef PLUS_TWO
+    ADDRINT addr = TRACE_Address (trace);
+    if (!g_hash_table_contains (sysexit_addr_table, GINT_TO_POINTER(addr))) return;
+#endif
+
+    if (addr_load) {
+	ADDRINT addr = TRACE_Address (trace);
+	if (!g_hash_table_contains (sysexit_addr_table, GINT_TO_POINTER(addr))) return;
+    }
+	
 #ifdef USE_TLS_SCRATCH
     TRACE_InsertCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_after, IARG_INST_PTR, IARG_REG_VALUE, tls_reg, IARG_END);
 #else
     TRACE_InsertCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_after, IARG_INST_PTR, IARG_END);
 #endif
+    //	}
 
 }
 
@@ -338,19 +364,6 @@ void after_function_call(ADDRINT name, ADDRINT rtn_addr)
     }
 }
 
-static ADDRINT bleh;
-void before_getline(ADDRINT addr)
-{
-    bleh = addr;
-}
-
-void after_getline(void)
-{
-    if (global_syscall_cnt >= function_print_limit && global_syscall_cnt < function_print_stop) {
-	fprintf(stderr, "getline returns: %s\n", *(char **)bleh);
-    }
-}
-
 void routine (RTN rtn, VOID *v)
 {
     const char *name;
@@ -359,12 +372,6 @@ void routine (RTN rtn, VOID *v)
 
     RTN_Open(rtn);
 
-    if (strstr(name, "__getdelim")){
-        RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)before_getline,
-		IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_END);
-        RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)after_getline,
-		IARG_END);
-    } else
     if (!strstr(name, "get_pc_thunk")) {
         RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)before_function_call,
                 IARG_PTR, name, IARG_ADDRINT, RTN_Address(rtn), IARG_END);
@@ -385,6 +392,11 @@ VOID ImageLoad (IMG img, VOID *v)
 			id, IMG_Name(img).c_str(), load_offset);
 }
 
+void print_addr (gpointer key, gpointer value, gpointer data)
+{
+	FILE* fp = (FILE*) data;
+	fprintf (fp, "syscall addr: %p\n", key);
+}
 
 void fini(INT32 code, void* v) {
     fprintf(stderr, "process is done\n");
@@ -395,6 +407,17 @@ void fini(INT32 code, void* v) {
         fprintf(stderr, "Pid %d start %ld secs %ld usecs\n", PIN_GetPid(), tv.tv_sec, tv.tv_usec);
     }
 #endif
+
+    if (addr_save) {
+	FILE* fp;
+	fp = fopen (addr_save, "w");
+	if (fp == NULL) {
+	    fprintf (stderr, "Cannot save addresses to file %s\n", addr_save);
+	} else {
+	    g_hash_table_foreach (sysexit_addr_table, print_addr, fp);
+	    fclose(fp);
+	}
+    }
 }
 
 int main(int argc, char** argv) 
@@ -409,15 +432,15 @@ int main(int argc, char** argv)
 
     PIN_InitSymbols();
     if (PIN_Init(argc, argv)) {
-        fprintf(stderr, "ERROR: could not initialize Pin?\n");
-        exit(-1);
+	fprintf(stderr, "ERROR: could not initialize Pin?\n");
+	exit(-1);
     }
 
     // Intialize the replay device
     rc = devspec_init (&fd);
     if (rc < 0) return rc;
 
- #ifdef USE_TLS_SCRATCH
+#ifdef USE_TLS_SCRATCH
     // Claim a Pin virtual register to store the pointer to a thread's TLS
     tls_reg = PIN_ClaimToolRegister();
 #else
@@ -430,9 +453,36 @@ int main(int argc, char** argv)
     print_stop = atoi(KnobPrintStop.Value().c_str());
     function_print_limit = atoi(KnobFunctionPrintLimit.Value().c_str());
     function_print_stop = atoi(KnobFunctionPrintStop.Value().c_str());
-		fprintf(stderr, "limit: %ld, stop %ld\n", function_print_limit,
-				function_print_stop);
+    fprintf(stderr, "limit: %ld, stop %ld\n", function_print_limit,
+	    function_print_stop);
 #endif
+    
+    addr_load = (char *) KnobLoadSyscallAddrs.Value().c_str();
+    addr_save = (char *) KnobSaveSyscallAddrs.Value().c_str();
+    if (!strcmp(addr_load,"")) addr_load = NULL;
+    if (!strcmp(addr_save,"")) addr_save = NULL;
+    if (addr_load) fprintf (stderr, "loading addresses\n");
+    if (addr_save) fprintf (stderr, "saving addresses\n");
+
+    sysexit_addr_table = g_hash_table_new(g_direct_hash, g_direct_equal);
+    if (addr_load) {
+	FILE* fp;
+	u_long value;
+	
+	fp = fopen (addr_load, "r");
+	if (fp == NULL) {
+	    fprintf (stderr, "Cannot load addresses from %s\n", addr_load);
+	    addr_load = NULL;
+	} else {
+	    while (!feof(fp)) {
+		rc = fscanf (fp, "syscall addr: %lx\n", &value);
+		if (rc == 1) {
+		    g_hash_table_add(sysexit_addr_table, GINT_TO_POINTER(value));
+		}
+	    }
+	    fclose(fp);
+	}
+    }
 
     PIN_AddThreadStartFunction(thread_start, 0);
     PIN_AddThreadFiniFunction(thread_fini, 0);
