@@ -144,6 +144,7 @@ static inline void replayfs_diskalloc_page_dirty(struct page *page) {
 }
 
 int glbl_diskalloc_init(void);
+void glbl_diskalloc_destroy(void);
 struct replayfs_diskalloc *replayfs_diskalloc_create(struct file *filp);
 struct replayfs_diskalloc *replayfs_diskalloc_init(struct file *filp);
 void replayfs_diskalloc_destroy(struct replayfs_diskalloc *alloc);

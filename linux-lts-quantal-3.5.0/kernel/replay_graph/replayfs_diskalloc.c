@@ -348,6 +348,15 @@ static void remove_from_free_list(struct page_data *data, struct list_head *head
 #define check_not_in_lru(X)
 #endif
 
+void glbl_diskalloc_destroy(void) {
+	/* If we've init'd, do a destroy */
+	if (atomic_read(&initd)) {
+		/* First sync */
+		replayfs_diskalloc_sync(replayfs_alloc);
+		replayfs_diskalloc_destroy(replayfs_alloc);
+	}
+}
+
 int glbl_diskalloc_init(void) {
 	int ret = 0;
 	int val;
@@ -419,6 +428,7 @@ int glbl_diskalloc_init(void) {
 			// Blocks in use
 			meta->i_size = 0;
 			meta->cache_tree_loc = (loff_t)syscache_page->index * PAGE_SIZE;
+			printk("Setting cache_tree_loc to %lld\n", meta->cache_tree_loc);
 			pos = meta->cache_tree_loc;
 			//SetPageDirty(page);
 			replayfs_diskalloc_page_dirty(page);
@@ -440,6 +450,7 @@ int glbl_diskalloc_init(void) {
 				v.id = (loff_t)page->index * PAGE_SIZE;
 				replayfs_btree128_create(&write_data_tree, replayfs_alloc, v.id);
 
+				printk("Setting val->id to be %lld page->index: %lu\n", v.id, page->index);
 				replayfs_btree128_insert(&filemap_meta_tree, &write_data_key, &v, GFP_NOFS);
 			}
 
@@ -457,6 +468,8 @@ int glbl_diskalloc_init(void) {
 					(loff_t)FIRST_PAGEALLOC_PAGE);
 			replayfs_btree128_init(&filemap_meta_tree, replayfs_alloc,
 					(loff_t)FIRST_PAGEALLOC_PAGE);
+
+			printk("Initing with cache_tree_loc at %lld\n", pos);
 			replayfs_syscache_init(&syscache, replayfs_alloc, pos, 0);
 
 			/* FIXME: Put this in some library function or something... */
@@ -466,6 +479,7 @@ int glbl_diskalloc_init(void) {
 
 				val = replayfs_btree128_lookup(&filemap_meta_tree, &write_data_key, &page);
 
+				printk("Got val->id of %lld (page idx of %lu\n", val->id, page->index);
 				replayfs_btree128_init(&write_data_tree, replayfs_alloc, val->id);
 
 				replayfs_diskalloc_put_page(replayfs_alloc, page);

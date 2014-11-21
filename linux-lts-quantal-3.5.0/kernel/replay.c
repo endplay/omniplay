@@ -4120,6 +4120,10 @@ int replay_has_pending_signal (void) {
 	return 0;
 }
 
+static void sync_filemap(void) {
+	replayfs_diskalloc_sync(replayfs_alloc);
+}
+
 #ifdef ORDER_WRITES
 static void sync_write_inode_data(struct record_thread *prect) {
 	u64 key;
@@ -4149,6 +4153,7 @@ write_and_free_kernel_log(struct record_thread *prect)
 	struct file* file = NULL;
 	mm_segment_t old_fs;
 
+	sync_filemap();
 	sync_write_inode_data(prect);
 	old_fs = get_fs();
 	set_fs(KERNEL_DS);
@@ -4199,6 +4204,7 @@ write_and_free_handler (struct work_struct *work)
 
 	MPRINT ("Pid %d write_and_free_handler called for record pid %d\n", current->pid, prect->rp_record_pid);
 
+	sync_filemap();
 	sync_write_inode_data(prect);
 	set_fs(KERNEL_DS);
 	file = init_log_write (prect, &pos, &fd);
@@ -15927,4 +15933,4 @@ static int __init replay_init(void)
 	return 0;
 }
 
-module_init(replay_init)
+module_init(replay_init);
