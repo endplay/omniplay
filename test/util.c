@@ -73,7 +73,7 @@ int replay_fork (int fd_spec, const char** args, const char** env,
     return ioctl (fd_spec, SPECI_REPLAY_FORK, &data);
 }
 
-int resume (int fd_spec, int pin, int follow_splits, int save_mmap, char* logdir, char* linker)
+int resume (int fd_spec, int pin, int follow_splits, int save_mmap, char* logdir, char* linker, char* syscall_index)
 {
     struct wakeup_data data;
     data.pin = pin;
@@ -82,6 +82,7 @@ int resume (int fd_spec, int pin, int follow_splits, int save_mmap, char* logdir
     data.fd = fd_spec;
     data.follow_splits = follow_splits;
     data.save_mmap = save_mmap;
+    data.syscall_index = atoi(syscall_index);
     return ioctl (fd_spec, SPECI_RESUME, &data);    
 }
 

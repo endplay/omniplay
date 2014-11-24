@@ -35,7 +35,7 @@ struct filemap_entry {
 
 int devspec_init (int* fd_spec);
 int replay_fork (int fd_spec, const char** args, const char** env, char* linkpath, char* logdir, int save_mmap, int output_fd);
-int resume (int fd_spec, int attach_pin, int follow_splits, int save_mmap, char* logdir, char* linker);
+int resume (int fd_spec, int attach_pin, int follow_splits, int save_mmap, char* logdir, char* linker, char* syscall_index);
 int set_pin_addr (int fd_spec, u_long app_syscall_addr);
 int check_clock_before_syscall (int fd_spec, int syscall);
 int check_clock_after_syscall (int fd_spec);
