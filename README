@@ -7,7 +7,7 @@ this distro before proceeeding.
 
 2) Obtain the omniplay source code
 
-Check the source out from the GitHub repository:
+Just clone the GitHub repository:
 $ git clone https://github.com/endplay/omniplay.git 
 
 This will create a number of sub-directories that contain the user-level and kernel source
@@ -50,7 +50,7 @@ $ cd $OMNIPLAY_DIR/eglibc-2.15/
 $ mkdir build
 $ mkdir prefix
 $ cd build
-$ ../configure -prefix=$OMNIPLAY_DIR/eglibc-2.15/prefix --disable-profile --enable-add-on --without-gd --without-selinux --without-cvs --enable-kernel=3.2.0
+$ ../configure --prefix=$OMNIPLAY_DIR/eglibc-2.15/prefix --disable-profile --enable-add-on --without-gd --without-selinux --without-cvs --enable-kernel=3.2.0
 $ make
 $ mkdir /var/db
 $ chown <user> /var/db
