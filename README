@@ -7,8 +7,8 @@ this distro before proceeeding.
 
 2) Obtain the omniplay source code
 
-Check the source out from the CVS repository on endplay.eecs.umich.edu
-$ cvs -d endplay.eecs.umich.edu:/home/cvs-archive co omniplay
+Check the source out from the GitHub repository:
+$ git clone https://github.com/endplay/omniplay.git 
 
 This will create a number of sub-directories that contain the user-level and kernel source
 for omniplay.
