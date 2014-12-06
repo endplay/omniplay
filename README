@@ -121,7 +121,7 @@ are additionally named by their respective modification times.
 
 You can replay a given group with id <id> as follows:
 
-$ ./resume /replay_logdir/rec_<id> -pthread <omniplay>/src/omniplay/eglibc-2.15/prefix/lib
+$ ./resume /replay_logdb/rec_<id> --pthread <omniplay>/src/omniplay/eglibc-2.15/prefix/lib
 
 Keep in mind that a recording process can not initiate a replay.  So,
 do this from some shell other than the recording bash shell that you
