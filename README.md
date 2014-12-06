@@ -1,12 +1,14 @@
 # OMNIPLAY
 
-## Get the required software
+## Get the software
+
+### Install Ubuntu 12.04.2 LTS 32-bit
 
 Omniplay runs on the 12.04.2 LTS Ubuntu Linux 32-bit distribution.  You should install
 this distro before proceeeding.
 The ISO file is available at: http://old-releases.ubuntu.com/releases/12.04.2/ubuntu-12.04.2-desktop-i386.iso.
 
-## Obtain the omniplay source code
+### Obtain the Omniplay source code
 
 Just clone the GitHub repository:
 
@@ -27,7 +29,8 @@ Assuming that `<omniplay>` is the root directory where you installed the source:
 
 ## Build the Omniplay kernel 
 
-Two method:
+There are two methods:
+
 Option 1:
 
     $ cd $OMNIPLAY_DIR/linux-lts-quantal-3.5.0
@@ -38,6 +41,8 @@ Option 1:
     $ ./compile
     $ sudo reboot
 
+Option 2:
+
     $ cd $OMNIPLAY_DIR/linux-lts-quantal-3.5.0
     $ make menuconfig
     $ sudo make modules_install
@@ -46,10 +51,14 @@ Option 1:
     $ sudo reboot
 
 After rebooting, you should be running the Omniplay kernel.
-j        
+        
 ### Build glibc
 
-Dependencies: (ubuntu 12.04) - gawk texinfo (for makeinfo) autoconf gettext (for msgfmt)
+Install dependencies:
+
+    $ sudo apt-get install gawk texinfo autoconf gettext
+
+Configure and build:
 
     $ cd $OMNIPLAY_DIR/eglibc-2.15/
     $ mkdir build
@@ -70,7 +79,7 @@ that we need to fix:
     $ cd $OMNIPLAY_DIR/eglibc-2.15/prefix
     $ ln -s /usr/lib/locale
 
-## Build the tools
+### Build the tools
 
     $ cd $OMNIPLAY_DIR/test/dev
     $ make
@@ -79,14 +88,13 @@ that we need to fix:
 
 ## Record and replay
 
-After each reboot, you need to load the Omniplay kernel module and do some setup work:
+After each reboot, you need to load the Omniplay kernel module and do some setup work.
 
-Two methods:
-Preferred:
+Preferred method:
 
     $ $OMNIPLAY_DIR/scripts/insert_spec.sh
 
-Basic
+Basic method:
 
     $ cd $OMNIPLAY_DIR/test
     $ ./setup.sh
@@ -154,18 +162,18 @@ Use parseklog to examine a kernel log.
     $ omniplay/test/parseklog /tmp/logs/klog.id.* > parsed_klog
 
 Use the user-level debug log.
-Turn on the USE_DEBUG_LOG macro in `eglibc-2.15/nptl/pthread_log.h` AND `linux-lts-quantal-3.5.0/include/linux/replay.h`
+Turn on the USE_DEBUG_LOG macro in `eglibc-2.15/nptl/pthread_log.h` and `linux-lts-quantal-3.5.0/include/linux/replay.h`
 
 
 ## How to build packages:
 
 Find the package for the executable you want to debug
 
-    > dpkg -S <fully-qualified pathname>
+    $ dpkg -S <fully-qualified pathname>
 
 Get the source for that package
 
-    > sudo apt-get source <package>
+    $ sudo apt-get source <package>
 
 Get build dependencies:
 
@@ -173,19 +181,19 @@ Get build dependencies:
 
 If you need to build with debug symbols, add the following to environment
 
-    > export DEB_BUILD_OPTIONS="debug nostrip noopt"
+    $ export DEB_BUILD_OPTIONS="debug nostrip noopt"
 
 Build the package as is
 
-    > dpkg-buildpackage -us -uc -nc
+    $ dpkg-buildpackage -us -uc -nc
 
 Build the package with the changes you made
 
-    > debuild -us -uc -b
+    $ debuild -us -uc -b
 
 Install the packages you build
 
-    > sudo dpkg -i ../*foo*.deb
+    $ sudo dpkg -i ../*foo*.deb
 
 
 ## Replaying with Pin
@@ -225,5 +233,4 @@ The replay will pause and will resume when Pin is attached.
 
 Attach Pin (the full path for the tool is needed):
 
-    $ /home/mcchow/pin-2.13/pin -pid <pid> -t
-/home/mcchow/omniplay/pin_tools/obj-ia32/print_instructions.so
+    $ /home/mcchow/pin-2.13/pin -pid <pid> -t /home/mcchow/omniplay/pin_tools/obj-ia32/print_instructions.so
