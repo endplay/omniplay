@@ -4,6 +4,7 @@ OMNIPLAY
 
 Omniplay runs on the 12.04.2 LTS Ubuntu Linux 32-bit distribution.  You should install
 this distro before proceeeding.
+The ISO file is available at: http://old-releases.ubuntu.com/releases/12.04.2/ubuntu-12.04.2-desktop-i386.iso.
 
 2) Obtain the omniplay source code
 
