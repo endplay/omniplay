@@ -4,11 +4,12 @@ OMNIPLAY
 
 Omniplay runs on the 12.04.2 LTS Ubuntu Linux 32-bit distribution.  You should install
 this distro before proceeeding.
+The ISO file is available at: http://old-releases.ubuntu.com/releases/12.04.2/ubuntu-12.04.2-desktop-i386.iso.
 
 2) Obtain the omniplay source code
 
-Check the source out from the CVS repository on endplay.eecs.umich.edu
-$ cvs -d endplay.eecs.umich.edu:/home/cvs-archive co omniplay
+Just clone the GitHub repository:
+$ git clone https://github.com/endplay/omniplay.git 
 
 This will create a number of sub-directories that contain the user-level and kernel source
 for omniplay.
@@ -50,7 +51,7 @@ $ cd $OMNIPLAY_DIR/eglibc-2.15/
 $ mkdir build
 $ mkdir prefix
 $ cd build
-$ ../configure -prefix=$OMNIPLAY_DIR/eglibc-2.15/prefix --disable-profile --enable-add-on --without-gd --without-selinux --without-cvs --enable-kernel=3.2.0
+$ ../configure --prefix=$OMNIPLAY_DIR/eglibc-2.15/prefix --disable-profile --enable-add-on --without-gd --without-selinux --without-cvs --enable-kernel=3.2.0
 $ make
 $ mkdir /var/db
 $ chown <user> /var/db
@@ -121,7 +122,7 @@ are additionally named by their respective modification times.
 
 You can replay a given group with id <id> as follows:
 
-$ ./resume /replay_logdir/rec_<id> -pthread <omniplay>/src/omniplay/eglibc-2.15/prefix/lib
+$ ./resume /replay_logdb/rec_<id> --pthread <omniplay>/src/omniplay/eglibc-2.15/prefix/lib
 
 Keep in mind that a recording process can not initiate a replay.  So,
 do this from some shell other than the recording bash shell that you
