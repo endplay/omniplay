@@ -24,6 +24,7 @@ struct wakeup_data {
 	char __user * linker;
 	int           fd;
 	int           follow_splits;
+    int           syscall_index;
 	int	      save_mmap;
 };
 	
