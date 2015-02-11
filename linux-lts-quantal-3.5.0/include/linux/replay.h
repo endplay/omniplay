@@ -18,7 +18,8 @@ int fork_replay (char __user * logdir, const char __user *const __user *args,
 
 /* Restore ckpt from disk - replaces AS of current process (like exec) */
 /* Linker may be NULL - otherwise points to special libc linker */
-long replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd, int follow_splits, int save_mmap);
+long replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd,
+		int follow_splits, int save_mmap, loff_t syscall_index, int attach_pid);
 
 /* Returns linker for exec to use */
 char* get_linker (void);

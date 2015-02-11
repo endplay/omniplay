@@ -43,8 +43,8 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 {
   	int len = _IOC_SIZE(cmd), retval;
 	struct ckpt_proc *pckpt_proc, *new_ckpt_proc;
-        struct record_data rdata;
-        struct wakeup_data wdata;
+	struct record_data rdata;
+	struct wakeup_data wdata;
 	struct get_used_addr_data udata;
 	struct filemap_num_data fndata;
 	struct filemap_entry_data fedata;
@@ -109,8 +109,9 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 		} else {
 			tmp = NULL;
 		}
-		rc = replay_ckpt_wakeup (wdata.pin, logdir, tmp, wdata.fd, wdata.follow_splits, wdata.save_mmap, wdata.syscall_index);
-		//rc = replay_ckpt_wakeup (wdata.pin, logdir, tmp, wdata.fd, wdata.follow_splits, wdata.save_mmap);
+		rc = replay_ckpt_wakeup(wdata.pin, logdir, tmp, wdata.fd,
+			wdata.follow_splits, wdata.save_mmap, wdata.attach_index,
+			wdata.attach_pid);
 		if (tmp) putname (tmp);
 		return rc;
 
@@ -196,9 +197,9 @@ int init_module(void)
 
 	if(register_chrdev(SPEC_PSDEV_MAJOR, "spec_psdev", 
 			   &spec_psdev_fops)) {
-              printk(KERN_ERR "spec_psdev: unable to get major %d\n", 
-		     SPEC_PSDEV_MAJOR);
-              return -EIO;
+		printk(KERN_ERR "spec_psdev: unable to get major %d\n", 
+		SPEC_PSDEV_MAJOR);
+		return -EIO;
 	}
 	
 	return 0;
@@ -206,8 +207,8 @@ int init_module(void)
 
 void cleanup_module(void)
 {
-        unregister_chrdev(SPEC_PSDEV_MAJOR,"spec_psdev");
-	printk (KERN_INFO "User-Level speculation module 1.0 exiting.\n");
+	unregister_chrdev(SPEC_PSDEV_MAJOR,"spec_psdev");
+	printk(KERN_INFO "User-Level speculation module 1.0 exiting.\n");
 }
 
 #endif
