@@ -2311,9 +2311,9 @@ relock:
 					signr = 0; // we added it already
 				}
 			}
-#ifdef REP_SIG_DEBUG
+//#ifdef REP_SIG_DEBUG
 			printk ("Replaying pid %d gets signal %d\n", current->pid, signr);
-#endif									
+//#endif									
 		}
 		if (signr == 0) {
 			if (current->record_thrd && replay_has_pending_signal()) {

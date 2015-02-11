@@ -4767,6 +4767,9 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 	//printk("the new fake time.%u, %u\n", fake_tv_sec, fake_tv_usec);
 #endif
 
+    //Temp, remove this
+    printk("performing syscall: %i.  is_pin_attached: %i\n", syscall, is_pin_attached());
+
 	rg_lock (prg->rg_rec_group);
 
 	if (syscall == TID_WAKE_CALL && prg->rg_rec_group->rg_mismatch_flag) {

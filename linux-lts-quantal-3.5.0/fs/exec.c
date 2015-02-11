@@ -770,10 +770,12 @@ struct file *open_exec(const char *name)
 		.acc_mode = MAY_EXEC | MAY_OPEN,
 		.intent = LOOKUP_OPEN
 	};
-
+    
 	file = do_filp_open(AT_FDCWD, name, &open_exec_flags, LOOKUP_FOLLOW);
+
 	if (IS_ERR(file))
 		goto out;
+
 
 	err = -EACCES;
 	if (!S_ISREG(file->f_path.dentry->d_inode->i_mode))
