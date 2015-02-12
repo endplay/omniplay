@@ -792,6 +792,7 @@ static u_long getretparams_socketcall(struct klogfile *log,
 			}
 #endif
 		case SYS_ACCEPT: 
+		case SYS_ACCEPT4:
 		case SYS_GETSOCKNAME:
 		case SYS_GETPEERNAME: {
 			struct accept_retvals avr;
