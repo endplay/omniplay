@@ -109,6 +109,12 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 		} else {
 			tmp = NULL;
 		}
+
+        //TODO: temp remove at some point
+        if (wdata.gdb) {
+            printk("gdb attach is turned on!\n");
+        }
+
 		rc = replay_ckpt_wakeup (wdata.pin, logdir, tmp, wdata.fd, wdata.follow_splits, wdata.save_mmap, wdata.syscall_index);
 		//rc = replay_ckpt_wakeup (wdata.pin, logdir, tmp, wdata.fd, wdata.follow_splits, wdata.save_mmap);
 		if (tmp) putname (tmp);

@@ -20,12 +20,13 @@ struct record_data {
 
 struct wakeup_data {
 	int           pin;
+	int           gdb;
 	char __user * logdir;
 	char __user * linker;
 	int           fd;
 	int           follow_splits;
-    int           syscall_index;
-	int	      save_mmap;
+	int           syscall_index;
+	int           save_mmap;
 };
 	
 struct get_used_addr_data {

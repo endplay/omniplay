@@ -12,13 +12,13 @@
 #include <sys/types.h>
 
 void print_help(const char *program) {
-    fprintf (stderr, "format: %s <logdir> [-p] [-f] [-m] [--pthread libdir]\n",
+    fprintf (stderr, "format: %s <logdir> [-p] [-f] [-m] [-g] [--pthread libdir]\n",
             program);
 }
 
 int main (int argc, char* argv[])
 {
-    int fd, rc, attach_pin = 0;
+    int fd, rc, attach_pin = 0, attach_gdb = 0;
     //int syscall_index = 0;
     char* syscall_index = "0";
     char* libdir = NULL;
@@ -31,6 +31,7 @@ int main (int argc, char* argv[])
     struct option long_options[] = {
         {"pthread", required_argument, 0, 0},
         {"attach_pin_later", optional_argument, 0, 0},
+        {"wait_at_syscall", optional_argument, 0, 0},
         {0, 0, 0, 0}
     };
 
@@ -47,7 +48,7 @@ int main (int argc, char* argv[])
         char opt;
         int option_index = 0;
 
-        opt = getopt_long(argc, argv, "fpmh", long_options, &option_index);
+        opt = getopt_long(argc, argv, "fpmhg", long_options, &option_index);
         //printf("getopt_long returns %c (%d)\n", opt, opt);
 
         if (opt == -1) {
@@ -62,6 +63,11 @@ int main (int argc, char* argv[])
                         break;
                     case 1: 
                         syscall_index = optarg; 
+                        printf("WARNING: --attach_pin_later is depreciated, since pin is not the only thing that attaches anymore. Use --wait_at_syscall.");
+                        printf("syscall_index = %s\n", syscall_index);
+                        break;
+                    case 2:
+                        syscall_index = optarg;
                         printf("syscall_index = %s\n", syscall_index);
                         break;
                     default:
@@ -84,6 +90,10 @@ int main (int argc, char* argv[])
             case 'h':
                 print_help(argv[0]);
                 exit(EXIT_SUCCESS);
+                break;
+            case 'g':
+                printf("attach_gdb is on\n");
+                attach_gdb = 1;
                 break;
             default:
                 fprintf(stderr, "Unrecognized option\n");
@@ -134,6 +144,11 @@ int main (int argc, char* argv[])
         exit(EXIT_FAILURE);
     }
 
+    if (attach_pin && attach_gdb) {
+        fprintf(stderr, "Cannot attach both pin (-p) and gdb (-g).\n");
+        exit(EXIT_FAILURE);
+    }
+
     if (libdir) {
         strcpy (ldpath, libdir);
         strcat (ldpath, "/ld-linux.so.2");
@@ -149,7 +164,7 @@ int main (int argc, char* argv[])
     printf("libdir: %s, ldpath: %s\n", libdir, ldpath);
     printf("resume pid %d follow %d\n", pid, follow_splits);
     printf("resume (%d, %d, %d, %d, %s, %s, %s)\n", fd, attach_pin, follow_splits, save_mmap, argv[base], libdir, syscall_index);
-    rc = resume (fd, attach_pin, follow_splits, save_mmap, argv[base], libdir, syscall_index);
+    rc = resume (fd, attach_pin, attach_gdb, follow_splits, save_mmap, argv[base], libdir, syscall_index);
     if (rc < 0) {
         perror ("resume");
         return -1;

@@ -146,7 +146,7 @@ unsigned int replay_pause_tool = 0;
 //xdou
 
 // ajyl
-int pin_attach_later = 0;
+int attach_device_later = 0;
 int pin_redo_syscall = 0;
 int syscall_to_pause = 0; // Default value = 0; if 0, attach pin at beginning of process
 
@@ -1008,6 +1008,8 @@ struct replay_thread {
 	u_char rp_signals;             // Set if sig should be delivered
 	u_long app_syscall_addr;       // Address in user-land that is set when the syscall should be replayed
 
+	int gdb_attached;               // 1 if gdb is attached. 0 otherwise.
+
 	int rp_status;                  // One of the replay statuses above
 	u_long rp_wait_clock;           // Valid if waiting for kernel or user-level clock according to rp_status
 	u_long rp_stop_clock_skip;      // Temporary storage while processing syscall
@@ -1185,6 +1187,12 @@ is_pin_attached (void)
 {
 	//return (current->replay_thrd->app_syscall_addr != 0 && current->replay_thrd->app_syscall_addr != 1);
 	return (current->replay_thrd->app_syscall_addr != 0);
+}
+
+static inline int
+is_gdb_attached (void)
+{
+	return current->replay_thrd->gdb_attached;
 }
 
 #ifdef USE_HPC
@@ -3614,7 +3622,7 @@ get_linker (void)
 }
 
 long
-replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd, int follow_splits, int save_mmap, int syscall_index)
+replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd, int follow_splits, int save_mmap, int syscall_index)
 {
 	struct record_group* precg; 
 	struct record_thread* prect;
@@ -3631,6 +3639,8 @@ replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd, int foll
 	struct timeval tv;
 	struct timespec tp;
 #endif
+	int attach_pid;
+	int attach_gdb;
 
     printk("Replay Start\n");
     syscall_to_pause = syscall_index;
@@ -3704,22 +3714,32 @@ replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd, int foll
 		MPRINT ("Set linker for replay process to %s\n", linker);
 	}
 
+	attach_pin = (attach_device == ATTACH_PIN);
+	attach_gdb = (attach_device == ATTACH_GDB);
+
 	// If pin, set the process to sleep, so that we can manually attach pin
 	// We would then have to wake up the process after pin has been attached.
-	if (attach_pin) {
-        if (!syscall_to_pause) {
-            /* Attach Pin before process begins */
-            prept->app_syscall_addr = 1;  // Will be set to actual value later
-            rc = read_mmap_log(precg);
-            if (rc) {
-                printk("replay_ckpt_wakeup: could not read memory log for Pin support\n");
-                return rc;
-            }
-            preallocate_memory (precg); // Actually do the prealloaction for this process
-            printk ("Pid %d sleeping in order to let you attach pin\n", current->pid);
-            set_current_state(TASK_INTERRUPTIBLE);
-            schedule();
-        }
+	if (attach_pin || attach_gdb) {
+		if (!syscall_to_pause) {
+			/* Attach Pin before process begins */
+			if (attach_pin) {
+				prept->app_syscall_addr = 1;  // Will be set to actual value later
+				rc = read_mmap_log(precg);
+				if (rc) {
+					printk("replay_ckpt_wakeup: could not read memory log for Pin support\n");
+					return rc;
+				}
+			}
+
+			if (attach_gdb) {
+				prept->gdb_attached = 1;
+			}
+
+			preallocate_memory (precg); // Actually do the prealloaction for this process
+			printk ("Pid %d sleeping in order to let you attach pin\n", current->pid);
+			set_current_state(TASK_INTERRUPTIBLE);
+			schedule();
+		}
         else { 
             /* Will attach Pin later at specified syscall index (syscall_to_pause) */
             rc = read_mmap_log(precg);
@@ -3728,7 +3748,7 @@ replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd, int foll
                 return rc;
             }
             preallocate_memory (precg); // Actually do the prealloaction for this process
-            pin_attach_later = 1;
+            attach_device_later = 1;
         }
     }
 
@@ -5126,13 +5146,21 @@ cget_next_syscall (int syscall, char** ppretparams, u_char* flag, long predictio
 	long retval = 0;
 	long exit_retval;
 
-    if (pin_attach_later == 1 && !is_pin_attached() && syscall_to_pause && prt->rp_out_ptr == syscall_to_pause) {
-        printk("Pid %d about to sleep at syscall %d, index %lu\n", current->pid, syscall, prt->rp_out_ptr);
-        prt->app_syscall_addr = 1;
-        set_current_state(TASK_INTERRUPTIBLE);
-        schedule();
-        printk("Pid %d woken up.\n", current->pid);
-    }
+	if (attach_device_later && !is_pin_attached() && !is_gdb_attached() && syscall_to_pause && prt->rp_out_ptr == syscall_to_pause) {
+		printk("Pid %d about to sleep at syscall %d, index %lu\n", current->pid, syscall, prt->rp_out_ptr);
+
+		if (attach_device_later == ATTACH_PIN) {
+			prt->app_syscall_addr = 1;
+		}
+
+		if (attach_device_later == ATTACH_GDB) {
+			prt->gdb_attached = 1;
+		}
+
+		set_current_state(TASK_INTERRUPTIBLE);
+		schedule();
+		printk("Pid %d woken up.\n", current->pid);
+	}
         /*
     if (syscall_to_pause) {
         DPRINT ("in cget_next_syscall, pin_attach_later = %d, syscall = %d\n", pin_attach_later, syscall);
@@ -8128,7 +8156,7 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
             }
         }
         else {
-            if (pin_attach_later) {
+            if (attach_device_later == ATTACH_PIN) {
                 preallocate_memory (prt->rp_record_thread->rp_group); /* And preallocate memory again - our previous preallocs were just destroyed */
                 create_used_address_list ();
             }
