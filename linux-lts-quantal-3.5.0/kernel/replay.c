@@ -3719,6 +3719,8 @@ replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd,
 	 */
 	if (attach_pin) {
 		rc = read_mmap_log(precg);
+		current->replay_thrd->attach_sysid = attach_index;
+		current->replay_thrd->attach_pid = attach_pid;
 		if (rc) {
 			printk("replay_ckpt_wakeup: could not read memory log for Pin support\n");
 			return rc;
@@ -3730,9 +3732,6 @@ replay_ckpt_wakeup (int attach_pin, char* logdir, char* linker, int fd,
 			prept->app_syscall_addr = 1;  // Will be set to actual value later
 			set_current_state(TASK_INTERRUPTIBLE);
 			schedule();
-		} else { 
-			current->replay_thrd->attach_sysid = attach_index;
-			current->replay_thrd->attach_pid = attach_pid;
 		}
 	} else {
 		current->replay_thrd->attach_sysid = -1;
@@ -8120,17 +8119,12 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 		}
 
 		/* Irregardless of splitting, if pin is attached we'll try to attach */
-		if (prt->attach_sysid < 0) {
-			if (is_pin_attached()) {
-				prt->app_syscall_addr = 1; /* We need to reattach the pin tool after exec */
-				preallocate_memory(prt->rp_record_thread->rp_group); /* And preallocate memory again - our previous preallocs were just destroyed */
-				create_used_address_list();
-			}
-		} else {
-			if (prt->attach_sysid > 0) {
-				preallocate_memory(prt->rp_record_thread->rp_group); /* And preallocate memory again - our previous preallocs were just destroyed */
-				create_used_address_list();
-			}
+		if (is_pin_attached()) {
+			prt->app_syscall_addr = 1; /* We need to reattach the pin tool after exec */
+		}
+		if (prt->attach_sysid >= 0 || is_pin_attached()) {
+			preallocate_memory(prt->rp_record_thread->rp_group); /* And preallocate memory again - our previous preallocs were just destroyed */
+			create_used_address_list();
 		}
 	}
 	get_next_syscall_exit(prt, prg, psr);
