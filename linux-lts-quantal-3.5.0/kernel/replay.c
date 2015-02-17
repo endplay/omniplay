@@ -145,9 +145,6 @@ unsigned int record_x = 1;
 unsigned int replay_pause_tool = 0;
 //xdou
 
-//TODO: move this!!! And rename...
-int attach_device_later = 0;
-
 //#define KFREE(x) my_kfree(x, __LINE__)
 //#define KMALLOC(size, flags) my_kmalloc(size, flags, __LINE__)
 
@@ -1006,7 +1003,6 @@ struct replay_thread {
 	u_char rp_signals;             // Set if sig should be delivered
 	u_long app_syscall_addr;       // Address in user-land that is set when the syscall should be replayed
 
-	int gdb_attached;               // 1 if gdb is attached. 0 otherwise.
 
 	int rp_status;                  // One of the replay statuses above
 	u_long rp_wait_clock;           // Valid if waiting for kernel or user-level clock according to rp_status
@@ -1038,6 +1034,9 @@ struct replay_thread {
 	loff_t attach_sysid;  // If Pin is being attached, will be set to the syscall
 	                      // id to attach to
 	int attach_pid;       // If Pin is being attached, set to the pid to attach to
+	int attach_device;    // The device that is being attached
+
+	int gdb_state;		  // State of gdb. 0 = not attached. 1 = attached
 
 	// ajyl
 	int pin_redo_syscall;
@@ -1192,13 +1191,15 @@ static inline int
 is_pin_attached (void)
 {
 	//return (current->replay_thrd->app_syscall_addr != 0 && current->replay_thrd->app_syscall_addr != 1);
-	return (current->replay_thrd->app_syscall_addr != 0);
+	return (current->replay_thrd->attach_device == ATTACH_PIN
+		&& current->replay_thrd->app_syscall_addr != 0);
 }
 
 static inline int
 is_gdb_attached (void)
 {
-	return current->replay_thrd->gdb_attached;
+	return (current->replay_thrd->attach_device == ATTACH_GDB
+		&& current->replay_thrd->gdb_state);
 }
 
 #ifdef USE_HPC
@@ -2230,6 +2231,7 @@ new_replay_thread (struct replay_group* prg, struct record_thread* prec_thrd, u_
 	MPRINT ("New replay thread %p prg %p reppid %ld\n", prp, prg, reppid);
 
 	prp->app_syscall_addr = 0;
+	prp->gdb_state = 0;
 
 	prp->rp_group = prg;
 	prp->rp_next_thread = prp;
@@ -3723,11 +3725,16 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 		MPRINT("Set linker for replay process to %s\n", linker);
 	}
 
+	prept->attach_device = attach_device;
+	
 	/*
 	 * If pin, set the process to sleep, so that we can manually attach pin
 	 * We would then have to wake up the process after pin has been attached.
 	 */
 	if (attach_device) {
+		printk("Debugging device will be attached: Device - %i, Pid - %i, Syscall Index - %lld\n",
+			attach_device, attach_pid, attach_index);
+
 		rc = read_mmap_log(precg);
 		current->replay_thrd->attach_sysid = attach_index;
 		current->replay_thrd->attach_pid = attach_pid;
@@ -3736,19 +3743,20 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 			return rc;
 		}
 		preallocate_memory(precg); // Actually do the prealloaction for this process
-		printk("Pid %d sleeping in order to let you attach pin\n", current->pid);
 		if (attach_index <= 0) {
+			printk("Pid %d sleeping in order to let you attach pin\n", current->pid);
 			/* Attach Pin before process begins */
 			if (attach_device == ATTACH_PIN) {
 				prept->app_syscall_addr = 1;  // Will be set to actual value later
 			}
 
 			if (attach_device == ATTACH_GDB) {
-				prept->gdb_attached = 1;
+				prept->gdb_state = 1;
 			}
 
 			set_current_state(TASK_INTERRUPTIBLE);
 			schedule();
+			printk("Pid %d woken up.\n", current->pid);
 		}
 	} else {
 		current->replay_thrd->attach_sysid = -1;
@@ -4144,7 +4152,8 @@ replay_signal_delivery (int* signr, siginfo_t* info)
 	*signr = psignal->signr;
 	memcpy (info, &psignal->info, sizeof (siginfo_t));
 	
-	if (prt->app_syscall_addr == 0) {
+	//if (prt->app_syscall_addr == 0) {
+	if (!is_pin_attached()) {
 		MPRINT ("Pid %d No Pin attached, so setting blocked signal mask to recorded mask, and copying k_sigaction\n", current->pid);
 		memcpy (&current->sighand->action[psignal->signr-1],
 			&psignal->ka, sizeof (struct k_sigaction));
@@ -4794,9 +4803,6 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 	//printk("the new fake time.%u, %u\n", fake_tv_sec, fake_tv_usec);
 #endif
 
-    //Temp, remove this
-    printk("performing syscall: %i.  is_pin_attached: %i\n", syscall, is_pin_attached());
-
 	rg_lock (prg->rg_rec_group);
 
 	if (syscall == TID_WAKE_CALL && prg->rg_rec_group->rg_mismatch_flag) {
@@ -5155,61 +5161,65 @@ cget_next_syscall (int syscall, char** ppretparams, u_char* flag, long predictio
 	long retval = 0;
 	long exit_retval;
 
-    if (prt->attach_sysid > 0 && !is_pin_attached() && 
+	//TODO: Temp, remove this
+	printk("performing syscall: %i.  is_pin_attached: %i, is_gdb_attached: %i, rp_record_pid: %i\n",
+		syscall, is_pin_attached(), is_gdb_attached(), prt->rp_record_thread->rp_record_pid);
+
+	if (prt->attach_sysid > 0 && !is_pin_attached() && 
+				!is_gdb_attached() &&
 				prt->rp_out_ptr == prt->attach_sysid && 
-				prt->rp_replay_pid == prt->attach_pid) {
+				prt->rp_record_thread->rp_record_pid == prt->attach_pid) {
 			printk("Pid %d about to sleep at syscall %d, index %lu\n", current->pid, syscall, prt->rp_out_ptr);
 
-			//TODO: figure out how to do determine if it is gdb here??
-			if (attach_device_later == ATTACH_PIN) {
+			if (prt->attach_device == ATTACH_PIN) {
 				prt->app_syscall_addr = 1;
 			}
 
-			if (attach_device_later == ATTACH_GDB) {
-				prt->gdb_attached = 1;
+			if (prt->attach_device == ATTACH_GDB) {
+				prt->gdb_state = 1;
 			}
 
 			set_current_state(TASK_INTERRUPTIBLE);
 			schedule();
 			printk("Pid %d woken up.\n", current->pid);
-    }
+	}
 
-    retval = cget_next_syscall_enter (prt, prg, syscall, ppretparams, &psr, prediction, start_clock);
-    if (current->replay_thrd->pin_redo_syscall) {
-        printk ("Pin will regenerate this syscall %d index %lu, don't do anything, return\n", syscall, prt->rp_out_ptr);
-        return retval;
-    }
+	retval = cget_next_syscall_enter (prt, prg, syscall, ppretparams, &psr, prediction, start_clock);
+	if (current->replay_thrd->pin_redo_syscall) {
+		printk ("Pin will regenerate this syscall %d index %lu, don't do anything, return\n", syscall, prt->rp_out_ptr);
+		return retval;
+	}
 
-    // Needed to exit the threads in the correct order with Pin attached.
-    // Essentially, return to Pin after Pin interrupts the syscall with a SIGTRAP.
-    // The thread will then begin to exit. recplay_exit_start will exit the threads
-    // in the correct order
-    if (is_pin_attached() && prt->rp_pin_restart_syscall == REPLAY_PIN_TRAP_STATUS_ENTER) {
-        prt->rp_saved_rc = retval;
-        return retval;
-    }
+	// Needed to exit the threads in the correct order with Pin attached.
+	// Essentially, return to Pin after Pin interrupts the syscall with a SIGTRAP.
+	// The thread will then begin to exit. recplay_exit_start will exit the threads
+	// in the correct order
+	if (is_pin_attached() && prt->rp_pin_restart_syscall == REPLAY_PIN_TRAP_STATUS_ENTER) {
+		prt->rp_saved_rc = retval;
+		return retval;
+	}
 
-    exit_retval = get_next_syscall_exit (prt, prg, psr);
+	exit_retval = get_next_syscall_exit (prt, prg, psr);
 
-    // Reset Pin syscall address value to 0 at the end of the system call
-    // This is required to differentiate between syscalls when
-    // Pin issues the same syscall immediately after the app
-    if (is_pin_attached()) {
-        if (prt->app_syscall_addr == 1) {
-            printk("prt->app_syscall_addr == 1, don't change value of *(int*)prt->app_syscall_addr\n");
-        }
-        else if ((*(int*)(prt->app_syscall_addr)) != 999) {
-            (*(int*)(prt->app_syscall_addr)) = 0;
-        }
-    }
+	// Reset Pin syscall address value to 0 at the end of the system call
+	// This is required to differentiate between syscalls when
+	// Pin issues the same syscall immediately after the app
+	if (is_pin_attached()) {
+		if (prt->app_syscall_addr == 1) {
+			printk("prt->app_syscall_addr == 1, don't change value of *(int*)prt->app_syscall_addr\n");
+		}
+		else if ((*(int*)(prt->app_syscall_addr)) != 999) {
+			(*(int*)(prt->app_syscall_addr)) = 0;
+		}
+	}
 
-    // Need to return restart back to Pin so it knows to continue
-    if ((exit_retval == -ERESTART_RESTARTBLOCK) && is_pin_attached()) {
-        prt->rp_saved_rc = retval;
-        return exit_retval;
-    }
-    if (flag) *flag = psr->flags;
-    
+	// Need to return restart back to Pin so it knows to continue
+	if ((exit_retval == -ERESTART_RESTARTBLOCK) && is_pin_attached()) {
+		prt->rp_saved_rc = retval;
+		return exit_retval;
+	}
+	if (flag) *flag = psr->flags;
+
 	return retval;
 }
 static inline long get_next_syscall (int syscall, char** ppretparams) {

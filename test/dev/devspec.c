@@ -53,6 +53,7 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 	char logdir[MAX_LOGDIR_STRLEN+1];
 	char* tmp = NULL;
 	long rc;
+	int device;
 
 	pckpt_proc = new_ckpt_proc = NULL;
 	DPRINT ("pid %d cmd number 0x%08x\n", current->pid, cmd);
@@ -110,12 +111,21 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 			tmp = NULL;
 		}
 
-        //TODO: temp remove at some point
-        if (wdata.gdb) {
+		if (wdata.pin) {
+			device = ATTACH_PIN;
+		}
+        else if (wdata.gdb) {
+			//TODO: temp remove at some point
             printk("gdb attach is turned on!\n");
+			device = ATTACH_GDB;
         }
+		else {
+			device = 0; //NONE
+		}
 
-		rc = replay_ckpt_wakeup(wdata.pin, logdir, tmp, wdata.fd,
+		
+		
+		rc = replay_ckpt_wakeup(device, logdir, tmp, wdata.fd,
 			wdata.follow_splits, wdata.save_mmap, wdata.attach_index,
 			wdata.attach_pid);
 

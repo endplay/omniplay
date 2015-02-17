@@ -12,7 +12,7 @@
 #include <sys/types.h>
 
 void print_help(const char *program) {
-	fprintf (stderr, "format: %s <logdir> [-p] [-f] [-m] [-g] [--pthread libdir]\n",
+	fprintf (stderr, "format: %s <logdir> [-p] [-f] [-m] [-g] [--pthread libdir] [--attach_offset=pid,sysnum]\n",
 			program);
 }
 
@@ -138,7 +138,7 @@ int main (int argc, char* argv[])
 	printf("resume(%d, %d, %d, %d, %s, %s, %lld, %d)\n", fd, attach_pin,
 		follow_splits, save_mmap, argv[base], libdir, attach_index,
 		attach_pid);
-	rc = resume(fd, attach_pin, follow_splits, save_mmap, argv[base], libdir,
+	rc = resume(fd, attach_pin, attach_gdb, follow_splits, save_mmap, argv[base], libdir,
 		attach_index, attach_pid);
 	if (rc < 0) {
 		perror("resume");
