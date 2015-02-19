@@ -850,6 +850,11 @@ static int check_kill_permission(int sig, struct siginfo *info,
  */
 static void ptrace_trap_notify(struct task_struct *t)
 {
+	//TODO: temp, remove
+	if (current->replay_thrd) {
+		printk("ptrace_trap_notify\n");
+	}
+
 	WARN_ON_ONCE(!(t->ptrace & PT_SEIZED));
 	assert_spin_locked(&t->sighand->siglock);
 
@@ -1722,8 +1727,11 @@ bool do_notify_parent(struct task_struct *tsk, int sig)
 			sig = 0;
 	}
 	/* Begin REPLAY */
+	//TODO: this is probably broken for ptrace
 	if (tsk->replay_thrd) {
 		if (tsk->parent->replay_thrd) {
+			printk("On a replay thread. Suppressing SIGCHILD from %d to %d\n", tsk->pid, 
+				tsk->parent->pid);
 			/* Pid %d and parent pid %d are replay threads so don't send SIGCHLD */
 			tsk->exit_signal = -1;
 			sig = 0;
@@ -1802,9 +1810,13 @@ static void do_notify_parent_cldstop(struct task_struct *tsk,
 		/* Begin REPLAY */
 		// Current process and parent are replay threads, so
 		// don't send SIGCHLD
-		if (!tsk->replay_thrd && !tsk->parent->replay_thrd) {
+		//TODO: replace for_ptracer with something from the replay code?
+		if (!tsk->replay_thrd && !tsk->parent->replay_thrd ||
+			for_ptracer) {
 			if (tsk->replay_thrd) {
-				printk("Pid %d replay thread but parent is not?\n", current->pid);
+				//printk("Pid %d replay thread but parent is not?\n", current->pid);
+				//TODO: temp, remove
+				printk("Send SIGCHLD to ptracing parent %d for tracee %d\n", parent->pid, tsk->pid);
 			}
 		/* End REPLAY */
 			__group_send_sig_info(SIGCHLD, &info, parent);
@@ -1930,6 +1942,13 @@ static void ptrace_stop(int exit_code, int why, int clear_code, siginfo_t *info)
 		 * for the two don't interact with each other.  Notify
 		 * separately unless they're gonna be duplicates.
 		 */
+
+		//TODO: temp, remove
+		if (current->replay_thrd) {
+			printk("ptrace notifying parent of stop - parent: %u, real_parent: %u\n",
+				current->parent->pid, current->real_parent->pid);
+		}
+
 		do_notify_parent_cldstop(current, true, why);
 		if (gstop_done && ptrace_reparented(current))
 			do_notify_parent_cldstop(current, false, why);
@@ -2310,10 +2329,14 @@ relock:
 					send_signal (signr, info, current, 1);
 					signr = 0; // we added it already
 				}
+				if (signr) {
+					//TODO: temp, remove
+					printk ("Replay replays signal %d\n", signr);
+				}
 			}
-//#ifdef REP_SIG_DEBUG
+#ifdef REP_SIG_DEBUG
 			printk ("Replaying pid %d gets signal %d\n", current->pid, signr);
-//#endif									
+#endif									
 		}
 		if (signr == 0) {
 			if (current->record_thrd && replay_has_pending_signal()) {
@@ -2329,6 +2352,9 @@ relock:
 			if (current->record_thrd && signr > 0) {
 				if (!(signr == 9 && SI_FROMKERNEL(info))) {
 				  if (check_signal_delivery(signr, info, &sighand->action[signr-1], ignore_flag) == -1) {
+						//TODO: temp, remove
+						printk("Replay suppresses signal %d\n", signr);
+
 						signr = 0; // Delay signal to safe point
 						break; 
 					}
@@ -2340,9 +2366,20 @@ relock:
 		if (!signr)
 			break; /* will return 0 */
 
+		
 		if (unlikely(current->ptrace) && signr != SIGKILL) {
+			//TODO: temp, remove
+			if (current->replay_thrd) {
+				printk("Sending signal %d through ptrace\n", signr);
+			}
+
 			signr = ptrace_signal(signr, info,
 					      regs, cookie);
+
+			if (current->replay_thrd) {
+				printk("Returns from ptrace. signr is now %d\n", signr);
+			}
+
 			if (!signr)
 				continue;
 		}

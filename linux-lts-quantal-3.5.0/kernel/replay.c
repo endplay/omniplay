@@ -5182,6 +5182,9 @@ cget_next_syscall (int syscall, char** ppretparams, u_char* flag, long predictio
 			set_current_state(TASK_INTERRUPTIBLE);
 			schedule();
 			printk("Pid %d woken up.\n", current->pid);
+			
+			//TODO: temp, remove
+			printk("Parent is: %u, %u\n", current->parent->pid, current->real_parent->pid);
 	}
 
 	retval = cget_next_syscall_enter (prt, prg, syscall, ppretparams, &psr, prediction, start_clock);
