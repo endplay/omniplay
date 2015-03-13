@@ -1787,38 +1787,38 @@ static void do_notify_parent_cldstop(struct task_struct *tsk,
 	info.si_utime = cputime_to_clock_t(tsk->utime);
 	info.si_stime = cputime_to_clock_t(tsk->stime);
 
- 	info.si_code = why;
- 	switch (why) {
- 	case CLD_CONTINUED:
- 		info.si_status = SIGCONT;
- 		break;
- 	case CLD_STOPPED:
- 		info.si_status = tsk->signal->group_exit_code & 0x7f;
- 		break;
- 	case CLD_TRAPPED:
- 		info.si_status = tsk->exit_code & 0x7f;
- 		break;
- 	default:
- 		BUG();
- 	}
+	info.si_code = why;
+	switch (why) {
+	case CLD_CONTINUED:
+		info.si_status = SIGCONT;
+		break;
+	case CLD_STOPPED:
+		info.si_status = tsk->signal->group_exit_code & 0x7f;
+		break;
+	case CLD_TRAPPED:
+		info.si_status = tsk->exit_code & 0x7f;
+		break;
+	default:
+		BUG();
+	}
 
 	sighand = parent->sighand;
 	spin_lock_irqsave(&sighand->siglock, flags);
 	if (sighand->action[SIGCHLD-1].sa.sa_handler != SIG_IGN &&
-	    !(sighand->action[SIGCHLD-1].sa.sa_flags & SA_NOCLDSTOP))
+		!(sighand->action[SIGCHLD-1].sa.sa_flags & SA_NOCLDSTOP))
 	{
 		/* Begin REPLAY */
 		// Current process and parent are replay threads, so
 		// don't send SIGCHLD
 		//TODO: replace for_ptracer with something from the replay code?
-		if (!tsk->replay_thrd && !tsk->parent->replay_thrd ||
+		if ((!tsk->replay_thrd && !tsk->parent->replay_thrd) ||
 			for_ptracer) {
 			if (tsk->replay_thrd) {
 				//printk("Pid %d replay thread but parent is not?\n", current->pid);
 				//TODO: temp, remove
 				printk("Send SIGCHLD to ptracing parent %d for tracee %d\n", parent->pid, tsk->pid);
 			}
-		/* End REPLAY */
+			/* End REPLAY */
 			__group_send_sig_info(SIGCHLD, &info, parent);
 		}
 	}
@@ -1945,8 +1945,9 @@ static void ptrace_stop(int exit_code, int why, int clear_code, siginfo_t *info)
 
 		//TODO: temp, remove
 		if (current->replay_thrd) {
-			printk("ptrace notifying parent of stop - parent: %u, real_parent: %u\n",
-				current->parent->pid, current->real_parent->pid);
+			printk("ptrace notifying parent of %i of stop - parent: %u, real_parent: %u\n",
+				current->pid, current->parent->pid, current->real_parent->pid);
+			printk("    reasoning- signal: %i, why: %i\n", info->si_signo, why);
 		}
 
 		do_notify_parent_cldstop(current, true, why);
@@ -2020,6 +2021,10 @@ static void ptrace_do_notify(int signr, int exit_code, int why)
 	info.si_pid = task_pid_vnr(current);
 	info.si_uid = from_kuid_munged(current_user_ns(), current_uid());
 
+	//TODO: temp, remove
+	if (current->replay_thrd) {
+		printk("ptrace_stop entry: ptrace_do_notify\n");
+	}
 	/* Let the debugger run.  */
 	ptrace_stop(exit_code, why, 1, &info);
 }
@@ -2029,6 +2034,12 @@ void ptrace_notify(int exit_code)
 	BUG_ON((exit_code & (0x7f | ~0xffff)) != SIGTRAP);
 
 	spin_lock_irq(&current->sighand->siglock);
+
+	//TODO: temp, remove
+	if (current->replay_thrd) {
+		printk("ptrace_do_notify entry: ptrace_notify\n");
+	}
+
 	ptrace_do_notify(SIGTRAP, exit_code, CLD_TRAPPED);
 	spin_unlock_irq(&current->sighand->siglock);
 }
@@ -2179,13 +2190,32 @@ static void do_jobctl_trap(void)
 
 	if (current->ptrace & PT_SEIZED) {
 		if (!signal->group_stop_count &&
-		    !(signal->flags & SIGNAL_STOP_STOPPED))
+		    !(signal->flags & SIGNAL_STOP_STOPPED)) {
+			//TODO: temp, remove
+			if (current->replay_thrd) {
+				printk("do_jobctl_trap: modifying signr from %i to SIGTRAP",
+					signr);
+			}
+
 			signr = SIGTRAP;
+		}
 		WARN_ON_ONCE(!signr);
+
+		//TODO: temp, remove
+		if (current->replay_thrd) {
+			printk("ptrace_do_notify enter: do_jobctl_trap");
+		}
+
 		ptrace_do_notify(signr, signr | (PTRACE_EVENT_STOP << 8),
 				 CLD_STOPPED);
 	} else {
 		WARN_ON_ONCE(!signr);
+
+		//TODO: temp, remove
+		if (current->replay_thrd) {
+			printk("ptrace_stop entry: do_jobctl_trap\n");
+		}
+
 		ptrace_stop(signr, CLD_STOPPED, 0, NULL);
 		current->exit_code = 0;
 	}
@@ -2205,6 +2235,9 @@ static int ptrace_signal(int signr, siginfo_t *info,
 	 * comment in dequeue_signal().
 	 */
 	current->jobctl |= JOBCTL_STOP_DEQUEUED;
+	if (current->replay_thrd) {
+		printk("ptrace_stop entry: ptrace_signal\n");
+	}
 	ptrace_stop(signr, CLD_TRAPPED, 0, info);
 
 	/* We're back.  Did the debugger cancel the sig?  */

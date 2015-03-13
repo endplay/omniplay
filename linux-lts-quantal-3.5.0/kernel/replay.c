@@ -3775,6 +3775,7 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 	set_fs(old_fs);
 	if (rc < 0) {
 		printk("replay_ckpt_wakeup: replay_execve of <%s> returns %ld\n", args[0], rc);
+		printk("--- replay received log dir: %s\n", logdir);
 	}
 	return rc;
 }
@@ -5162,8 +5163,8 @@ cget_next_syscall (int syscall, char** ppretparams, u_char* flag, long predictio
 	long exit_retval;
 
 	//TODO: Temp, remove this
-	printk("performing syscall: %i.  is_pin_attached: %i, is_gdb_attached: %i, rp_record_pid: %i\n",
-		syscall, is_pin_attached(), is_gdb_attached(), prt->rp_record_thread->rp_record_pid);
+	printk("pid %i performing syscall: %i. is_gdb_attached: %i\n", current->pid,
+		syscall, is_gdb_attached());
 
 	if (prt->attach_sysid > 0 && !is_pin_attached() && 
 				!is_gdb_attached() &&
