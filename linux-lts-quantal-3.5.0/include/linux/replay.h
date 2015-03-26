@@ -8,6 +8,7 @@
 
 #define MAX_LOGDIR_STRLEN 80
 
+/* These are the device numbers for the attach mechanism in replay_ckpt_wakeup */
 #define ATTACH_PIN 1
 #define ATTACH_GDB 2
 
@@ -124,5 +125,8 @@ long get_num_filemap_entries(int fd, loff_t offset, int size);
 long get_filemap(int fd, loff_t offset, int size, void __user * entries, int num_entries);
 
 long reset_replay_ndx(void);
+
+/* Used for gdb attachment */
+int replay_gdb_attached(void);
 
 #endif

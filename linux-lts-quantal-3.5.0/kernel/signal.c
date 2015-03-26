@@ -850,10 +850,12 @@ static int check_kill_permission(int sig, struct siginfo *info,
  */
 static void ptrace_trap_notify(struct task_struct *t)
 {
+	// Begin REPLAY
 	//TODO: temp, remove
 	if (current->replay_thrd) {
 		printk("ptrace_trap_notify\n");
 	}
+	// End REPLAY
 
 	WARN_ON_ONCE(!(t->ptrace & PT_SEIZED));
 	assert_spin_locked(&t->sighand->siglock);
@@ -1943,12 +1945,14 @@ static void ptrace_stop(int exit_code, int why, int clear_code, siginfo_t *info)
 		 * separately unless they're gonna be duplicates.
 		 */
 
+		/* Begin REPLAY */
 		//TODO: temp, remove
 		if (current->replay_thrd) {
 			printk("ptrace notifying parent of %i of stop - parent: %u, real_parent: %u\n",
 				current->pid, current->parent->pid, current->real_parent->pid);
 			printk("    reasoning- signal: %i, why: %i\n", info->si_signo, why);
 		}
+		/* End REPLAY */
 
 		do_notify_parent_cldstop(current, true, why);
 		if (gstop_done && ptrace_reparented(current))
@@ -2021,10 +2025,13 @@ static void ptrace_do_notify(int signr, int exit_code, int why)
 	info.si_pid = task_pid_vnr(current);
 	info.si_uid = from_kuid_munged(current_user_ns(), current_uid());
 
+	/* Begin REPLAY */
 	//TODO: temp, remove
 	if (current->replay_thrd) {
 		printk("ptrace_stop entry: ptrace_do_notify\n");
 	}
+	/* End REPLAY */
+
 	/* Let the debugger run.  */
 	ptrace_stop(exit_code, why, 1, &info);
 }
@@ -2035,10 +2042,13 @@ void ptrace_notify(int exit_code)
 
 	spin_lock_irq(&current->sighand->siglock);
 
+	/* Begin REPLAY */
 	//TODO: temp, remove
 	if (current->replay_thrd) {
-		printk("ptrace_do_notify entry: ptrace_notify\n");
+		printk("ptrace_do_notify entry for %i: ptrace_notify with code %i\n",
+			current->pid, exit_code);
 	}
+	/* End REPLAY */
 
 	ptrace_do_notify(SIGTRAP, exit_code, CLD_TRAPPED);
 	spin_unlock_irq(&current->sighand->siglock);
@@ -2191,30 +2201,37 @@ static void do_jobctl_trap(void)
 	if (current->ptrace & PT_SEIZED) {
 		if (!signal->group_stop_count &&
 		    !(signal->flags & SIGNAL_STOP_STOPPED)) {
+
+			/* Begin REPLAY */
 			//TODO: temp, remove
 			if (current->replay_thrd) {
 				printk("do_jobctl_trap: modifying signr from %i to SIGTRAP",
 					signr);
 			}
+			/* End REPLAY */
 
 			signr = SIGTRAP;
 		}
 		WARN_ON_ONCE(!signr);
 
+		/* Begin REPLAY */
 		//TODO: temp, remove
 		if (current->replay_thrd) {
 			printk("ptrace_do_notify enter: do_jobctl_trap");
 		}
+		/* End REPLAY */
 
 		ptrace_do_notify(signr, signr | (PTRACE_EVENT_STOP << 8),
 				 CLD_STOPPED);
 	} else {
 		WARN_ON_ONCE(!signr);
 
+		/* Begin REPLAY */
 		//TODO: temp, remove
 		if (current->replay_thrd) {
 			printk("ptrace_stop entry: do_jobctl_trap\n");
 		}
+		/* End REPLAY */
 
 		ptrace_stop(signr, CLD_STOPPED, 0, NULL);
 		current->exit_code = 0;
@@ -2401,17 +2418,22 @@ relock:
 
 		
 		if (unlikely(current->ptrace) && signr != SIGKILL) {
+			/* Begin REPLAY */
 			//TODO: temp, remove
 			if (current->replay_thrd) {
 				printk("Sending signal %d through ptrace\n", signr);
 			}
+			/* End REPLAY */
 
 			signr = ptrace_signal(signr, info,
 					      regs, cookie);
 
+			/* Begin REPLAY */
 			if (current->replay_thrd) {
 				printk("Returns from ptrace. signr is now %d\n", signr);
+	
 			}
+			/* End REPLAY */
 
 			if (!signr)
 				continue;

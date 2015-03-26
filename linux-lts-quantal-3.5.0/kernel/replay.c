@@ -1202,6 +1202,64 @@ is_gdb_attached (void)
 		&& current->replay_thrd->gdb_state);
 }
 
+static inline int
+is_gdb_fork_flagged (void)
+{
+	return (current->replay_thrd->attach_device == ATTACH_GDB
+		&& current->replay_thrd->gdb_state == 2);
+}
+
+static inline void 
+gdb_flag_forked (struct replay_thread* prt)
+{
+	//TODO: some more error checking here?
+	prt->gdb_state = 2;
+}
+
+static inline void
+gdb_unflag_forked (struct replay_thread* prt)
+{
+	//TODO: some more error checking here?
+	prt->gdb_state = 1;
+}
+
+int 
+replay_gdb_attached (void)
+{
+	if (current->replay_thrd) {
+		return is_gdb_attached();
+	}
+	return 0;
+}
+
+//TODO: delete this, its not being used
+/*void
+replay_gdb_do_fork_sleep (void)
+{
+	//This function is needed when gdb is attached and
+	//	fork is called to create a child. When the child wakes up,
+	//	it will have a SIGSTOP queued. After that is delivered,
+	//	this function needs to be called to put it to sleep and let only 
+	//	the parent replay thread run.
+
+	//This is very similar to ret_from_fork_replay
+	if (is_gdb_fork_flagged()) {
+		int ret;
+
+		printk("Pid %d doing the delayed sleep after fork call for gdb\n", current->pid);
+
+		ret = wait_event_interruptible_timeout (prept->rp_waitq, prept->rp_status == REPLAY_STATUS_RUNNING, SCHED_TO);
+		if (ret == 0) printk ("Replay pid %d timed out waiting for parent thread to go\n", current->pid);
+		if (ret == -ERESTARTSYS) printk ("Pid %d: replay_gdb_do_fork_sleep cannot wait due to signal - try again\n", current->pid);
+		if (prept->rp_status != REPLAY_STATUS_RUNNING) {
+			//Something went wrong... self destruct.
+			sys_exit (0);
+		}
+		
+	}
+}*/
+
+
 #ifdef USE_HPC
 static inline long long rdtsc(void) {
 	union {
@@ -2533,13 +2591,40 @@ void ret_from_fork_replay (void)
 
 	/* Nothing to do unless we need to support multiple threads */
 	MPRINT ("Pid %d ret_from_fork_replay\n", current->pid);
-	ret = wait_event_interruptible_timeout (prept->rp_waitq, prept->rp_status == REPLAY_STATUS_RUNNING, SCHED_TO);
-	if (ret == 0) printk ("Replay pid %d timed out waiting for cloned thread to go\n", current->pid);
-	if (ret == -ERESTARTSYS) printk ("Pid %d: ret_from_fork_replay cannot wait due to signal - try again\n", current->pid);
-	if (prept->rp_status != REPLAY_STATUS_RUNNING) {
-		MPRINT ("Replay pid %d woken up during clone but not running.  We must want it to die\n", current->pid);
-		sys_exit (0);
-	}
+
+	//This is a while loop, but should only ever run twice at maximum
+	do {
+		//TODO: temp, remove
+		printk("Pid %d sleeping after returning from fork call.", current->pid);
+
+		ret = wait_event_interruptible_timeout (prept->rp_waitq, prept->rp_status == REPLAY_STATUS_RUNNING, SCHED_TO);
+		if (ret == 0) printk ("Replay pid %d timed out waiting for cloned thread to go\n", current->pid);
+		if (ret == -ERESTARTSYS) printk ("Pid %d: ret_from_fork_replay cannot wait due to signal - try again\n", current->pid);
+		if (prept->rp_status != REPLAY_STATUS_RUNNING) {
+
+			//TODO: grab current's siglock? current->sighand->siglock
+			//spin_lock_irq(&current->sighand->siglock);
+
+			//When a ptraced program is forked, the child is created with a SIGSTOP already pending
+			//	Don't self destruct when this happens
+			if (is_gdb_fork_flagged()) {
+				printk("Pid %i got an expected sigstop when returning from a ptraced fork. Delivering it and sleeping.\n",
+					current->pid);
+				gdb_unflag_forked(prept);
+				signal_wake_up(current, 0);
+
+				//Now it will try to sleep again
+
+				//spin_unlock_irq(&current->sighand->siglock);
+			}
+			else {
+				MPRINT ("Replay pid %d woken up during clone but not running.  We must want it to die\n", current->pid);
+				//spin_unlock_irq(&current->sighand->siglock);
+				sys_exit (0);
+			}
+		}
+	} while (prept->rp_status != REPLAY_STATUS_RUNNING);
+
 	MPRINT ("Pid %d done with ret_from_fork_replay\n", current->pid);
 }
 
@@ -5163,8 +5248,8 @@ cget_next_syscall (int syscall, char** ppretparams, u_char* flag, long predictio
 	long exit_retval;
 
 	//TODO: Temp, remove this
-	printk("pid %i performing syscall: %i. is_gdb_attached: %i\n", current->pid,
-		syscall, is_gdb_attached());
+	printk("pid %i performing syscall: %i. is_gdb_attached: %i, status: %i\n", current->pid,
+		syscall, is_gdb_attached(), prt->rp_status);
 
 	if (prt->attach_sysid > 0 && !is_pin_attached() && 
 				!is_gdb_attached() &&
@@ -10805,7 +10890,10 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 
 	prg = current->replay_thrd->rp_group;
 
-	MPRINT ("Pid %d replay_clone with flags %lx\n", current->pid, clone_flags);
+	//TODO: temp, remove
+	//MPRINT ("Pid %d replay_clone with flags %lx\n", current->pid, clone_flags);
+	printk("Pid %d replay_clone with flags %lx\n", current->pid, clone_flags);
+	
 	if (is_pin_attached()) {
 		rc = current->replay_thrd->rp_saved_rc;
 		(*(int*)(current->replay_thrd->app_syscall_addr)) = 999;
@@ -10821,7 +10909,10 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 
 		// We also need to create a clone here 
 		pid = do_fork(clone_flags, stack_start, regs, stack_size, parent_tidptr, child_tidptr);
-		MPRINT ("Pid %d in replay clone spawns child %d\n", current->pid, pid);
+		//TODO: temp, remove
+		//MPRINT ("Pid %d in replay clone spawns child %d\n", current->pid, pid);
+		printk("Pid %d in replay clone spawns child %d\n", current->pid, pid);
+
 		if (pid < 0) {
 			printk ("[DIFF]replay_clone: second clone failed, rc=%d\n", pid);
 			return syscall_mismatch();
@@ -10930,8 +11021,27 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 
 		rg_unlock(prg->rg_rec_group);
 
+		//Set up the child so that the gdb state is the same
+		tsk->replay_thrd->attach_device = current->replay_thrd->attach_device;
+		tsk->replay_thrd->gdb_state = current->replay_thrd->gdb_state;
+
+		if (is_gdb_attached())
+		{
+			//Flag the child as having just been created by a fork
+			gdb_flag_forked(tsk->replay_thrd);
+		}
+
 		// Now wake up the new thread and wait
 		wake_up_new_task (tsk);
+
+		if (is_gdb_attached()) {
+			// In this case, a ptrace event notification got squashed earlier in the do_fork call
+			// The notification lets ptrace grab the parent, then it thinks there is a child in existance before
+			//  we woke up the child task --> leads to deadlock situations
+			// Do the notification now that the child actually is awake
+			printk("Notifying ptrace about the fork event which was delayed\n");
+			ptrace_event(PTRACE_EVENT_FORK, tsk->pid);
+		}
 
 		// see above
 		if (rp_sigpending) {

@@ -197,6 +197,13 @@ static inline void ptrace_event(int event, unsigned long message)
 {
 	if (unlikely(ptrace_event_enabled(current, event))) {
 		current->ptrace_message = message;
+
+		//TODO: temp, remove
+		if (current->replay_thrd) {
+			printk("ptrace_notify enter for %i: event is %i\n",
+				current->pid, event);
+		}
+
 		ptrace_notify((event << 8) | SIGTRAP);
 	} else if (event == PTRACE_EVENT_EXEC) {
 		/* legacy EXEC report via SIGTRAP */
