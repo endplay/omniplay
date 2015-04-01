@@ -2238,7 +2238,8 @@ static void do_jobctl_trap(void)
 	}
 }
 
-static int ptrace_signal(int signr, siginfo_t *info,
+/* REPLAY */ //static
+int ptrace_signal(int signr, siginfo_t *info,
 			 struct pt_regs *regs, void *cookie)
 {
 	ptrace_signal_deliver(regs, cookie);

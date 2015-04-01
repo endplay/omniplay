@@ -1232,34 +1232,6 @@ replay_gdb_attached (void)
 	return 0;
 }
 
-//TODO: delete this, its not being used
-/*void
-replay_gdb_do_fork_sleep (void)
-{
-	//This function is needed when gdb is attached and
-	//	fork is called to create a child. When the child wakes up,
-	//	it will have a SIGSTOP queued. After that is delivered,
-	//	this function needs to be called to put it to sleep and let only 
-	//	the parent replay thread run.
-
-	//This is very similar to ret_from_fork_replay
-	if (is_gdb_fork_flagged()) {
-		int ret;
-
-		printk("Pid %d doing the delayed sleep after fork call for gdb\n", current->pid);
-
-		ret = wait_event_interruptible_timeout (prept->rp_waitq, prept->rp_status == REPLAY_STATUS_RUNNING, SCHED_TO);
-		if (ret == 0) printk ("Replay pid %d timed out waiting for parent thread to go\n", current->pid);
-		if (ret == -ERESTARTSYS) printk ("Pid %d: replay_gdb_do_fork_sleep cannot wait due to signal - try again\n", current->pid);
-		if (prept->rp_status != REPLAY_STATUS_RUNNING) {
-			//Something went wrong... self destruct.
-			sys_exit (0);
-		}
-		
-	}
-}*/
-
-
 #ifdef USE_HPC
 static inline long long rdtsc(void) {
 	union {
@@ -2592,38 +2564,69 @@ void ret_from_fork_replay (void)
 	/* Nothing to do unless we need to support multiple threads */
 	MPRINT ("Pid %d ret_from_fork_replay\n", current->pid);
 
-	//This is a while loop, but should only ever run twice at maximum
-	do {
-		//TODO: temp, remove
-		printk("Pid %d sleeping after returning from fork call.", current->pid);
+	if (is_gdb_fork_flagged()) {
+		siginfo_t info;
 
-		ret = wait_event_interruptible_timeout (prept->rp_waitq, prept->rp_status == REPLAY_STATUS_RUNNING, SCHED_TO);
-		if (ret == 0) printk ("Replay pid %d timed out waiting for cloned thread to go\n", current->pid);
-		if (ret == -ERESTARTSYS) printk ("Pid %d: ret_from_fork_replay cannot wait due to signal - try again\n", current->pid);
-		if (prept->rp_status != REPLAY_STATUS_RUNNING) {
+		spin_lock_irq(&current->sighand->siglock);
 
-			//TODO: grab current's siglock? current->sighand->siglock
-			//spin_lock_irq(&current->sighand->siglock);
+		// ~~~ Dequeue the SIGSTOP
+		int signalNumber = dequeue_signal(current, &current->blocked, &info);
 
-			//When a ptraced program is forked, the child is created with a SIGSTOP already pending
-			//	Don't self destruct when this happens
-			if (is_gdb_fork_flagged()) {
-				printk("Pid %i got an expected sigstop when returning from a ptraced fork. Delivering it and sleeping.\n",
-					current->pid);
-				gdb_unflag_forked(prept);
-				signal_wake_up(current, 0);
-
-				//Now it will try to sleep again
-
-				//spin_unlock_irq(&current->sighand->siglock);
-			}
-			else {
-				MPRINT ("Replay pid %d woken up during clone but not running.  We must want it to die\n", current->pid);
-				//spin_unlock_irq(&current->sighand->siglock);
-				sys_exit (0);
-			}
+		if (signalNumber != SIGSTOP) {
+			//Something is very wrong
+			printk("Replay pid %i is marked as from a gdb fork but didn't have a SIGSTOP queued. Something is wrong, kill it.\n",
+				current->pid);
+			
+			spin_unlock_irq(&current->sighand->siglock);
+			sys_exit(0);
 		}
-	} while (prept->rp_status != REPLAY_STATUS_RUNNING);
+
+		if (signal_pending(current)) {
+			printk("Pid %i - pending signals is not empty!\n", current->pid);
+		}
+
+		// ~~~ Send the "I've stopped" signal here to gdb...
+		//The last two values are unused on x86. See "ptrace_signal_deliver"
+		printk("Pid %d forked from gdb: notifying ptrace.\n", current->pid);
+		int newSignal = ptrace_signal(SIGSTOP, &info, NULL, NULL);
+
+		if (newSignal) {
+			//We also have a problem... this is supposed to be ignored
+			printk("Replay pid %i: gdb did not ignore the SIGSTOP... ignoring the returned signal %i.\n",
+				current->pid, newSignal);
+		}
+
+		//ptrace_signal appears to actually set the pending signal flag for some reason... Unclear why. Clear it.
+		clear_tsk_thread_flag(current, TIF_SIGPENDING);
+
+		if (signal_pending(current)) {
+			printk("Pid %i - pending signals is not empty2!\n", current->pid);
+		}
+		//This is now handled by dequeue_signal
+		////~~~ Then clear the stop signal flags
+		//sigdelset(&current->signal, SIGSTOP);
+
+		spin_unlock_irq(&current->sighand->siglock);
+
+		//~~~ Unflag that it is a brand new forked child
+		gdb_unflag_forked(prept);
+	}
+
+	//TODO: temp, remove
+	printk("Pid %d sleeping after returning from fork call.\n", current->pid);
+
+	ret = wait_event_interruptible_timeout (prept->rp_waitq, prept->rp_status == REPLAY_STATUS_RUNNING, SCHED_TO);
+	if (ret == 0) printk ("Replay pid %d timed out waiting for cloned thread to go\n", current->pid);
+	if (ret == -ERESTARTSYS) printk ("Pid %d: ret_from_fork_replay cannot wait due to signal - try again\n", current->pid);
+	if (prept->rp_status != REPLAY_STATUS_RUNNING) {
+		if (signal_pending(current)) {
+			printk("Pid %i - pending signals is not empty3!\n", current->pid);
+		}
+
+		MPRINT ("Replay pid %d woken up during clone but not running.  We must want it to die\n", current->pid);
+		sys_exit (0);
+
+	}
 
 	MPRINT ("Pid %d done with ret_from_fork_replay\n", current->pid);
 }

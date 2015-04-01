@@ -388,6 +388,10 @@ int unhandled_signal(struct task_struct *tsk, int sig);
 
 void signals_init(void);
 
+/** REPLAY **/
+int ptrace_signal(int signr, siginfo_t *info,
+	struct pt_regs *regs, void *cookie);
+
 #endif /* __KERNEL__ */
 
 #endif /* _LINUX_SIGNAL_H */
