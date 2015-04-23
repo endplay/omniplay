@@ -24,6 +24,7 @@
 #include <linux/regset.h>
 #include <linux/hw_breakpoint.h>
 #include <linux/cn_proc.h>
+#include <linux/replay.h> /* REPLAY */
 
 
 static int ptrace_trapping_sleep_fn(void *flags)
@@ -469,6 +470,13 @@ static int ptrace_detach(struct task_struct *child, unsigned int data)
 	if (child->ptrace) {
 		child->exit_code = data;
 		dead = __ptrace_detach(current, child);
+
+		/* Begin REPLAY */
+		if (child->replay_thrd) {
+			replay_unlink_gdb(child);
+		}
+		/* End REPLAY */		
+
 	}
 	write_unlock_irq(&tasklist_lock);
 

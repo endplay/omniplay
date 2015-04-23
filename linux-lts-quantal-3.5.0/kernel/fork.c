@@ -1658,13 +1658,16 @@ long do_fork(unsigned long clone_flags,
 
 		/* forking complete and child started to run, tell ptracer */
 		if (unlikely(trace)) {
-			if (replay_gdb_attached()) {
+			/* Begin REPLAY */
+			if (current->replay_thrd && replay_gdb_attached()) {
 				printk("fork.c: delay notifying ptracer of fork event %i until it is safe\n", 
 					trace);
-			}
-			else {
+			} else {
+				/* End REPLAY */
 				ptrace_event(trace, nr);
+				/* Begin REPLAY */
 			}
+			/* End REPLAY */
 		}
 
 		if (clone_flags & CLONE_VFORK) {

@@ -128,5 +128,6 @@ long reset_replay_ndx(void);
 
 /* Used for gdb attachment */
 int replay_gdb_attached(void);
+void replay_unlink_gdb(struct task_struct* tsk);
 
 #endif

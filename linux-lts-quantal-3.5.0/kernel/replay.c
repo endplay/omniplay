@@ -1223,6 +1223,13 @@ gdb_unflag_forked (struct replay_thread* prt)
 	prt->gdb_state = 1;
 }
 
+static inline void
+gdb_unlink(struct replay_thread* prt)
+{
+	prt->gdb_state = 0;
+	prt->attach_device = 0;
+}
+
 int 
 replay_gdb_attached (void)
 {
@@ -1230,6 +1237,16 @@ replay_gdb_attached (void)
 		return is_gdb_attached();
 	}
 	return 0;
+}
+
+//This is called with tthe tasklist lock held!
+void
+replay_unlink_gdb(struct task_struct* tsk)
+{
+	if (tsk->replay_thrd) {
+		printk("Pid %d is unlinked from gdb.\n", tsk->pid);
+		gdb_unlink(tsk->replay_thrd);
+	}
 }
 
 #ifdef USE_HPC
@@ -2559,7 +2576,7 @@ create_used_address_list (void)
 void ret_from_fork_replay (void)
 {
 	struct replay_thread* prept = current->replay_thrd;
-	int ret;
+	int ret, signalNumber, newSignal;
 
 	/* Nothing to do unless we need to support multiple threads */
 	MPRINT ("Pid %d ret_from_fork_replay\n", current->pid);
@@ -2570,7 +2587,7 @@ void ret_from_fork_replay (void)
 		spin_lock_irq(&current->sighand->siglock);
 
 		// ~~~ Dequeue the SIGSTOP
-		int signalNumber = dequeue_signal(current, &current->blocked, &info);
+		signalNumber = dequeue_signal(current, &current->blocked, &info);
 
 		if (signalNumber != SIGSTOP) {
 			//Something is very wrong
@@ -2588,7 +2605,7 @@ void ret_from_fork_replay (void)
 		// ~~~ Send the "I've stopped" signal here to gdb...
 		//The last two values are unused on x86. See "ptrace_signal_deliver"
 		printk("Pid %d forked from gdb: notifying ptrace.\n", current->pid);
-		int newSignal = ptrace_signal(SIGSTOP, &info, NULL, NULL);
+		newSignal = ptrace_signal(SIGSTOP, &info, NULL, NULL);
 
 		if (newSignal) {
 			//We also have a problem... this is supposed to be ignored
@@ -11052,7 +11069,7 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 			signal_wake_up (current, 0);
 		}
 	}
-		
+
 	if (current->replay_thrd->app_syscall_addr == 0) {
 		get_next_syscall_exit (current->replay_thrd, prg, psr);
 	}
