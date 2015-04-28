@@ -12,3 +12,9 @@ linux-lts-quantal-3.5.0/errlog
 linux-lts-quantal-3.5.0/security/apparmor/net_names.h
 linux-lts-quantal-3.5.0/ubuntu/aufs/conf.str
 linux-lts-quantal-3.5.0/ubuntu/aufs/conf.str.tmp
+
+#Also temporary
+python_environ/omniplay/build/*
+pin_tools/obj-ia32/*
+
+*.pyc
