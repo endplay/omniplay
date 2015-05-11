@@ -1196,10 +1196,18 @@ is_pin_attached (void)
 }
 
 static inline int
+gdb_attached(struct replay_thread* prt)
+{
+	return (prt->attach_device == ATTACH_GDB
+		&& prt->gdb_state);
+}
+
+static inline int
 is_gdb_attached (void)
 {
-	return (current->replay_thrd->attach_device == ATTACH_GDB
-		&& current->replay_thrd->gdb_state);
+	return gdb_attached(current->replay_thrd);
+	//return (current->replay_thrd->attach_device == ATTACH_GDB
+	//	&& current->replay_thrd->gdb_state);
 }
 
 static inline int
@@ -1239,11 +1247,14 @@ replay_gdb_attached (void)
 	return 0;
 }
 
-//This is called with tthe tasklist lock held!
+//This is called with the tasklist lock held!
 void
 replay_unlink_gdb(struct task_struct* tsk)
 {
 	if (tsk->replay_thrd) {
+		if (!gdb_attached(tsk->replay_thrd))
+			return;
+
 		printk("Pid %d is unlinked from gdb.\n", tsk->pid);
 		gdb_unlink(tsk->replay_thrd);
 	}

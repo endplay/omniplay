@@ -1948,9 +1948,9 @@ static void ptrace_stop(int exit_code, int why, int clear_code, siginfo_t *info)
 		/* Begin REPLAY */
 		//TODO: temp, remove
 		if (current->replay_thrd) {
-			printk("ptrace notifying parent of %i of stop - parent: %u, real_parent: %u\n",
-				current->pid, current->parent->pid, current->real_parent->pid);
-			printk("    reasoning- signal: %i, why: %i\n", info->si_signo, why);
+			//printk("ptrace notifying parent of %i of stop - parent: %u, real_parent: %u\n",
+			//	current->pid, current->parent->pid, current->real_parent->pid);
+			//printk("    reasoning- signal: %i, why: %i\n", info->si_signo, why);
 		}
 		/* End REPLAY */
 
@@ -2028,7 +2028,7 @@ static void ptrace_do_notify(int signr, int exit_code, int why)
 	/* Begin REPLAY */
 	//TODO: temp, remove
 	if (current->replay_thrd) {
-		printk("ptrace_stop entry: ptrace_do_notify\n");
+		//printk("ptrace_stop entry: ptrace_do_notify\n");
 	}
 	/* End REPLAY */
 
@@ -2045,8 +2045,8 @@ void ptrace_notify(int exit_code)
 	/* Begin REPLAY */
 	//TODO: temp, remove
 	if (current->replay_thrd) {
-		printk("ptrace_do_notify entry for %i: ptrace_notify with code %i\n",
-			current->pid, exit_code);
+		//printk("ptrace_do_notify entry for %i: ptrace_notify with code %i\n",
+		//	current->pid, exit_code);
 	}
 	/* End REPLAY */
 
@@ -2229,7 +2229,7 @@ static void do_jobctl_trap(void)
 		/* Begin REPLAY */
 		//TODO: temp, remove
 		if (current->replay_thrd) {
-			printk("ptrace_stop entry: do_jobctl_trap\n");
+			//printk("ptrace_stop entry: do_jobctl_trap\n");
 		}
 		/* End REPLAY */
 
@@ -2254,7 +2254,7 @@ int ptrace_signal(int signr, siginfo_t *info,
 	 */
 	current->jobctl |= JOBCTL_STOP_DEQUEUED;
 	if (current->replay_thrd) {
-		printk("ptrace_stop entry: ptrace_signal\n");
+		//printk("ptrace_stop entry: ptrace_signal\n");
 	}
 	ptrace_stop(signr, CLD_TRAPPED, 0, info);
 
