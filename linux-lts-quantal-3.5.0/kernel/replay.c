@@ -1206,8 +1206,6 @@ static inline int
 is_gdb_attached (void)
 {
 	return gdb_attached(current->replay_thrd);
-	//return (current->replay_thrd->attach_device == ATTACH_GDB
-	//	&& current->replay_thrd->gdb_state);
 }
 
 static inline int
