@@ -29,6 +29,17 @@ def grabParameterRegs():
 	ebp = gdb.parse_and_eval("$ebp")
 	return eax, ebx, ecx, edx, esi, edi, ebp
 
+def printRegs(regs):
+	first = True
+	for val in regs:
+		if first:
+			first = False
+		else:
+			print ", ",
+		print val,
+
+	print ''
+
 class PreLoadHandler:
 	def __init__(self):
 		self.syscallReturn = False
@@ -73,7 +84,6 @@ class PreLoadHandler:
 		isBreakpoint = isinstance(event, gdb.BreakpointEvent)
 
 		if isBreakpoint:
-			#print "** Breakpoint!"
 			breakpoint = event.breakpoints[0]
 			self.handleBreakpoint(pid, breakpoint)
 		else:
@@ -85,18 +95,92 @@ class PreLoadHandler:
 			gdb.execute("sharedlibrary libc.so")
 			gdb.execute("delete")
 
+			global handler
+			handler = PostLoadHandler()
+
+			gdb.execute("continue")
+			return
+
 		gdb.execute("continue")
 		return False
 
 class PostLoadHandler:
 	def __init__(self):
 		self.count = 0
+		self.beginOfCall = True
+		self.specialReturn = -1
+		self.cstr = gdb.lookup_type("char").pointer()
+		self.voidptr = gdb.lookup_type("void").pointer()
+
+		gdb.Breakpoint("__kernel_vsyscall")
+
+	def determinePrintArgs(self, regs):
+		watchedCalls = [ 3, 4, 90, 145, 146, 180, 181, 192, 333, 334 ]
+
+		sysnum = regs[0]		
+
+		if not sysnum in watchedCalls:
+			return
+
+		if sysnum == 3 or sysnum == 4: #read or write
+			name = "read" if sysnum == 3 else "write"
+			out = "\t%s ( fd = %s, buf = %s, count = %s )"
+			bufptr = regs[2].cast(self.cstr)
+			print out % ( name, str(regs[1]), str(bufptr), str(regs[3]) )
+
+			if sysnum == 4: #write only
+				print "\tFull data ***:"
+				self.printMem(bufptr, int(regs[3]))
+				print "\t***"
+			else:
+				self.specialReturn = sysnum
+		elif sysnum == 90 or sysnum == 192: #mmap
+			out = "\tmmap ( addr = %s, length = %i, prot = %i, flags = %i, fd = %i, offset = %i )"
+			addr = regs[1].cast(self.voidptr)
+			inttype = gdb.lookup_type("int")
+			offset = int(regs[6].cast(inttype))
+			print out % ( addr, int(regs[2]), int(regs[3]), int(regs[4]), int(regs[5]), offset )
+				
+			
+	def determinePrintReturn(self, regs):
+		if self.specialReturn == -1:
+			print "\tReturned", regs[0]
+			return	
+
+		if self.specialReturn == 3:
+			bufptr = regs[2].cast(self.cstr)
+			print "\tFull data ***:"
+			self.printMem(bufptr, int(regs[3]))
+			print "\t***"
+
+			print "\tReturned", regs[0]
+
+		self.specialReturn = -1
+
+	def printMem(self, buf, length):
+		sval = buf.string('utf-8', 'backslashreplace', length)
+		print sval
+
 
 	def handle(self, event):
-		pass
+		regs = grabParameterRegs()
+		pid = gdb.selected_inferior().pid
+
+		if self.beginOfCall:
+			print "Pid", pid, "Syscall Number", regs[0]
+			self.determinePrintArgs(regs)
+		else:
+			self.determinePrintReturn(regs)
+		self.beginOfCall = not self.beginOfCall		
 
 	def onActualStop(self):
-		return True
+		if not self.beginOfCall:
+			gdb.execute("finish")
+		else:
+			gdb.execute("continue")
+
+
+		return False
 
 handler = None
 
