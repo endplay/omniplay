@@ -48,12 +48,14 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 	struct get_used_addr_data udata;
 	struct filemap_num_data fndata;
 	struct filemap_entry_data fedata;
+	struct get_record_pid_data recordpid_data;
 	int syscall;
 	u_long app_syscall_addr;
 	char logdir[MAX_LOGDIR_STRLEN+1];
 	char* tmp = NULL;
 	long rc;
 	int device;
+	
 
 	pckpt_proc = new_ckpt_proc = NULL;
 	DPRINT ("pid %d cmd number 0x%08x\n", current->pid, cmd);
@@ -115,16 +117,12 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 			device = ATTACH_PIN;
 		}
         else if (wdata.gdb) {
-			//TODO: temp remove at some point
-            printk("gdb attach is turned on!\n");
 			device = ATTACH_GDB;
         }
 		else {
 			device = 0; //NONE
 		}
 
-		
-		
 		rc = replay_ckpt_wakeup(device, logdir, tmp, wdata.fd,
 			wdata.follow_splits, wdata.save_mmap, wdata.attach_index,
 			wdata.attach_pid);
@@ -191,6 +189,17 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 		return get_filemap(fedata.fd, fedata.offset, fedata.size, fedata.entries, fedata.num_entries);
 	case SPECI_RESET_REPLAY_NDX:
 		return reset_replay_ndx();
+	case SPECI_GET_CURRENT_RECORD_PID:
+		if (len != sizeof(struct get_record_pid_data))
+		{
+			printk("ioctl SPECI_GET_CURRENT_RECORD_PID fails, len %d\n", len);
+			return -EINVAL;
+		}
+		if (copy_from_user(&recordpid_data, (void *)data, sizeof(recordpid_data)))
+		{
+			return -EFAULT;
+		}
+		return get_current_record_pid(recordpid_data.nonrecordPid);
 	default:
 		return -EINVAL;
 	}

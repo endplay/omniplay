@@ -3292,6 +3292,52 @@ long get_record_group_id (__u64* prg_id)
 }
 EXPORT_SYMBOL(get_record_group_id);
 
+pid_t get_current_record_pid(pid_t nonrecord_pid)
+{
+	struct task_struct* task;
+	struct replay_thread *original, *rpt;
+	int found;
+	pid_t result;
+
+	task = find_task_by_vpid(nonrecord_pid);
+	
+	if (!task) {
+		printk("get_current_record_pid could not find the given process\n");
+		return -EINVAL;
+	}
+
+	if (!task->replay_thrd) {
+		printk("get_current_record_pid was not given a replay process pid\n");
+		return -EINVAL;
+	}
+
+	original = task->replay_thrd;
+
+	rg_lock(original->rp_group->rg_rec_group);
+
+	rpt = original;
+	found = false;
+	do {
+		if (rpt->rp_status == REPLAY_STATUS_RUNNING) {
+			found = true;
+			break;
+		}
+
+		rpt = rpt->rp_next_thread;
+	} while (rpt != original);
+
+	if (found) {
+		result = rpt->rp_record_thread->rp_record_pid;
+	} else {
+		result = -EINVAL;
+	}
+
+	rg_unlock(original->rp_group->rg_rec_group);
+
+	return result;
+}
+EXPORT_SYMBOL(get_current_record_pid);
+
 long get_num_filemap_entries(int fd, loff_t offset, int size) {
 	int num_entries = 0;
 	struct file *filp;

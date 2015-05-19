@@ -166,3 +166,10 @@ long reset_replay_ndx(int fd_spec)
 {
     return ioctl (fd_spec, SPECI_RESET_REPLAY_NDX);
 }
+
+pid_t get_current_record_pid(int fd_spec, pid_t nonrecord_pid)
+{
+	struct get_record_pid_data data;
+	data.nonrecordPid = nonrecord_pid;
+	return ioctl(fd_spec, SPECI_GET_CURRENT_RECORD_PID, &data);
+}

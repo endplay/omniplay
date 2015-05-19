@@ -116,7 +116,7 @@ class OmniplayEnvironment(object):
         self.logdb_dir = "/replay_logdb/"
 
         binaries = collections.namedtuple('Binary', ["record", "parseklog",
-                "filemap", "replay", "parseckpt", "getstats", "pin"])
+                "filemap", "replay", "parseckpt", "getstats", "pin", "currentpid"])
         scripts = collections.namedtuple('Scripts', ["setup", "record", "insert", "run_pin"])
 
         self.scripts_dir = ''.join([self.omniplay_location, "/scripts"])
@@ -137,7 +137,8 @@ class OmniplayEnvironment(object):
                 filemap = '/'.join([self.test_dir, "filemap"]),
                 parseckpt = '/'.join([self.test_dir, "parseckpt"]),
                 getstats = '/'.join([self.test_dir, "getstats"]),
-                pin = '/'.join([self.pin_root, "pin"])
+                pin = '/'.join([self.pin_root, "pin"]),
+				currentpid = '/'.join([self.test_dir, "currentpid"])
             )
 
         self.setup_system()
@@ -614,3 +615,22 @@ class OmniplayEnvironment(object):
         m = re.search(" ([0-9]+)$", lines[2])
         mismatched = int(m.groups()[0])
         return (started, finished, mismatched)
+
+    def pid_to_current_record_pid(self, pid):
+        """
+        Given the pid of a replaying process, return the currently running
+        record pid.
+        Uses the currentpid utility.
+        On error returns None.
+        """
+        cmd = ' '.join([self.bins.currentpid, pid])
+        process = subprocess.Popen(shlex.split(cmd), shell=False, stdout=subprocess.PIPE, stderr=None)
+        output, errors = process.communicate()
+
+        lines = output.split("\n")
+        for line in lines:
+            if re.search("ERROR", line):
+                return None
+
+        return int(lines[0])
+

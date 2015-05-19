@@ -120,6 +120,11 @@ unsigned long get_env_vars(void);
 
 long get_record_group_id(__u64 __user * prg_id);
 
+/* Pass in the "real" resume process pid and it will give back the
+	recorded replay pid that is currently running.
+	Does not need to be called from a replay thread.*/
+pid_t get_current_record_pid(pid_t nonrecord_pid);
+
 /* Calls to read the filemap */
 long get_num_filemap_entries(int fd, loff_t offset, int size);
 long get_filemap(int fd, loff_t offset, int size, void __user * entries, int num_entries);

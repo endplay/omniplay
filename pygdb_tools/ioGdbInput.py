@@ -121,6 +121,7 @@ class PostLoadHandler:
 		self.currentSyscall = -1
 		self.cstr = gdb.lookup_type("char").pointer()
 		self.voidptr = gdb.lookup_type("void").pointer()
+		self.recordPid = None
 
 		gdb.Breakpoint("__kernel_vsyscall")
 
@@ -242,6 +243,11 @@ class PostLoadHandler:
 			print sval
 		else:
 			print sval,
+
+	def getPid(self):
+		if self.pid == None:
+			gdb.parse_and_evaluate("getpid()")
+		return self.pid
 
 	def handle(self, event):
 		regs = grabParameterRegs()

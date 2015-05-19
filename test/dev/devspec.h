@@ -55,6 +55,10 @@ struct filemap_entry_data {
 	int num_entries;
 };
 
+struct get_record_pid_data {
+	pid_t nonrecordPid;
+};
+
 #define SPECI_REPLAY_FORK _IOR('u', 0, struct record_data)
 #define SPECI_RESUME _IOR('u', 1, struct wakeup_data)
 #define SPECI_SET_PIN_ADDR _IOR('u',2,u_long)
@@ -70,5 +74,6 @@ struct filemap_entry_data {
 #define SPECI_GET_NUM_FILEMAP_ENTRIES _IOR('u',12,struct filemap_num_data)
 #define SPECI_GET_FILEMAP _IOR('u', 13,struct filemap_entry_data)
 #define SPECI_RESET_REPLAY_NDX _IO('u', 14)
+#define SPECI_GET_CURRENT_RECORD_PID _IOR('u', 15, struct get_record_pid_data)
 
 #endif
