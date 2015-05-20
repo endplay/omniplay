@@ -10,6 +10,7 @@ import tempfile
 import subprocess
 import collections
 
+import gdbscripts
 import logdb
 
 LogCkpt = collections.namedtuple('LogCheckpoint',
@@ -127,7 +128,7 @@ class OmniplayEnvironment(object):
                 run_pin = '/'.join([self.scripts_dir, "run_pin.sh"])
             )
 
-        
+
         self.test_dir = ''.join([self.omniplay_location, "/test"])
 
         self.bins = binaries(
@@ -138,8 +139,11 @@ class OmniplayEnvironment(object):
                 parseckpt = '/'.join([self.test_dir, "parseckpt"]),
                 getstats = '/'.join([self.test_dir, "getstats"]),
                 pin = '/'.join([self.pin_root, "pin"]),
-				currentpid = '/'.join([self.test_dir, "currentpid"])
+                currentpid = '/'.join([self.test_dir, "currentpid"])
             )
+
+        self.gdbscripts_dir = ''.join([self.omniplay_location, "/pygdb_tools"])
+        self.gdblaunchpad = '/'.join([self.gdbscripts_dir, "gdblaunchpad.py"])
 
         self.setup_system()
 
@@ -308,7 +312,7 @@ class OmniplayEnvironment(object):
         programName = shlex.split(programArgs)[0]
         return programName
 
-    def attach_gdb(self, group_id, pid, script_path=None, pipe_output=None):
+    def attach_gdb(self, group_id, pid, script_path=None, pipe_output=None, script_args=None):
         """
         Attaches gdb to a replaying process.
 
@@ -329,25 +333,33 @@ class OmniplayEnvironment(object):
         cmd = "gdb %s %i" % (progName, pid)
 
         if script_path != None:
-            cmd += " -batch -x %s" % script_path
+            #TODO: change the -batch to a -batch-silent
+            cmd += " -batch -x %s" % self.gdblaunchpad
 
         if self.verbose:
             print(cmd)
 
-        if script_path == None or pipe_output == None:
-            stdout_arg = None
-            stderr_arg = None
-        #elif pipe_output == None:
-        #    devnull = open(os.devnull, 'w')
-        #    stdout_arg = devnull
-        #    stderr_arg = devnull
-        else:
-            outhandle = open(pipe_output, 'w')
-            stdout_arg = outhandle
-            stderr_arg = outhandle
+        #if script_path == None or pipe_output == None:
+        #    stdout_arg = None
+        #    stderr_arg = None
+        #else:
+        #    outhandle = open(pipe_output, 'w')
+        #    stdout_arg = outhandle
+        #    stderr_arg = outhandle
 
-        gdb_proc = subprocess.Popen(shlex.split(cmd), shell=False,
-            stdout=stdout_arg, stderr=stderr_arg)
+        prep = gdbscripts.ScriptPreparer(group_id)
+
+        if script_path != None:
+            if pipe_output != None:
+                prep.set_redirect_file(pipe_output)
+
+            if script_args != None:
+                script_args["SCRIPT"] = script_path
+            else:
+                script_args = { "SCRIPT" : script_path }
+            prep.set_script_args(script_args)
+
+        gdb_proc = subprocess.Popen(shlex.split(cmd), shell=False)
 
         return gdb_proc
 
@@ -387,16 +399,16 @@ class OmniplayEnvironment(object):
 
         replay_proc = self.replay(replay_dir, gdb=True)
         gdb_proc = self.attach_gdb(group_id, replay_proc.pid)
-        
+
         gdb_proc.wait()
         replay_proc.wait()
 
-    def run_gdb_script(self, group_id, script_path, pipe_output=None):
+    def run_gdb_script(self, group_id, script_path, pipe_output=None, script_args=None):
         """
         Starts a replay and then attaches gdb to it, which runs the given script
         """
         replay_dir = self.get_record_dir(group_id)
-    
+
         replay_proc = self.replay(replay_dir, gdb=True)
         gdb_proc = self.attach_gdb(group_id, replay_proc.pid, script_path=script_path, pipe_output=pipe_output)
 
@@ -623,7 +635,7 @@ class OmniplayEnvironment(object):
         Uses the currentpid utility.
         On error returns None.
         """
-        cmd = ' '.join([self.bins.currentpid, pid])
+        cmd = ' '.join([self.bins.currentpid, str(pid)])
         process = subprocess.Popen(shlex.split(cmd), shell=False, stdout=subprocess.PIPE, stderr=None)
         output, errors = process.communicate()
 
