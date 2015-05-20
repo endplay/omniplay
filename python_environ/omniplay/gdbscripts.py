@@ -4,6 +4,8 @@ Utilities to be used inside of gdb scripts and for launching them.
 import os
 import pickle
 import shlex
+import subprocess
+import re
 
 _env_group_str = "GDB_SCRIPT_GROUP"
 _env_args_str = "GDB_SCRIPT_ARGS"
@@ -50,7 +52,7 @@ class ScriptUtilities():
         Uses the currentpid utility.
         On error returns None.
         """
-        cmd = ' '.join([self.currentpid, str(pid)])
+        cmd = ' '.join([self.currentpid, str(nonrecordPid)])
         process = subprocess.Popen(shlex.split(cmd), shell=False, stdout=subprocess.PIPE, stderr=None)
         output, errors = process.communicate()
 
