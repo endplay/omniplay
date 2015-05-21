@@ -44,8 +44,6 @@ class PreLoadHandler:
         self.needsLoad = False
         self.currentSyscall = -1
         self.basePC = getPC()
-        print "PC is", self.basePC
-        print "\t", format(self.basePC, '#x')
 
         #This maps address offsets to the correct system calls when in ld!
         self.offsetMap = {
@@ -180,10 +178,6 @@ def syscallEnter(syscall, regs, pid):
         outstr = "%i Pid %i (record pid %i), Syscall Number %i"
         print outstr % ( counter, pid, recordpid, syscall )
 
-        notrecorded = [ 243, 233 ]
-        if syscall in notrecorded:
-            return
-
         printArgs(syscall, regs)
         printSyscallEnterData(syscall, regs, recordpid)
 
@@ -191,7 +185,7 @@ def syscallExit(syscall, regs, pid):
     if syscall == -1:
         return
 
-    notrecorded = [ 243, 244 ]
+    notrecorded = [ 243, 244, 56, 31, 98, 137, 17, 35, 188, 32, 53, 219, 44, 189, 58, 273 ]
     if syscall in notrecorded:
         return
 
@@ -203,7 +197,7 @@ def syscallExit(syscall, regs, pid):
     counter += 1
 
 def printArgs(sysnum, regs):
-    watchedCalls = [ 3, 4, 90, 145, 146, 180, 181, 192, 333, 334 ]
+    watchedCalls = [ 3, 4, 5, 6, 90, 145, 146, 180, 181, 192, 333, 334 ]
 
     if not sysnum in watchedCalls:
         return
@@ -211,6 +205,8 @@ def printArgs(sysnum, regs):
     outputs = {
         3   :   "read ( fd = %i, buf = %s, count = %i )",
         4   :   "write ( fd = %i, buf = %s, count = %i )",
+        5   :   "open ( pathname = %s, flags = %i )",
+        6   :   "close ( fd = %i )",
         90  :   "mmap ( addr = %s, length = %i, prot = %i, flags = %i, fd = %i, offset = %i )",
         145 :   "readv ( fd = %i, iovec = %s, iovcnt = %i )",
         146 :   "writev ( fd = %i, iovec = %s, iovcnt = %i )",
@@ -225,6 +221,11 @@ def printArgs(sysnum, regs):
     if sysnum == 3 or sysnum == 4 or sysnum == 145 or sysnum == 146:
         buf = regs[2].cast(gdbTypes.voidptr)
         formats = ( int(regs[1]), str(buf), int(regs[3]) )
+    elif sysnum == 5:
+        buf = regs[1].cast(gdbTypes.cstr)
+        formats = ( str(buf), int(regs[2]) )
+    elif sysnum == 6:
+        formats = int(regs[1])
     #the mmaps
     elif sysnum == 90 or sysnum == 192:
         addr = regs[1].cast(gdbTypes.voidptr)
@@ -289,7 +290,7 @@ def printSyscallExitData(syscall, regs, pid):
         print "\t<invalid memory address>"
 
 def printReturnValue(syscall, regs):
-    watchedCalls = [ 3, 4, 90, 145, 146, 180, 181, 192, 333, 334 ]
+    watchedCalls = [ 3, 4, 5, 6, 90, 145, 146, 180, 181, 192, 333, 334 ]
 
     if syscall not in watchedCalls:
         return
@@ -323,12 +324,15 @@ class Printer():
             os.mkdir(Printer.writes)
 
     def printRead(self, pid, buf, length):
+        totalValues.bytesRead += length
         self._doRead(pid, Printer._printMemRaw, buf, length)
 
     def printWrite(self, pid, buf, length):
+        totalValues.bytesWritten += length
         self._doWrite(pid, Printer._printMemRaw, buf, length)
 
     def printReadIovec(self, pid, iovec, count, length):
+        totalValues.bytesRead += length
         self._doRead(pid, Printer._printIovecRaw, iovec, count, length)
 
     def printWriteIovec(self, pid, iovec, count):
@@ -374,6 +378,8 @@ class Printer():
 
         if length == None:
             length = sum([ int(vec['iov_len'])  for vec in vecarr ])
+            #TODO: This really really really needs to go somewhere else
+            totalValues.bytesWritten += length
 
         for vec in vecarr:
             buf = vec['iov_base'].cast(gdbTypes.cstr)
@@ -392,6 +398,11 @@ class gdbTypes:
     cstr = gdb.lookup_type("char").pointer()
     voidptr = gdb.lookup_type("void").pointer()
     inttype = gdb.lookup_type("int")
+
+#TODO: find a better way to do this
+class totalValues:
+    bytesRead = 0
+    bytesWritten = 0
 
 handler = None
 utils = None
@@ -434,6 +445,7 @@ def main():
         except gdb.error:
             break
 
-    return
+    print "Total Bytes Read:", totalValues.bytesRead
+    print "Total Bytes Written:", totalValues.bytesWritten
 
 main()
