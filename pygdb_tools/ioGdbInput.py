@@ -1,22 +1,8 @@
 import gdb
-import pydoc
 import sys
 import os
-import omniplay
 import omniplay.gdbscripts
-
-#class SyscallBreakpoint(gdb.Breakpoint):
-#    def __init__(self, syscall, spec=None):
-#        if spec == None:
-#            spec = syscall
-#        self.syscall = syscall
-#
-#        #Call the base constructor
-#        super(SyscallBreakpoint, self).__init__(spec)
-#
-#    def stop(self):
-#        print "py: Hit syscall", self.syscall
-#        return False
+import ctypes
 
 counter = 1
 def exitHandler(event):
@@ -45,12 +31,35 @@ def getRecordPid(pid):
     return getRecordPid.pids[pid]
 getRecordPid.pids = {}
 
+def getPC():
+    pc = gdb.parse_and_eval("$pc")
+    pcint = pc.cast(gdbTypes.inttype)
+    uint = ctypes.c_uint(int(pcint))
+    return uint.value
+
 class PreLoadHandler:
     def __init__(self):
         self.syscallReturn = False
         self.sawVsyscall = False
         self.needsLoad = False
         self.currentSyscall = -1
+        self.basePC = getPC()
+        print "PC is", self.basePC
+        print "\t", format(self.basePC, '#x')
+
+        #This maps address offsets to the correct system calls when in ld!
+        self.offsetMap = {
+            84164 : 45,
+            91795 : 192,
+            91617 : 33,
+            91300 : 5,
+            91117 : 195,
+            91428 : 3,
+            91181 : 197,
+            91357 : 6,
+            -1011 : 243,
+            91924 : 125
+        }
 
     def switchOver(self):
         return self.needsLoad
@@ -69,8 +78,20 @@ class PreLoadHandler:
         if self.sawVsyscall:
             self.sawVsyscall = False
         else:
-            self.currentSyscall = -1
-            syscallEnter(-1, regs, pid)
+            pc = getPC()
+            offset = pc - self.basePC
+
+            if offset in self.offsetMap:
+                syscall = self.offsetMap[offset]
+            else:
+                syscall = -1
+
+            self.currentSyscall = syscall
+            syscallEnter(syscall, regs, pid)
+
+            if syscall == -1:
+                print "\tPC:", format(pc, '#x')
+                print "\tOffset:", offset
 
     def handleBreakpoint(self, pid, breakpoint):
         if breakpoint.location == "__libc_start_main":
@@ -123,138 +144,6 @@ class PostLoadHandler:
 
         gdb.Breakpoint("__kernel_vsyscall")
 
-    def determinePrintArgs(self, regs):
-        watchedCalls = [ 3, 4, 90, 145, 146, 180, 181, 192, 333, 334 ]
-
-        sysnum = self.currentSyscall
-
-        if not sysnum in watchedCalls:
-            return
-
-        if sysnum == 3 or sysnum == 4: #read or write
-            name = "read" if sysnum == 3 else "write"
-            out = "\t%s ( fd = %s, buf = %s, count = %s )"
-            bufptr = regs[2].cast(self.voidptr)
-            print out % ( name, str(regs[1]), str(bufptr), str(regs[3]) )
-
-            if sysnum == 4: #write only
-                bufptr = regs[2].cast(self.cstr)
-                print "\tFull data ***:"
-                self.printMem(bufptr, int(regs[3]))
-                print "\t***"
-
-        elif sysnum == 90 or sysnum == 192: #mmap
-            name = "mmap" if sysnum == 90 else "mmap2"
-            out = "\t%s ( addr = %s, length = %i, prot = %i, flags = %i, fd = %i, offset = %i )"
-
-            addr = regs[1].cast(self.voidptr)
-            inttype = gdb.lookup_type("int")
-            offset = int(regs[6].cast(inttype))
-
-            print out % ( name, addr, int(regs[2]), int(regs[3]), int(regs[4]), int(regs[5]), offset )
-
-        elif sysnum == 145 or sysnum == 146: #readv or writev
-            name = "readv" if sysnum == 145 else "writev"
-            out = "\t%s ( fd = %i, iovec = %s, iovcnt = %i )"
-
-            iovec = regs[2].cast(getIovecPtr())
-            count = int(regs[3])
-
-            print out % ( name, int(regs[1]), str(iovec), count )
-
-            if sysnum == 146: #writev
-                print "\tFull data ***:"
-                self.printIovec(iovec, count)
-                print "\t***"
-
-        elif sysnum == 180 or sysnum == 181: #pread or pwrite
-            name = "pread" if sysnum == 180 else "pwrite"
-            out = "\t%s ( fd = %i, buf = %s, count = %i, offset = %i )"
-
-            ptr = regs[2].cast(self.voidptr)
-            count = int(regs[3])
-
-            print out % ( name, int(regs[1]), str(ptr), count, int(regs[4]) )
-
-            if sysnum == 181: #pwrite
-                cstr = regs[2].cast(self.cstr)
-                print "\tFull data***:"
-                self.printMem(cstr, count)
-                print "\t***"
-
-        elif sysnum == 333 or sysnum == 334: #preadv or pwritev 
-            name = "preadv" if sysnum == 333 else "pwritev"
-            out = "\t%s ( fd = %i, iovec = %s, iovcnt = %i, offset = %i )"
-
-            iovec = regs[2].cast(getIovecPtr())
-            count = int(regs[3])
-            offset = int(regs[4])
-
-            print out % ( name, int(regs[1]), str(iovec), count, offset )
-
-            if sysnum == 334: #pwritev
-                print "\tFull data ***:"
-                self.printIovec(iovec, count)
-                print "\t***"
-
-    def determinePrintReturn(self, regs):
-        if self.currentSyscall == 3 or self.currentSyscall == 180: #read or pread
-            bufptr = regs[2].cast(self.cstr)
-            length = int(regs[0])
-            print "\tFull data ***:"
-            self.printMem(bufptr, length)
-            print "\t***"
-
-            print "\tReturned", regs[0]
-        elif self.currentSyscall == 90 or self.currentSyscall == 192: #mmap or mmap2
-            ptr = regs[0].cast(self.voidptr)
-            cstr = regs[0].cast(self.cstr)
-            length = int(regs[2])
-
-            #print "\tFull data ***:"
-            #self.printMem(cstr, length)
-            #print "\t***"			
-
-            print "\tReturned", ptr
-        elif self.currentSyscall == 145 or self.currentSyscall == 333: #readv or preadv
-            iovec = regs[2].cast(getIovecPtr())
-            count = int(regs[3])
-
-            print "\tFull data ***:"
-            self.printIovec(iovec, count)
-            print "\t***"
-            print "\tReturned", regs[0]
-        else:
-            print "\tReturned", regs[0]
-
-    def printIovec(self, iovecArr, count, length=None):
-        vecarr = [ iovecArr[i]  for i in xrange(count) ]
-
-        if length == None:
-            length = sum([ int(vec['iov_len'])  for vec in vecarr ])
-
-        for vec in vecarr:
-            buf = vec['iov_base'].cast(self.cstr)
-            vlength = int(vec['iov_len'])
-            if vlength > length:
-                vlength = length
-            length -= vlength
-
-            self.printMem(buf, vlength, newLine=False)
-
-        print ''
-
-    def printMem(self, buf, length, newLine=True):
-        try:
-            sval = buf.string('ascii', 'ignore', length)
-        except UnicodeError:
-            sval = "<***contained unprintable characters***>"
-
-        if newLine:
-            print sval
-        else:
-            print sval,
-
     def handle(self, event):
         regs = grabParameterRegs()
         pid = gdb.selected_inferior().pid
@@ -291,11 +180,19 @@ def syscallEnter(syscall, regs, pid):
         outstr = "%i Pid %i (record pid %i), Syscall Number %i"
         print outstr % ( counter, pid, recordpid, syscall )
 
+        notrecorded = [ 243, 233 ]
+        if syscall in notrecorded:
+            return
+
         printArgs(syscall, regs)
         printSyscallEnterData(syscall, regs, recordpid)
 
 def syscallExit(syscall, regs, pid):
     if syscall == -1:
+        return
+
+    notrecorded = [ 243, 244 ]
+    if syscall in notrecorded:
         return
 
     recordpid = getRecordPid(pid)
@@ -348,14 +245,17 @@ def printSyscallEnterData(syscall, regs, pid):
 
     printer = Printer()
 
-    if syscall == 4 or syscall == 181:
-        buf = regs[2].cast(gdbTypes.cstr)
-        count = int(regs[3])
-        printer.printWrite(pid, buf, count)
-    else:
-        iovec = regs[2].cast(getIovecPtr())
-        count = int(regs[3])
-        printer.printWriteIovec(pid, iovec, count)
+    try:
+        if syscall == 4 or syscall == 181:
+            buf = regs[2].cast(gdbTypes.cstr)
+            count = int(regs[3])
+            printer.printWrite(pid, buf, count)
+        else:
+            iovec = regs[2].cast(getIovecPtr())
+            count = int(regs[3])
+            printer.printWriteIovec(pid, iovec, count)
+    except gdb.MemoryError:
+        print "\t<invalid memory address>"
 
 def printSyscallExitData(syscall, regs, pid):
     watchedCalls = [ 3, 90, 145, 180, 192, 333 ]
@@ -366,17 +266,27 @@ def printSyscallExitData(syscall, regs, pid):
     printer = Printer()
     retval = int(regs[0])
 
-    if syscall == 3 or syscall == 180:
-        buf = regs[2].cast(gdbTypes.cstr)
-        printer.printRead(pid, buf, retval)
-    elif syscall == 90 or syscall == 192:
-        buf = regs[0].cast(gdbTypes.cstr)
-        length = int(regs[2])
-        printer.printRead(pid, buf, length)
-    else:
-        iovec = regs[2].cast(getIovecPtr())
-        count = int(regs[3])
-        printer.printReadIovec(pid, iovec, count, retval)
+    if retval == -1:
+        return
+
+    try:
+        if syscall == 3 or syscall == 180:
+            buf = regs[2].cast(gdbTypes.cstr)
+            printer.printRead(pid, buf, retval)
+        elif syscall == 90 or syscall == 192:
+            fd = int(regs[5])
+            if fd == -1:
+                return
+
+            buf = regs[0].cast(gdbTypes.cstr)
+            length = int(regs[2])
+            printer.printRead(pid, buf, length)
+        else:
+            iovec = regs[2].cast(getIovecPtr())
+            count = int(regs[3])
+            printer.printReadIovec(pid, iovec, count, retval)
+    except gdb.MemoryError:
+        print "\t<invalid memory address>"
 
 def printReturnValue(syscall, regs):
     watchedCalls = [ 3, 4, 90, 145, 146, 180, 181, 192, 333, 334 ]
@@ -388,8 +298,12 @@ def printReturnValue(syscall, regs):
 
     #mmap returns a pointer
     if syscall == 90 or syscall == 192:
-        ptr = returnVal.cast(gdbTypes.voidptr)
-        print "\tReturned: %s" % str(ptr)
+        intval = returnVal.cast(gdbTypes.inttype)
+        if intval == -1:
+            val = -1
+        else:
+            val = returnVal.cast(gdbTypes.voidptr)
+        print "\tReturned: %s" % str(val)
     else:
         print "\tReturned: %i" % int(returnVal)
 
@@ -422,7 +336,7 @@ class Printer():
 
     def _doRead(self, pid, func, *args):
         outfile = self._getFile(True, pid)
-        func(self, outfile, *args)
+        func(self, outfile, *args, newLine=False)
         print "\tCreated out file", outfile.name
         outfile.close()
 
@@ -430,10 +344,10 @@ class Printer():
         outfile = self._getFile(False, pid)
 
         print "\tData ***"
-        func(self, sys.stdout, *args)
+        func(self, sys.stdout, *args, newLine=True)
         print "\t***"
 
-        func(self, outfile, *args)
+        func(self, outfile, *args, newLine=False)
         print "\tCreated out file", outfile.name
         outfile.close()
 
@@ -455,7 +369,7 @@ class Printer():
         else:
             print >>ostream, sval,
 
-    def _printIovecRaw(self, ostream, iovecArr, count, length):
+    def _printIovecRaw(self, ostream, iovecArr, count, length, newLine=False):
         vecarr = [ iovecArr[i]  for i in xrange(count) ]
 
         if length == None:
@@ -470,14 +384,14 @@ class Printer():
 
             self._printMemRaw(ostream, buf, vlength, newLine=False)
 
-            print ''
+        if newLine:
+            print >>ostream, ''
 
-#This is really hacky but oh well
-def gdbTypes():
-    pass
-gdbTypes.cstr = gdb.lookup_type("char").pointer()
-gdbTypes.voidptr = gdb.lookup_type("void").pointer()
-gdbTypes.inttype = gdb.lookup_type("int")
+#This is pretty hacky but oh well
+class gdbTypes:
+    cstr = gdb.lookup_type("char").pointer()
+    voidptr = gdb.lookup_type("void").pointer()
+    inttype = gdb.lookup_type("int")
 
 handler = None
 utils = None
