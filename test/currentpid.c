@@ -1,25 +1,38 @@
-//#include <fcntl.h>
-//#include <sys/ioctl.h>
-//#include <sys/stat.h>
+//Gets the current recorded pid given the pid of the replaying process
 #include <stdlib.h>
 #include <stdio.h>
+#include <getopt.h>
 
-//#define __user 
-//#include "dev/devspec.h"
 #include "util.h"
+
+void print_help(const char* program)
+{
+	fprintf(stderr, "Usage: %s <replay_pid> [-h]\n", program);
+}
 
 int main(int argc, char** argv)
 {
+	int c;
+	while ((c = getopt(argc, argv, "h")) != -1)
+	{
+		switch (c)
+		{
+			case 'h':
+			default:
+				print_help(argv[0]);
+				return -1;
+		}
+	}
+
 	if (argc != 2)
 	{
 		printf("ERROR\n");
 		printf("Wrong number of arguments\n");
+		print_help(argv[0]);
 		return -1;
 	}
 
 	pid_t pid = atoi(argv[1]);
-
-	//printf("Pid: %i\n", pid);
 	
 	int fd;
 	if (devspec_init(&fd))
