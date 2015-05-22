@@ -3,8 +3,11 @@ This is used to set up the environment for running other gdb scripts.
 See OmniplayEnvironment.run_gdb_script
 """
 import sys
+import os
 import re
 from omniplay.gdbscripts import ScriptUtilities
+
+import imp
 
 utils = ScriptUtilities()
 
@@ -18,8 +21,15 @@ else:
 
 scriptname = utils.get_arg("SCRIPT")
 
-#strip off the trailing ".py" if any
-scriptname = re.sub(r"\.py$", '', scriptname)
+if not os.path.isfile(scriptname):
+    #look in the gdb scripts folder
+    omniplay_dir = os.environ["OMNIPLAY_DIR"]
+    script_dir = "gdb_tools"
 
-#Run the script!
-__import__(scriptname)
+    newname = '/'.join([omniplay_dir, script_dir, scriptname])
+    if not os.path.isfile(newname):
+        raise IOError("Could not find file: " + scriptname)
+
+    scriptname = newname
+
+imp.load_source('__main__', scriptname)
