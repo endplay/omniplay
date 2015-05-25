@@ -1659,10 +1659,8 @@ long do_fork(unsigned long clone_flags,
 		/* forking complete and child started to run, tell ptracer */
 		if (unlikely(trace)) {
 			/* Begin REPLAY */
-			if (current->replay_thrd && replay_gdb_attached()) {
-				printk("fork.c: delay notifying ptracer of fork event %i until it is safe\n", 
-					trace);
-			} else {
+			//The fork event can't be sent to gdb here. It needs to be done later.
+			if (!(current->replay_thrd && replay_gdb_attached())) {
 				/* End REPLAY */
 				ptrace_event(trace, nr);
 				/* Begin REPLAY */

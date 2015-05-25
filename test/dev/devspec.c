@@ -55,7 +55,6 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 	char* tmp = NULL;
 	long rc;
 	int device;
-	
 
 	pckpt_proc = new_ckpt_proc = NULL;
 	DPRINT ("pid %d cmd number 0x%08x\n", current->pid, cmd);

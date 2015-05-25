@@ -60,7 +60,7 @@ int devspec_init (int* fd_spec)
 }
 
 int replay_fork (int fd_spec, const char** args, const char** env,
-	char* linkpath, char* logdir, int save_mmap, int pipe_fd)
+    char* linkpath, char* logdir, int save_mmap, int pipe_fd)
 {
     struct record_data data;
     data.args = args;
@@ -74,7 +74,7 @@ int replay_fork (int fd_spec, const char** args, const char** env,
 }
 
 int resume (int fd_spec, int pin, int gdb, int follow_splits, int save_mmap, char*
-	logdir, char* linker, loff_t attach_index, int attach_pid)
+    logdir, char* linker, loff_t attach_index, int attach_pid)
 {
     struct wakeup_data data;
     data.pin = pin;

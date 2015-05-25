@@ -83,8 +83,6 @@ void replay_execval(int* uid, int* euid, int* gid, int* egid, int* secureexec);
 /* For replaying exec from a cache file */
 const char* replay_get_exec_filename (void);
 
-//int replay_ptrace_attached(const struct task_struct* tsk);
-
 /* In replay_logdb.c */
 __u64 get_replay_id (void);
 void get_logdir_for_replay_id (__u64 id, char* buf);

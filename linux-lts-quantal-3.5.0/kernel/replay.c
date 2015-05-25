@@ -1003,7 +1003,6 @@ struct replay_thread {
 	u_char rp_signals;             // Set if sig should be delivered
 	u_long app_syscall_addr;       // Address in user-land that is set when the syscall should be replayed
 
-
 	int rp_status;                  // One of the replay statuses above
 	u_long rp_wait_clock;           // Valid if waiting for kernel or user-level clock according to rp_status
 	u_long rp_stop_clock_skip;      // Temporary storage while processing syscall
@@ -2607,10 +2606,6 @@ void ret_from_fork_replay (void)
 			sys_exit(0);
 		}
 
-		if (signal_pending(current)) {
-			printk("Pid %i - pending signals is not empty!\n", current->pid);
-		}
-
 		// ~~~ Send the "I've stopped" signal here to gdb...
 		//The last two values are unused on x86. See "ptrace_signal_deliver"
 		printk("Pid %d forked from gdb: notifying ptrace.\n", current->pid);
@@ -2618,19 +2613,12 @@ void ret_from_fork_replay (void)
 
 		if (newSignal) {
 			//We also have a problem... this is supposed to be ignored
-			printk("Replay pid %i: gdb did not ignore the SIGSTOP... ignoring the returned signal %i.\n",
+			printk("WARNING: Replay pid %i: gdb did not ignore the SIGSTOP... ignoring the returned signal %i.\n",
 				current->pid, newSignal);
 		}
 
 		//ptrace_signal appears to actually set the pending signal flag for some reason... Unclear why. Clear it.
 		clear_tsk_thread_flag(current, TIF_SIGPENDING);
-
-		if (signal_pending(current)) {
-			printk("Pid %i - pending signals is not empty2!\n", current->pid);
-		}
-		//This is now handled by dequeue_signal
-		////~~~ Then clear the stop signal flags
-		//sigdelset(&current->signal, SIGSTOP);
 
 		spin_unlock_irq(&current->sighand->siglock);
 
@@ -2638,8 +2626,7 @@ void ret_from_fork_replay (void)
 		gdb_unflag_forked(prept);
 	}
 
-	//TODO: temp, remove
-	printk("Pid %d sleeping after returning from fork call.\n", current->pid);
+	MPRINT("Pid %d sleeping after returning from fork call.\n", current->pid);
 
 	ret = wait_event_interruptible_timeout (prept->rp_waitq, prept->rp_status == REPLAY_STATUS_RUNNING, SCHED_TO);
 	if (ret == 0) printk ("Replay pid %d timed out waiting for cloned thread to go\n", current->pid);
@@ -2651,9 +2638,7 @@ void ret_from_fork_replay (void)
 
 		MPRINT ("Replay pid %d woken up during clone but not running.  We must want it to die\n", current->pid);
 		sys_exit (0);
-
 	}
-
 	MPRINT ("Pid %d done with ret_from_fork_replay\n", current->pid);
 }
 
@@ -3810,6 +3795,8 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 	struct timespec tp;
 #endif
 
+	printk("Replay Start\n");
+
 	MPRINT ("In replay_ckpt_wakeup\n");
 	if (current->record_thrd || current->replay_thrd) {
 		printk ("fork_replay: pid %d cannot start a new replay while already recording or replaying\n", current->pid);
@@ -4313,7 +4300,6 @@ replay_signal_delivery (int* signr, siginfo_t* info)
 	*signr = psignal->signr;
 	memcpy (info, &psignal->info, sizeof (siginfo_t));
 	
-	//if (prt->app_syscall_addr == 0) {
 	if (!is_pin_attached()) {
 		MPRINT ("Pid %d No Pin attached, so setting blocked signal mask to recorded mask, and copying k_sigaction\n", current->pid);
 		memcpy (&current->sighand->action[psignal->signr-1],
@@ -5322,30 +5308,23 @@ cget_next_syscall (int syscall, char** ppretparams, u_char* flag, long predictio
 	long retval = 0;
 	long exit_retval;
 
-	//TODO: Temp, remove this
-	printk("pid %i performing syscall: %i. is_gdb_attached: %i, status: %i\n", current->pid,
-		syscall, is_gdb_attached(), prt->rp_status);
-
-	if (prt->attach_sysid > 0 && !is_pin_attached() && 
+	if (prt->attach_sysid > 0 && !is_pin_attached() &&
 				!is_gdb_attached() &&
-				prt->rp_out_ptr == prt->attach_sysid && 
+				prt->rp_out_ptr == prt->attach_sysid &&
 				prt->rp_record_thread->rp_record_pid == prt->attach_pid) {
-			printk("Pid %d about to sleep at syscall %d, index %lu\n", current->pid, syscall, prt->rp_out_ptr);
+		printk("Pid %d about to sleep at syscall %d, index %lu\n", current->pid, syscall, prt->rp_out_ptr);
 
-			if (prt->attach_device == ATTACH_PIN) {
-				prt->app_syscall_addr = 1;
-			}
+		if (prt->attach_device == ATTACH_PIN) {
+			prt->app_syscall_addr = 1;
+		}
 
-			if (prt->attach_device == ATTACH_GDB) {
-				prt->gdb_state = 1;
-			}
+		if (prt->attach_device == ATTACH_GDB) {
+			prt->gdb_state = 1;
+		}
 
-			set_current_state(TASK_INTERRUPTIBLE);
-			schedule();
-			printk("Pid %d woken up.\n", current->pid);
-			
-			//TODO: temp, remove
-			printk("Parent is: %u, %u\n", current->parent->pid, current->real_parent->pid);
+		set_current_state(TASK_INTERRUPTIBLE);
+		schedule();
+		printk("Pid %d woken up.\n", current->pid);
 	}
 
 	retval = cget_next_syscall_enter (prt, prg, syscall, ppretparams, &psr, prediction, start_clock);
@@ -10965,9 +10944,7 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 
 	prg = current->replay_thrd->rp_group;
 
-	//TODO: temp, remove
-	//MPRINT ("Pid %d replay_clone with flags %lx\n", current->pid, clone_flags);
-	printk("Pid %d replay_clone with flags %lx\n", current->pid, clone_flags);
+	MPRINT ("Pid %d replay_clone with flags %lx\n", current->pid, clone_flags);
 	
 	if (is_pin_attached()) {
 		rc = current->replay_thrd->rp_saved_rc;
@@ -10984,9 +10961,7 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 
 		// We also need to create a clone here 
 		pid = do_fork(clone_flags, stack_start, regs, stack_size, parent_tidptr, child_tidptr);
-		//TODO: temp, remove
-		//MPRINT ("Pid %d in replay clone spawns child %d\n", current->pid, pid);
-		printk("Pid %d in replay clone spawns child %d\n", current->pid, pid);
+		MPRINT ("Pid %d in replay clone spawns child %d\n", current->pid, pid);
 
 		if (pid < 0) {
 			printk ("[DIFF]replay_clone: second clone failed, rc=%d\n", pid);
@@ -11130,7 +11105,7 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 	}
 
 	if (rc > 0 && (clone_flags&CLONE_VM) && is_pin_attached()) {
-		MPRINT ("Return real child pid %d to Pin instead of recorded child pid %ld\n", tsk->pid, rc);
+		DPRINT ("Return real child pid %d to Pin instead of recorded child pid %ld\n", tsk->pid, rc);
 		return tsk->pid;
 	}
 
@@ -11170,7 +11145,7 @@ shim_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_regs 
 		// replay flag set. Becuase of this, we need to wake up the thread after sys_clone.
 		// See copy_process in kernel/fork.c
 		wake_up_new_task(tsk);
-		MPRINT("Pid %d - Pin fork child %d\n", current->pid, child_pid);
+		DPRINT("Pid %d - Pin fork child %d\n", current->pid, child_pid);
 		printk("Pid %d - Pin fork child %d\n", current->pid, child_pid);
 		return child_pid;
 	}

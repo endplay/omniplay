@@ -117,7 +117,7 @@ class OmniplayEnvironment(object):
         self.logdb_dir = "/replay_logdb/"
 
         binaries = collections.namedtuple('Binary', ["record", "parseklog",
-                "filemap", "replay", "parseckpt", "getstats", "pin", "currentpid"])
+                "filemap", "replay", "parseckpt", "getstats", "pin"])
         scripts = collections.namedtuple('Scripts', ["setup", "record", "insert", "run_pin"])
 
         self.scripts_dir = ''.join([self.omniplay_location, "/scripts"])
@@ -138,8 +138,7 @@ class OmniplayEnvironment(object):
                 filemap = '/'.join([self.test_dir, "filemap"]),
                 parseckpt = '/'.join([self.test_dir, "parseckpt"]),
                 getstats = '/'.join([self.test_dir, "getstats"]),
-                pin = '/'.join([self.pin_root, "pin"]),
-                currentpid = '/'.join([self.test_dir, "currentpid"])
+                pin = '/'.join([self.pin_root, "pin"])
             )
 
         self.gdbscripts_dir = ''.join([self.omniplay_location, "/gdb_tools"])
@@ -253,6 +252,7 @@ class OmniplayEnvironment(object):
         @param replay_dir Directory of recording
         @param pipe_log Output redirection for stdout/stderr
         @param pin will pin be attached?
+        @param gdb Wait for gdb to attach
         @param follow Follow the execution?
 
         @returns the subprocess of the replaying process
@@ -340,14 +340,6 @@ class OmniplayEnvironment(object):
 
         if self.verbose:
             print(cmd)
-
-        #if script_path == None or pipe_output == None:
-        #    stdout_arg = None
-        #    stderr_arg = None
-        #else:
-        #    outhandle = open(pipe_output, 'w')
-        #    stdout_arg = outhandle
-        #    stderr_arg = outhandle
 
         prep = gdbscripts.ScriptPreparer(group_id)
 
@@ -629,4 +621,3 @@ class OmniplayEnvironment(object):
         m = re.search(" ([0-9]+)$", lines[2])
         mismatched = int(m.groups()[0])
         return (started, finished, mismatched)
-
