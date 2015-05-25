@@ -1724,8 +1724,6 @@ bool do_notify_parent(struct task_struct *tsk, int sig)
 	/* Begin REPLAY */
 	if (tsk->replay_thrd) {
 		if (tsk->parent->replay_thrd) {
-			printk("On a replay thread. Suppressing SIGCHILD from %d to %d\n", tsk->pid, 
-				tsk->parent->pid);
 			/* Pid %d and parent pid %d are replay threads so don't send SIGCHLD */
 			tsk->exit_signal = -1;
 			sig = 0;
@@ -1930,7 +1928,6 @@ static void ptrace_stop(int exit_code, int why, int clear_code, siginfo_t *info)
 		 * for the two don't interact with each other.  Notify
 		 * separately unless they're gonna be duplicates.
 		 */
-
 		do_notify_parent_cldstop(current, true, why);
 		if (gstop_done && ptrace_reparented(current))
 			do_notify_parent_cldstop(current, false, why);
@@ -2011,7 +2008,6 @@ void ptrace_notify(int exit_code)
 	BUG_ON((exit_code & (0x7f | ~0xffff)) != SIGTRAP);
 
 	spin_lock_irq(&current->sighand->siglock);
-
 	ptrace_do_notify(SIGTRAP, exit_code, CLD_TRAPPED);
 	spin_unlock_irq(&current->sighand->siglock);
 }
@@ -2167,12 +2163,10 @@ static void do_jobctl_trap(void)
 			signr = SIGTRAP;
 		}
 		WARN_ON_ONCE(!signr);
-
 		ptrace_do_notify(signr, signr | (PTRACE_EVENT_STOP << 8),
 				 CLD_STOPPED);
 	} else {
 		WARN_ON_ONCE(!signr);
-
 		ptrace_stop(signr, CLD_STOPPED, 0, NULL);
 		current->exit_code = 0;
 	}
@@ -2319,7 +2313,7 @@ relock:
 					// when it is unblocked.
 					send_signal (signr, info, current, 1);
 					signr = 0; // we added it already
-				} 
+				}
 			}
 #ifdef REP_SIG_DEBUG
 			printk ("Replaying pid %d gets signal %d\n", current->pid, signr);
@@ -2355,7 +2349,6 @@ relock:
 		if (unlikely(current->ptrace) && signr != SIGKILL) {
 			signr = ptrace_signal(signr, info,
 					      regs, cookie);
-
 			if (!signr)
 				continue;
 		}

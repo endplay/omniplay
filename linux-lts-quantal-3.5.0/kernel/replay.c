@@ -10945,7 +10945,6 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 	prg = current->replay_thrd->rp_group;
 
 	MPRINT ("Pid %d replay_clone with flags %lx\n", current->pid, clone_flags);
-	
 	if (is_pin_attached()) {
 		rc = current->replay_thrd->rp_saved_rc;
 		(*(int*)(current->replay_thrd->app_syscall_addr)) = 999;
@@ -10962,7 +10961,6 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 		// We also need to create a clone here 
 		pid = do_fork(clone_flags, stack_start, regs, stack_size, parent_tidptr, child_tidptr);
 		MPRINT ("Pid %d in replay clone spawns child %d\n", current->pid, pid);
-
 		if (pid < 0) {
 			printk ("[DIFF]replay_clone: second clone failed, rc=%d\n", pid);
 			return syscall_mismatch();
@@ -11105,7 +11103,7 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 	}
 
 	if (rc > 0 && (clone_flags&CLONE_VM) && is_pin_attached()) {
-		DPRINT ("Return real child pid %d to Pin instead of recorded child pid %ld\n", tsk->pid, rc);
+		MPRINT ("Return real child pid %d to Pin instead of recorded child pid %ld\n", tsk->pid, rc);
 		return tsk->pid;
 	}
 
@@ -11145,7 +11143,7 @@ shim_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_regs 
 		// replay flag set. Becuase of this, we need to wake up the thread after sys_clone.
 		// See copy_process in kernel/fork.c
 		wake_up_new_task(tsk);
-		DPRINT("Pid %d - Pin fork child %d\n", current->pid, child_pid);
+		MPRINT("Pid %d - Pin fork child %d\n", current->pid, child_pid);
 		printk("Pid %d - Pin fork child %d\n", current->pid, child_pid);
 		return child_pid;
 	}
