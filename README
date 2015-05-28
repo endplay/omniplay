@@ -52,8 +52,9 @@ $ mkdir prefix
 $ cd build
 $ ../configure -prefix=$OMNIPLAY_DIR/eglibc-2.15/prefix --disable-profile --enable-add-on --without-gd --without-selinux --without-cvs --enable-kernel=3.2.0
 $ make
-$ mkdir /var/db
+$ mkdir /var/db (if not there already)
 $ chown <user> /var/db
+$ mkdir ../prefix/etc
 $ touch ../prefix/etc/ld.so.conf
 $ make install
 
