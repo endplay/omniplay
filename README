@@ -33,6 +33,7 @@ $ wget http://web.eecs.umich.edu/~ddevec/omniplay.config
 $ mv omniplay.config .config
 $ # End once only steps
 $ ./compile
+$ sudo make modules_install
 $ sudo reboot
 
 $ cd $OMNIPLAY_DIR/linux-lts-quantal-3.5.0
