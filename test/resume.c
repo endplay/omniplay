@@ -27,11 +27,16 @@ int main (int argc, char* argv[])
 	int base;
 	int follow_splits = 0;
 	int save_mmap = 0;
+	int ckpt_at = 0;
+	int from_ckpt = 0;
+	char filename[4096];
 
 	struct option long_options[] = {
 		{"pthread", required_argument, 0, 0},
 		{"attach_pin_later", optional_argument, 0, 0},
 		{"attach_offset", optional_argument, 0, 0},
+		{"ckpt_at", required_argument, 0, 0},
+		{"from_ckpt", required_argument, 0, 0},
 		{0, 0, 0, 0}
 	};
 
@@ -56,50 +61,57 @@ int main (int argc, char* argv[])
 		}
 
 		switch(opt) {
-			case 0:
-				switch(option_index) {
-			/* --pthread */
-					case 0: printf("pthread libdir is %s\n", optarg);
-						libdir = optarg;
-						break;
-			/* --attach_offset or --attach_pin_later */
+		case 0:
+			switch(option_index) {
+				/* --pthread */
+			case 0: printf("pthread libdir is %s\n", optarg);
+				libdir = optarg;
+				break;
+				/* --attach_offset or --attach_pin_later */
 			case 1: case 2:
-			if (sscanf(optarg, "%d,%lld", &attach_pid, &attach_index)
-				!= 2) {
-				fprintf(stderr, "ERROR: expected format: --attach_offset <pid>,<sysnum>\n");
-				exit(EXIT_FAILURE);
-			}
-						break;
-					default:
-						assert(0);
+				if (sscanf(optarg, "%d,%lld", &attach_pid, &attach_index)
+				    != 2) {
+					fprintf(stderr, "ERROR: expected format: --attach_offset <pid>,<sysnum>\n");
+					exit(EXIT_FAILURE);
 				}
 				break;
-			case 'm':
-				//printf("save_mmap is on");
-				save_mmap = 1;
+			case 3:
+				ckpt_at = atoi(optarg);
+				printf ("Checkpointing at %d\n", ckpt_at);
 				break;
-			case 'f':
-				//printf("follow_splits is on");
-				follow_splits = 1;
-				break;
-			case 'p':
-				printf("attach_pin is on\n");
-				attach_pin = 1;
-				
-				break;
-			case 'h':
-				print_help(argv[0]);
-				exit(EXIT_SUCCESS);
-				break;
-			case 'g':
-				printf("attach_gdb is on\n");
-				attach_gdb = 1;
-				break;
+			case 4:
+				from_ckpt = atoi(optarg);
+				break;	
 			default:
-				fprintf(stderr, "Unrecognized option\n");
-				print_help(argv[0]);
-				exit(EXIT_FAILURE);
-				break;
+				assert(0);
+			}
+			break;
+		case 'm':
+			//printf("save_mmap is on");
+			save_mmap = 1;
+			break;
+		case 'f':
+			//printf("follow_splits is on");
+			follow_splits = 1;
+			break;
+		case 'p':
+			printf("attach_pin is on\n");
+			attach_pin = 1;
+			
+			break;
+		case 'h':
+			print_help(argv[0]);
+			exit(EXIT_SUCCESS);
+			break;
+		case 'g':
+			printf("attach_gdb is on\n");
+			attach_gdb = 1;
+			break;
+		default:
+			fprintf(stderr, "Unrecognized option\n");
+			print_help(argv[0]);
+			exit(EXIT_FAILURE);
+			break;
 		}
 	}
 	base = optind;
@@ -138,8 +150,15 @@ int main (int argc, char* argv[])
 	printf("resume(%d, %d, %d, %d, %s, %s, %lld, %d)\n", fd, attach_pin,
 		follow_splits, save_mmap, argv[base], libdir, attach_index,
 		attach_pid);
-	rc = resume(fd, attach_pin, attach_gdb, follow_splits, save_mmap, argv[base], libdir,
-		attach_index, attach_pid);
+	if (from_ckpt > 0) {
+		sprintf (filename, "ckpt.%d", from_ckpt);
+		printf("resuming from ckpt %s\n", filename);
+		rc = resume_after_ckpt (fd, attach_pin, attach_gdb, follow_splits, save_mmap, argv[base], libdir, filename,
+					attach_index, attach_pid);
+	} else {
+		rc = resume_with_ckpt (fd, attach_pin, attach_gdb, follow_splits, save_mmap, argv[base], libdir,
+				       attach_index, attach_pid, ckpt_at);
+	}
 	if (rc < 0) {
 		perror("resume");
 		return -1;

@@ -73,8 +73,8 @@ int replay_fork (int fd_spec, const char** args, const char** env,
     return ioctl (fd_spec, SPECI_REPLAY_FORK, &data);
 }
 
-int resume (int fd_spec, int pin, int gdb, int follow_splits, int save_mmap, char*
-    logdir, char* linker, loff_t attach_index, int attach_pid)
+int resume_with_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int save_mmap, 
+		      char* logdir, char* linker, loff_t attach_index, int attach_pid, int ckpt_at)
 {
     struct wakeup_data data;
     data.pin = pin;
@@ -86,7 +86,32 @@ int resume (int fd_spec, int pin, int gdb, int follow_splits, int save_mmap, cha
     data.save_mmap = save_mmap;
     data.attach_index = attach_index;
     data.attach_pid = attach_pid;
+    data.ckpt_at = ckpt_at;
     return ioctl (fd_spec, SPECI_RESUME, &data);    
+}
+
+int resume (int fd_spec, int pin, int gdb, int follow_splits, int save_mmap, 
+	    char* logdir, char* linker, loff_t attach_index, int attach_pid)
+{
+    return resume_with_ckpt (fd_spec, pin, gdb, follow_splits, save_mmap,
+			     logdir, linker, attach_index, attach_pid, 0);
+}
+
+int resume_after_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int save_mmap, 
+		       char* logdir, char* linker, char* filename, loff_t attach_index, int attach_pid)
+{
+    struct wakeup_ckpt_data data;
+    data.pin = pin;
+    data.gdb = gdb;
+    data.logdir = logdir;
+    data.filename = filename;
+    data.linker = linker;
+    data.fd = fd_spec;
+    data.follow_splits = follow_splits;
+    data.save_mmap = save_mmap;
+    data.attach_index = attach_index;
+    data.attach_pid = attach_pid;
+    return ioctl (fd_spec, SPECI_CKPT_RESUME, &data);    
 }
 
 int set_pin_addr (int fd_spec, u_long app_syscall_addr)
@@ -172,4 +197,9 @@ pid_t get_current_record_pid(int fd_spec, pid_t nonrecord_pid)
 	struct get_record_pid_data data;
 	data.nonrecordPid = nonrecord_pid;
 	return ioctl(fd_spec, SPECI_GET_CURRENT_RECORD_PID, &data);
+}
+
+long get_ckpt_status (int fd_spec, pid_t pid)
+{
+	return ioctl(fd_spec, SPECI_GET_CKPT_STATUS, &pid);
 }

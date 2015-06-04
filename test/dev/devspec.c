@@ -45,13 +45,16 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 	struct ckpt_proc *pckpt_proc, *new_ckpt_proc;
 	struct record_data rdata;
 	struct wakeup_data wdata;
+	struct wakeup_ckpt_data wcdata;
 	struct get_used_addr_data udata;
 	struct filemap_num_data fndata;
 	struct filemap_entry_data fedata;
 	struct get_record_pid_data recordpid_data;
+	pid_t pid;
 	int syscall;
 	u_long app_syscall_addr;
 	char logdir[MAX_LOGDIR_STRLEN+1];
+	char filename[MAX_LOGDIR_STRLEN+1];
 	char* tmp = NULL;
 	long rc;
 	int device;
@@ -99,7 +102,7 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 			return -EFAULT;
 		retval = strncpy_from_user(logdir, wdata.logdir, MAX_LOGDIR_STRLEN);
 		if (retval < 0 || retval >= MAX_LOGDIR_STRLEN) {
-			printk ("ioctl SPECI_FOR_REPLAY fails, strcpy returns %d\n", retval);
+			printk ("ioctl SPECI_RESUME fails, strcpy returns %d\n", retval);
 			return -EINVAL;
 		}
 		if (wdata.linker) {
@@ -114,17 +117,57 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 
 		if (wdata.pin) {
 			device = ATTACH_PIN;
-		}
-        else if (wdata.gdb) {
+		} else if (wdata.gdb) {
 			device = ATTACH_GDB;
-        }
-		else {
+		} else {
 			device = 0; //NONE
 		}
 
 		rc = replay_ckpt_wakeup(device, logdir, tmp, wdata.fd,
-			wdata.follow_splits, wdata.save_mmap, wdata.attach_index,
-			wdata.attach_pid);
+					wdata.follow_splits, wdata.save_mmap, wdata.attach_index,
+					wdata.attach_pid, wdata.ckpt_at);
+
+		if (tmp) putname (tmp);
+		return rc;
+
+	case SPECI_CKPT_RESUME:
+		if (len != sizeof(wcdata)) {
+			printk ("ioctl SPECI_CKPT_RESUME fails, len %d\n", len);
+			return -EINVAL;
+		}
+		if (copy_from_user (&wcdata, (void *) data, sizeof(wcdata)))
+			return -EFAULT;
+		retval = strncpy_from_user(logdir, wcdata.logdir, MAX_LOGDIR_STRLEN);
+		if (retval < 0 || retval >= MAX_LOGDIR_STRLEN) {
+			printk ("ioctl SPECI_CKPT_RESUME fails, strcpy returns %d\n", retval);
+			return -EINVAL;
+		}
+		retval = strncpy_from_user(filename, wcdata.filename, MAX_LOGDIR_STRLEN);
+		if (retval < 0 || retval >= MAX_LOGDIR_STRLEN) {
+			printk ("ioctl SPECI_FOR_REPLAY fails, strcpy returns %d\n", retval);
+			return -EINVAL;
+		}
+		if (wcdata.linker) {
+			tmp = getname(wcdata.linker);
+			if (tmp == NULL) {
+				printk ("SPECI_CKPT_RESUME: cannot get linker name\n");
+				return -EFAULT;
+			} 
+		} else {
+			tmp = NULL;
+		}
+
+		if (wcdata.pin) {
+			device = ATTACH_PIN;
+		} else if (wcdata.gdb) {
+			device = ATTACH_GDB;
+		} else {
+			device = 0; //NONE
+		}
+
+		rc = replay_full_ckpt_wakeup(device, logdir, filename, tmp, wcdata.fd,
+					     wcdata.follow_splits, wcdata.save_mmap, wcdata.attach_index,
+					     wcdata.attach_pid);
 
 		if (tmp) putname (tmp);
 		return rc;
@@ -199,6 +242,12 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 			return -EFAULT;
 		}
 		return get_current_record_pid(recordpid_data.nonrecordPid);
+	case SPECI_GET_CKPT_STATUS:
+		if (copy_from_user(&pid, (void *)data, sizeof(pid_t)))
+		{
+			return -EFAULT;
+		}
+		return get_ckpt_state(pid);
 	default:
 		return -EINVAL;
 	}

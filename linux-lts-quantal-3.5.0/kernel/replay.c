@@ -755,6 +755,7 @@ struct replay_group {
 	u_long rg_max_brk;          // Maximum value of brk address
 	ds_list_t* rg_used_address_list; // List of addresses that will be used by the application (and hence, not by pin)
 	int rg_follow_splits;       // Ture if we should replay any split-off replay groups
+	int rg_checkpoint_at;       // Checkpoint at this system call
 };
 
 struct argsalloc_node {
@@ -1035,7 +1036,8 @@ struct replay_thread {
 	int attach_pid;       // If Pin is being attached, set to the pid to attach to
 	int attach_device;    // The device that is being attached
 
-	int gdb_state;		  // State of gdb. 0 = not attached. 1 = attached
+	int gdb_state;	      // State of gdb. 0 = not attached. 1 = attached
+	int rp_ckpt_state;              //  1 if waiting for ckpt signals; 0 otherwise
 
 	// ajyl
 	int pin_redo_syscall;
@@ -1050,6 +1052,7 @@ struct file* init_log_write (struct record_thread* prect, loff_t* ppos, int* pfd
 void term_log_write (struct file* file, int fd);
 int read_log_data (struct record_thread* prt);
 int read_log_data_internal (struct record_thread* prect, struct syscall_result* psr, int logid, int* syscall_count, loff_t* pos);
+int skip_and_read_log_data (struct record_thread* prect);
 static ssize_t write_log_data(struct file* file, loff_t* ppos, struct record_thread* prect, struct syscall_result* psr, int count);
 #ifdef LOG_COMPRESS_1
 struct file* init_clog_write (struct record_thread* prect, loff_t* ppos, int* pfd);
@@ -1337,7 +1340,7 @@ create_shared_clock (struct record_group* prg)
 
 	rc = get_user_pages (current, current->mm, uaddr, 1, 1, 0, &prg->rg_shared_page, NULL);
 	if (rc != 1) {
-		printk ("creare_shared_clock: pid %d cannot get shm page, rc=%d\n", current->pid, rc);
+		printk ("create_shared_clock: pid %d cannot get shm page, rc=%d\n", current->pid, rc);
 		goto out_unmap;
 	}
 
@@ -1699,6 +1702,137 @@ close_replay_cache_files (struct replay_cache_files* pfiles)
 	}
 }
 
+int
+checkpoint_replay_cache_files (struct file* cfile, loff_t* ppos)
+{
+	struct file* file = NULL;
+	char* p;
+	char* buffer;
+	int i, copyed, cnt = 0;
+
+	buffer = KMALLOC (PATH_MAX, GFP_KERNEL);
+	if (!buffer) {
+		printk ("checkpoint_replay_chache_files: cannot allocate memory\n");
+		return -ENOMEM;
+	}
+
+	for (i = 0; i < current->replay_thrd->rp_cache_files->count; i++) {
+		if (current->replay_thrd->rp_cache_files->data[i] >= 0) cnt++;
+	}
+	DPRINT ("checkpoint_replay_cache_files: %d files to checkpoint\n", cnt);
+
+	copyed = vfs_write(cfile, (char *) &cnt, sizeof(cnt), ppos);
+	if (copyed != sizeof(cnt)) {
+		printk ("checkpoint_replay_cache_files: tried to write count, got rc %d\n", copyed);
+		return -EINVAL;
+	}
+			
+	task_lock(current);
+	rcu_read_lock();
+	for (i = 0; i < current->replay_thrd->rp_cache_files->count; i++) {
+		if (current->replay_thrd->rp_cache_files->data[i] >= 0) {
+			file = fcheck_files (current->files, current->replay_thrd->rp_cache_files->data[i]);
+			if (file) {
+				copyed = vfs_write(cfile, (char *) &current->replay_thrd->rp_cache_files->data[i], 
+						   sizeof(current->replay_thrd->rp_cache_files->data[i]), ppos);
+				if (copyed != sizeof(current->replay_thrd->rp_cache_files->data[i])) {
+					printk ("checkpoint_replay_cache_files: tried to write path len, got rc %d\n", copyed);
+					goto out;
+				}
+
+				p = d_path (&file->f_path, buffer, PATH_MAX);
+				printk ("fd %d has value %d path %s\n", i, current->replay_thrd->rp_cache_files->data[i], p);
+				
+				cnt = strlen(p);
+				copyed = vfs_write(cfile, (char *) &cnt, sizeof(cnt), ppos);
+				if (copyed != sizeof(cnt)) {
+					printk ("checkpoint_replay_cache_files: tried to write path len, got rc %d\n", copyed);
+					goto out;
+				}
+				copyed = vfs_write(cfile, p, cnt, ppos);
+				if (copyed != cnt) {
+					printk ("checkpoint_replay_cache_files: tried to write path, got rc %d\n", copyed);
+					goto out;
+				}
+				copyed = vfs_write(cfile, (char *) &file->f_pos, sizeof(file->f_pos), ppos);
+				if (copyed != sizeof(file->f_pos)) {
+					printk ("checkpoint_replay_cache_files: tried to file position, got rc %d\n", copyed);
+					goto out;
+				}
+
+			} else {
+				printk ("checkpoint_replay_cache_files: unknown file %d\n", current->replay_thrd->rp_cache_files->data[i]);
+			}
+		}
+	}
+ out:
+	rcu_read_unlock();
+	task_unlock(current);
+	KFREE(buffer);
+
+	return 0;
+}
+
+int
+restore_replay_cache_files (struct file* cfile, loff_t* ppos)
+{
+	int fd, cnt, len, copyed, i, rc, val;
+	char* buffer;
+	loff_t pos;
+
+	copyed = vfs_read(cfile, (char *) &cnt, sizeof(cnt), ppos);
+	if (copyed != sizeof(cnt)) {
+		printk ("restore_replay_cache_files: tried to read count, got rc %d\n", copyed);
+		return copyed;
+	}
+	printk ("restore_replay_cache_files: %d files in checkpoint\n", cnt);
+
+	for (i = 0; i < cnt; i++) {
+		copyed = vfs_read(cfile, (char *) &val, sizeof(val), ppos);
+		if (copyed != sizeof(val)) {
+			printk ("restore_replay_cache_files: tried to read fd val, got rc %d\n", copyed);
+			return copyed;
+		}
+
+		copyed = vfs_read(cfile, (char *) &len, sizeof(len), ppos);
+		if (copyed != sizeof(len)) {
+			printk ("restore_replay_cache_files: tried to read count, got rc %d\n", copyed);
+			return copyed;
+		}
+		
+		buffer = KMALLOC (len+1, GFP_KERNEL);
+		if (!buffer) {
+			printk ("restore_replay_chache_files: cannot allocate memory\n");
+			return -ENOMEM;
+		}
+		copyed = vfs_read(cfile, (char *) buffer, len, ppos);
+		if (copyed != len) {
+			printk ("restore_replay_cache_files: tried to read filename, got rc %d\n", copyed);
+			KFREE(buffer);
+			return copyed;
+		}
+		buffer[len] = '\0';
+
+		fd = sys_open (buffer, O_RDONLY, 0);
+		printk ("restore_replay_cache_files: opened cache file %s fd is %d val is %d\n", buffer, fd, val);
+		KFREE(buffer);
+
+		if (set_replay_cache_file (current->replay_thrd->rp_cache_files, val, fd) < 0) {
+			printk ("restore_replay_cache_files: cannot set cache file");
+			sys_close (fd);
+		} else {
+			copyed = vfs_read(cfile, (char *) &pos, sizeof(pos), ppos);
+			if (copyed != sizeof(pos)) {
+				printk ("restore_replay_cache_files: tried to read file position, got rc %d\n", copyed);
+				return copyed;
+			}
+			rc = sys_lseek(fd, pos, SEEK_SET);
+			if (rc < 0) printk ("restore_replay_cache_files: lseek to pos %Ld failed\n", pos);
+		}
+	}
+	return 0;
+}
+
 #endif
 
 
@@ -2017,6 +2151,8 @@ new_replay_group (struct record_group* prec_group, int follow_splits)
 	prg->rg_reserved_mem_list = ds_list_create (rm_cmp, 0, 1);
 	prg->rg_used_address_list = NULL;
 
+	prg->rg_checkpoint_at = -1;
+
 	// Record group should not be destroyed before replay group
 	get_record_group (prec_group);
 
@@ -2322,6 +2458,7 @@ new_replay_thread (struct replay_group* prg, struct record_thread* prec_thrd, u_
 	prp->rp_replay_hook = 0;
 
 	prp->is_pin_vfork = 0;
+	prp->rp_ckpt_state = 0;
 
 #ifdef CACHE_READS
 	if (pfiles) {
@@ -3057,6 +3194,17 @@ argsconsume (struct record_thread* prect, u_long size)
 	node->pos += size;
 }
 
+static u_long
+argsconsumed (struct record_thread* prect)
+{
+	struct argsalloc_node* node;
+	node = list_first_entry(&prect->rp_argsalloc_list, struct argsalloc_node, list);
+	if (unlikely(list_empty(&prect->rp_argsalloc_list))) {
+		return -1; 
+	}
+	return node->pos - node->head;
+}
+
 #ifdef LOG_COMPRESS_1
 static inline struct clog_node* clog_alloc (int size) {
 	struct clog_node* cnode = list_first_entry (&current->record_thrd->rp_clog_list, struct clog_node, list);
@@ -3777,7 +3925,7 @@ get_linker (void)
 
 long
 replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
-		int follow_splits, int save_mmap, loff_t attach_index, int attach_pid)
+		    int follow_splits, int save_mmap, loff_t attach_index, int attach_pid, int ckpt_at)
 {
 	struct record_group* precg; 
 	struct record_thread* prect;
@@ -3799,7 +3947,7 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 
 	MPRINT ("In replay_ckpt_wakeup\n");
 	if (current->record_thrd || current->replay_thrd) {
-		printk ("fork_replay: pid %d cannot start a new replay while already recording or replaying\n", current->pid);
+		printk ("replay_ckpt_wakeup: pid %d cannot start a new replay while already recording or replaying\n", current->pid);
 		return -EINVAL;
 	}
 
@@ -3819,6 +3967,8 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 		destroy_record_group(precg);
 		return -ENOMEM;
 	}
+
+	if (ckpt_at > 0) prepg->rg_checkpoint_at = ckpt_at;
 
 	prept = new_replay_thread (prepg, prect, current->pid, 0, NULL);
 	if (prept == NULL) {
@@ -3927,6 +4077,193 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 	return rc;
 }
 EXPORT_SYMBOL(replay_ckpt_wakeup);
+
+static inline long 
+should_take_checkpoint (void)
+{
+	return (atomic_read (current->replay_thrd->rp_group->rg_rec_group->rg_pkrecord_clock) == current->replay_thrd->rp_group->rg_checkpoint_at);
+}
+
+long
+replay_full_ckpt (long rc)
+{
+	char ckpt[MAX_LOGDIR_STRLEN+10];
+	struct replay_thread* prept = current->replay_thrd;
+	struct record_thread* prect = prept->rp_record_thread;
+	struct replay_group* prepg;
+	struct record_group* precg;
+	long retval;
+#ifdef TIME_TRICK
+	struct timeval tv;
+	struct timespec tp;
+#endif
+	int clock;
+
+	if (!prept) {
+		printk ("Currently, only a replaying process can take a checkpoint\n");
+		return -EINVAL;
+	}
+	prepg = prept->rp_group;
+	precg = prepg->rg_rec_group;
+	clock = atomic_read (precg->rg_pkrecord_clock);
+	sprintf (ckpt, "%s/ckpt.%d", precg->rg_logdir, clock);
+
+	MPRINT ("replay_full_ckpt saving rc %ld\n", rc);
+
+#ifdef TIME_TRICK
+	retval = replay_full_checkpoint_to_disk (ckpt, rc, precg->rg_id, prect->rp_record_pid, clock, 
+						 prect->rp_read_log_pos, prept->rp_out_ptr, argsconsumed(prect), &tv, &tp);
+	init_det_time (&precg->rg_det_time, &tv, &tp);
+#else
+	retval = replay_full_checkpoint_to_disk (ckpt, rc, precg->rg_id, prect->rp_record_pid, clock, 
+						 prect->rp_read_log_pos, prept->rp_out_ptr, argsconsumed(prect));
+#endif
+
+	return retval;
+}
+
+long
+replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* linker, int fd, 
+			 int follow_splits, int save_mmap, loff_t attach_index, int attach_pid)
+{
+	struct record_group* precg; 
+	struct record_thread* prect;
+	struct replay_group* prepg;
+	struct replay_thread* prept;
+	long record_pid, rc;
+	char ckpt[MAX_LOGDIR_STRLEN+10];
+	__u64 rg_id;
+	long retval;
+	u_long consumed;
+#ifdef TIME_TRICK
+	struct timeval tv;
+	struct timespec tp;
+#endif
+	int clock;
+
+	MPRINT ("In replay_full_ckpt_wakeup\n");
+	if (current->record_thrd || current->replay_thrd) {
+		printk ("replay_full_ckpt_wakeup: pid %d cannot start a new replay while already recording or replaying\n", current->pid);
+		return -EINVAL;
+	}
+
+	// First create a record group and thread for this replay
+	precg = new_record_group (logdir);
+	if (precg == NULL) return -ENOMEM;
+	precg->rg_save_mmap_flag = save_mmap;
+
+	prect = new_record_thread(precg, 0, NULL);
+	if (prect == NULL) {
+		destroy_record_group(precg);
+		return -ENOMEM;
+	}
+
+	prepg = new_replay_group (precg, follow_splits);
+	if (prepg == NULL) {
+		destroy_record_group(precg);
+		return -ENOMEM;
+	}
+
+	prept = new_replay_thread (prepg, prect, current->pid, 0, NULL);
+	if (prept == NULL) {
+		destroy_replay_group (prepg);
+		destroy_record_group (precg);
+		return -ENOMEM;
+	}
+	prept->rp_status = REPLAY_STATUS_RUNNING;
+	// Since there is no recording going on, we need to dec record_thread's refcnt
+	atomic_dec(&prect->rp_refcnt);
+	
+	// Restore the checkpoint
+	strcpy (ckpt, logdir);
+	strcat (ckpt, "/");
+	strcat (ckpt, filename);
+
+	// Create a replay group and thread for this process
+	current->replay_thrd = prept;
+	current->record_thrd = NULL;
+
+#ifdef TIME_TRICK
+	record_pid = replay_full_resume_from_disk (ckpt, &retval, &rg_id, &clock, &prect->rp_read_log_pos, &prept->rp_out_ptr, &consumed, &tv, &tp);
+	init_det_time (&precg->rg_det_time, &tv, &tp);
+#else
+	record_pid = replay_full_resume_from_disk(ckpt, &retval, &rg_id, &clock, &prect->rp_read_log_pos, &prept->rp_out_ptr, &consumed);
+#endif
+	if (record_pid < 0) return record_pid;
+
+	// Read in the log records 
+	prect->rp_record_pid = record_pid;
+	rc = skip_and_read_log_data (prect);
+	if (rc < 0) return rc;
+#ifdef LOG_COMPRESS_1
+	rc = read_clog_data (prect);
+	if (rc < 0) return rc;
+#endif
+	if (consumed > 0) argsconsume(prect, consumed);
+		
+	atomic_set(precg->rg_pkrecord_clock, clock);
+
+	MPRINT ("Pid %d set_record_group_id to %llu\n", current->pid, rg_id);
+	current->replay_thrd->rp_record_thread->rp_group->rg_id = rg_id;
+#ifdef LOG_COMPRESS
+	init_evs ();
+#endif
+
+	if (linker) {
+		strncpy (current->replay_thrd->rp_group->rg_rec_group->rg_linker, linker, MAX_LOGDIR_STRLEN);
+		MPRINT ("Set linker for replay process to %s\n", linker);
+	}
+
+	/*
+	 * If pin, set the process to sleep, so that we can manually attach pin
+	 * We would then have to wake up the process after pin has been attached.
+	 */
+	if (attach_device) {
+		printk("Debugging device will be attached: Device - %i, Pid - %i, Syscall Index - %lld\n",
+			attach_device, attach_pid, attach_index);
+
+		rc = read_mmap_log(precg);
+		current->replay_thrd->attach_sysid = attach_index;
+		current->replay_thrd->attach_pid = attach_pid;
+		if (rc) {
+			printk("replay_ckpt_wakeup: could not read memory log for Pin support\n");
+			return rc;
+		}
+		preallocate_memory(precg); // Actually do the prealloaction for this process
+		if (attach_index <= 0) {
+			printk("Pid %d sleeping in order to let you attach pin/gdb\n", current->pid);
+			/* Attach Pin before process begins */
+			if (attach_device == ATTACH_PIN) {
+				prept->app_syscall_addr = 1;  // Will be set to actual value later
+			}
+
+			if (attach_device == ATTACH_GDB) {
+				prept->gdb_state = 1;
+			}
+
+			set_current_state(TASK_INTERRUPTIBLE);
+			schedule();
+			printk("Pid %d woken up\n", current->pid);
+		}
+	} else {
+		current->replay_thrd->attach_sysid = -1;
+		current->replay_thrd->attach_pid = -1;
+		current->replay_thrd->rp_ckpt_state = 1;
+		printk ("Pid %d sleeping for checkpoint restore\n", current->pid);
+		set_current_state(TASK_INTERRUPTIBLE); // Send SIGSTOP and SIGCONT to start
+		schedule();
+		current->replay_thrd->rp_ckpt_state = 0;
+		printk("Pid %d woken up\n", current->pid);
+	}
+
+	if (fd >= 0) {
+		rc = sys_close (fd);
+		if (rc < 0) printk ("replay_full_ckpt_wakeup: unable to close fd %d, rc=%ld\n", fd, rc);
+	}
+	MPRINT ("replay_full_ckpt_wakeup returning retval %ld\n", retval);
+	return retval;
+}
+EXPORT_SYMBOL(replay_full_ckpt_wakeup);
 
 static inline long
 new_syscall_enter (long sysnum)
@@ -5527,6 +5864,20 @@ long check_clock_after_syscall (int syscall)
 }
 EXPORT_SYMBOL(check_clock_after_syscall);
 
+long
+get_ckpt_state (pid_t pid)
+{
+        struct task_struct* task;
+
+	task = find_task_by_vpid(pid);
+	if (task && task->replay_thrd) {
+		return task->replay_thrd->rp_ckpt_state;
+	} else {
+		return -EINVAL;
+	}
+}
+EXPORT_SYMBOL(get_ckpt_state);
+
 asmlinkage long
 sys_pthread_print (const char __user * buf, size_t count)
 {
@@ -5784,6 +6135,7 @@ asmlinkage long sys_pthread_sysign (void)
 #define SHIM_CALL_MAIN(number, F_RECORD, F_REPLAY, F_SYS) \
 { \
 	int ignore_flag;						\
+	long rc;							\
 	if (current->record_thrd) {					\
 		if (current->record_thrd->rp_ignore_flag_addr) {	\
 			get_user (ignore_flag, current->record_thrd->rp_ignore_flag_addr); \
@@ -5800,13 +6152,15 @@ asmlinkage long sys_pthread_sysign (void)
 			}						\
 		}							\
 		DPRINT("Pid %d, regular replay syscall %d\n", current->pid, number); \
-		return F_REPLAY;					\
+		rc = F_REPLAY;						\
+		if (should_take_checkpoint()) replay_full_ckpt(rc);	\
+                return rc;						\
 	}								\
-    else if (current->replay_thrd) { \
-        if (*(current->replay_thrd->rp_preplay_clock) > pin_debug_clock) { \
-            DPRINT("Pid %d, pin syscall %d\n", current->pid, number); \
-        } \
-    }\
+	else if (current->replay_thrd) {				\
+	  if (*(current->replay_thrd->rp_preplay_clock) > pin_debug_clock) { \
+            DPRINT("Pid %d, pin syscall %d\n", current->pid, number);	\
+	  }								\
+	}								\
 	return F_SYS;							\
 }
 
@@ -6345,7 +6699,7 @@ recplay_exit_start(void)
 {
 	struct record_thread* prt = current->record_thrd;
 
-    printk("recplay_exit_start \n");
+	DPRINT("recplay_exit_start \n");
 
 	if (prt) {
 		MPRINT ("Record thread %d starting to exit\n", current->pid);
@@ -8269,7 +8623,7 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 				// Now start a new group if needed
 				get_logdir_for_replay_id(logid, logdir);
 				return replay_ckpt_wakeup(app_syscall_addr, logdir, linker, -1,
-						follow_splits, prg->rg_rec_group->rg_save_mmap_flag, -1, -1);
+							  follow_splits, prg->rg_rec_group->rg_save_mmap_flag, -1, -1, 0);
 			} else {
 				DPRINT("Don't follow splits - so just exit\n");
 				sys_exit_group(0);
@@ -15368,6 +15722,123 @@ error:
 	if (rc < 0) printk ("read_log_data: file close failed with rc %d\n", rc);
 	set_fs (old_fs);
 	return rc;
+}
+
+// For checkpoint restore - skip forward until we reach the target log record - this matches log state when ckpt was taken
+int 
+skip_and_read_log_data (struct record_thread* prect)
+{
+	char filename[MAX_LOGDIR_STRLEN+20];
+	struct file* file;
+	int fd, rc, count;
+	mm_segment_t old_fs;
+	u_long data_len;
+	struct argsalloc_node* node;
+	char* slab;
+	loff_t pos = 0;
+	struct syscall_result* psr = prect->rp_log;
+	int logid = prect->rp_record_pid;
+
+#ifdef USE_HPC
+	// for those calibration constants
+	char dummy_buffer[2*sizeof(unsigned long long) + 2*sizeof(struct timeval)];
+#endif
+	old_fs = get_fs();
+	set_fs(KERNEL_DS);
+	
+	MPRINT ("Reading logid %d starting at pos %lld\n", logid, (long long) pos);
+	sprintf (filename, "%s/klog.id.%d", prect->rp_group->rg_logdir, logid);
+	MPRINT ("Opening %s\n", filename);
+	fd = sys_open(filename, O_RDONLY|O_LARGEFILE, 0644);
+	MPRINT ("Open returns %d\n", fd);
+	if (fd < 0) {
+		printk ("read_log_data: cannot open log file %s\n", filename);
+		return -EINVAL;
+	}
+
+	file = fget(fd);
+
+#ifdef USE_HPC
+	rc = vfs_read (file, (char *) dummy_buffer, 2*sizeof(unsigned long long) + 2*sizeof(struct timeval), pos);
+	if (rc == 0) {
+		MPRINT ("no more records in the log\n");
+		*syscall_count = 0;
+		goto error;
+	}
+	if (rc != 2*sizeof(unsigned long long) + 2*sizeof(struct timeval)) {
+		printk ("vfs_read returns %d, sizeof calibration constants %d\n", rc, 2*sizeof(unsigned long long) + 2*sizeof(struct timeval));
+		BUG();
+		goto error;
+	}
+#endif
+
+	do {
+		// read one section of the log (array of syscall results and then the args/retvals/signals)
+		rc = vfs_read (file, (char *) &count, sizeof(count), &pos);
+		if (rc != sizeof(count)) {
+			MPRINT ("vfs_read returns %d, sizeof(count) %d\n", rc, sizeof(count));
+			goto error;
+		}
+
+		MPRINT ("skip_and_read_log_data syscall count is %d\n", count);
+		
+		rc = vfs_read (file, (char *) &psr[0], sizeof(struct syscall_result)*count, &pos);
+		if (rc != sizeof(struct syscall_result)*count) {
+			printk ("vfs_read returns %d when %d of records expected\n", rc, sizeof(struct syscall_result)*count);
+			goto error;
+		}
+		
+		rc = vfs_read (file, (char *) &data_len, sizeof(data_len), &pos);
+		if (rc != sizeof(data_len)) {
+			printk ("vfs_read returns %d, sizeof(data_len) %d\n", rc, sizeof(data_len));
+			goto error;
+		}
+		
+		/* Read in length of ancillary data, and add it to the argsalloc list */
+		MPRINT ("skip_and_read_log_data data length is %lu\n", data_len);
+		if (data_len > 0) {
+			printk ("skip_and_read_log_data: pos %lld target %lld\n", pos, prect->rp_read_log_pos);
+			if (pos + data_len == prect->rp_read_log_pos) {
+				slab = VMALLOC(data_len);
+				rc = add_argsalloc_node(prect, slab, data_len);
+				if (rc) {
+					printk("read_log_data_internal: pid %d argalloc: problem adding argsalloc_node\n", current->pid);
+					VFREE(slab);
+					goto error;
+				}
+				
+				node = list_first_entry(&prect->rp_argsalloc_list, struct argsalloc_node, list);
+				rc = vfs_read (file, node->pos, data_len, &pos);
+				if (rc != data_len) {
+					printk ("read_log_data_internal: vfs_read of ancillary data returns %d, epected %lu\n", rc, data_len);
+					goto error;
+				}
+				break;
+			} else if (pos + data_len < prect->rp_read_log_pos) {
+				pos += data_len; // Just skip this section and continue
+			} else {
+				printk ("skip_and_read_log_data: mismatch in bytes read (somehow)\n");
+				goto error;
+			}
+		}
+	} while (1);
+
+	prect->rp_in_ptr = count;
+
+	fput(file);
+
+	rc = sys_close (fd);
+	if (rc < 0) printk ("read_log_data: file close failed with rc %d\n", rc);
+	set_fs (old_fs);
+
+	return 0;
+
+error:
+	fput(file);
+	rc = sys_close (fd);
+	if (rc < 0) printk ("read_log_data: file close failed with rc %d\n", rc);
+	set_fs (old_fs);
+	return -1;
 }
 
 /* Write out the list of memory regions used in this record group */

@@ -23,7 +23,9 @@ int fork_replay (char __user * logdir, const char __user *const __user *args,
 /* Restore ckpt from disk - replaces AS of current process (like exec) */
 /* Linker may be NULL - otherwise points to special libc linker */
 long replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
-		int follow_splits, int save_mmap, loff_t syscall_index, int attach_pid);
+			 int follow_splits, int save_mmap, loff_t syscall_index, int attach_pid, int ckpt_at);
+long replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* linker, int fd, 
+			      int follow_splits, int save_mmap, loff_t syscall_index, int attach_pid);
 
 /* Returns linker for exec to use */
 char* get_linker (void);
@@ -93,10 +95,23 @@ char* copy_args (const char __user* const __user* args, const char __user* const
 #ifdef TIME_TRICK
 long replay_checkpoint_to_disk (char* filename, char* execname, char* buf, int buflen, __u64 parent_rg_id, struct timeval* tv, struct timespec* tp);
 long replay_resume_from_disk (char* filename, char** execname, char*** argsp, char*** envp, __u64* prg_id, struct timeval* tv, struct timespec* tp);
+long replay_full_resume_from_disk (char* filename, long* pretval, __u64* prg_id, int* pclock, loff_t* plogpos, 
+				   u_long* poutptr, u_long* pconsumed, struct timeval* tv, struct timespec *tp);
+long replay_full_checkpoint_to_disk (char* filename, long retval, __u64 rg_id, pid_t record_pid, int clock, loff_t logpos, 
+				     u_long outptr, u_long consumed, struct timeval *tv, struct timespec *tp);
 #else
 long replay_checkpoint_to_disk (char* filename, char* execname, char* buf, int buflen, __u64 parent_rg_id);
 long replay_resume_from_disk (char* filename, char** execname, char*** argsp, char*** envp, __u64* prg_id);
+long replay_full_resume_from_disk (char* filename, long* pretval, __u64* prg_id, int* pclock, loff_t* plogpos, 
+				   u_long* poutptr, u_long* pconsumed); 
+long replay_full_checkpoint_to_disk (char* filename, long retval, __u64 rg_id, pid_t record_pid, int clock, loff_t logpos, 
+				     u_long outptr, u_long consumed);
 #endif
+
+/* Helper functions for checkpoint/resotre */
+int checkpoint_replay_cache_files (struct file* cfile, loff_t* ppos);
+int restore_replay_cache_files (struct file* cfile, loff_t* ppos);
+long get_ckpt_state (pid_t pid);
 
 /* Optional stats interface */
 #define REPLAY_STATS

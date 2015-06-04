@@ -364,6 +364,35 @@ int arch_setup_additional_pages(struct linux_binprm *bprm, int uses_interp)
 	return ret;
 }
 
+// REPLAY BEGIN
+/* Setup a VMA at program startup for the vsyscall page */
+int arch_restore_additional_pages (void* addr)
+{
+	struct mm_struct *mm = current->mm;
+	int ret = 0;
+
+	down_write(&mm->mmap_sem);
+
+	current->mm->context.vdso = addr;
+
+	ret = install_special_mapping(mm, (u_long) addr, PAGE_SIZE,
+				      VM_READ|VM_EXEC|
+				      VM_MAYREAD|VM_MAYWRITE|VM_MAYEXEC,
+				      vdso32_pages);
+	if (ret) goto up_fail;
+
+	current_thread_info()->sysenter_return = VDSO32_SYMBOL((u_long) addr, SYSENTER_RETURN);
+
+up_fail:
+	if (ret)
+		current->mm->context.vdso = NULL;
+
+	up_write(&mm->mmap_sem);
+
+	return ret;
+}
+// REPLAY END
+
 #ifdef CONFIG_X86_64
 
 subsys_initcall(sysenter_setup);

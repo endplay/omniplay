@@ -27,7 +27,21 @@ struct wakeup_data {
 	int           follow_splits;
 	loff_t        attach_index;
 	int           attach_pid;
-	int	          save_mmap;
+	int	      save_mmap;
+	int           ckpt_at;
+};
+
+struct wakeup_ckpt_data {
+	int           pin;
+	int           gdb;
+	char __user * logdir;
+	char __user * filename;
+	char __user * linker;
+	int           fd;
+	int           follow_splits;
+	loff_t        attach_index;
+	int           attach_pid;
+	int	      save_mmap;
 };
 
 struct get_used_addr_data {
@@ -75,5 +89,7 @@ struct get_record_pid_data {
 #define SPECI_GET_FILEMAP _IOR('u', 13,struct filemap_entry_data)
 #define SPECI_RESET_REPLAY_NDX _IO('u', 14)
 #define SPECI_GET_CURRENT_RECORD_PID _IOR('u', 15, struct get_record_pid_data)
+#define SPECI_CKPT_RESUME _IOR('u', 16, struct wakeup_ckpt_data)
+#define SPECI_GET_CKPT_STATUS _IOR('u', 17, pid_t)
 
 #endif
