@@ -18,7 +18,7 @@ void print_help(const char *program) {
 
 int main (int argc, char* argv[])
 {
-	int fd, rc, attach_pin = 0, attach_gdb = 0;
+	int fd, cfd, rc, attach_pin = 0, attach_gdb = 0;
 	loff_t attach_index = -1;
 	int attach_pid = -1;
 	char* libdir = NULL;
@@ -29,7 +29,8 @@ int main (int argc, char* argv[])
 	int save_mmap = 0;
 	int ckpt_at = 0;
 	int from_ckpt = 0;
-	char filename[4096];
+	char filename[4096], pathname[4096];
+	u_long proc_count, i;
 
 	struct option long_options[] = {
 		{"pthread", required_argument, 0, 0},
@@ -152,7 +153,29 @@ int main (int argc, char* argv[])
 		attach_pid);
 	if (from_ckpt > 0) {
 		sprintf (filename, "ckpt.%d", from_ckpt);
-		printf("resuming from ckpt %s\n", filename);
+		sprintf (pathname, "%s/ckpt.%d", argv[base], from_ckpt);
+		printf ("restoring from %s\n", pathname);
+		cfd = open (pathname, O_RDONLY);
+		if (cfd < 0) {
+			perror ("open checkpoint file");
+			return cfd;
+		}
+		rc = read (cfd, &proc_count, sizeof(proc_count));
+		if (rc != sizeof(proc_count)) {
+			perror ("read proc count");
+			return rc;
+		}
+		close(cfd);
+		for (i = 1; i < proc_count; i++) {
+			pid = fork ();
+			if (pid == 0) {
+				rc = resume_proc_after_ckpt (fd, argv[base], filename);
+				if (rc < 0) {
+					perror ("resume after ckpt");
+					exit (-1);
+				}
+			}
+		}
 		rc = resume_after_ckpt (fd, attach_pin, attach_gdb, follow_splits, save_mmap, argv[base], libdir, filename,
 					attach_index, attach_pid);
 	} else {

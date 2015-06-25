@@ -114,6 +114,15 @@ int resume_after_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int sav
     return ioctl (fd_spec, SPECI_CKPT_RESUME, &data);    
 }
 
+int resume_proc_after_ckpt (int fd_spec, char* logdir, char* filename)
+{
+    struct wakeup_ckpt_data data;
+    data.logdir = logdir;
+    data.filename = filename;
+    data.fd = fd_spec;
+    return ioctl (fd_spec, SPECI_CKPT_PROC_RESUME, &data);    
+}
+
 int set_pin_addr (int fd_spec, u_long app_syscall_addr)
 {
     return ioctl (fd_spec, SPECI_SET_PIN_ADDR, &app_syscall_addr);

@@ -2,6 +2,7 @@
    Jason Flinn */
 #include <linux/limits.h>
 #include <linux/mm.h>
+#include <linux/highmem.h>
 #include <linux/mman.h>
 #include <linux/sched.h>
 #include <linux/syscalls.h>
@@ -58,12 +59,18 @@ struct mm_info {
 };
 
 struct ckpt_data {
-	long   retval;
+	u_long proc_count;
 	__u64  rg_id;
 	int    clock;
+};
+
+struct ckpt_proc_data {
+	pid_t  record_pid;
+	long   retval;
 	loff_t logpos;
 	u_long outptr;
 	u_long consumed;
+	u_long expclock;
 };
 
 // File format:
@@ -175,7 +182,7 @@ replay_checkpoint_to_disk (char* filename, char* execname, char* buf, int buflen
 #endif
 {
 	mm_segment_t old_fs = get_fs();
-	int fd, rc, copyed, len;
+	int fd, rc, copied, len;
 	struct file* file = NULL;
 	pid_t pid;
 	loff_t pos = 0;
@@ -195,67 +202,67 @@ replay_checkpoint_to_disk (char* filename, char* execname, char* buf, int buflen
 
 	// First - write out process identifier
 	pid = current->pid;
-	copyed = vfs_write (file, (char *) &pid, sizeof(pid), &pos);
-	if (copyed != sizeof(pid)) {
-		printk ("replay_checkpoint_to_disk: tried to write pid, got rc %d\n", copyed);
-		rc = copyed;
+	copied = vfs_write (file, (char *) &pid, sizeof(pid), &pos);
+	if (copied != sizeof(pid)) {
+		printk ("replay_checkpoint_to_disk: tried to write pid, got rc %d\n", copied);
+		rc = copied;
 		goto exit;
 	}
 
 	// Next, write out the record group identifier
 	get_record_group_id(&rg_id);
 	MPRINT ("Pid %d get record group id %llu\n", current->pid, rg_id);
-	copyed = vfs_write (file, (char *) &rg_id, sizeof(rg_id), &pos);
-	if (copyed != sizeof(rg_id)) {
-		printk ("replay_checkpoint_to_disk: tried to write rg_id, got rc %d\n", copyed);
-		rc = copyed;
+	copied = vfs_write (file, (char *) &rg_id, sizeof(rg_id), &pos);
+	if (copied != sizeof(rg_id)) {
+		printk ("replay_checkpoint_to_disk: tried to write rg_id, got rc %d\n", copied);
+		rc = copied;
 		goto exit;
 	}
 
 	// Next, record the parent group identifier
 	MPRINT ("Pid %d parent record group id %llu\n", current->pid, parent_rg_id);
-	copyed = vfs_write (file, (char *) &parent_rg_id, sizeof(rg_id), &pos);
-	if (copyed != sizeof(parent_rg_id)) {
-		printk ("replay_checkpoint_to_disk: tried to write parent_rg_id, got %d\n", copyed);
-		rc = copyed;
+	copied = vfs_write (file, (char *) &parent_rg_id, sizeof(rg_id), &pos);
+	if (copied != sizeof(parent_rg_id)) {
+		printk ("replay_checkpoint_to_disk: tried to write parent_rg_id, got %d\n", copied);
+		rc = copied;
 		goto exit;
 	}
 
 	// Next, write out exec name
 	len = strlen_user(execname);
-	copyed = vfs_write (file, (char *) &len, sizeof(len), &pos);
-	if (copyed != sizeof(len)) {
-		printk ("replay_checkpoint_to_disk: tried to write exec name len, got rc %d\n", copyed);
-		rc = copyed;
+	copied = vfs_write (file, (char *) &len, sizeof(len), &pos);
+	if (copied != sizeof(len)) {
+		printk ("replay_checkpoint_to_disk: tried to write exec name len, got rc %d\n", copied);
+		rc = copied;
 		goto exit;
 	}
-	copyed = vfs_write (file, execname, len, &pos);
-	if (copyed != len) {
-		printk ("replay_checkpoint_to_disk: tried to write exec name, got rc %d\n", copyed);
-		rc = copyed;
+	copied = vfs_write (file, execname, len, &pos);
+	if (copied != len) {
+		printk ("replay_checkpoint_to_disk: tried to write exec name, got rc %d\n", copied);
+		rc = copied;
 		goto exit;
 	}
 
 	// Next, write out rlimit information
-	copyed = vfs_write (file, (char *) &current->signal->rlim, sizeof(struct rlimit)*RLIM_NLIMITS, &pos);
-	if (copyed != sizeof(struct rlimit)*RLIM_NLIMITS) {
-		printk ("replay_checkpoint_to_disk: tried to write rlimits, got rc %d\n", copyed);
+	copied = vfs_write (file, (char *) &current->signal->rlim, sizeof(struct rlimit)*RLIM_NLIMITS, &pos);
+	if (copied != sizeof(struct rlimit)*RLIM_NLIMITS) {
+		printk ("replay_checkpoint_to_disk: tried to write rlimits, got rc %d\n", copied);
 		rc = -EFAULT;
 		goto exit;
 	}
 
 	// Next, copy the signal handlers
-	copyed = vfs_write (file, (char *) &current->sighand->action, sizeof(struct k_sigaction) * _NSIG, &pos);
-	if (copyed != sizeof(struct k_sigaction)*_NSIG) {
-		printk ("replay_checkpoint_to_disk: tried to write sighands, got rc %d\n", copyed);
+	copied = vfs_write (file, (char *) &current->sighand->action, sizeof(struct k_sigaction) * _NSIG, &pos);
+	if (copied != sizeof(struct k_sigaction)*_NSIG) {
+		printk ("replay_checkpoint_to_disk: tried to write sighands, got rc %d\n", copied);
 		rc = -EFAULT;
 		goto exit;
 	}
 
 	// Next, write out arguments to exec
-	copyed = vfs_write (file, buf, buflen, &pos);
-	if (copyed != buflen) {
-		printk ("replay_checkpoint_to_disk: tried to write arguments, got rc %d\n", copyed);
+	copied = vfs_write (file, buf, buflen, &pos);
+	if (copied != buflen) {
+		printk ("replay_checkpoint_to_disk: tried to write arguments, got rc %d\n", copied);
 		rc = -EFAULT;
 		goto exit;
 	}
@@ -267,15 +274,15 @@ replay_checkpoint_to_disk (char* filename, char* execname, char* buf, int buflen
 	rc = sys_clock_gettime (CLOCK_MONOTONIC, tp);
 	if (rc < 0) printk ("Semi-det clock for clock_gettime fails to initialize.\n");
 	printk ("semi-det time inits for gettimeofday %ld, %ld, for clock_gettime: %ld, %ld.\n", tv->tv_sec, tv->tv_usec, tp->tv_sec, tp->tv_nsec);
-	copyed = vfs_write (file, (char*) tv, sizeof (struct timeval), &pos);
-	if (copyed != sizeof (struct timeval)) {
-		printk ("replay_checkpoint_to_disk: tried to write timeval, got rc %d\n", copyed);
+	copied = vfs_write (file, (char*) tv, sizeof (struct timeval), &pos);
+	if (copied != sizeof (struct timeval)) {
+		printk ("replay_checkpoint_to_disk: tried to write timeval, got rc %d\n", copied);
 		rc = -EFAULT;
 		goto exit;
 	}
-	copyed = vfs_write (file, (char*) tp, sizeof (struct timespec), &pos);
-	if (copyed != sizeof (struct timespec)) {
-		printk ("replay_checkpoint_to_disk: tried to write timespec, got rc %d\n", copyed);
+	copied = vfs_write (file, (char*) tp, sizeof (struct timespec), &pos);
+	if (copied != sizeof (struct timespec)) {
+		printk ("replay_checkpoint_to_disk: tried to write timespec, got rc %d\n", copied);
 		rc = -EFAULT;
 		goto exit;
 	}
@@ -284,10 +291,10 @@ replay_checkpoint_to_disk (char* filename, char* execname, char* buf, int buflen
 
 	// Next, the time the recording started.
 	time = CURRENT_TIME;
-	copyed = vfs_write (file, (char *) &time, sizeof(time), &pos);
-	if (copyed != sizeof(time)) {
-		printk ("replay_checkpoint_to_disk: tried to write time, got %d\n", copyed);
-		rc = copyed;
+	copied = vfs_write (file, (char *) &time, sizeof(time), &pos);
+	if (copied != sizeof(time)) {
+		printk ("replay_checkpoint_to_disk: tried to write time, got %d\n", copied);
+		rc = copied;
 		goto exit;
 	}
 
@@ -308,7 +315,7 @@ long replay_resume_from_disk (char* filename, char** execname, char*** argsp, ch
 #endif
 {
 	mm_segment_t old_fs = get_fs();
-	int rc, fd, args_cnt, env_cnt, copyed, i, len;
+	int rc, fd, args_cnt, env_cnt, copied, i, len;
 	struct file* file = NULL;
 	loff_t pos = 0;
 	pid_t record_pid;
@@ -330,37 +337,37 @@ long replay_resume_from_disk (char* filename, char** execname, char*** argsp, ch
 	file = fget(fd);
 
 	// Read the record pid
-	copyed = vfs_read(file, (char *) &record_pid, sizeof(record_pid), &pos);
-	if (copyed != sizeof(record_pid)) {
-		printk ("replay_resume_from_disk: tried to read record pid, got rc %d\n", copyed);
-		rc = copyed;
+	copied = vfs_read(file, (char *) &record_pid, sizeof(record_pid), &pos);
+	if (copied != sizeof(record_pid)) {
+		printk ("replay_resume_from_disk: tried to read record pid, got rc %d\n", copied);
+		rc = copied;
 		goto exit;
 	}
 
 	// Next read the record group id
-	copyed = vfs_read(file, (char *) &rg_id, sizeof(rg_id), &pos);
+	copied = vfs_read(file, (char *) &rg_id, sizeof(rg_id), &pos);
 	MPRINT ("Pid %d replay_resume_from_disk: rg_id %llu\n", current->pid, rg_id);
-	if (copyed != sizeof(rg_id)) {
-		printk ("replay_resume_from_disk: tried to read rg_id, got rc %d\n", copyed);
-		rc = copyed;
+	if (copied != sizeof(rg_id)) {
+		printk ("replay_resume_from_disk: tried to read rg_id, got rc %d\n", copied);
+		rc = copied;
 		goto exit;
 	}
 	*prg_id = rg_id;
 
 	// Next read the parent record group id
-	copyed = vfs_read(file, (char *) &parent_rg_id, sizeof(parent_rg_id), &pos);
+	copied = vfs_read(file, (char *) &parent_rg_id, sizeof(parent_rg_id), &pos);
 	MPRINT ("Pid %d replay_resume_from_disk: parent_rg_id %llu", current->pid, parent_rg_id);
-	if (copyed != sizeof(parent_rg_id)) {
-		printk ("replay_resume_from_disk: tried to read parent_rg_id got %d\n", copyed);
-		rc = copyed;
+	if (copied != sizeof(parent_rg_id)) {
+		printk ("replay_resume_from_disk: tried to read parent_rg_id got %d\n", copied);
+		rc = copied;
 		goto exit;
 	}
 
 	// Next read the exec name
-	copyed = vfs_read(file, (char *) &len, sizeof(len), &pos);
-	if (copyed != sizeof(len)) {
-		printk ("replay_resume_from_disk: tried to read execname len, got rc %d\n", copyed);
-		rc = copyed;
+	copied = vfs_read(file, (char *) &len, sizeof(len), &pos);
+	if (copied != sizeof(len)) {
+		printk ("replay_resume_from_disk: tried to read execname len, got rc %d\n", copied);
+		rc = copied;
 		goto exit;
 	}
 	*execname = KMALLOC (len, GFP_KERNEL);
@@ -369,33 +376,33 @@ long replay_resume_from_disk (char* filename, char** execname, char*** argsp, ch
 		rc = -ENOMEM;
 		goto exit;
 	}
-	copyed = vfs_read(file, *execname, len, &pos);
-	if (copyed != len) {
-		printk ("replay_resume_from_disk: tried to read execname, got rc %d\n", copyed);
-		rc = copyed;
+	copied = vfs_read(file, *execname, len, &pos);
+	if (copied != len) {
+		printk ("replay_resume_from_disk: tried to read execname, got rc %d\n", copied);
+		rc = copied;
 		goto exit;
 	}
 	
 	// Next, read the rlimit info
-	copyed = vfs_read(file, (char *) &current->signal->rlim, sizeof(struct rlimit)*RLIM_NLIMITS, &pos);
-	if (copyed != sizeof(struct rlimit)*RLIM_NLIMITS) {
-		printk ("replay_resume_from_disk: tried to read rlimits, got rc %d\n", copyed);
-		rc = copyed;
+	copied = vfs_read(file, (char *) &current->signal->rlim, sizeof(struct rlimit)*RLIM_NLIMITS, &pos);
+	if (copied != sizeof(struct rlimit)*RLIM_NLIMITS) {
+		printk ("replay_resume_from_disk: tried to read rlimits, got rc %d\n", copied);
+		rc = copied;
 		goto exit;
 	}
 
-	copyed = vfs_read(file, (char *) &current->sighand->action, sizeof(struct k_sigaction) * _NSIG, &pos);
-	if (copyed != sizeof(struct k_sigaction)*_NSIG) {
-		printk ("replay_resume_from_disk: tried to read sighands, got rc %d\n", copyed);
-		rc = copyed;
+	copied = vfs_read(file, (char *) &current->sighand->action, sizeof(struct k_sigaction) * _NSIG, &pos);
+	if (copied != sizeof(struct k_sigaction)*_NSIG) {
+		printk ("replay_resume_from_disk: tried to read sighands, got rc %d\n", copied);
+		rc = copied;
 		goto exit;
 	}
 
 	// Next, read the number of arguments
-	copyed = vfs_read(file, (char *) &args_cnt, sizeof(args_cnt), &pos);
-	if (copyed != sizeof(args_cnt)) {
-		printk ("replay_resume_from_disk: tried to read record pid, got rc %d\n", copyed);
-		rc = copyed;
+	copied = vfs_read(file, (char *) &args_cnt, sizeof(args_cnt), &pos);
+	if (copied != sizeof(args_cnt)) {
+		printk ("replay_resume_from_disk: tried to read record pid, got rc %d\n", copied);
+		rc = copied;
 		goto exit;
 	}
 	MPRINT ("%d arguments in checkpoint\n", args_cnt);
@@ -409,10 +416,10 @@ long replay_resume_from_disk (char* filename, char** execname, char*** argsp, ch
 
 	// Now read in each argument
 	for (i = 0; i < args_cnt; i++) {
-		copyed = vfs_read(file, (char *) &len, sizeof(len), &pos);
-		if (copyed != sizeof(len)) {
-			printk ("replay_resume_from_disk: tried to read argument %d len, got rc %d\n", i, copyed);
-			rc = copyed;
+		copied = vfs_read(file, (char *) &len, sizeof(len), &pos);
+		if (copied != sizeof(len)) {
+			printk ("replay_resume_from_disk: tried to read argument %d len, got rc %d\n", i, copied);
+			rc = copied;
 			goto exit;
 		}
 		args[i] = KMALLOC(len+1, GFP_KERNEL);
@@ -421,11 +428,11 @@ long replay_resume_from_disk (char* filename, char** execname, char*** argsp, ch
 			rc = -ENOMEM;
 			goto exit;
 		}
-		copyed = vfs_read(file, args[i], len, &pos);
-		MPRINT ("copyed %d bytes\n", copyed);
-		if (copyed != len) {
-			printk ("replay_resume_from_disk: tried to read argument %d, got rc %d\n", i, copyed);
-			rc = copyed;
+		copied = vfs_read(file, args[i], len, &pos);
+		MPRINT ("copied %d bytes\n", copied);
+		if (copied != len) {
+			printk ("replay_resume_from_disk: tried to read argument %d, got rc %d\n", i, copied);
+			rc = copied;
 			goto exit;
 		}
 		args[i][len] = '\0'; // NULL terminator not in file format
@@ -434,10 +441,10 @@ long replay_resume_from_disk (char* filename, char** execname, char*** argsp, ch
 	args[i] = NULL;
 
 	// Next, read the number of env. objects
-	copyed = vfs_read(file, (char *) &env_cnt, sizeof(env_cnt), &pos);
-	if (copyed != sizeof(env_cnt)) {
-		printk ("replay_resume_from_disk: tried to read record pid, got rc %d\n", copyed);
-		rc = copyed;
+	copied = vfs_read(file, (char *) &env_cnt, sizeof(env_cnt), &pos);
+	if (copied != sizeof(env_cnt)) {
+		printk ("replay_resume_from_disk: tried to read record pid, got rc %d\n", copied);
+		rc = copied;
 		goto exit;
 	}
 	MPRINT ("%d env. objects in checkpoint\n", env_cnt);
@@ -451,10 +458,10 @@ long replay_resume_from_disk (char* filename, char** execname, char*** argsp, ch
 
 	// Now read in each env. object
 	for (i = 0; i < env_cnt; i++) {
-		copyed = vfs_read(file, (char *) &len, sizeof(len), &pos);
-		if (copyed != sizeof(len)) {
-			printk ("replay_resume_from_disk: tried to read env. %d len, got rc %d\n", i, copyed);
-			rc = copyed;
+		copied = vfs_read(file, (char *) &len, sizeof(len), &pos);
+		if (copied != sizeof(len)) {
+			printk ("replay_resume_from_disk: tried to read env. %d len, got rc %d\n", i, copied);
+			rc = copied;
 			goto exit;
 		}
 		env[i] = KMALLOC(len+1, GFP_KERNEL);
@@ -463,10 +470,10 @@ long replay_resume_from_disk (char* filename, char** execname, char*** argsp, ch
 			rc = -ENOMEM;
 			goto exit;
 		}
-		copyed = vfs_read(file, env[i], len, &pos);
-		if (copyed != len) {
-			printk ("replay_resume_from_disk: tried to read env. %d, got rc %d\n", i, copyed);
-			rc = copyed;
+		copied = vfs_read(file, env[i], len, &pos);
+		if (copied != len) {
+			printk ("replay_resume_from_disk: tried to read env. %d, got rc %d\n", i, copied);
+			rc = copied;
 			goto exit;
 		}
 		env[i][len] = '\0'; // NULL terminator not in file format
@@ -478,16 +485,16 @@ long replay_resume_from_disk (char* filename, char** execname, char*** argsp, ch
 	*envp = env;
 	
 	#ifdef TIME_TRICK
-	copyed = vfs_read(file, (char*) tv, sizeof(struct timeval), &pos);
-	if (copyed != sizeof(struct timeval)) {
-		printk ("replay_resume_from_disk: tried to read timeval. %d len, got rc %d\n", sizeof(struct timeval), copyed);
-		rc = copyed;
+	copied = vfs_read(file, (char*) tv, sizeof(struct timeval), &pos);
+	if (copied != sizeof(struct timeval)) {
+		printk ("replay_resume_from_disk: tried to read timeval. %d len, got rc %d\n", sizeof(struct timeval), copied);
+		rc = copied;
 		goto exit;
 	}
-	copyed = vfs_read(file, (char*) tp, sizeof(struct timespec), &pos);
-	if (copyed != sizeof(struct timespec)) {
-		printk ("replay_resume_from_disk: tried to read timespec. %d len, got rc %d\n", sizeof(struct timespec), copyed);
-		rc = copyed;
+	copied = vfs_read(file, (char*) tp, sizeof(struct timespec), &pos);
+	if (copied != sizeof(struct timespec)) {
+		printk ("replay_resume_from_disk: tried to read timespec. %d len, got rc %d\n", sizeof(struct timespec), copied);
+		rc = copied;
 		goto exit;
 	}
 	printk ("semi-det time inits for gettimeofday: %ld, %ld, for clock_gettime: %ld, %ld.\n", tv->tv_sec, tv->tv_usec, tp->tv_sec, tp->tv_nsec);
@@ -495,10 +502,10 @@ long replay_resume_from_disk (char* filename, char** execname, char*** argsp, ch
 #endif
 
 	// Next read the time
-	copyed = vfs_read(file, (char *) &time, sizeof(time), &pos);
-	if (copyed != sizeof(time)) {
-		printk ("replay_resume_from_disk: tried to read time, got %d\n", copyed);
-		rc = copyed;
+	copied = vfs_read(file, (char *) &time, sizeof(time), &pos);
+	if (copied != sizeof(time)) {
+		printk ("replay_resume_from_disk: tried to read time, got %d\n", copied);
+		rc = copied;
 		goto exit;
 	}
 
@@ -528,68 +535,133 @@ get_exe_path (struct mm_struct* mm, char* path)
 }
 #endif
 
-// This function writes the process state to a disk file
+// This function writes the global checkpoint state to disk
 long 
 #ifdef TIME_TRICK
-replay_full_checkpoint_to_disk (char* filename, long retval, __u64 rg_id, pid_t record_pid, int clock, loff_t logpos, 
-				u_long outptr, u_long consumed, struct timeval *tv, struct timespec *tp)
+replay_full_checkpoint_hdr_to_disk (char* filename, __u64 rg_id, int clock, struct timeval *tv, struct timespec *tp, u_long proc_count, loff_t* ppos)
 #else
-replay_full_checkpoint_to_disk (char* filename, long retval, __u64 rg_id, pid_t record_pid, int clock, loff_t logpos, 
-				u_long outptr, u_long consumed)
+replay_full_checkpoint_hdr_to_disk (char* filename, __u64 rg_id, int clock, u_long proc_count, loff_t* ppos)
 #endif
 {
 	mm_segment_t old_fs = get_fs();
-	int fd, rc, copyed, i;
 	struct file* file = NULL;
-	loff_t pos = 0;
-	struct timespec time;
+	struct ckpt_data cdata;
+	int fd = -1, rc, copied;
+
+	MPRINT ("pid %d enters replay_full_checkpoint_hdr_to_disk: filename %s\n", current->pid, filename);
+
+	set_fs(KERNEL_DS);
+	fd = sys_open (filename, O_WRONLY|O_CREAT|O_TRUNC, 0644);
+	if (fd < 0) {
+		printk ("replay_full_checkpoint_hdr_to_disk: open of %s returns %d\n", filename, fd);
+		rc = fd;
+		goto exit;
+	}
+	file = fget(fd);
+	*ppos = 0;
+
+	// Write out checkpoint data
+	cdata.rg_id = rg_id;
+	cdata.clock = clock;
+	cdata.proc_count = proc_count;
+	copied = vfs_write (file, (char *) &cdata, sizeof(cdata), ppos);
+	if (copied != sizeof(cdata)) {
+		printk ("replay_full_checkpoint_hdr_to_disk: tried to write ckpt data, got rc %d\n", copied);
+		rc = copied;
+		goto exit;
+	}
+
+#ifdef TIME_TRICK
+	do_gettimeofday (tv);
+	rc = sys_clock_gettime (CLOCK_MONOTONIC, tp);
+	if (rc < 0) printk ("Semi-det clock for clock_gettime fails to initialize.\n");
+	printk ("semi-det time inits for gettimeofday %ld, %ld, for clock_gettime: %ld, %ld.\n", tv->tv_sec, tv->tv_usec, tp->tv_sec, tp->tv_nsec);
+	copied = vfs_write (file, (char*) tv, sizeof (struct timeval), ppos);
+	if (copied != sizeof (struct timeval)) {
+		printk ("replay_full_checkpoint_hdr_to_disk: tried to write timeval, got rc %d\n", copied);
+		rc = -EFAULT;
+		goto exit;
+	}
+	copied = vfs_write (file, (char*) tp, sizeof (struct timespec), ppos);
+	if (copied != sizeof (struct timespec)) {
+		printk ("replay_full_checkpoint_hdr_to_disk: tried to write timespec, got rc %d\n", copied);
+		rc = -EFAULT;
+		goto exit;
+	}
+
+#endif
+
+exit:
+	if (file) fput(file);
+	if (fd >= 0)  {
+		rc = sys_close (fd);
+		if (rc < 0) printk ("replay_checkpoint_proc_to_disk: close returns %d\n", rc);
+	}
+	set_fs(old_fs);
+	return rc;
+}
+
+// This function writes the process state to a disk file
+long 
+replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pid_t record_pid, long retval, loff_t logpos, u_long outptr, u_long consumed, u_long expclock, loff_t* ppos)
+{
+	mm_segment_t old_fs = get_fs();
+	int fd = -1, rc, copied, i;
+	struct file* file = NULL;
 	struct vm_area_struct* vma;
 	struct vma_stats* pvmas = NULL;
 	char* buffer = NULL;
 	struct mm_info* pmminfo = NULL;
 	struct inode* inode;
 	char* p;
-	struct ckpt_data cdata;
 	struct user_desc desc;
-	struct desc_struct gdt_entry;
+	struct ckpt_proc_data cpdata;
+	long nr_pages = 0;
+	struct page** ppages = NULL;
 
-	MPRINT ("pid %d enters replay_full_checkpoint_to_disk: filename %s\n", current->pid, filename);
+	MPRINT ("Pid %d enters replay_full_checkpoint_proc_to_disk: filename %s\n", tsk->pid, filename);
 
 	set_fs(KERNEL_DS);
-	fd = sys_open (filename, O_WRONLY|O_CREAT|O_TRUNC, 0644);
+	fd = sys_open (filename, O_WRONLY|O_APPEND, 0);
 	if (fd < 0) {
-		printk ("replay_full_checkpoint_to_disk: open of %s returns %d\n", filename, fd);
+		printk ("replay_full_checkpoint_proc_to_disk: open of %s returns %d\n", filename, fd);
 		rc = fd;
 		goto exit;
 	}
 	file = fget(fd);
 
-	// First - write out process identifier
-	copyed = vfs_write (file, (char *) &record_pid, sizeof(record_pid), &pos);
-	if (copyed != sizeof(record_pid)) {
-		printk ("replay_full_checkpoint_to_disk: tried to write pid, got rc %d\n", copyed);
-		rc = copyed;
+	// First - write out checkpoint data
+	cpdata.record_pid = record_pid;
+	cpdata.retval = retval;
+	cpdata.logpos = logpos;
+	cpdata.outptr = outptr;
+	cpdata.consumed = consumed;
+	cpdata.expclock = expclock;
+	copied = vfs_write (file, (char *) &cpdata, sizeof(cpdata), ppos);
+	if (copied != sizeof(cpdata)) {
+		printk ("replay_full_checkpoint_proc_to_disk: tried to write process data, got rc %d\n", copied);
+		rc = copied;
 		goto exit;
 	}
 
-	// Next - write out the registers, assuming a single-threaded app here
-	copyed = vfs_write(file, (char *) get_pt_regs(NULL), sizeof(struct pt_regs), &pos);
-	if (copyed != sizeof(struct pt_regs)) {
-		printk ("replay_full_checkpoint_to_disk: tried to write regs, got rc %d\n", copyed);
-		rc = copyed;
+	// Next - write out the registers
+	copied = vfs_write(file, (char *) get_pt_regs(tsk), sizeof(struct pt_regs), ppos);
+	if (copied != sizeof(struct pt_regs)) {
+		printk ("replay_full_checkpoint_proc_to_disk: tried to write regs, got rc %d\n", copied);
+		rc = copied;
 		goto exit;
 	}
 
 	// Write out the replay cache state
-	checkpoint_replay_cache_files (file, &pos);
+	checkpoint_replay_cache_files (tsk, file, ppos);
 
-	down_read (&current->mm->mmap_sem);
+	down_read (&tsk->mm->mmap_sem);
 
 	// Next - number of VM area
-	copyed = vfs_write(file, (char *) &current->mm->map_count, sizeof(int), &pos);
-	if (copyed != sizeof(int)) {
-		printk ("replay_full_checkpoint_to_disk: tried to write map_count, got rc %d\n", copyed);
-		rc = copyed;
+	copied = vfs_write(file, (char *) &tsk->mm->map_count, sizeof(int), ppos);
+	if (copied != sizeof(int)) {
+		printk ("replay_full_checkpoint_proc_to_disk: tried to write map_count, got rc %d\n", copied);
+		rc = copied;
 		goto unlock;
 	}
 
@@ -597,15 +669,15 @@ replay_full_checkpoint_to_disk (char* filename, long retval, __u64 rg_id, pid_t 
 	pvmas = KMALLOC (sizeof(struct vma_stats), GFP_KERNEL);
 	buffer = KMALLOC (PATH_MAX, GFP_KERNEL);
 	if (!pvmas || !buffer) {
-		printk ("replay_full_checkpoint_to_disk: cannot allocate memory\n");
+		printk ("replay_full_checkpoint_proc_to_disk: cannot allocate memory\n");
 		rc = -ENOMEM;
 		goto unlock;
 	}
 
 	// Next - info and data for each vma
-	for (vma = current->mm->mmap; vma; vma = vma->vm_next) {
+	for (vma = tsk->mm->mmap; vma; vma = vma->vm_next) {
 
-		if (vma->vm_start == (u_long) current->mm->context.vdso) {
+		if (vma->vm_start == (u_long) tsk->mm->context.vdso) {
 			continue; // Don't save VDSO - will regenerate it on restore
 		}
 
@@ -620,168 +692,228 @@ replay_full_checkpoint_to_disk (char* filename, long retval, __u64 rg_id, pid_t 
 		} else {
 			pvmas->vmas_file[0] = '\0';
 		}
-		copyed = vfs_write(file, (char *) pvmas, sizeof(struct vma_stats), &pos);
-		if (copyed != sizeof(struct vma_stats)) {
-			printk ("replay_full_checkpoint_to_disk: tried to write vma info, got rc %d\n", copyed);
-			rc = copyed;
+		copied = vfs_write(file, (char *) pvmas, sizeof(struct vma_stats), ppos);
+		if (copied != sizeof(struct vma_stats)) {
+			printk ("replay_full_checkpoint_proc_to_disk: tried to write vma info, got rc %d\n", copied);
+			rc = copied;
 			goto freemem;
 		}
 		
-		if(!strcmp(pvmas->vmas_file, "/dev/zero//deleted")) continue; /* Skip writing this one */
+		if(!strncmp(pvmas->vmas_file, "/dev/zero", 9)) continue; /* Skip writing this one */
+		if (pvmas->vmas_flags & VM_MAYSHARE && strncmp(pvmas->vmas_file, "/run/shm/uclock", 15)) {
+			printk ("Warning: pid %d region %lx-%lx is shared\n", record_pid, pvmas->vmas_start, pvmas->vmas_end);
+			if (pvmas->vmas_file) printk ("File: %s\n", pvmas->vmas_file);
+		}
+		if (!(pvmas->vmas_flags & VM_READ)) {
+			printk ("Pid %d skipping non-readable region %lx-%lx\n", record_pid, pvmas->vmas_start, pvmas->vmas_end);
+			continue;
+		}
 
-		set_fs(old_fs);
-		copyed = vfs_write(file, (char *) pvmas->vmas_start, pvmas->vmas_end - pvmas->vmas_start, &pos);
-		set_fs(KERNEL_DS);
-		if (copyed != pvmas->vmas_end - pvmas->vmas_start) {
-			printk ("replay_full_checkpoint_to_disk: tried to write vma data, got rc %d\n", copyed);
-			rc = copyed;
-			goto freemem;
+		if (current->pid != tsk->pid) {
+			// Need to map these pages to kernel space
+			nr_pages = (pvmas->vmas_end-pvmas->vmas_start)/PAGE_SIZE;
+			DPRINT ("Region: %lx to %lx: number of pages is %ld\n", pvmas->vmas_start, pvmas->vmas_end, nr_pages);
+			ppages = KMALLOC(sizeof(struct page *) * nr_pages, GFP_KERNEL);
+			if (ppages == NULL) {
+				printk ("replay_full_checkpoint_proc_to_disk: cannot allocate page array\n");
+				rc = -ENOMEM;
+				goto freemem;
+			}
+
+			rc = get_user_pages (tsk, tsk->mm, pvmas->vmas_start, nr_pages, 0, 0, ppages, NULL);
+			if (rc != nr_pages) {
+				printk ("replay_full_checkpoint_proc_to_disk: cannot get user pages,rc=%d\n", rc);
+				KFREE (ppages);
+				ppages = NULL;
+				goto freemem;
+			}
+			for (i = 0; i < nr_pages; i++) {
+				char* p = kmap (ppages[i]);
+				copied = vfs_write(file, p, PAGE_SIZE, ppos);
+				kunmap (ppages[i]);
+				if (copied != PAGE_SIZE) {
+					printk ("replay_full_checkpoint_proc_to_disk: tried to write vma page, got rc %d\n", copied);
+					rc = copied;
+					goto freemem;
+				}
+			}
+			for (i = 0; i < nr_pages; i++) {
+				put_page (ppages[i]);
+			}
+			KFREE(ppages);
+			ppages = NULL;
+		} else {
+			set_fs(old_fs);
+			copied = vfs_write(file, (char *) pvmas->vmas_start, pvmas->vmas_end - pvmas->vmas_start, ppos);
+			set_fs(KERNEL_DS);
+			if (copied != pvmas->vmas_end - pvmas->vmas_start) {
+				printk ("replay_full_checkpoint_proc_to_disk: tried to write vma data, got rc %d\n", copied);
+				rc = copied;
+				goto freemem;
+			}
 		}
 	}
 
 	// Process-specific info in the mm struct
 	pmminfo = KMALLOC (sizeof(struct mm_info), GFP_KERNEL);
 	if (pmminfo == NULL) {
-		printk ("replay_full_checkpoint_to_disk: unable to allocate mm_info structure\n");
+		printk ("replay_full_checkpoint_proc_to_disk: unable to allocate mm_info structure\n");
 		rc = -ENOMEM;
 		goto freemem;
 	}
-	pmminfo->start_code = current->mm->start_code;
-	pmminfo->end_code = current->mm->end_code;
-	pmminfo->start_data = current->mm->start_data;
-	pmminfo->end_data = current->mm->end_data;
-	pmminfo->start_brk = current->mm->start_brk;
-	pmminfo->brk = current->mm->brk;
-	pmminfo->start_stack = current->mm->start_stack;
-	pmminfo->arg_start = current->mm->arg_start;
-	pmminfo->arg_end = current->mm->arg_end;
-	pmminfo->env_start = current->mm->env_start;
-	pmminfo->env_end = current->mm->env_end;
-	pmminfo->vdso = current->mm->context.vdso;
+	pmminfo->start_code = tsk->mm->start_code;
+	pmminfo->end_code = tsk->mm->end_code;
+	pmminfo->start_data = tsk->mm->start_data;
+	pmminfo->end_data = tsk->mm->end_data;
+	pmminfo->start_brk = tsk->mm->start_brk;
+	pmminfo->brk = tsk->mm->brk;
+	pmminfo->start_stack = tsk->mm->start_stack;
+	pmminfo->arg_start = tsk->mm->arg_start;
+	pmminfo->arg_end = tsk->mm->arg_end;
+	pmminfo->env_start = tsk->mm->env_start;
+	pmminfo->env_end = tsk->mm->env_end;
+	pmminfo->vdso = tsk->mm->context.vdso;
 
 #ifdef CONFIG_PROC_FS
-	p = get_exe_path (current->mm, buffer);
+	p = get_exe_path (tsk->mm, buffer);
 	strcpy (pmminfo->exe_file, p);
 #endif
 
-	copyed = vfs_write(file, (char *) pmminfo, sizeof(struct mm_info), &pos);
-	if (copyed != sizeof(struct mm_info)) {
-		printk ("replay_full_checkpoint_to_disk: tried to write mm info, got rc %d\n", copyed);
-		rc = copyed;
+	copied = vfs_write(file, (char *) pmminfo, sizeof(struct mm_info), ppos);
+	if (copied != sizeof(struct mm_info)) {
+		printk ("replay_full_checkpoint_proc_to_disk: tried to write mm info, got rc %d\n", copied);
+		rc = copied;
 		goto freemem;
 	}
 	
 	// Write out TLS info
 	for (i = 0; i < GDT_ENTRY_TLS_ENTRIES; i++) {
-		fill_user_desc(&desc, GDT_ENTRY_TLS_MIN+i, &current->thread.tls_array[i]);
-		copyed = vfs_write(file, (char *) &desc, sizeof(desc), &pos);
-		if (copyed != sizeof(desc)) {
-			printk ("replay_full_checkpoint_to_disk: tried to write TLS entry #%d, got rc %d\n", i, copyed);
-			rc = copyed;
+		fill_user_desc(&desc, GDT_ENTRY_TLS_MIN+i, &tsk->thread.tls_array[i]);
+		copied = vfs_write(file, (char *) &desc, sizeof(desc), ppos);
+		if (copied != sizeof(desc)) {
+			printk ("replay_full_checkpoint_proc_to_disk: tried to write TLS entry #%d, got rc %d\n", i, copied);
+			rc = copied;
 			goto freemem;
 		}
-		MPRINT ("Pid %d replay_full_checkpoint_to_disk filling user_desc base_addr %x limit %x\n", current->pid, desc.base_addr, desc.limit);
-	}
-
-	// Next, write out checkpoint data
-	cdata.retval = retval;
-	cdata.rg_id = rg_id;
-	cdata.clock = clock;
-	cdata.logpos = logpos;
-	cdata.outptr = outptr;
-	cdata.consumed = consumed;
-	copyed = vfs_write (file, (char *) &cdata, sizeof(cdata), &pos);
-	if (copyed != sizeof(cdata)) {
-		printk ("replay_full_checkpoint_to_disk: tried to write ckpt data, got rc %d\n", copyed);
-		rc = copyed;
-		goto exit;
+		MPRINT ("Pid %d replay_full_checkpoint_proc_to_disk filling user_desc base_addr %x limit %x\n", tsk->pid, desc.base_addr, desc.limit);
 	}
 
 	// Next, write out rlimit information
-	copyed = vfs_write (file, (char *) &current->signal->rlim, sizeof(struct rlimit)*RLIM_NLIMITS, &pos);
-	if (copyed != sizeof(struct rlimit)*RLIM_NLIMITS) {
-		printk ("replay_checkpoint_to_disk: tried to write rlimits, got rc %d\n", copyed);
+	copied = vfs_write (file, (char *) &tsk->signal->rlim, sizeof(struct rlimit)*RLIM_NLIMITS, ppos);
+	if (copied != sizeof(struct rlimit)*RLIM_NLIMITS) {
+		printk ("replay_checkpoint_proc_to_disk: tried to write rlimits, got rc %d\n", copied);
 		rc = -EFAULT;
 		goto exit;
 	}
 
 	// Next, copy the signal handlers
-	copyed = vfs_write (file, (char *) &current->sighand->action, sizeof(struct k_sigaction) * _NSIG, &pos);
-	if (copyed != sizeof(struct k_sigaction)*_NSIG) {
-		printk ("replay_checkpoint_to_disk: tried to write sighands, got rc %d\n", copyed);
+	copied = vfs_write (file, (char *) &tsk->sighand->action, sizeof(struct k_sigaction) * _NSIG, ppos);
+	if (copied != sizeof(struct k_sigaction)*_NSIG) {
+		printk ("replay_checkpoint_proc_to_disk: tried to write sighands, got rc %d\n", copied);
 		rc = -EFAULT;
-		goto exit;
-	}
-
-#ifdef TIME_TRICK
-	do_gettimeofday (tv);
-	rc = sys_clock_gettime (CLOCK_MONOTONIC, tp);
-	if (rc < 0) printk ("Semi-det clock for clock_gettime fails to initialize.\n");
-	printk ("semi-det time inits for gettimeofday %ld, %ld, for clock_gettime: %ld, %ld.\n", tv->tv_sec, tv->tv_usec, tp->tv_sec, tp->tv_nsec);
-	copyed = vfs_write (file, (char*) tv, sizeof (struct timeval), &pos);
-	if (copyed != sizeof (struct timeval)) {
-		printk ("replay_checkpoint_to_disk: tried to write timeval, got rc %d\n", copyed);
-		rc = -EFAULT;
-		goto exit;
-	}
-	copyed = vfs_write (file, (char*) tp, sizeof (struct timespec), &pos);
-	if (copyed != sizeof (struct timespec)) {
-		printk ("replay_checkpoint_to_disk: tried to write timespec, got rc %d\n", copyed);
-		rc = -EFAULT;
-		goto exit;
-	}
-
-#endif
-
-	// Next, the time the recording started.
-	time = CURRENT_TIME;
-	copyed = vfs_write (file, (char *) &time, sizeof(time), &pos);
-	if (copyed != sizeof(time)) {
-		printk ("replay_checkpoint_to_disk: tried to write time, got %d\n", copyed);
-		rc = copyed;
 		goto exit;
 	}
 
 freemem:
+	if (ppages) {
+		for (i = 0; i < nr_pages; i++) {
+			put_page (ppages[i]);
+		}
+		KFREE(ppages);
+	}
 	KFREE(buffer);
 	KFREE(pvmas);
 	KFREE(pmminfo);
 unlock:
-	up_read (&current->mm->mmap_sem);
+	up_read (&tsk->mm->mmap_sem);
 exit:
 	if (file) fput(file);
 	if (fd >= 0)  {
 		rc = sys_close (fd);
-		if (rc < 0) printk ("replay_checkpoint_to_disk: close returns %d\n", rc);
+		if (rc < 0) printk ("replay_checkpoint_proc_to_disk: close returns %d\n", rc);
 	}
 	set_fs(old_fs);
 	return rc;
 }
 
 #ifdef TIME_TRICK
-long replay_full_resume_from_disk (char* filename, long* pretval, __u64* prg_id, int* pclock, loff_t* plogpos, 
-				   u_long* poutptr, u_long* pconsumed, struct timeval* tv, struct timespec *tp) 
+long replay_full_resume_hdr_from_disk (char* filename, __u64* prg_id, int* pclock, u_long* pproc_count, struct timeval* tv, struct timespec *tp, loff_t* ppos) 
 #else
-long replay_full_resume_from_disk (char* filename, long* pretval, __u64* prg_id, int* pclock, loff_t* plogpos, 
-				   u_long* poutptr, u_long* pconsumed) 
+long replay_full_resume_hdr_from_disk (char* filename, __u64* prg_id, int* pclock, u_long* pproc_count, loff_t* ppos) 
 #endif
 {
 	mm_segment_t old_fs = get_fs();
-	int rc = 0, fd, exe_fd, copyed, i, map_count;
+	int rc = 0, fd, copied;
+	struct file* file = NULL;
+	struct ckpt_data cdata;
+
+	MPRINT ("pid %d enters replay_full_resume_hdr_from_disk: filename %s\n", current->pid, filename);
+
+	set_fs(KERNEL_DS);
+	fd = sys_open (filename, O_RDONLY, 0);
+	if (fd < 0) {
+		printk ("replay_full_reusme_hdr_from_disk: open of %s returns %d\n", filename, fd);
+		rc = fd;
+		goto exit;
+	}
+	file = fget(fd);
+	*ppos = 0;
+
+	// Read the checkpoint header data
+	copied = vfs_read(file, (char *) &cdata, sizeof(cdata), ppos);
+	MPRINT ("Pid %d replay_full_resume_hdr_from_disk: rg_id %llu\n", current->pid, cdata.rg_id);
+	if (copied != sizeof(cdata)) {
+		printk ("replay_full_resume_hdr_from_disk: tried to read ckpt data, got rc %d\n", copied);
+		rc = copied;
+		goto exit;
+	}
+	*prg_id = cdata.rg_id;
+	*pclock = cdata.clock;
+	*pproc_count = cdata.proc_count;
+
+#ifdef TIME_TRICK
+	copied = vfs_read(file, (char*) tv, sizeof(struct timeval), ppos);
+	if (copied != sizeof(struct timeval)) {
+		printk ("replay_full_resume_hdr_from_disk: tried to read timeval. %d len, got rc %d\n", sizeof(struct timeval), copied);
+		rc = copied;
+		goto exit;
+	}
+	copied = vfs_read(file, (char*) tp, sizeof(struct timespec), ppos);
+	if (copied != sizeof(struct timespec)) {
+		printk ("replay_full_resume_hdr_from_disk: tried to read timespec. %d len, got rc %d\n", sizeof(struct timespec), copied);
+		rc = copied;
+		goto exit;
+	}
+	printk ("semi-det time inits for gettimeofday: %ld, %ld, for clock_gettime: %ld, %ld.\n", tv->tv_sec, tv->tv_usec, tp->tv_sec, tp->tv_nsec);
+
+#endif
+
+	MPRINT ("replay_full_resume_hdr_from_disk done\n");
+
+exit:
+	if (fd >= 0) {
+		if (sys_close (fd) < 0) printk ("replay_full_resume_hdr_from_disk: close returns %d\n", rc);
+	}
+	if (file) fput(file);
+	set_fs(old_fs);
+	return rc;
+}
+
+long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, long* pretval, loff_t* plogpos, u_long* poutptr, u_long* pconsumed, u_long* pexpclock, loff_t* ppos)
+{
+	mm_segment_t old_fs = get_fs();
+	int rc = 0, fd, exe_fd, copied, i, map_count;
 	struct file* file = NULL, *map_file;
-	loff_t pos = 0;
-	pid_t record_pid;
-	struct timespec time;
+	pid_t record_pid = -1;
 	struct vm_area_struct* vma, *vma_next;
 	struct vma_stats* pvmas = NULL;
 	struct mm_info* pmminfo = NULL;
 	u_long addr;
-	struct ckpt_data cdata;
-	struct pt_regs* ptregs = get_pt_regs(NULL);
+	struct ckpt_proc_data cpdata;
 	struct user_desc desc;
 	int flags;
 
-	MPRINT ("pid %d enters replay_full_resume_from_disk: filename %s\n", current->pid, filename);
+	MPRINT ("pid %d enters replay_full_resume_proc_from_disk: filename %s\n", current->pid, filename);
 
 	set_fs(KERNEL_DS);
 	fd = sys_open (filename, O_RDONLY, 0);
@@ -792,19 +924,26 @@ long replay_full_resume_from_disk (char* filename, long* pretval, __u64* prg_id,
 	}
 	file = fget(fd);
 
-	// Read the record pid
-	copyed = vfs_read(file, (char *) &record_pid, sizeof(record_pid), &pos);
-	if (copyed != sizeof(record_pid)) {
-		printk ("replay_full_resume_from_disk: tried to read record pid, got rc %d\n", copyed);
-		rc = copyed;
+	// Read the process checkpoint data
+	copied = vfs_read(file, (char *) &cpdata, sizeof(cpdata), ppos);
+	if (copied != sizeof(cpdata)) {
+		printk ("replay_full_resume_proc_from_disk: tried to read checkpoint process data, got rc %d\n", copied);
+		rc = copied;
 		goto exit;
 	}
 
+	record_pid = cpdata.record_pid;
+	*pretval = cpdata.retval;
+	*plogpos = cpdata.logpos;
+	*poutptr = cpdata.outptr;
+	*pconsumed = cpdata.consumed;
+	*pexpclock = cpdata.expclock;
+
 	// Restore the user-level registers
-	copyed = vfs_read(file, (char *) get_pt_regs(NULL), sizeof(struct pt_regs), &pos);
-	if (copyed != sizeof(struct pt_regs)) {
-		printk ("replay_full_resume_from_disk: tried to read regs, got rc %d\n", copyed);
-		rc = copyed;
+	copied = vfs_read(file, (char *) get_pt_regs(NULL), sizeof(struct pt_regs), ppos);
+	if (copied != sizeof(struct pt_regs)) {
+		printk ("replay_full_resume_proc_from_disk: tried to read regs, got rc %d\n", copied);
+		rc = copied;
 		goto exit;
 	}
 
@@ -819,49 +958,51 @@ long replay_full_resume_from_disk (char* filename, long* pretval, __u64* prg_id,
 	up_write (&current->mm->mmap_sem);
 
 	// Write out the replay cache state
-	restore_replay_cache_files (file, &pos);
+	restore_replay_cache_files (file, ppos);
 
 	// Next - read the number of VM area
-	copyed = vfs_read(file, (char *) &map_count, sizeof(int), &pos);
-	if (copyed != sizeof(int)) {
-		printk ("replay_full_resume_from_disk: tried to read map_count, got rc %d\n", copyed);
-		rc = copyed;
+	copied = vfs_read(file, (char *) &map_count, sizeof(int), ppos);
+	if (copied != sizeof(int)) {
+		printk ("replay_full_resume_proc_from_disk: tried to read map_count, got rc %d\n", copied);
+		rc = copied;
 		goto exit;
 	}
 
 	/* This is too big to put on the kernel stack */
 	pvmas = KMALLOC (sizeof(struct vma_stats), GFP_KERNEL);
 	if (!pvmas) {
-		printk ("replay_full_resume_from_disk: cannot allocate memory\n");
+		printk ("replay_full_resume_proc_from_disk: cannot allocate memory\n");
 		rc = -ENOMEM;
 		goto exit;
 	}
 	
 	// Map each VMA and copy data from the file - assume VDSO handled separately - so use map_count-1
 	for (i = 0; i < map_count-1; i++) {
-		copyed = vfs_read (file, (char *) pvmas, sizeof(struct vma_stats), &pos);
-		if (copyed != sizeof(struct vma_stats)) {
-			printk ("replay_full_resume_from_disk: tried to read vma info, got rc %d\n", copyed);
-			rc = copyed;
+		copied = vfs_read (file, (char *) pvmas, sizeof(struct vma_stats), ppos);
+		if (copied != sizeof(struct vma_stats)) {
+			printk ("replay_full_resume_proc_from_disk: tried to read vma info, got rc %d\n", copied);
+			rc = copied;
 			goto freemem;
 		}	
 	
 		if (pvmas->vmas_file[0]) { 
 			flags = O_RDONLY;
-			if (!strcmp(pvmas->vmas_file, "/dev/zero//deleted")) {
+			if (!strncmp(pvmas->vmas_file, "/dev/zero", 9)) {
 				MPRINT ("special vma for /dev/zero!\n");
-				pvmas->vmas_file[9] = '\0';
-			} else if (!strncmp(pvmas->vmas_file, "/run/shm/uclock", 15)) {
-				flags = O_RDWR;
-				MPRINT ("special uclock vma\n");
-				sprintf (pvmas->vmas_file, "/run/shm/uclock%d", current->pid);
-			}
-			DPRINT ("Opening file %s\n", pvmas->vmas_file);
-			map_file = filp_open (pvmas->vmas_file, flags, 0);
-			if (IS_ERR(map_file)) {
-				printk ("replay_full_resume_from_disk: filp_open error %s\n", pvmas->vmas_file);
-				rc = PTR_ERR(map_file);
-				goto freemem;
+				map_file = NULL;
+			} else {
+				if (!strncmp(pvmas->vmas_file, "/run/shm/uclock", 15)) {
+					flags = O_RDWR;
+					MPRINT ("special uclock vma\n");
+					sprintf (pvmas->vmas_file, "/run/shm/uclock%d", clock_pid);
+				}
+				DPRINT ("Opening file %s\n", pvmas->vmas_file);
+				map_file = filp_open (pvmas->vmas_file, flags, 0);
+				if (IS_ERR(map_file)) {
+					printk ("replay_full_resume_proc_from_disk: filp_open error %s\n", pvmas->vmas_file);
+					rc = PTR_ERR(map_file);
+					goto freemem;
+				}
 			}
 		} else { 
 			map_file = NULL;
@@ -875,22 +1016,22 @@ long replay_full_resume_from_disk (char* filename, long* pretval, __u64* prg_id,
 				     ((pvmas->vmas_flags&VM_MAYSHARE) ? MAP_SHARED : MAP_PRIVATE)|MAP_FIXED, pvmas->vmas_pgoff);
 		if (map_file) filp_close (map_file, NULL);
 		if (IS_ERR((char *) addr)) {
-			printk ("replay_full_resume_from_disk: mmap error %ld\n", PTR_ERR((char *) addr));
+			printk ("replay_full_resume_proc_from_disk: mmap error %ld\n", PTR_ERR((char *) addr));
 			rc = addr;
 			goto freemem;
 		}
 
-		if(!strcmp(pvmas->vmas_file, "/dev/zero//deleted")) continue; /* Skip writing this one */
+		if(!strncmp(pvmas->vmas_file, "/dev/zero", 9)) continue; /* Skip writing this one */
+		if (!(pvmas->vmas_flags&VM_READ)) continue;  // Not in checkpoint - so skip writing this one
 
 		if (!(pvmas->vmas_flags&VM_WRITE)) rc = sys_mprotect (pvmas->vmas_start, pvmas->vmas_end - pvmas->vmas_start, PROT_WRITE); // force it to writable temproarilly
 
 		set_fs(old_fs);
-		DPRINT ("Reading from file position %lu\n", (u_long) pos);
-		copyed = vfs_read (file, (char *) pvmas->vmas_start, pvmas->vmas_end - pvmas->vmas_start, &pos);
+		copied = vfs_read (file, (char *) pvmas->vmas_start, pvmas->vmas_end - pvmas->vmas_start, ppos);
 		set_fs(KERNEL_DS);
-		if (copyed != pvmas->vmas_end - pvmas->vmas_start) {
-			printk ("replay_full_resume_from_disk: tried to read vma data, got rc %d\n", copyed);
-			rc = copyed;
+		if (copied != pvmas->vmas_end - pvmas->vmas_start) {
+			printk ("replay_full_resume_proc_from_disk: tried to read vma data, got rc %d\n", copied);
+			rc = copied;
 			goto freemem;
 		}
 
@@ -901,14 +1042,14 @@ long replay_full_resume_from_disk (char* filename, long* pretval, __u64* prg_id,
 	// Process-specific info in the mm struct
 	pmminfo = KMALLOC (sizeof(struct mm_info), GFP_KERNEL);
 	if (pmminfo == NULL) {
-		printk ("replay_full_resume_from_disk: unable to allocate mm_info structure\n");
+		printk ("replay_full_resume_proc_from_disk: unable to allocate mm_info structure\n");
 		rc = -ENOMEM;
 		goto freemem;
 	}
-	copyed = vfs_read (file, (char *) pmminfo, sizeof(struct mm_info), &pos);
-	if (copyed != sizeof(struct mm_info)) {
-		printk ("replay_full_resume_from_disk: tried to read mm info, got rc %d\n", copyed);
-		rc = copyed;
+	copied = vfs_read (file, (char *) pmminfo, sizeof(struct mm_info), ppos);
+	if (copied != sizeof(struct mm_info)) {
+		printk ("replay_full_resume_proc_from_disk: tried to read mm info, got rc %d\n", copied);
+		rc = copied;
 		goto freemem;
 	}
 	current->mm->start_code =  pmminfo->start_code;
@@ -935,83 +1076,39 @@ long replay_full_resume_from_disk (char* filename, long* pretval, __u64* prg_id,
 
 	// Read in TLS info
 	for (i = 0; i < GDT_ENTRY_TLS_ENTRIES; i++) {
-		copyed = vfs_read (file, (char *) &desc, sizeof(desc), &pos);
-		if (copyed != sizeof(desc)) {
-			printk ("replay_full_resume_from_disk: tried to read TLS entry #%d, got rc %d\n", i, copyed);
-			rc = copyed;
+		copied = vfs_read (file, (char *) &desc, sizeof(desc), ppos);
+		if (copied != sizeof(desc)) {
+			printk ("replay_full_resume_proc_from_disk: tried to read TLS entry #%d, got rc %d\n", i, copied);
+			rc = copied;
 			goto freemem;
 		}
 		set_tls_desc(current, GDT_ENTRY_TLS_MIN+i, &desc, 1);
 		MPRINT ("Pid %d resume ckpt set GDT entry %d base_addr %x limit %x\n", current->pid, GDT_ENTRY_TLS_MIN+i, desc.base_addr, desc.limit);
 	}
 
-	// We need to force a context switch to make sure that the GDT info is 
-	// loaded correctly for the CPU.  We should be able to do this directly if I figure out the magic...
-	//msleep (1); 
-
-	// Next read the record group id
-	copyed = vfs_read(file, (char *) &cdata, sizeof(cdata), &pos);
-	MPRINT ("Pid %d replay_full_resume_from_disk: rg_id %llu\n", current->pid, cdata.rg_id);
-	if (copyed != sizeof(cdata)) {
-		printk ("replay_full_resume_from_disk: tried to read ckpt data, got rc %d\n", copyed);
-		rc = copyed;
-		goto exit;
-	}
-	*pretval = cdata.retval;
-	*prg_id = cdata.rg_id;
-	*pclock = cdata.clock;
-	*plogpos = cdata.logpos;
-	*poutptr = cdata.outptr;
-	*pconsumed = cdata.consumed;
-
 	// Next, read the rlimit info
-	copyed = vfs_read(file, (char *) &current->signal->rlim, sizeof(struct rlimit)*RLIM_NLIMITS, &pos);
-	if (copyed != sizeof(struct rlimit)*RLIM_NLIMITS) {
-		printk ("replay_full_resume_from_disk: tried to read rlimits, got rc %d\n", copyed);
-		rc = copyed;
+	copied = vfs_read(file, (char *) &current->signal->rlim, sizeof(struct rlimit)*RLIM_NLIMITS, ppos);
+	if (copied != sizeof(struct rlimit)*RLIM_NLIMITS) {
+		printk ("replay_full_resume_proc_from_disk: tried to read rlimits, got rc %d\n", copied);
+		rc = copied;
 		goto exit;
 	}
 
-	copyed = vfs_read(file, (char *) &current->sighand->action, sizeof(struct k_sigaction) * _NSIG, &pos);
-	if (copyed != sizeof(struct k_sigaction)*_NSIG) {
-		printk ("replay_full_resume_from_disk: tried to read sighands, got rc %d\n", copyed);
-		rc = copyed;
+	copied = vfs_read(file, (char *) &current->sighand->action, sizeof(struct k_sigaction) * _NSIG, ppos);
+	if (copied != sizeof(struct k_sigaction)*_NSIG) {
+		printk ("replay_full_resume_proc_from_disk: tried to read sighands, got rc %d\n", copied);
+		rc = copied;
 		goto exit;
 	}
 
-#ifdef TIME_TRICK
-	copyed = vfs_read(file, (char*) tv, sizeof(struct timeval), &pos);
-	if (copyed != sizeof(struct timeval)) {
-		printk ("replay_full_resume_from_disk: tried to read timeval. %d len, got rc %d\n", sizeof(struct timeval), copyed);
-		rc = copyed;
-		goto exit;
-	}
-	copyed = vfs_read(file, (char*) tp, sizeof(struct timespec), &pos);
-	if (copyed != sizeof(struct timespec)) {
-		printk ("replay_full_resume_from_disk: tried to read timespec. %d len, got rc %d\n", sizeof(struct timespec), copyed);
-		rc = copyed;
-		goto exit;
-	}
-	printk ("semi-det time inits for gettimeofday: %ld, %ld, for clock_gettime: %ld, %ld.\n", tv->tv_sec, tv->tv_usec, tp->tv_sec, tp->tv_nsec);
-
-#endif
-
-	// Next read the time
-	copyed = vfs_read(file, (char *) &time, sizeof(time), &pos);
-	if (copyed != sizeof(time)) {
-		printk ("replay_full_resume_from_disk: tried to read time, got %d\n", copyed);
-		rc = copyed;
-		goto exit;
-	}
-
-	MPRINT ("replay_full_resume_from_disk done\n");
+	MPRINT ("replay_full_resume_proc_from_disk done\n");
 
 freemem:
 	KFREE (pmminfo);
 	KFREE (pvmas);
 exit:
 	if (fd >= 0) {
-		if (sys_close (fd) < 0) printk ("replay_full_resume_from_disk: close returns %d\n", rc);
+		if (sys_close (fd) < 0) printk ("replay_full_resume_proc_from_disk: close returns %d\n", rc);
 	}
 	if (file) fput(file);
 	set_fs(old_fs);

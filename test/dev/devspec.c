@@ -172,6 +172,29 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 		if (tmp) putname (tmp);
 		return rc;
 
+	case SPECI_CKPT_PROC_RESUME:
+		if (len != sizeof(wcdata)) {
+			printk ("ioctl SPECI_CKPT_RESUME fails, len %d\n", len);
+			return -EINVAL;
+		}
+		if (copy_from_user (&wcdata, (void *) data, sizeof(wcdata)))
+			return -EFAULT;
+		retval = strncpy_from_user(logdir, wcdata.logdir, MAX_LOGDIR_STRLEN);
+		if (retval < 0 || retval >= MAX_LOGDIR_STRLEN) {
+			printk ("ioctl SPECI_CKPT_RESUME fails, strcpy returns %d\n", retval);
+			return -EINVAL;
+		}
+		retval = strncpy_from_user(filename, wcdata.filename, MAX_LOGDIR_STRLEN);
+		if (retval < 0 || retval >= MAX_LOGDIR_STRLEN) {
+			printk ("ioctl SPECI_FOR_REPLAY fails, strcpy returns %d\n", retval);
+			return -EINVAL;
+		}
+
+		rc = replay_full_ckpt_proc_wakeup(logdir, filename, wcdata.fd);
+
+		if (tmp) putname (tmp);
+		return rc;
+
 	case SPECI_SET_PIN_ADDR:
 		if (len != sizeof(u_long)) {
 			printk ("ioctl SPECI_SET_PIN_ADDR fails, len %d\n", len);

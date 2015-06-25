@@ -207,3 +207,25 @@ The replay will pause and will resume when Pin is attached.
 Attach Pin (the full path for the tool is needed):
 $ /home/mcchow/pin-2.13/pin -pid <pid> -t
 /home/mcchow/omniplay/pin_tools/obj-ia32/print_instructions.so
+
+8) Checkpoint and restore
+
+You can checkpoint a replaying process at a specific system call, and later
+start a new replay from that checkpoint.  This currently only works for
+single-threaded processes and is somewhat experimental.
+
+To create a checkpoint during replay use the --ckpt_at flag and specify the
+clock of a system call entry (you can determine this from parseklog) at which
+you want to create the checkpoint.
+
+$ ./resume /replay_logdir/rec_<id> --pthread <omniplay>/src/omniplay/eglibc-2.15/prefix/lib --ckpt_at <n>
+
+If succesful this will create the file ckpt.n in /replay_logdir/rec_<id>
+
+To resume from that checkpoint with a new replay, use the restore.py script.
+Pass in the replay group id and the clock value specified above.
+
+$ ./restore.py <id> <n>
+
+You should be able to attach PIN or gdb to the replay from the checkpoint as
+desired.

@@ -26,6 +26,7 @@ long replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 			 int follow_splits, int save_mmap, loff_t syscall_index, int attach_pid, int ckpt_at);
 long replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* linker, int fd, 
 			      int follow_splits, int save_mmap, loff_t syscall_index, int attach_pid);
+long replay_full_ckpt_proc_wakeup (char* logdir, char* filename, int fd);
 
 /* Returns linker for exec to use */
 char* get_linker (void);
@@ -95,21 +96,19 @@ char* copy_args (const char __user* const __user* args, const char __user* const
 #ifdef TIME_TRICK
 long replay_checkpoint_to_disk (char* filename, char* execname, char* buf, int buflen, __u64 parent_rg_id, struct timeval* tv, struct timespec* tp);
 long replay_resume_from_disk (char* filename, char** execname, char*** argsp, char*** envp, __u64* prg_id, struct timeval* tv, struct timespec* tp);
-long replay_full_resume_from_disk (char* filename, long* pretval, __u64* prg_id, int* pclock, loff_t* plogpos, 
-				   u_long* poutptr, u_long* pconsumed, struct timeval* tv, struct timespec *tp);
-long replay_full_checkpoint_to_disk (char* filename, long retval, __u64 rg_id, pid_t record_pid, int clock, loff_t logpos, 
-				     u_long outptr, u_long consumed, struct timeval *tv, struct timespec *tp);
+long replay_full_resume_hdr_from_disk (char* filename, __u64* prg_id, int* pclock, u_long* pproccount, struct timeval* tv, struct timespec *tp, loff_t* ppos);
+long replay_full_checkpoint_hdr_to_disk (char* filename, __u64 rg_id, int clock, struct timeval *tv, struct timespec *tp, u_long proc_count, loff_t* ppos);
 #else
 long replay_checkpoint_to_disk (char* filename, char* execname, char* buf, int buflen, __u64 parent_rg_id);
 long replay_resume_from_disk (char* filename, char** execname, char*** argsp, char*** envp, __u64* prg_id);
-long replay_full_resume_from_disk (char* filename, long* pretval, __u64* prg_id, int* pclock, loff_t* plogpos, 
-				   u_long* poutptr, u_long* pconsumed); 
-long replay_full_checkpoint_to_disk (char* filename, long retval, __u64 rg_id, pid_t record_pid, int clock, loff_t logpos, 
-				     u_long outptr, u_long consumed);
+long replay_full_resume_hdr_from_disk (char* filename, __u64* prg_id, int* pclock, u_long* pproccount, loff_t* ppos);
+long replay_full_checkpoint_hdr_to_disk (char* filename, __u64 rg_id, int clock, u_long proc_count, loff_t* ppos);
 #endif
+long replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pid_t record_pid, long retval, loff_t logpos, u_long outptr, u_long consumed, u_long expclock, loff_t* ppos);
+long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, long* pretval, loff_t* plogpos, u_long* poutptr, u_long* pconsumed, u_long* pexpclock, loff_t* ppos);
 
 /* Helper functions for checkpoint/resotre */
-int checkpoint_replay_cache_files (struct file* cfile, loff_t* ppos);
+int checkpoint_replay_cache_files (struct task_struct* tsk, struct file* cfile, loff_t* ppos);
 int restore_replay_cache_files (struct file* cfile, loff_t* ppos);
 long get_ckpt_state (pid_t pid);
 
