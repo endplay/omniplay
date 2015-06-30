@@ -81,20 +81,12 @@ int debug_flag = 0;
 
 //#define REPLAY_PARANOID
 
-// If defined, use file cache for reads of read-only files
-#define CACHE_READS
-
-
 /* These #defines can be found in replay_config.h */
 int verify_debug = 0;
 #ifdef VERIFY_COMPRESSED_DATA
 #define verify_debugk(...) if (verify_debug) {printk(__VA_ARGS__);}
 #else
 #define verify_debugk(...)
-#endif
-
-#if defined(TRACE_READ_WRITE) && !defined(CACHE_READS)
-# error "TRACE_READ_WRITE without CACHE_READS unimplemented!"
 #endif
 
 #if defined(TRACE_PIPE_READ_WRITE) && !defined(TRACE_READ_WRITE)
@@ -117,31 +109,8 @@ int verify_debug = 0;
 //#define MPRINT(x,...)
 #define MCPRINT
 
-//xdou
-/*
-   * LOG_COMPRESS is the basic compression level, any other compression technique relies on this, i.e. if you want level_1, xproxy or det_time to be on, LOG_COMPRESS should also be on
-   * LOG_COMPRESS_1 is not fully tested for firefox, don't turn it on for now; this means level 1 compression
-   * X_COMPRESS will enable the application to use the x proxy; after X_COMPRESS is on, the application will talk to x proxy if x_proxy is 1 and will not talk to x proxy if x_proxy is 0
-   * x_proxy can be set up in /proc/sys/kernel/x_proxy
-   * when x_proxy is equal to 2, the user-level conversion tool should also be used
-   * record_x should be set to 1 if you want a copy of all x messages in the replay log; otherwise, only a compressed x message log in the same folder with x proxy is enough for replaying
-   *TIME_TRICK is for deterministic time; don't turn it on for now as I'm changing it. TIME_TRICK is defined in replay.h
-   */
-#define LOG_COMPRESS //log compress level 0
-//#define LOG_COMPRESS_1 //log compress level 1
-//#define X_COMPRESS  // note: x_compress should be defined at least along with log_compress level 0
 #define USE_SYSNUM
 //#define REPLAY_PAUSE
-#define DET_TIME_DEBUG 0
-#define DET_TIME_STAT 0
-//#define MULTI_GROUP
-#define SYSCALL_CACHE_REC current->record_thrd->rp_clog.syscall_cache
-#define SYSCALL_CACHE_REP current->replay_thrd->rp_record_thread->rp_clog.syscall_cache
-#define X_STRUCT_REC current->record_thrd->rp_clog.x
-#define X_STRUCT_REP current->replay_thrd->rp_record_thread->rp_clog.x
-#define x_detail 0
-unsigned int x_proxy = 0;
-unsigned int record_x = 1;
 unsigned int replay_pause_tool = 0;
 //xdou
 
@@ -658,26 +627,11 @@ struct repsignal_context {
 
 // This structure records the result of a system call
 struct syscall_result {
-#ifdef USE_HPC
-	unsigned long long	hpc_begin;	// Time-stamp counter value when system call started
-	unsigned long long	hpc_end;	// Time-stamp counter value when system call finished
-#endif
 #ifdef USE_SYSNUM
 	short			sysnum;		// system call number executed
 #endif
 	u_char                  flags;          // See defs above
 };
-
-#ifdef LOG_COMPRESS
-//xdou
-struct pipe_fds
-{
-	int* fds;
-	int length;
-	int size;
-	struct mutex lock;
-};
-#endif
 
 // This holds a memory range that should be preallocated
 struct reserved_mapping {
@@ -685,7 +639,6 @@ struct reserved_mapping {
 	u_long m_end;
 };
 
-#ifdef CACHE_READS
 struct record_cache_data {
 	char is_cache_file; // True if this is a cache file descriptor
 	struct mutex mutex;  // Only one thread at a time gets to access the descriptor
@@ -709,10 +662,6 @@ struct replay_cache_files {
 	int      count; // Maximum number of files in this struct 
 	int*     data;  // Array of cache fds per file descriptor
 };
-#else
-struct record_cache_files;
-struct replay_cache_files;
-#endif
 
 struct record_group {
 	__u64 rg_id;                         // Unique identifier for all time for this recording
@@ -733,11 +682,6 @@ struct record_group {
 
 	char rg_linker[MAX_LOGDIR_STRLEN+1]; // contains the name of a special linker to use - for user level pthread library
 
-
-#ifdef TIME_TRICK
-	struct det_time_struct rg_det_time; 
-	struct mutex rg_time_mutex;
-#endif
 	atomic_t rg_record_threads; // Number of active record threads
 	int rg_save_mmap_flag;		// If on, records list of mmap regions during record
 	ds_list_t* rg_reserved_mem_list; // List of addresses that are mmaped, kept on the fly as they occur
@@ -880,27 +824,6 @@ struct rvalues {
 	u_long val[REPLAY_MAX_RANDOM_VALUES];
 };
 
-#ifdef LOG_COMPRESS
-/*struct det_time{
-	int flag;
-};*/
-struct clog_struct {
-	//for log compression
-	int done;
-	int args_size;
-	struct syscallCache syscall_cache;
-
-	struct x_struct x;
-	long clock_predict;
-	struct pipe_fds pfds;
-
-	struct status_info syscall_status;
-	
-	//struct det_time time;
-};
-
-#endif
-
 // This structure records/replays other values passed to an executable during exec
 struct exec_values {
 	int uid;
@@ -930,13 +853,7 @@ struct record_thread {
 	u64 rp_count;                   // Number of syscalls run by this thread
 
 	loff_t rp_read_log_pos;		// The current position in the log file that is being read
-#ifdef LOG_COMPRESS_1
-	loff_t rp_read_clog_pos;
-#endif
 	struct list_head rp_argsalloc_list;	// kernel linked list head pointing to linked list of argsalloc_nodes
-#ifdef LOG_COMPRESS_1
-	struct list_head rp_clog_list; 		// the linked list for compressed log, written to another file
-#endif
 
 #ifdef ORDER_WRITES
 	struct btree_head64 write_ids;
@@ -972,12 +889,7 @@ struct record_thread {
 	char recorded_filemap_valid[RECORD_FILE_SLOTS];
 #endif
 
-#ifdef CACHE_READS
 	struct record_cache_files* rp_cache_files; // Info about open cache files
-#endif
-#ifdef LOG_COMPRESS
-	struct clog_struct rp_clog; 	// additional parameters used by compressed log
-#endif
 };
 
 /* FIXME: Put this somewhere that doesn't suck */
@@ -1046,9 +958,7 @@ struct replay_thread {
 	// ajyl
 	int pin_redo_syscall;
 
-#ifdef CACHE_READS
 	struct replay_cache_files* rp_cache_files; // Info about open cache files
-#endif
 };
 
 /* Prototypes */
@@ -1058,20 +968,10 @@ int read_log_data (struct record_thread* prt);
 int read_log_data_internal (struct record_thread* prect, struct syscall_result* psr, int logid, int* syscall_count, loff_t* pos);
 int skip_and_read_log_data (struct record_thread* prect);
 static ssize_t write_log_data(struct file* file, loff_t* ppos, struct record_thread* prect, struct syscall_result* psr, int count);
-#ifdef LOG_COMPRESS_1
-struct file* init_clog_write (struct record_thread* prect, loff_t* ppos, int* pfd);
-void term_clog_write (struct file* file, int fd);
-int read_clog_data (struct record_thread* prt);
-int read_clog_data_internal (struct record_thread* prect, struct syscall_result* psr, int logid, int* syscall_count, loff_t* pos);
-static ssize_t write_clog_data(struct file* file, loff_t* ppos, struct record_thread* prect, struct syscall_result* psr, int count);
-#endif
 static void destroy_record_group (struct record_group *prg);
 static void destroy_replay_group (struct replay_group *prepg);
 static void __destroy_replay_thread (struct replay_thread* prp);
 static void argsfreeall (struct record_thread* prect);
-#ifdef LOG_COMPRESS_1
-static void clogfreeall (struct record_thread* prect);
-#endif
 void write_begin_log (struct file* file, loff_t* ppos, struct record_thread* prect);
 static void write_and_free_kernel_log(struct record_thread *prect);
 void write_mmap_log (struct record_group* prg);
@@ -1264,21 +1164,6 @@ replay_unlink_gdb(struct task_struct* tsk)
 	}
 }
 
-#ifdef USE_HPC
-static inline long long rdtsc(void) {
-	union {
-		struct {
-			unsigned int l;  /* least significant word */
-			unsigned int h;  /* most significant word */
-		} w32;
-		unsigned long long w64;
-	} v;
-	__asm __volatile (".byte 0xf; .byte 0x31     # RDTSC instruction"
-			: "=a" (v.w32.l), "=d" (v.w32.h) :);
-	return v.w64;
-}
-#endif
-
 void print_memory_areas (void) 
 {
 	struct vm_area_struct *existing_mmap;
@@ -1387,7 +1272,6 @@ recycle_shared_clock (char* path)
 	mutex_unlock(&paths_to_free_mutex);
 }
 
-#ifdef CACHE_READS
 static struct record_cache_files*
 init_record_cache_files (void)
 {
@@ -1837,297 +1721,6 @@ restore_replay_cache_files (struct file* cfile, loff_t* ppos)
 	return 0;
 }
 
-#endif
-
-
-//xdou
-#ifdef TIME_TRICK
-
-#define DET_TIME_STRUCT_REC current->record_thrd->rp_group->rg_det_time
-#define DET_TIME_STRUCT_REP current->replay_thrd->rp_record_thread->rg_group
-
-inline void add_fake_time (long nsec, struct record_group* prg)
-{
-	prg->rg_det_time.last_fake_nsec_accum += nsec;
-	if (prg->rg_det_time.last_fake_nsec_accum >= 1000000000) {
-		prg->rg_det_time.last_fake_nsec_accum -= 1000000000;
-		++ prg->rg_det_time.last_fake_sec_accum;
-	}
-}
-
-inline void add_fake_time_syscall (struct record_group* prg) {
-	// prg->rg_det_time.syscall_count += (atomic_read (prg->rg_pkrecord_clock) - prg->rg_det_time.syscall_count);
-	//++ prg->rg_det_time.syscall_count;
-}
-
-#endif
-
-//long clock_predict = 0;
-int c_detail = 0;
-#define log_compress_debug 0
-
-#ifdef LOG_COMPRESS
-inline void pipe_fds_init(struct pipe_fds *fds, int size)
-{
-	//printk("init pipe fds.\n");
-	//fds = kmalloc(sizeof(struct pipe_fds), GFP_KERNEL);
-	//if(fds == NULL)
-	//	printk("pipe fds init fails.\n");
-	if(fds->fds)
-		kfree(fds->fds);
-	fds->fds = kmalloc(sizeof(int)*size*2, GFP_KERNEL);
-	fds->length = 0;
-	fds->size = size;
-	mutex_init (&fds->lock);
-}
-
-
-
-inline struct pipe_fds* pipe_fds_clone(struct pipe_fds* fds)
-{
-	struct pipe_fds* ret = kmalloc(sizeof(struct pipe_fds), GFP_KERNEL);
-	mutex_lock (&fds->lock);
-	printk("clone.\n");
-	ret->length = fds->length;
-	ret->size = fds->size;
-	ret->fds = kmalloc(sizeof(int)*fds->size*2, GFP_KERNEL);
-	memcpy(ret->fds, fds->fds, sizeof(int)*fds->size*2);
-	mutex_unlock (&fds->lock);
-	return ret;
-}
-
-inline void pipe_fds_free(struct pipe_fds *fds)
-{
-	mutex_lock (&fds->lock);
-	if(fds==NULL) {
-		mutex_unlock (&fds->lock);
-		return;
-	}
-	if(fds->fds==NULL) {
-		mutex_unlock (&fds->lock);
-		return;
-	}
-	kfree(fds->fds);
-	mutex_unlock (&fds->lock);
-	//kfree(fds);
-}
-
-inline void pipe_fds_insert(struct pipe_fds* fds, int* file)
-{
-	int* tmp;
-	mutex_lock (&fds->lock);
-	fds->fds[fds->length*2] = file[0];
-	fds->fds[fds->length*2 + 1] = file[1];
-	++fds->length;
-	if(fds->length == fds->size)
-	{
-		fds->size *= 2;
-		tmp = kmalloc(sizeof(int)*2*fds->size, GFP_KERNEL);
-		memcpy(tmp, fds->fds, fds->size*sizeof(int));
-		kfree(fds->fds);
-		fds->fds = tmp;
-	}
-	mutex_unlock (&fds->lock);
-}
-
-inline int pipe_fds_lookup(struct pipe_fds* fds, int fd)
-{
-	int i = 0;
-	for(;i<fds->length*2; ++i)
-	{
-		if(fds->fds[i] == fd){
-			//printk("Find a pipe fd.\n");
-			return 1;
-		}
-	}
-	return 0;
-}
-
-inline int pipe_fds_delete(struct pipe_fds* fds, int fd)
-{
-	int i = 0;
-	for(;i<fds->length*2; ++i)
-	{
-		//TODO
-	}
-	return 0;
-}
-
-inline void pipe_fds_copy (struct pipe_fds* to, struct pipe_fds* from)
-{
-	mutex_lock (&from->lock);
-	printk("free old pipe_fds.\n");
-	pipe_fds_free(to);
-	printk("copy pipe_fds_map.\n");
-	to->length = from->length;
-	to->size = from->size;
-	to->fds = kmalloc (sizeof(int)*from->size*2, GFP_KERNEL);
-	memcpy(to->fds, from->fds, sizeof(int)*from->size*2);
-	mutex_unlock (&from->lock);
-}
-
-static void inline init_clog_struct (struct clog_struct* clog) {
-	init_x_comp (&clog->x);
-
-	clog->done = 0;
-	clog->args_size = 0;
-	clog->clock_predict = 0;
-	//clog->pfds = NULL;
-	
-	clog->pfds.fds = NULL;
-	pipe_fds_init(&clog->pfds, 8);
-	/*clog->fd_map_table[0] = 0;
-	clog->fd_map_table[1] = 1;
-	clog->fd_map_table[2] = 2;
-	for (i = 3; i < 1024; ++i)
-		clog->fd_map_table[i] = -1;
-	*/
-	init_syscall_cache (&clog->syscall_cache);
-	status_init (&clog->syscall_status);
-	//clog->time.flag = 1;
-	//printk ("Pid %d init_clog_struct.\n", current->pid);
-}
-
-inline int is_x_socket (unsigned long* a) {
-		//to decide whether the socket is for x server
-		struct sockaddr tmp;
-		struct sockaddr_in *tmp2;
-		int result = 0;
-
-		if (x_detail) printk ("Pid %d connect:%s,%lu, %d\n", current->pid, ((char*)(a[1])) + 3, a[2], tmp.sa_family);
-		if (strstr(((char*)(a[1])) + 3,"tmp/.X11-unix/X") != NULL){
-			printk ("Pid %d connect to the x server. socket fd:%lu\n", current->pid, a[0]);
-			result = 1;
-		}
-		else {
-			tmp2 = (struct sockaddr_in*)(a[1]);
-			if (x_detail) printk ("connect2: port:%u, addr:%u\n", tmp2->sin_port, tmp2->sin_addr.s_addr);
-			if ((tmp2->sin_port == htons(6010)) && tmp2->sin_addr.s_addr == in_aton("127.0.0.1"))
-			{
-				if (x_detail) printk("connect2 to the x server.\n");
-				result = 1;
-			}
-		}
-
-		return result;
-}
-
-
-
-inline int is_regular_file(unsigned int fd){
-        struct files_struct *files=current->files;
-        struct file *file;
-        /* xdou 
-         * test if this file is a regular file
-         */
-		if((int)fd<0)
-			return 0;
-        rcu_read_lock();
-        file = fcheck_files(files,fd);
-        if(file){
-                if(!atomic_inc_not_zero(&file->f_count)){
-                        rcu_read_unlock();
-                        return 0;
-                }
-                if(S_ISREG(file->f_dentry->d_inode->i_mode) || S_ISLNK(file->f_dentry->d_inode->i_mode)){
-                        rcu_read_unlock();
-                        return 1;
-                }
-		//if(S_ISFIFO(file->f_dentry->d_inode->i_mode))
-		//		printk("Find a FIFO, fd:%d\n", fd);
-        }
-        else{
-                printk("error:fd not exist.%u\n", fd);
-        }
-        rcu_read_unlock();
-	/*if(pipe_fds_lookup(&current->replay_thrd->rp_record_thread->pfds, fd) == 1)
-	{
-		return 1;
-	}*/
-        return 0;
-}
-
-inline void
-change_log_special(void)
-{
-	struct syscall_result* psr;
-	struct record_thread* prt = current->record_thrd;
-	psr = &prt->rp_log[prt->rp_in_ptr];
-	psr->flags |= SR_HAS_SPECIAL_FIRST;
-}
-
-inline void
-change_log_special_second(void)
-{
-	struct syscall_result* psr;
-	struct record_thread* prt = current->record_thrd;
-	psr = &prt->rp_log[prt->rp_in_ptr];
-	psr->flags |= SR_HAS_SPECIAL_SECOND;
-}
-
-inline void
-change_log_special_third(void)
-{
-	struct syscall_result* psr;
-	struct record_thread* prt = current->record_thrd;
-	psr = &prt->rp_log[prt->rp_in_ptr];
-	psr->flags |= SR_HAS_SPECIAL_THIRD;
-}
-
-inline void init_evs(void)
-{
-#ifdef MULTI_GROUP
-	struct shmat_rec_merge* tmp_rec = NULL;
-	struct shmat_rep_merge* tmp_rep = NULL;
-	pid_t *tmp_pid = NULL;
-#endif
-
-#ifdef MULTI_GROUP
-	if (test_thread_flag(TIF_RECORD)) {
-		if (shmat_rec_list != NULL) {
-			while ((tmp_rec = ds_list_get_first (shmat_rec_list)) != NULL)
-				KFREE (tmp_rec);
-			ds_list_destroy (shmat_rec_list);
-		}
-		shmat_rec_list = ds_list_create (NULL, 0, 1);
-	} else if (test_thread_flag (TIF_REPLAY)) {
-		if (shmat_rep_list != NULL) {
-			while ((tmp_rep = ds_list_get_first (shmat_rep_list)) != NULL)
-				KFREE (tmp_rep);
-			ds_list_destroy (shmat_rep_list);
-		}
-		shmat_rep_list = ds_list_create (NULL, 0, 1);
-
-	}
-	if (forked_process_list != NULL) {
-		while ((tmp_pid = ds_list_get_first (forked_process_list)) != NULL)
-			KFREE (tmp_pid);
-		ds_list_destroy (forked_process_list);
-	}
-	forked_process_list = ds_list_create (NULL, 0, 1);
-#endif
-	printk ("init_evs.\n");
-}
-
-inline long get_log_special(void)
-{
-	struct syscall_result* psr;
-	struct record_thread* prt = current->replay_thrd->rp_record_thread;
-	psr = &prt->rp_log[current->replay_thrd->rp_out_ptr - 1];
-	BUG_ON (current->replay_thrd->rp_out_ptr == 0);
-	return psr->flags & SR_HAS_SPECIAL_FIRST;
-}
-
-inline long get_log_special_second (void)
-{
-	struct syscall_result* psr;
-	struct record_thread* prt = current->replay_thrd->rp_record_thread;
-	psr = &prt->rp_log[current->replay_thrd->rp_out_ptr - 1];
-	BUG_ON (current->replay_thrd->rp_out_ptr == 0);
-	return psr->flags & SR_HAS_SPECIAL_SECOND;
-}
-#endif
-
 /* Creates a new replay group for the replaying process info */
 static struct replay_group*
 new_replay_group (struct record_group* prec_group, int follow_splits)
@@ -2200,10 +1793,6 @@ new_record_group (char* logdir)
 	mutex_init (&prg->rg_mutex);
 #endif	
 	atomic_set(&prg->rg_refcnt, 0);
-
-#ifdef TIME_TRICK
-	mutex_init (&prg->rg_time_mutex);
-#endif
 
 	if (create_shared_clock (prg) < 0) goto err_free;
 
@@ -2344,10 +1933,6 @@ new_record_thread (struct record_group* prg, u_long recpid, struct record_cache_
 	prp->rp_in_ptr = 0;
 	prp->rp_count = 0;
 	prp->rp_read_log_pos = 0;
-#ifdef LOG_COMPRESS_1
-	prp->rp_read_clog_pos = 0;
-#endif
-
 	prp->in_fs = 0;
 
 	INIT_LIST_HEAD(&prp->rp_argsalloc_list);
@@ -2358,10 +1943,6 @@ new_record_thread (struct record_group* prg, u_long recpid, struct record_cache_
 
 #ifdef ORDER_WRITES
 	btree_init64(&prp->write_ids);
-#endif
-
-#ifdef LOG_COMPRESS_1
-	INIT_LIST_HEAD (&prp->rp_clog_list);
 #endif
 
 	prp->rp_user_log_addr = 0;
@@ -2383,7 +1964,6 @@ new_record_thread (struct record_group* prg, u_long recpid, struct record_cache_
 	prp->rp_last_signal = NULL;
 
 	atomic_inc(&prg->rg_record_threads);
-#ifdef CACHE_READS
 	if (pfiles) {
 		prp->rp_cache_files = pfiles;
 		get_record_cache_files (pfiles);
@@ -2402,13 +1982,7 @@ new_record_thread (struct record_group* prg, u_long recpid, struct record_cache_
 			prp->prev_file_version[i] = -1;
 		}
 	} while (0);
-#endif
 
-#ifdef LOG_COMPRESS
-	//xdou
-	prp->rp_ignore_flag_addr = 0;
-	init_clog_struct (&prp->rp_clog);
-#endif
 	get_record_group(prg);
 	return prp;
 }
@@ -2464,7 +2038,6 @@ new_replay_thread (struct replay_group* prg, struct record_thread* prec_thrd, u_
 	prp->is_pin_vfork = 0;
 	prp->rp_ckpt_state = 0;
 
-#ifdef CACHE_READS
 	if (pfiles) {
 		prp->rp_cache_files = pfiles;
 		get_replay_cache_files (pfiles);
@@ -2475,7 +2048,6 @@ new_replay_thread (struct replay_group* prg, struct record_thread* prec_thrd, u_
 			return NULL;
 		}
 	}
-#endif
 
 	get_replay_group(prg);
 
@@ -2519,18 +2091,6 @@ __destroy_record_thread (struct record_thread* prp)
 
 	put_record_group (prp->rp_group);
 
-#ifdef LOG_COMPRESS_1
-	clogfreeall (prp);
-	int bitsin, bitsout;
-	printk ("Pid %d compresssion summary:\n", current->pid);
-	status_summarize (&prp->rp_clog.syscall_status, &bitsin, &bitsout);
-	printk ("Pid %d compression saves %d bytes.\n", current->pid, (bitsin-bitsout)/8);
-#endif
-#ifdef LOG_COMPRESS
-	free_syscall_cache (&prp->rp_clog.syscall_cache);
-	pipe_fds_free(&prp->rp_clog.pfds);
-	free_x_comp (&prp->rp_clog.x);
-#endif
 	KFREE (prp);
 	MPRINT ("      Pid %d __destroy_record_thread: exit!\n", current->pid);
 }
@@ -2559,9 +2119,7 @@ __destroy_replay_thread (struct replay_thread* prp)
 
 	BUG_ON (ds_list_remove(prp->rp_group->rg_replay_threads, prp) == NULL);
 
-#ifdef CACHE_READS
 	put_replay_cache_files (prp->rp_cache_files);
-#endif
 
 	// Decrement the record thread's refcnt and maybe destroy it.
 	__destroy_record_thread (prp->rp_record_thread);
@@ -2981,25 +2539,6 @@ static struct argsalloc_node* new_argsalloc_node (void* slab, size_t size)
 	return new_node;
 }
 
-#ifdef LOG_COMPRESS_1
-static struct clog_node* new_clog_node (void* slab, size_t size)
-{
-	struct clog_node* new_node;
-	new_node = KMALLOC (sizeof(struct clog_node), GFP_KERNEL);
-	if (new_node == NULL) {
-		printk ("new_clog_node: Cannot allocate struct clog_node\n");
-		return NULL;
-	}
-
-	new_node->head = slab;
-	new_node->pos = slab;
-	new_node->size = size;
-	//new_node->list should be init'ed in the calling function
-
-	return new_node;
-}
-#endif
-
 /*
  * Adds another slab for args/retparams/signals allocation,
  * if no slab exists, then we create one */ 
@@ -3016,27 +2555,6 @@ static int add_argsalloc_node (struct record_thread* prect, void* slab, size_t s
 	list_add(&new_node->list, &prect->rp_argsalloc_list);
 	return 0;
 }
-
-#ifdef LOG_COMPRESS_1
-static int add_compress_node (struct record_thread* prect, void* slab, size_t size, struct list_head *rp_list) { 
-	struct clog_node* new_node;
-	new_node = new_clog_node(slab, size);
-	if (new_node == NULL) {
-		printk("Pid %d add_compress_node: could not create new clog_node\n", prect->rp_record_pid);
-		return -1;
-	}
-
-	// Add to front of the list
-	MPRINT ("Pid %d add_compress_node: adding an args slab to record_thread\n", prect->rp_record_pid);
-	list_add(&new_node->list, rp_list);
-	init_encode_buffer (new_node); // basically, this function is the same with decodebuffer_init, the only exception is *node->pos = 0;
-	return 0;
-}
-static int inline add_clog_node (struct record_thread* prect, void* slab, size_t size) {
-	MPRINT ("Adding node to compress_log buffer.\n");
-	return add_compress_node (prect, slab, size, &prect->rp_clog_list);
-}
-#endif
 
 static void* argsalloc (size_t size)
 {
@@ -3070,50 +2588,6 @@ static void* argsalloc (size_t size)
 		node = list_first_entry(&prect->rp_argsalloc_list, struct argsalloc_node, list);
 		ptr = node->pos;
 		node->pos += size;
-#ifdef LOG_COMPRESS_1
-		if (unlikely (list_empty(&prect->rp_clog_list))) {
-			MPRINT ("Pid %d allocate new clog node, clog list is empty\n", current->pid);
-
-			asize = (size > argsalloc_size) ? size : argsalloc_size;
-			slab = VMALLOC(asize);
-			if (slab == NULL) {
-				printk ("Pid %d argsalloc:(clog) couldn't alloc slab with size %u\n", current->pid, asize);
-				return NULL;
-			}
-			rc = add_clog_node(current->record_thrd, slab, asize);
-			if (rc) {
-				printk("Pid %d argalloc: (clog) problem adding argsalloc_node\n", current->pid);
-				VFREE(slab);
-				return NULL;
-			}
-		} else {
-			struct clog_node *cnode = list_first_entry (&prect->rp_clog_list, struct clog_node, list);
-			if (cnode->head + cnode->size - cnode->pos < size) {
-				//copy the last byte to the new cnode
-				unsigned char last_byte = *cnode->pos;
-				unsigned int free_bits = cnode->freeBitsInDest;
-				//after we copy the last byte, the last byte in previous cnode node can be cleared
-				cnode->freeBitsInDest = 8;
-				printk ("Pid %d allocate new clog node, clog run out of space.\n", current->pid);
-				asize = (size> argsalloc_size) ? size: argsalloc_size;
-				slab = VMALLOC (asize);
-				if (slab == NULL) {
-					printk ("Pid %d argsalloc:(clog) couldn't alloc slab with size %u\n", current->pid, asize);
-					return NULL;
-				}
-				rc = add_clog_node(current->record_thrd, slab, asize);
-				if (rc) {
-					printk("Pid %d argalloc: (clog) problem adding argsalloc_node\n", current->pid);
-					VFREE(slab);
-					return NULL;
-				}
-				cnode = list_first_entry (&prect->rp_clog_list, struct clog_node, list);
-				*cnode->pos = last_byte;
-				cnode->freeBitsInDest = free_bits;
-			}
-		}
-		
-#endif
 		return ptr;
 	}
 
@@ -3123,53 +2597,6 @@ static void* argsalloc (size_t size)
 
 	return ptr;
 }
-
-#ifdef LOG_COMPRESS_1
-static void* compressalloc (size_t size, struct list_head *rp_list)
-{
-	struct clog_node* node;
-	size_t asize;
-	void* ptr;
-
-	node = list_first_entry(rp_list, struct clog_node, list);
-
-	// check to see if we've allocated a slab and if we have enough space left in the slab
-	if (unlikely(list_empty(rp_list) || ((node->head + node->size - node->pos) < size))) {
-		int rc;
-		void* slab;
-
-		MPRINT ("Pid %d compressalloc: not enough space left in slab, allocating new slab\n", current->pid);
-		
-		asize = (size > argsalloc_size) ? size : argsalloc_size;
-		slab = VMALLOC(asize);
-		if (slab == NULL) {
-			printk ("Pid %d compressalloc: couldn't alloc slab with size %u\n", current->pid, asize);
-			return NULL;
-		}
-		rc = add_compress_node(current->record_thrd, slab, asize, rp_list);
-		if (rc) {
-			printk("Pid %d compressalloc: problem adding argsalloc_node\n", current->pid);
-			VFREE(slab);
-			return NULL;
-		}
-		// get the new first node of the linked list
-		node = list_first_entry(rp_list, struct clog_node, list);
-		ptr = node->pos;
-		node->pos += size;
-		return ptr;
-	}
-
-	// return pointer and then advance
-	ptr = node->pos;
-	node->pos += size;
-
-	return ptr;
-}
-static inline void* clogalloc(size_t size) {
-	struct record_thread* prect = current->record_thrd;
-	return compressalloc (size, &prect->rp_clog_list); 
-}
-#endif
 
 /* Simplified method to return pointer to next data to consume on replay */
 static char* 
@@ -3214,31 +2641,6 @@ argsconsumed (struct record_thread* prect)
 	return node->pos - node->head;
 }
 
-#ifdef LOG_COMPRESS_1
-static inline struct clog_node* clog_alloc (int size) {
-	struct clog_node* cnode = list_first_entry (&current->record_thrd->rp_clog_list, struct clog_node, list);
-	return cnode;
-}
-
-// IMPORTANT: never use encodeXXX functions directly after ARGSMALLOC if the clog_node structure is defined before ARGSMALLOC
-// encodeValue_clog function should never compress more than 256 bytes at one time
-inline void encodeValue_clog (unsigned int value, unsigned int numBits, unsigned int blockSize) {
-	struct clog_node *node = clog_alloc (256);
-	encodeValue (value, numBits, blockSize, node);
-}
-
-static inline struct clog_node* clog_mark_done (void) {
-	current->record_thrd->rp_clog.done = 1;
-	return list_first_entry (&current->record_thrd->rp_clog_list, struct clog_node, list);
-}
-
-static inline struct clog_node* clog_mark_done_replay (void) {
-	current->replay_thrd->rp_record_thread->rp_clog.done = 1;
-	return list_first_entry (&current->replay_thrd->rp_record_thread->rp_clog_list, struct clog_node, list);
-}
-
-#endif
-
 /*
  * Adding support for freeing...
  * The only use case for this is in case of an error (like copying from user)
@@ -3281,53 +2683,6 @@ static void argsfreeall (struct record_thread* prect)
 		KFREE(node);	
 	}
 }
-
-#ifdef LOG_COMPRESS_1
-static void compressfree (const void* ptr, size_t size, struct list_head* rp_list)
-{
-	struct record_thread* prect;
-	struct clog_node* ra_node;
-	prect = current->record_thrd;
-	ra_node = list_first_entry(rp_list, struct clog_node, list);
-	
-	if (ptr == NULL) 
-		return;
-	
-	if (ra_node->head == ra_node->pos)
-		return;
-
-	// simply rollback allocation (there is the rare case where allocation has
-	// created a new slab, but in that case we simply roll back the allocation 
-	// and keep the slab since calling argsfree itself is rare)
-	if ((ra_node->pos - size) >= ra_node->head) {
-		ra_node->pos -= size;
-		return;
-	} else {
-		printk("Pid %d compressfree: unhandled case\n", current->pid);
-		return;
-	}
-}
-
-// Free all allocated data values at once
-static void compressfreeall (struct record_thread* prect, struct list_head* rp_list)
-{
-	struct clog_node* node;
-	struct clog_node* next_node;
-
-	list_for_each_entry_safe (node, next_node, rp_list, list) {
-		VFREE(node->head);
-		list_del(&node->list);
-		KFREE(node);	
-	}
-}
-static inline void clogfree (const void* ptr, size_t size) {
-	compressfree (ptr, size, &current->record_thrd->rp_clog_list);
-}
-static inline void clogfreeall (struct record_thread* prect) {
-	printk ("clogfreeall\n");
-	compressfreeall (prect, &prect->rp_clog_list);
-}
-#endif
 
 // function to keep track of the sysv identifiers, since we always want to return the record identifier
 static int add_sysv_mapping (struct replay_thread* prt, int record_id, int replay_id) { 
@@ -3794,10 +3149,6 @@ int fork_replay (char __user* logdir, const char __user *const __user *args,
 	char* argbuf;
 	int argbuflen;
 	void* slab;
-#ifdef TIME_TRICK
-	struct timeval tv;
-	struct timespec tp;
-#endif
 
 	MPRINT ("in fork_replay for pid %d\n", current->pid);
 	if (current->record_thrd || current->replay_thrd) {
@@ -3832,21 +3183,6 @@ int fork_replay (char __user* logdir, const char __user *const __user *args,
 		return -ENOMEM;
 	}
 	MPRINT ("fork_replay added new slab %p to record_thread %p\n", slab, current->record_thrd);
-#ifdef LOG_COMPRESS_1
-	slab = VMALLOC (argsalloc_size);
-	if (slab == NULL) return -ENOMEM;
-	if (add_clog_node(current->record_thrd, slab, argsalloc_size)) {
-		VFREE (slab);
-		destroy_record_group(prg);
-		current->record_thrd = NULL;
-		printk ("Pid %d fork_replay: error adding clog_node\n", current->pid);
-		return -ENOMEM;
-	}
-	MPRINT ("fork_replay added new slab %p to record_thread %p (clog)\n", slab, current->record_thrd);
-#endif
-#ifdef LOG_COMPRESS
-	init_evs ();
-#endif
 
 	current->replay_thrd = NULL;
 	MPRINT ("Record-Pid %d, tsk %p, prp %p\n", current->pid, current, current->record_thrd);
@@ -3889,13 +3225,8 @@ int fork_replay (char __user* logdir, const char __user *const __user *args,
 		return -EINVAL;
 	}
 
-#ifdef TIME_TRICK
-	retval = replay_checkpoint_to_disk (ckpt, filename, argbuf, argbuflen, 0, &tv, &tp);
-	init_det_time (&prg->rg_det_time, &tv, &tp);
-#else
 	// Save reduced-size checkpoint with info needed for exec
 	retval = replay_checkpoint_to_disk (ckpt, filename, argbuf, argbuflen, 0);
-#endif
 	DPRINT ("replay_checkpoint_to_disk returns %ld\n", retval);
 	if (retval) {
 		printk ("replay_checkpoint_to_disk returns %ld\n", retval);
@@ -3947,10 +3278,6 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 	char* execname;
 	__u64 rg_id;
 	mm_segment_t old_fs = get_fs();
-#ifdef TIME_TRICK
-	struct timeval tv;
-	struct timespec tp;
-#endif
 
 	printk("Replay Start\n");
 
@@ -3993,12 +3320,7 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 	strcpy (ckpt, logdir);
 	strcat (ckpt, "/ckpt");
 
-#ifdef TIME_TRICK
-	record_pid = replay_resume_from_disk (ckpt, &execname, &args, &env, &rg_id, &tv, &tp);
-	init_det_time (&precg->rg_det_time, &tv, &tp);
-#else
 	record_pid = replay_resume_from_disk(ckpt, &execname, &args, &env, &rg_id);
-#endif
 	if (record_pid < 0) {
 		return record_pid;
 	}
@@ -4009,12 +3331,6 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 	if (rc < 0) {
 		return rc;
 	}
-#ifdef LOG_COMPRESS_1
-	rc = read_clog_data(prect);
-	if (rc < 0) {
-		return rc;
-	}
-#endif
 
 	// Create a replay group and thread for this process
 	current->replay_thrd = prept;
@@ -4022,9 +3338,6 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 
 	MPRINT("Pid %d set_record_group_id to %llu\n", current->pid, rg_id);
 	current->replay_thrd->rp_record_thread->rp_group->rg_id = rg_id;
-#ifdef LOG_COMPRESS
-	init_evs();
-#endif
 
 	if (linker) {
 		strncpy(current->replay_thrd->rp_group->rg_rec_group->rg_linker, linker, MAX_LOGDIR_STRLEN);
@@ -4101,10 +3414,6 @@ replay_full_ckpt (long rc)
 	struct replay_group* prepg;
 	struct record_group* precg;
 	long retval;
-#ifdef TIME_TRICK
-	struct timeval tv;
-	struct timespec tp;
-#endif
 	int clock;
 	u_long proc_count = 0;
 	ds_list_iter_t* iter, *iter2;
@@ -4147,12 +3456,7 @@ replay_full_ckpt (long rc)
 	}
 	ds_list_iter_destroy(iter);
 	
-#ifdef TIME_TRICK
-	retval = replay_full_checkpoint_hdr_to_disk (ckpt, precg->rg_id, clock, proc_count, &tv, &tp, &pos);
-	init_det_time (&precg->rg_det_time, &tv, &tp);
-#else
 	retval = replay_full_checkpoint_hdr_to_disk (ckpt, precg->rg_id, clock, proc_count, &pos);
-#endif
 	if (retval) return retval;
 
 	// First write out data for this process
@@ -4224,10 +3528,6 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* 
 	long retval;
 	u_long consumed, num_procs;
 	loff_t pos;
-#ifdef TIME_TRICK
-	struct timeval tv;
-	struct timespec tp;
-#endif
 	int clock, i;
 
 	MPRINT ("In replay_full_ckpt_wakeup\n");
@@ -4272,20 +3572,12 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* 
 	current->replay_thrd = prept;
 	current->record_thrd = NULL;
 
-#ifdef TIME_TRICK
-	rc = replay_full_resume_hdr_from_disk (ckpt, &rg_id, &clock, &tv, &tp, &num_procs, &pos);
-	init_det_time (&precg->rg_det_time, &tv, &tp);
-#else
 	rc = replay_full_resume_hdr_from_disk(ckpt, &rg_id, &clock, &num_procs, &pos);
-#endif
 	if (rc < 0) return rc;
 	
 	MPRINT ("Pid %d set_record_group_id to %llu\n", current->pid, rg_id);
 	current->replay_thrd->rp_record_thread->rp_group->rg_id = rg_id;
 	atomic_set(precg->rg_pkrecord_clock, clock);
-#ifdef LOG_COMPRESS
-	init_evs ();
-#endif
 
 	MPRINT ("Number of checkpoint processes %lu\n", num_procs);
 	if (num_procs > 1) {
@@ -4322,13 +3614,7 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* 
 		if (num_procs > 1) pckpt_waiter->prepg = NULL;
 		return rc;
 	}
-#ifdef LOG_COMPRESS_1
-	rc = read_clog_data (prect);
-	if (rc < 0) {
-		if (num_procs > 1) pckpt_waiter->prepg = NULL;
-		return rc;
-	}
-#endif
+
 	if (consumed > 0) argsconsume(prect, consumed);
 
 	if (linker) {
@@ -4407,6 +3693,7 @@ replay_full_ckpt_proc_wakeup (char* logdir, char* filename, int fd)
 	char ckpt[MAX_LOGDIR_STRLEN+20];
 	int found;
 	u_long cur_ckpts, consumed;
+	u_char ch, ch2;
 
 	strcpy (ckpt, logdir);
 	strcat (ckpt, "/");
@@ -4475,14 +3762,9 @@ replay_full_ckpt_proc_wakeup (char* logdir, char* filename, int fd)
 	prect->rp_record_pid = record_pid;
 	rc = skip_and_read_log_data (prect);
 	if (rc < 0) return rc;
-#ifdef LOG_COMPRESS_1
-	rc = read_clog_data (prect);
-	if (rc < 0) return rc;
-#endif
 
 	// Restart the system call - assume sysenter as a hack
 	get_pt_regs(NULL)->ip -= 2;
-	u_char ch, ch2;
 	get_user (ch, (u_char *) get_pt_regs(NULL)->ip);
 	get_user (ch2, (u_char *) get_pt_regs(NULL)->ip+1);
 	if (ch != 0xcd || ch2 != 0x80) {
@@ -4543,26 +3825,11 @@ new_syscall_enter (long sysnum)
 		p = ARGSKMALLOC(sizeof(u_long), GFP_KERNEL);
 		if (unlikely (p == NULL)) return -ENOMEM;
 		*p = start_clock;
-#ifdef LOG_COMPRESS_1
-		// compression for start_clock
-		encodeValue ((unsigned int) start_clock, 32, 4, clog_alloc (4));
-		if (c_detail)
-			printk ("Pid %d encoded 4 bytes.\n", current->pid);
-		status_add (&current->record_thrd->rp_clog.syscall_status, 1, sizeof (long) << 3, getCumulativeBitsWritten (list_first_entry (&current->record_thrd->rp_clog_list, struct clog_node, list)));
-#endif
 	}
 	prt->rp_expected_clock = new_clock;
 	MPRINT ("pid %d incremented clock to %d on syscall %ld enter\n", current->pid, atomic_read(prt->rp_precord_clock), sysnum);
 
-#ifdef USE_HPC
-	psr->hpc_begin = rdtsc(); // minus cc_calibration
-#endif
-
-#ifdef TIME_TRICK
-	return new_clock - 1;
-#else
 	return 0;
-#endif
 }
 
 long new_syscall_enter_external (long sysnum)
@@ -4570,12 +3837,8 @@ long new_syscall_enter_external (long sysnum)
 	return new_syscall_enter (sysnum);
 }
 
-#if defined(LOG_COMPRESS)
-static inline long cnew_syscall_done (long sysnum, long retval, long prediction, int shift_clock)
-#else
 static inline long
 new_syscall_done (long sysnum, long retval) 
-#endif
 {
 	struct syscall_result* psr;
 	struct record_thread* prt = current->record_thrd;
@@ -4584,11 +3847,6 @@ new_syscall_done (long sysnum, long retval)
 	long *p;
 
 	psr = &prt->rp_log[prt->rp_in_ptr];
-
-#ifdef TIME_TRICK
-	if (shift_clock)
-		atomic_set (&current->record_thrd->rp_group->rg_det_time.flag, 1);
-#endif
 
 	if (retval) {
 		psr->flags |= SR_HAS_NONZERO_RETVAL;
@@ -4610,12 +3868,6 @@ new_syscall_done (long sysnum, long retval)
 	return 0;
 }
 
-#ifdef LOG_COMPRESS
-static inline long new_syscall_done (long sysnum, long retval) {
-	return cnew_syscall_done (sysnum, retval, -1, 1);
-}
-#endif
-
 static inline long
 new_syscall_exit (long sysnum, void* retparams)
 {
@@ -4624,9 +3876,6 @@ new_syscall_exit (long sysnum, void* retparams)
 
 	psr = &prt->rp_log[prt->rp_in_ptr];
 	psr->flags = retparams ? (psr->flags | SR_HAS_RETPARAMS) : psr->flags;
-#ifdef USE_HPC
-	psr->hpc_end = rdtsc();
-#endif
 	if (unlikely(prt->rp_signals)) signal_wake_up (current, 0); // we want to deliver signals when this syscall exits
 
 #ifdef MCPRINT
@@ -4946,20 +4195,9 @@ write_and_free_kernel_log(struct record_thread *prect)
 		write_log_data (file, &pos, prect, write_psr, prect->rp_in_ptr);
 		term_log_write (file, fd);
 	}
-#ifdef LOG_COMPRESS_1
-	file = init_clog_write (prect, &pos, &fd);
-	if (file) {
-		write_psr = &prect->rp_log[0];
-		write_clog_data (file, &pos, prect, write_psr, prect->rp_in_ptr);
-		term_clog_write (file, fd);
-	}
-#endif
 	set_fs(old_fs);
 
 	argsfreeall (prect);
-#ifdef LOG_COMPRESS_1
-	clogfreeall (prect);
-#endif
 }
 
 #ifdef WRITE_ASYNC
@@ -4997,21 +4235,10 @@ write_and_free_handler (struct work_struct *work)
 		write_log_data (file, &pos, prect, write_psr, prect->rp_in_ptr);
 		term_log_write (file, fd);
 	}
-#ifdef LOG_COMPRESS_1
-	file = init_clog_write (prect, &pos, &fd);
-	if (file) {
-		write_psr = &prect->rp_log[0];
-		write_clog_data (file, &pos, prect, write_psr, prect->rp_in_ptr);
-		term_clog_write (file, fd);
-	}
-#endif
 
 	set_fs(old_fs);
 
 	argsfreeall (prect);
-#ifdef LOG_COMPRESS_1
-	clogfreeall (prect);
-#endif
 	 __destroy_record_thread(prect);
 	KFREE(awp);
 	return;
@@ -5491,12 +4718,8 @@ sys_wakeup_paused_process (pid_t pid)
 	return 1;
 }
 
-#ifdef LOG_COMPRESS
-static inline long cget_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int syscall, char** ppretparams, struct syscall_result** ppsr, long prediction, u_long* ret_start_clock)
-#else
 static inline long
 get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int syscall, char** ppretparams, struct syscall_result** ppsr)
-#endif
 {
 	struct syscall_result* psr;
 	struct replay_thread* tmp;
@@ -5505,9 +4728,6 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 	u_long* pclock;
 	long retval = 0;
 	int ret, is_restart = 0;
-#ifdef LOG_COMPRESS_1
-	unsigned int dvalue = 0;
-#endif
 #ifndef USE_SYSNUM
 	loff_t peekpos;
 	int rc=0;
@@ -5521,12 +4741,6 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 		sys_exit(0);
 	}
 #endif
-#ifdef TIME_TRICK
-	//add_fake_time(5000, prg->rg_rec_group);
-	//add_fake_time_syscall (prg->rg_rec_group);
-	//printk("the new fake time.%u, %u\n", fake_tv_sec, fake_tv_usec);
-#endif
-
 	rg_lock (prg->rg_rec_group);
 
 	if (syscall == TID_WAKE_CALL && prg->rg_rec_group->rg_mismatch_flag) {
@@ -5550,10 +4764,6 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 		argsfreeall (prect);
 		prect->rp_in_ptr = 0;
 		read_log_data (prect);
-#ifdef LOG_COMPRESS_1
-		clogfreeall (prect);
-		read_clog_data (prt->rp_record_thread);
-#endif
 		if (prect->rp_in_ptr == 0) {
 			// There should be one record there at least
 			printk ("Pid %d waiting for non-existant syscall record %d - recording not synced yet??? \n", current->pid, syscall);
@@ -5600,9 +4810,6 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 
 	// Pin can interrupt, so we need to save the start clock in case we need to resume
 	prt->rp_start_clock_save = start_clock;
-#ifdef TIME_TRICK
-	if (ret_start_clock) *ret_start_clock = start_clock;
-#endif
 
 	if (unlikely(psr->sysnum != syscall)) {
 		if (psr->sysnum == SIGNAL_WHILE_SYSCALL_IGNORED && prect->rp_in_ptr == prt->rp_out_ptr+1) {
@@ -5736,11 +4943,6 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 	*ppsr = psr;
 	return retval;
 }
-#ifdef LOG_COMPRESS
-static inline long get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int syscall, char** ppretparams, struct syscall_result** ppsr) {
-	return cget_next_syscall_enter (prt, prg, syscall, ppretparams, ppsr, 0, NULL);
-}
-#endif
 
 static inline long
 get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, struct syscall_result* psr)
@@ -5857,49 +5059,8 @@ get_next_syscall_exit_external (struct syscall_result* psr)
    original return value and any optional data (if ppretparams is set).
    On an error, it calls sys_exit, and so never returns 
    */
-#ifndef LOG_COMPRESS
 static inline long
 get_next_syscall (int syscall, char** ppretparams)
-{
-	struct replay_thread* prt = current->replay_thrd;
-	struct replay_group* prg = prt->rp_group;
-	struct syscall_result* psr;
-	long retval;
-	long exit_retval;
-
-	retval = get_next_syscall_enter (prt, prg, syscall, ppretparams, &psr);
-
-	// Needed to exit the threads in the correct order with Pin attached.
-	// Essentially, return to Pin after Pin interrupts the syscall with a SIGTRAP.
-	// The thread will then begin to exit. recplay_exit_start will exit the threads
-	// in the correct order
-	if (is_pin_attached() && prt->rp_pin_restart_syscall == REPLAY_PIN_TRAP_STATUS_ENTER) {
-		prt->rp_saved_rc = retval;
-		return retval;
-	}
-
-	exit_retval = get_next_syscall_exit (prt, prg, psr);
-
-	// Reset Pin syscall address value to 0 at the end of the system call
-	// This is required to differentiate between syscalls when
-	// Pin issues the same syscall immediately after the app
-	if (is_pin_attached()) {
-		if ((*(int*)(prt->app_syscall_addr)) != 999) {
-			(*(int*)(prt->app_syscall_addr)) = 0;
-		}
-	}
-
-	// Need to return restart back to Pin so it knows to continue
-	if ((exit_retval == -ERESTART_RESTARTBLOCK) && is_pin_attached()) {
-		prt->rp_saved_rc = retval;
-		return exit_retval;
-	}
-
-	return retval;
-}
-#else
-static inline long
-cget_next_syscall (int syscall, char** ppretparams, u_char* flag, long prediction, u_long* start_clock)
 {
 	struct replay_thread* prt = current->replay_thrd;
 	struct replay_group* prg = prt->rp_group;
@@ -5926,7 +5087,7 @@ cget_next_syscall (int syscall, char** ppretparams, u_char* flag, long predictio
 		printk("Pid %d woken up.\n", current->pid);
 	}
 
-	retval = cget_next_syscall_enter (prt, prg, syscall, ppretparams, &psr, prediction, start_clock);
+	retval = get_next_syscall_enter (prt, prg, syscall, ppretparams, &psr);
 	if (current->replay_thrd->pin_redo_syscall) {
 		printk ("Pin will regenerate this syscall %d index %lu, don't do anything, return\n", syscall, prt->rp_out_ptr);
 		return retval;
@@ -5960,14 +5121,9 @@ cget_next_syscall (int syscall, char** ppretparams, u_char* flag, long predictio
 		prt->rp_saved_rc = retval;
 		return exit_retval;
 	}
-	if (flag) *flag = psr->flags;
 
 	return retval;
 }
-static inline long get_next_syscall (int syscall, char** ppretparams) {
-	return cget_next_syscall (syscall, ppretparams, NULL, 0, NULL);
-}
-#endif
 
 void consume_remaining_records (void)
 {
@@ -7142,22 +6298,9 @@ record_restart_syscall(struct restart_block* restart)
 		short* p;
 		int i;
 		
-#ifdef LOG_COMPRESS_1
-		struct clog_node* node;
-#endif
-#ifdef TIME_TRICK
-		int shift_clock = 1;
-#endif
 		new_syscall_enter (168);
-
 		rc = restart->fn (restart); 
-#ifdef TIME_TRICK
-		if (rc <= 0)  
-			shift_clock = 0;
-		cnew_syscall_done (168, rc, -1, shift_clock);
-#else
 		new_syscall_done (168, rc);
-#endif
 		if (rc > 0) {
 			pretvals = ARGSKMALLOC(sizeof(int)+restart->poll.nfds*sizeof(short), GFP_KERNEL);
 			if (pretvals == NULL) {
@@ -7174,28 +6317,9 @@ record_restart_syscall(struct restart_block* restart)
 				}
 				p++;
 			}
-#ifdef LOG_COMPRESS_1
-			// compress for the retparams of poll 
-			node = clog_alloc (sizeof (int ) + restart->poll.nfds * sizeof(short));
-			encodeCachedValue (restart->poll.nfds*sizeof(short), 32, &current->record_thrd->rp_clog.syscall_cache.poll_size, 0, node);
-			for (i = 0; i < restart->poll.nfds; ++i) {
-				encodeCachedValue (restart->poll.ufds[i].revents, 16, &current->record_thrd->rp_clog.syscall_cache.poll_revents, 0, node);
-			}
-			status_add (&current->record_thrd->rp_clog.syscall_status, 168, (sizeof (int) + restart->poll.nfds*sizeof (short)) << 3, getCumulativeBitsWritten (node));
-#endif
 		}
 
 		new_syscall_exit (168, pretvals);
-#ifdef TIME_TRICK
-		if (rc == 0) {
-			if (restart->poll.has_timeout) {
-				BUG ();
-				//add_fake_time(restart->poll.timeout_msecs*1000000, current->record_thrd->rp_group);
-				//printk ("semi-det time for poll: timeout %ld ms.\n", timeout_msecs);
-			}
-		}
-#endif
-		
 		return rc;
 	} else {
 		printk ("Record pid %d clock %d unhandled restart function %p do_restart_poll %p\n", current->pid, atomic_read(current->record_thrd->rp_precord_clock), restart->fn, do_restart_poll);
@@ -7570,8 +6694,6 @@ void consume_socket_args_write(void *retparams) {
 
 /* fork system call is handled by shim_clone */
 
-#ifdef CACHE_READS
-
 struct open_retvals {
 	dev_t           dev;
 	u_long          ino;
@@ -7597,11 +6719,6 @@ long file_cache_check_version(int fd, struct file *filp,
 		if (current->record_thrd->prev_file_version[fd] < data->idata->version) {
 			printk("%s %d: !!!!!! Warning - HAVE Out of date file version pid %d fd %d versions %lld %lld !!!!!!!!\n", __func__, __LINE__, 
 			       current->pid, fd, current->record_thrd->prev_file_version[fd], data->idata->version);
-#if 0
-			ret = READ_NEW_CACHE_FILE;
-			/* Stat the file and add it to the cache... */
-			add_file_to_cache(filp, &retvals->dev, &retvals->ino, &retvals->mtime);
-#endif
 		}
 		current->record_thrd->prev_file_version[fd] = data->idata->version;
 	}
@@ -7654,9 +6771,6 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 #ifdef TRACE_SOCKET_READ_WRITE
 	int err;
 #endif
-#ifdef LOG_COMPRESS
-	int shift_clock = 1;
-#endif
 
 	//perftimer_tick(read_btwn_timer);
 	perftimer_start(read_in_timer);
@@ -7681,19 +6795,7 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 	rc = sys_read (fd, buf, count);
 	perftimer_stop(read_sys_timer);
 
-#ifdef TIME_TRICK
-	if (rc <= 0) shift_clock = 0;
-#endif
-
-#ifdef LOG_COMPRESS
-	if(rc == count && (is_cache_file & 1)) {
-		change_log_special ();
-		cnew_syscall_done (3, rc, count, shift_clock);
-	} else
-		new_syscall_done (3, rc);
-#else
 	new_syscall_done (3, rc);
-#endif
 	if (rc > 0 && buf) {
 		// For now, include a flag that indicates whether this is a cached read or not - this is only
 		// needed for parseklog and so we may take it out later
@@ -7957,11 +7059,6 @@ record_read (unsigned int fd, char __user * buf, size_t count)
 				ARGSKFREE(pretval, rc+sizeof(u_int));	
 				return -EFAULT;
 			}							
-#ifdef X_COMPRESS
-			if (is_x_fd (&current->record_thrd->rp_clog.x, fd)) {
-				change_log_special_second ();
-			}
-#endif
 		}
 	} else if (is_cache_file) {
 		record_cache_file_unlock (current->record_thrd->rp_cache_files, fd);
@@ -7977,14 +7074,10 @@ static asmlinkage long
 replay_read (unsigned int fd, char __user * buf, size_t count)
 {
 	char *retparams = NULL;
-#ifndef LOG_COMPRESS
 	long retval, rc = get_next_syscall (3, &retparams);
-#else
-	long retval, rc = cget_next_syscall (3, &retparams, NULL, (long)count, NULL);
-#endif
 	int cache_fd;
 
-    DPRINT ("replay_read (%d, %s, %d)\n", fd, buf, count);
+	DPRINT ("replay_read (%d, %s, %d)\n", fd, buf, count);
 
 	if (retparams) {
 		u_int is_cache_file = *((u_int *)retparams);
@@ -8040,30 +7133,6 @@ replay_read (unsigned int fd, char __user * buf, size_t count)
 			argsconsume (current->replay_thrd->rp_record_thread, consume_size + rc);
 #endif
 		} else {
-#ifdef X_COMPRESS
-			if (rc > 0) {
-                int actual_fd = is_x_fd_replay (&current->replay_thrd->rp_record_thread->rp_clog.x, fd);
-				if (actual_fd > 0) {
-					if (x_detail) printk ("Pid %d read for x, fd:%d, buf:%p, count:%d, rc:%ld\n", current->pid, fd, buf, count, rc);
-					if (x_proxy) {
-						retval = sys_read (actual_fd, buf, count);
-						if (rc != retval)
-							printk ("pid %d read from x socket fails, expected:%ld, actual:%ld\n", current->pid, rc, retval);
-					}
-					if (record_x) {
-						if (copy_to_user (buf, retparams+sizeof(u_int), rc)) printk ("replay_read: pid %d cannot copy to user\n", current->pid);
-						consume_size = sizeof(u_int)+rc;
-						argsconsume (current->replay_thrd->rp_record_thread, consume_size); 
-					} else {
-						argsconsume (current->replay_thrd->rp_record_thread, sizeof(u_int)); 
-					}
-					//x_decompress_reply (rc, &X_STRUCT_REP, node); // this function should only computes the sequence number
-					//validate_decode_buffer (retparams+sizeof(u_int), rc, &X_STRUCT_REP);
-					//consume_decode_buffer (rc, &X_STRUCT_REP);
-					return rc;
-				}
-			}
-#endif
 			// uncached read
 			DPRINT ("uncached read of fd %u\n", fd);
 			if (copy_to_user (buf, retparams+sizeof(u_int), rc)) printk ("replay_read: pid %d cannot copy %ld bytes to user\n", current->pid, rc);
@@ -8076,9 +7145,6 @@ replay_read (unsigned int fd, char __user * buf, size_t count)
 }									
 
 asmlinkage ssize_t shim_read (unsigned int fd, char __user * buf, size_t count) SHIM_CALL (read, 3, fd, buf, count);
-#else
-RET1_COUNT_SHIM3(read, 3, buf, unsigned int, fd, char __user *, buf, size_t, count);
-#endif
 
 static asmlinkage ssize_t 
 record_write (unsigned int fd, const char __user * buf, size_t count)
@@ -8139,18 +7205,7 @@ record_write (unsigned int fd, const char __user * buf, size_t count)
 	new_syscall_enter (4);
 	size = sys_write (fd, buf, count);
 	DPRINT ("Pid %d records write returning %d\n", current->pid,size);
-#ifdef X_COMPRESS
-	if (is_x_fd (&current->record_thrd->rp_clog.x, fd) && size > 0) {
-		if (x_detail) printk ("Pid %d write for x\n", current->pid);
-		BUG_ON (size != count);
-		//x_compress_req (buf, size, &X_STRUCT_REC);
-	}
-#endif
-#ifdef LOG_COMPRESS
-	cnew_syscall_done (4, size, count, 1);
-#else
 	new_syscall_done (4, size);			       
-#endif		       
 	perftimer_stop(write_sys_timer);
 
 #ifdef TRACE_READ_WRITE
@@ -8353,17 +7408,10 @@ replay_write (unsigned int fd, const char __user * buf, size_t count)
 	ssize_t rc;
 	char *pretparams = NULL;
 	char kbuf[80];
-#ifdef X_COMPRESS
-    int actual_fd;
-#endif
 
-    DPRINT ("write(%d, %s, %d)\n", fd, buf, count);
+	DPRINT ("write(%d, %s, %d)\n", fd, buf, count);
 
-#ifndef LOG_COMPRESS
 	rc = get_next_syscall (4, &pretparams);
-#else
-	rc = cget_next_syscall (4, &pretparams, NULL, (long)count, NULL);
-#endif
 	if (fd == 99999) { // Hack that assists in debugging user-level code
 		memset (kbuf, 0, sizeof(kbuf));
 		if (copy_from_user (kbuf, buf, count < 80 ? count : 79)) printk ("replay_write: cannot copy kstring\n");
@@ -8385,25 +7433,11 @@ replay_write (unsigned int fd, const char __user * buf, size_t count)
 		}
 	}
 
-#ifdef X_COMPRESS
-	if ((actual_fd = is_x_fd_replay (&current->replay_thrd->rp_record_thread->rp_clog.x, fd)) > 0 && rc > 0) {
-		if (x_detail) printk ("Pid %d write for x\n", current->pid);
-		if (x_proxy) {
-			long retval;
-			retval = sys_write (actual_fd, buf, count);
-			if (rc != retval)
-				printk ("pid %d write to x socket fails, expected:%d, actual:%ld\n", current->pid, rc, retval);
-		}
-		//x_compress_req (buf, rc, &X_STRUCT_REP);
-	}
-#endif
-
 	return rc;
 }
 
 asmlinkage ssize_t shim_write (unsigned int fd, const char __user * buf, size_t count) SHIM_CALL (write, 4, fd, buf, count);
 
-#ifdef CACHE_READS
 static asmlinkage long							
 record_open (const char __user * filename, int flags, int mode)
 {								
@@ -8484,11 +7518,7 @@ replay_open (const char __user * filename, int flags, int mode)
 }
 
 asmlinkage long shim_open (const char __user * filename, int flags, int mode) SHIM_CALL (open, 5, filename, flags, mode);
-#else
-SIMPLE_SHIM3(open, 5, const char __user *, filename, int, flags, int, mode);
-#endif
 
-#ifdef CACHE_READS
 static asmlinkage long							
 record_close (int fd)
 {									
@@ -8511,14 +7541,6 @@ record_close (int fd)
 	perftimer_stop(close_sys_timer);
 	new_syscall_done (6, rc);
 	if (rc >= 0) clear_record_cache_file (current->record_thrd->rp_cache_files, fd);
-#ifdef X_COMPRESS
-	if (is_x_fd (&current->record_thrd->rp_clog.x, fd)) {
-		// don't set it to be -1 after closed
-		// -1 is for initial state, -2 is for closed state; the socket to x server may be re-established again
-		printk ("Pid %d close x server socket %d.\n", current->pid, fd);
-        remove_x_fd (&X_STRUCT_REC, fd);
-	}
-#endif
 	new_syscall_exit (6, NULL);				
 
 	perftimer_stop(close_timer);
@@ -8530,32 +7552,19 @@ replay_close (int fd)
 {	
 	long rc;
 	int cache_fd; 
-#ifdef X_COMPRESS
-    int actual_fd;
-#endif
 
-    DPRINT("replay_close(%d)\n", fd);
+	DPRINT("replay_close(%d)\n", fd);
 	rc = get_next_syscall (6, NULL);
 	if (rc >= 0 && is_replay_cache_file (current->replay_thrd->rp_cache_files, fd, &cache_fd)) {
 		clear_replay_cache_file (current->replay_thrd->rp_cache_files, fd);
 		DPRINT ("pid %d about to close cache fd %d fd %d\n", current->pid, cache_fd, fd);
 		sys_close (cache_fd);
 	}
-#ifdef X_COMPRESS
-	if ((actual_fd = is_x_fd_replay (&current->replay_thrd->rp_record_thread->rp_clog.x, fd)) > 0) {
-		sys_close (actual_fd);
-		remove_x_fd_replay (&current->replay_thrd->rp_record_thread->rp_clog.x, fd);
-	}
-#endif
-
 
 	return rc;
 }
 
 asmlinkage long shim_close (int fd) SHIM_CALL (close, 6, fd);
-#else
-SIMPLE_SHIM1(close, 6, int, fd);
-#endif
 
 RET1_SHIM3(waitpid, 7, int, stat_addr, pid_t, pid, int __user *, stat_addr, int, options);
 SIMPLE_SHIM2(creat, 8, const char __user *, pathname, int, mode);
@@ -8617,19 +7626,12 @@ record_execve(const char *filename, const char __user *const __user *__argv, con
 	struct record_group* precg;
 	struct record_thread* prect;
 	void* slab;
-#ifdef LOG_COMPRESS_1
-	void* clog_slab;
-#endif
 	char ckpt[MAX_LOGDIR_STRLEN+20];
 	long rc, retval;
 	char* argbuf, *newbuf;
 	int argbuflen, present;
 	char** env;
 	mm_segment_t old_fs;
-#ifdef TIME_TRICK
-	struct timeval tv;
-	struct timespec tp;
-#endif
 
 	MPRINT ("Record pid %d performing execve of %s\n", current->pid, filename);
 	new_syscall_enter (11);
@@ -8723,21 +7725,6 @@ record_execve(const char *filename, const char __user *const __user *__argv, con
 				current->record_thrd = NULL;
 				return -ENOMEM;
 			}
-#ifdef LOG_COMPRESS_1
-			clog_slab = VMALLOC (argsalloc_size);
-			if (clog_slab == NULL) {
-				destroy_record_group (precg);
-				current->record_thrd = NULL;
-				return -ENOMEM;
-			}
-
-			if (add_clog_node(current->record_thrd, clog_slab, argsalloc_size)) {
-				VFREE (clog_slab);
-				destroy_record_group (precg);
-				current->record_thrd = NULL;
-				return -ENOMEM;
-			}
-#endif
 			// Now write last record to log and flush it to disk
 			pretval = ARGSKMALLOC(sizeof(struct execve_retvals), GFP_KERNEL);
 			if (pretval == NULL) {
@@ -8764,18 +7751,10 @@ record_execve(const char *filename, const char __user *const __user *__argv, con
 
 			// Write out checkpoint for the new group
 			sprintf (ckpt, "%s/ckpt", precg->rg_logdir);
-#ifdef TIME_TRICK
-			retval = replay_checkpoint_to_disk (ckpt, (char *) filename, argbuf, argbuflen, parent_rg_id, &tv, &tp);
-			init_det_time (&precg->rg_det_time, &tv, &tp);
-#else
 			retval = replay_checkpoint_to_disk (ckpt, (char *) filename, argbuf, argbuflen, parent_rg_id);
-#endif
 			if (retval) {
 				printk ("record_execve: replay_checkpoint_to_disk returns %ld\n", retval);
 				VFREE (slab);
-#ifdef LOG_COMPRESS_1
-				VFREE (clog_slab);
-#endif
 				destroy_record_group (precg);
 				current->record_thrd = NULL;
 				return retval;
@@ -8786,9 +7765,7 @@ record_execve(const char *filename, const char __user *const __user *__argv, con
 			new_syscall_enter (11);
 			new_syscall_done (11, 0);
 		} else {
-#ifdef CACHE_READS
 			close_record_cache_files(prt->rp_cache_files); // This is conservative - some files may not have been closed on exec - but it is correct
-#endif
 			prt->rp_ignore_flag_addr = NULL; // No longer valid since address space destroyed
 		}
 
@@ -8833,9 +7810,7 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 	retval = get_next_syscall_enter (prt, prg, 11, (char **) &retparams, &psr);  // Need to split enter/exit because of vfork/exec wait
 	if (retval >= 0) {
 
-#ifdef CACHE_READS
 		close_replay_cache_files(prt->rp_cache_files); // Simpler to just close whether group survives or not
-#endif
 		if (retparams->is_new_group) {
 			if (current->vfork_done) complete_vfork_done (current);
 
@@ -9066,9 +8041,6 @@ record_pipe (int __user *fildes)
 	rc = sys_pipe (fildes);
 	new_syscall_done (42, rc);
 	if (rc == 0) {
-#ifdef LOG_COMPRESS_1
-		pipe_fds_insert (&current->record_thrd->rp_clog.pfds, fildes);
-#endif
 		pretval = ARGSKMALLOC(2*sizeof(int), GFP_KERNEL);
 		if (pretval == NULL) {
 			printk("record_pipe: can't allocate buffer\n");
@@ -9084,33 +8056,7 @@ record_pipe (int __user *fildes)
 	return rc;
 }
 
-#ifndef LOG_COMPRESS_1
 RET1_REPLAYG(pipe, 42, fildes, 2*sizeof(int), int __user* fildes);
-#else
-static asmlinkage long replay_pipe (int __user *fildes)	{									
-	char *retparams = NULL;						
-	long rc = get_next_syscall (42, (char **) &retparams);	
-	int ret;
-	int ret_fildes[2];
-	ret = sys_pipe(fildes);
-	if(copy_from_user(ret_fildes, fildes, 2*sizeof(int)))
-	{
-		printk("Pid %d cannot copy from user. \n", current->pid);
-		return syscall_mismatch();	
-	}
-
-	if (retparams) {						
-		if (copy_to_user (fildes, retparams, 2*sizeof(int))) printk ("replay_pipe: pid %d cannot copy to user\n", current->pid); 
-		argsconsume (current->replay_thrd->rp_record_thread, 2*sizeof(int)); 
-	}
-	DPRINT ("replay_pipe, return:%d(actual:%d), %d(actual:%d)\n", fildes[0], ret_fildes[0], fildes[1], ret_fildes[1]);
-	//current->replay_thrd->rp_record_thread->fd_map_table[fildes[0]] = ret_fildes[0];
-	//current->replay_thrd->rp_record_thread->fd_map_table[fildes[1]] = ret_fildes[1];
-	pipe_fds_insert(&current->replay_thrd->rp_record_thread->rp_clog.pfds, ret_fildes);	
-
-	return rc;							
-}
-#endif
 
 asmlinkage long shim_pipe (int __user *fildes) SHIM_CALL(pipe, 42, fildes);
 
@@ -9541,66 +8487,16 @@ record_gettimeofday (struct timeval __user *tv, struct timezone __user *tz)
 {
 	long rc;
 	struct gettimeofday_retvals* pretvals = NULL;
-#ifdef LOG_COMPRESS_1
-	struct clog_node *node;
-	int diff;
-#endif
-#ifdef TIME_TRICK
-	struct record_group *prg = current->record_thrd->rp_group;
-	int fake_time = 0;
-	long long time_diff;
-	int is_shift = 0;
-	long current_clock = new_syscall_enter (78);
-#else 
 	new_syscall_enter (78);
-#endif
 	rc = sys_gettimeofday (tv, tz);
-	//note: now we need to put TIME_TRICK here as we update the flag in new_syscall_done
-	// note: this could be buggy, fix it later; about the retval of gettimeofday
-#ifdef TIME_TRICK
-	if (!tv) BUG();
-	if (DET_TIME_DEBUG) printk ("Pid %d gettimeofday actual time %lu, %lu\n", current->pid, tv->tv_sec, tv->tv_usec);
-	mutex_lock (&prg->rg_time_mutex);	
-	//get the clock count since last update
-	if (atomic_read (&prg->rg_det_time.flag)) {
-		//return the actual time here
-		update_fake_accum_gettimeofday (&prg->rg_det_time, tv, current_clock);
-	} else {
-		time_diff = get_diff_gettimeofday (&prg->rg_det_time, tv, current_clock);
-		if ((is_shift = is_shift_time (&prg->rg_det_time, time_diff, current_clock))) {
-			change_log_special_second ();
-			update_step_time (time_diff, &prg->rg_det_time, current_clock);
-			update_fake_accum_gettimeofday (&prg->rg_det_time, tv, current_clock);
-		} else {
-			calc_det_gettimeofday (&prg->rg_det_time, tv, current_clock);
-			if (DET_TIME_DEBUG) printk ("Pid %d gettimeofday returns det time\n", current->pid);
-			fake_time = 1;
-		}
-	}
-	if (DET_TIME_DEBUG) printk ("Pid %d gettimeofday finally returns %lu, %lu\n", current->pid, tv->tv_sec, tv->tv_usec);
-	atomic_set (&prg->rg_det_time.flag, 0); //all time queries don't need to update the det time
-	cnew_syscall_done (78, rc, -1, 0);
-	mutex_unlock (&prg->rg_time_mutex);
-#else
 	new_syscall_done (78, rc);
-#endif
 
 	if (rc == 0) {
-#ifdef TIME_TRICK
-		if (fake_time) {
-			change_log_special ();
-			fake_time = 0;
-		}
-		else {
-#endif
 		pretvals = ARGSKMALLOC(sizeof(struct gettimeofday_retvals), GFP_KERNEL);
 		if (pretvals == NULL) {
 			printk("record_gettimeofday: can't allocate buffer\n");
 			return -ENOMEM;
 		}
-#ifdef LOG_COMPRESS_1
-		node = clog_alloc (sizeof(struct gettimeofday_retvals));
-#endif
 		if (tv) {
 			pretvals->has_tv = 1;
 			if (copy_from_user (&pretvals->tv, tv, sizeof(struct timeval))) {
@@ -9608,25 +8504,8 @@ record_gettimeofday (struct timeval __user *tv, struct timezone __user *tz)
 				ARGSKFREE (pretvals, sizeof(struct gettimeofday_retvals));
 				return -EFAULT;
 			}
-#ifdef LOG_COMPRESS_1
-			encodeValue (1, 1, 0, node);
-			diff = pretvals->tv.tv_sec - SYSCALL_CACHE_REC.tv_sec;
-			if (diff == 0) {
-				encodeValue (0, 1, 0, node);
-			} else {
-				encodeValue (1, 1, 0, node);
-				SYSCALL_CACHE_REC.tv_sec = pretvals->tv.tv_sec;
-				encodeValue (diff, 32, 4, node);
-			}
-			diff = pretvals->tv.tv_usec - SYSCALL_CACHE_REC.tv_usec;
-			SYSCALL_CACHE_REC.tv_usec = pretvals->tv.tv_usec;
-			encodeValue (diff, 32, 10, node);
-#endif
 		} else {
 			pretvals->has_tv = 0;
-#ifdef LOG_COMPRESS_1
-			encodeValue (0, 1, 0, node);
-#endif
 		}
 		if (tz) {
 			pretvals->has_tz = 1;
@@ -9635,31 +8514,9 @@ record_gettimeofday (struct timeval __user *tv, struct timezone __user *tz)
 				ARGSKFREE (pretvals, sizeof(struct gettimeofday_retvals));
 				return -EFAULT;
 			}
-#ifdef LOG_COMPRESS_1
-			encodeValue (1, 1, 0, node);
-			diff = pretvals->tz.tz_minuteswest - SYSCALL_CACHE_REC.tz_minuteswest;
-			SYSCALL_CACHE_REC.tz_minuteswest = pretvals->tz.tz_minuteswest;
-			encodeValue (diff, 32, 9, node);
-			diff = pretvals->tz.tz_dsttime- SYSCALL_CACHE_REC.tz_dsttime;
-			SYSCALL_CACHE_REC.tz_dsttime = pretvals->tz.tz_dsttime;
-			encodeValue (diff, 32, 9, node);
-
-#endif
 		} else {
 			pretvals->has_tz = 0;
-#ifdef LOG_COMPRESS_1
-			encodeValue (0, 1, 0, node);
-#endif
 		}
-#ifdef LOG_COMPRESS_1
-		status_add (&current->record_thrd->rp_clog.syscall_status, 78, sizeof (struct gettimeofday_retvals) << 3, getCumulativeBitsWritten(node));
-#endif
-
-#ifdef TIME_TRICK
-		}
-#endif
-
-
 	}
 
 	new_syscall_exit (78, pretvals);
@@ -9671,30 +8528,9 @@ static asmlinkage long
 replay_gettimeofday (struct timeval __user *tv, struct timezone __user *tz)
 {
 	struct gettimeofday_retvals* retparams = NULL;
-#ifdef TIME_TRICK
-	int fake_time = 0;
-	int is_shift = 0;
-	u_long start_clock;
-	long long time_diff;
-	struct record_group* prg = current->replay_thrd->rp_group->rg_rec_group;
-	u_char syscall_flag = 0;
-	long rc = cget_next_syscall (78, (char **) &retparams, &syscall_flag, 0, &start_clock);
-#else
 	long rc = get_next_syscall (78, (char **) &retparams);
-#endif
-
-#ifdef LOG_COMPRESS_1
-	struct clog_node * node;
-	int diff;
-	int value;
-	struct gettimeofday_retvals c_retparams;
-#endif
 
 	DPRINT ("Pid %d replays gettimeofday(tv=%p,tz=%p) returning %ld\n", current->pid, tv, tz, rc);
-#ifdef TIME_TRICK
-	if (syscall_flag & SR_HAS_SPECIAL_FIRST) fake_time = 1;
-	if (syscall_flag & SR_HAS_SPECIAL_SECOND) is_shift = 1;
-#endif
 	if (retparams) {
 		if (retparams->has_tv && tv) {
 			if (copy_to_user (tv, &retparams->tv, sizeof(struct timeval))) {
@@ -9708,84 +8544,12 @@ replay_gettimeofday (struct timeval __user *tv, struct timezone __user *tz)
 				return syscall_mismatch();
 			}
 		}
-#ifdef LOG_COMPRESS_1
-		node = clog_mark_done_replay ();
-		decodeValue (&value, 1, 0, 0, node);
-		if (tv && value) {
-			decodeValue (&value, 1, 0, 0, node);
-			if (value) {
-				decodeValue (&diff, 32, 4, 0, node);
-				c_retparams.tv.tv_sec = diff + SYSCALL_CACHE_REP.tv_sec;
-				//put_user
-				if (log_compress_debug) BUG_ON (retparams->tv.tv_sec != c_retparams.tv.tv_sec);
-				SYSCALL_CACHE_REP.tv_sec = c_retparams.tv.tv_sec;
-			} else {
-				//put_user
-				c_retparams.tv.tv_sec = SYSCALL_CACHE_REP.tv_sec;
-				if (log_compress_debug) BUG_ON (retparams->tv.tv_sec != c_retparams.tv.tv_sec);
-			}
-			decodeValue (&diff, 32, 10, 0, node);
-			//put_user
-			c_retparams.tv.tv_usec = diff + SYSCALL_CACHE_REP.tv_usec;
-			if (log_compress_debug) BUG_ON (retparams->tv.tv_usec != c_retparams.tv.tv_usec);
-			SYSCALL_CACHE_REP.tv_usec = c_retparams.tv.tv_usec;
-			if (copy_to_user (tv, &c_retparams.tv, sizeof (struct timeval))) {
-				printk ("Pid %d cannot copy tv to user\n", current->pid);
-				return syscall_mismatch();
-			}
-		}
-		decodeValue (&value, 1, 0, 0, node);
-		if (tz && value) {
-			decodeValue (&diff, 32, 9, 0, node);
-			//put_user
-			c_retparams.tz.tz_minuteswest = diff + SYSCALL_CACHE_REP.tz_minuteswest;
-			if(log_compress_debug) BUG_ON (retparams->tz.tz_minuteswest != c_retparams.tz.tz_minuteswest);
-			SYSCALL_CACHE_REP.tz_minuteswest = c_retparams.tz.tz_minuteswest; 
-			decodeValue (&diff, 32, 9, 0, node);
-			c_retparams.tz.tz_dsttime = diff + SYSCALL_CACHE_REP.tz_dsttime;
-			//put_user
-			if (log_compress_debug) BUG_ON (retparams->tz.tz_dsttime != c_retparams.tz.tz_dsttime);
-			SYSCALL_CACHE_REP.tz_dsttime = c_retparams.tz.tz_dsttime; 
-			if (copy_to_user (tz, &c_retparams.tz, sizeof(struct timezone))) {
-				printk ("Pid %d cannot copy tz to user\n", current->pid);
-				return syscall_mismatch();
-			}
-		}
-		
-#endif
-#ifdef TIME_TRICK
-		if (DET_TIME_DEBUG) printk("gettimeofday returns actual time. actual :%ld,%ld\n", tv->tv_sec, tv->tv_usec);
-		if (is_shift) {
-			time_diff = get_diff_gettimeofday (&prg->rg_det_time, &retparams->tv, start_clock);	
-			update_step_time (time_diff, &prg->rg_det_time, start_clock);
-		}
-		update_fake_accum_gettimeofday (&prg->rg_det_time, &retparams->tv, start_clock);
-#endif
 		argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct gettimeofday_retvals));
 	} 
-#ifdef TIME_TRICK
-	else {
-		//return det_time
-		calc_det_gettimeofday (&prg->rg_det_time, tv, start_clock);
-		if (DET_TIME_DEBUG) printk ("gettimeofday returns deterministic time\n");
-	}
-	if (DET_TIME_DEBUG) printk ("Pid %d gettimeofday finally returns %lu, %lu\n", current->pid, tv->tv_sec, tv->tv_usec);
-#endif
 	return rc;
 }
 
-#ifdef TIME_TRICK
-static asmlinkage long record_gettimeofday_ignored (struct timeval __user *tv, struct timezone __user *tz) {
-	long rc;
-	rc = sys_gettimeofday (tv, tz);
-	BUG ();//fix if needed
-	return rc;
-}
-
-asmlinkage long shim_gettimeofday (struct timeval __user *tv, struct timezone __user *tz) SHIM_CALL_IGNORE(gettimeofday, 78, tv, tz);
-#else
 asmlinkage long shim_gettimeofday (struct timeval __user *tv, struct timezone __user *tz) SHIM_CALL(gettimeofday, 78, tv, tz);
-#endif
 
 SIMPLE_SHIM2(settimeofday, 79, struct timeval __user *, tv, struct timezone __user *, tz);
 
@@ -10089,9 +8853,6 @@ record_socketcall(int call, unsigned long __user *args)
 	long rc = 0;
 	unsigned long a[6];
 	unsigned int len;
-#ifdef TIME_TRICK
-	int shift_clock = 1;
-#endif
 
 	DPRINT ("Pid %d in record_socketcall(%d)\n", current->pid, call);
 
@@ -10138,13 +8899,7 @@ record_socketcall(int call, unsigned long __user *args)
 #endif
 
 	rc = sys_socketcall (call, args);
-#ifdef TIME_TRICK
-	if ((call == SYS_RECV || call == SYS_RECVMSG) && rc <= 0) 
-		shift_clock = 0;
-	cnew_syscall_done (102, rc, -1, shift_clock);
-#else
 	new_syscall_done (102, rc);
-#endif
 
 	DPRINT ("Pid %d records socketcall %d returning %ld\n", current->pid, call, rc);
 
@@ -10152,40 +8907,6 @@ record_socketcall(int call, unsigned long __user *args)
 	case SYS_CONNECT:
 	{
 		struct generic_socket_retvals* pretvals = NULL;
-#ifdef X_COMPRESS
-		//xdou
-		if (is_x_socket (a) && rc >= 0) {
-			int conn_times = X_STRUCT_REC.connection_times;
-			/*if (current->record_thrd->rp_clog.x.xfd != -1) {
-				//connection to x server is already established, re-establishment requires reset
-				free_x_comp (&X_STRUCT_REC);
-				init_x_comp (&X_STRUCT_REC);
-			}*/
-			add_x_fd (&current->record_thrd->rp_clog.x, a[0]);
-			X_STRUCT_REC.connection_times = ++ conn_times;
-			change_log_special ();
-			if (x_proxy) {
-				//init messages
-				mm_segment_t old_fs = get_fs ();
-				int tmp_retval;
-				set_fs (KERNEL_DS);
-				tmp_retval = sys_write (a[0], "0", 1);
-				if (tmp_retval != 1)
-					printk ("Pid %d write fails to x proxy for initialization.(mode)\n", current->pid);
-				tmp_retval = sys_write (a[0], current->record_thrd->rp_group->rg_logdir, MAX_LOGDIR_STRLEN+1);
-				if (tmp_retval != MAX_LOGDIR_STRLEN+1)
-					printk ("Pid %d write fails to x proxy for initialization.(logdir)\n", current->pid);
-				tmp_retval = sys_write (a[0], (char*)&current->record_thrd->rp_record_pid, sizeof (pid_t));	
-				if (tmp_retval != sizeof(pid_t)) 
-					printk ("Pid %d write fails to x proxy for initialization.(pid)\n", current->pid);
-				tmp_retval = sys_write (a[0], (char*)&X_STRUCT_REC.connection_times, sizeof (int));
-				if (tmp_retval != sizeof(int)) 
-					printk ("Pid %d write fails to x proxy for initialization.(connection_times)\n", current->pid);
-				set_fs (old_fs);
-			}
-		}
-		//xdou
-#endif
 		pretvals = ARGSKMALLOC(sizeof(struct generic_socket_retvals), GFP_KERNEL);
 		if (pretvals == NULL) {
 			printk("record_socketcall(socket): can't allocate buffer\n");
@@ -10315,19 +9036,6 @@ record_socketcall(int call, unsigned long __user *args)
 	{
 		struct recvfrom_retvals* pretvals = NULL;
 		if (rc >= 0) {
-#ifdef X_COMPRESS
-			if (is_x_fd (&X_STRUCT_REC, a[0])) {
-				change_log_special_second ();
-				if (x_detail) {
-					//int i = 0;
-					printk ("Pid %d recv: fd:%ld, size:%ld\n", current->pid, a[0], rc);
-					/*for (i = 0; i < rc; ++i) {
-						printk ("%u,",  (unsigned int)(*((unsigned char*) a[1] + i)));
-					}
-					printk ("\n");*/
-				}
-			}
-#endif
 			pretvals = ARGSKMALLOC(sizeof(struct recvfrom_retvals) + rc, GFP_KERNEL);
 			if (pretvals == NULL) {
 				printk("record_socketcall(recv): can't allocate data buffer of size %ld\n", sizeof(struct recvfrom_retvals)+rc-1);
@@ -10339,13 +9047,6 @@ record_socketcall(int call, unsigned long __user *args)
 				return -EFAULT;
 			}
 			pretvals->call = call;
-#ifdef LOG_COMPRESS_1
-			//not compatible with TRACE?
-			/*node = clog_alloc (sizeof (struct recvfrom_retvals));
-			if (c_detail) printk ("Pid %d recv call.\n", current->pid);
-			encodeCachedValue (call, 32, &current->record_thrd->rp_clog.syscall_cache.recv_call, 0, node);*/
-			status_add (&current->record_thrd->rp_clog.syscall_status, 102, (sizeof(struct recvfrom_retvals) - 4) << 3, 0);
-#endif
 #ifdef TRACE_SOCKET_READ_WRITE
 			do /* magic */ {
 				struct file *filp = fget(a[0]);
@@ -10403,10 +9104,6 @@ record_socketcall(int call, unsigned long __user *args)
 					return -EFAULT;
 				}
 			}
-#ifdef X_COMPRESS
-			if (x_detail) printk ("recvfrom: fd:%ld, size:%ld\n", a[0], a[1]);
-			BUG_ON (is_x_fd (&X_STRUCT_REC, a[0])); //if this assertion fails, both x compression and det time need to be modified
-#endif
 			pretvals->call = call;
 
 #ifdef TRACE_SOCKET_READ_WRITE
@@ -10493,12 +9190,6 @@ record_socketcall(int call, unsigned long __user *args)
 				if (rem_size == 0) break;
 			}
 			if (rem_size != 0) printk ("record_socketcall(recvmsg): %ld bytes of data remain???\n", rem_size);
-#ifdef X_COMPRESS
-			if (is_x_fd (&X_STRUCT_REC, a[0])) {
-				if (x_detail) printk ("Pid %d recvmsg: fd:%ld, size:%ld\n",current->pid,  a[0], rc);
-				change_log_special_second ();
-			}
-#endif
 		}
 
 		new_syscall_exit (102, pretvals);
@@ -10523,10 +9214,6 @@ record_socketcall(int call, unsigned long __user *args)
 			if (retval < 0) return retval;
 		}
 
-#ifdef X_COMPRESS
-		BUG_ON (is_x_fd (&X_STRUCT_REC, a[0]));
-		if (x_detail) printk ("recvmmsg: fd:%ld, size:%ld\n", a[0], a[1]);
-#endif
 		new_syscall_exit (102, pretvals);
 		return rc;
 	}
@@ -10667,79 +9354,12 @@ replay_socketcall (int call, unsigned long __user *args)
 	}
 
 	DPRINT ("Pid %d, replay_socketcall %d, rc is %ld, retparams is %p\n", current->pid, call, rc, retparams);
-#ifdef X_COMPRESS
-	if (x_detail && is_x_fd (&X_STRUCT_REP, kargs[0]))
-		printk ("Pid %d socketcall for x server.\n", current->pid);
-#endif
 
 	switch (call) {
-#ifndef LOG_COMPRESS
 	case SYS_SOCKET:
 	case SYS_CONNECT:
-#else
-	case SYS_CONNECT: 
-		//decide whether the socket is for x server
-		//maybe consider to write xfd into the log when recording
-		{
-			if (rc >= 0 && is_x_socket (kargs)) {
-				int conn_times = X_STRUCT_REP.connection_times;
-				int actual_fd = X_STRUCT_REP.last_fd;
-				/*if (X_STRUCT_REP.xfd != -1) {
-					free_x_comp (&X_STRUCT_REP);
-					init_x_comp (&X_STRUCT_REP);
-				}*/
-				X_STRUCT_REP.connection_times = ++ conn_times;
-				add_x_fd_replay (&X_STRUCT_REP, kargs[0], actual_fd);
-				if (x_proxy) { 
-					long retval;
-					mm_segment_t old_fs = get_fs ();
-					//init messages
-					set_fs (KERNEL_DS);
-					kargs[0] = X_STRUCT_REP.last_fd;
-					retval = sys_socketcall (call, kargs);
-					if (retval != rc) { 
-						printk ("Pid %d connect from x fails, expected:%ld, actual:%ld\n", current->pid, rc, retval);
-					}
-					if (x_proxy == 2) {
-						retval = sys_write (kargs[0], "2", 1);
-					} else {
-						retval = sys_write (kargs[0], "1", 1);
-					}
-					if (retval != 1)
-						printk ("Pid %d write fails to x proxy for initialization.(mode)\n", current->pid);
-					retval = sys_write (kargs[0], current->replay_thrd->rp_record_thread->rp_group->rg_logdir, MAX_LOGDIR_STRLEN+1);
-					if (retval != MAX_LOGDIR_STRLEN+1)
-						printk ("Pid %d write fails to x proxy for initialization.(logdir)\n", current->pid);
-					retval = sys_write (kargs[0], (char*)&current->replay_thrd->rp_record_thread->rp_record_pid, sizeof (pid_t));	
-					if (retval != sizeof(pid_t)) 
-						printk ("Pid %d write fails to x proxy for initialization.(pid)\n", current->pid);
-					retval = sys_write (kargs[0], (char*)&X_STRUCT_REP.connection_times, sizeof (int));
-					if (retval != sizeof(int)) 
-						printk ("Pid %d write fails to x proxy for initialization.(connection_times)\n", current->pid);
-					set_fs (old_fs);
-
-				}
-			}
-		}
 		if (retparams) argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct generic_socket_retvals));
 		return rc;
-		break;
-	case SYS_SOCKET:
-		{
-			if (x_proxy) {
-				long retval = sys_socketcall (call, args);
-				if (retval <= 0) 
-					printk ("Pid %d create socket fails, expected:%ld, actual:%ld\n", current->pid, rc, retval);
-				else {
-					if (x_detail) printk ("Pid %d create socket, recorded fd is %ld, actual fd is %ld\n", current->pid, rc, retval);
-					X_STRUCT_REP.last_fd = retval;
-				}
-			}
-			if (retparams) argsconsume (current->replay_thrd->rp_record_thread, sizeof (struct generic_socket_retvals));
-			return rc;
-		}
-		break;
-#endif
 #ifdef TRACE_SOCKET_READ_WRITE
 	case SYS_SEND:
 	case SYS_SENDTO:
@@ -10807,68 +9427,11 @@ replay_socketcall (int call, unsigned long __user *args)
 		return rc;
 	case SYS_RECV:
 		if (retparams) {
-#ifdef X_COMPRESS
-			struct recvfrom_retvals* retvals = (struct recvfrom_retvals *) retparams;
-                        int actual_fd;
-
-			if ((actual_fd = is_x_fd_replay (&X_STRUCT_REP, kargs[0])) > 0) {
-				mm_segment_t old_fs = get_fs ();
-				set_fs (KERNEL_DS);
-				if (x_detail) printk ("Pid %d recv (socketcall) for x\n", current->pid);
-				if (x_proxy) { 
-					long retval;
-					long count = 0;
-					int tries = 0;
-					kargs[2] = rc;
-					kargs[0] = actual_fd;
-					retval = sys_socketcall (call, kargs);	
-					if (retval > 0)
-						count += retval;
-					while (count < rc) {
-						if (x_detail) printk ("Pid %d recv from x fails, %ld bytes to go, expected:%ld, try again\n", current->pid, rc - count, rc);
-						kargs[2] = rc - count;
-						kargs[1] += retval;
-						retval = sys_socketcall (call, kargs);
-						if (retval > 0) count += retval;
-						++ tries;
-						if (tries >= 15) {
-							printk ("Pid %d tries too many times receiving x messages. sleep and try later.\n", current->pid);
-							msleep (200);
-						}
-					}
-					if (record_x && rc > 0 && memcmp ((char*)(args[1]), &retvals->buf, rc)) {
-						int i = 0;
-						printk ("Pid %d diverges in x messages.\n", current->pid);
-						for (i = 0; i <rc; ++i) 
-							printk ("%u,", (unsigned int) ((unsigned char*)(args[1]))[i]);
-						printk ("\n");
-						for (i = 0; i <rc; ++i) 
-							printk ("%u,", (unsigned int) ((unsigned char*)(&retvals->buf))[i]);
-						printk ("\n");
-					}
-				}
-				set_fs (old_fs);
-				if (record_x) {
-					if (!x_proxy && copy_to_user ((char *) kargs[1], &retvals->buf, rc)) {
-						printk ("Pid %d replay_socketcall_recv cannot copy to user\n", current->pid);
-					}
-
-					argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct recvfrom_retvals)+rc);
-				} else 
-					argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct recvfrom_retvals));
-			} else {
-				if (copy_to_user ((char *) kargs[1], &retvals->buf, rc)) {
-					printk ("Pid %d replay_socketcall_recv cannot copy to user\n", current->pid);
-				} 
-				argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct recvfrom_retvals)+rc);
-			}
-#else
 			struct recvfrom_retvals* retvals = (struct recvfrom_retvals *) retparams;
 			if (copy_to_user ((char *) kargs[1], &retvals->buf, rc)) {
 				printk ("Pid %d replay_socketcall_recv cannot copy to user\n", current->pid);
 			}
 			argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct recvfrom_retvals)+rc);
-#endif
 #ifdef TRACE_SOCKET_READ_WRITE
 			consume_socket_args_read(retparams + sizeof(struct recvfrom_retvals) + rc);
 #endif
@@ -10942,22 +9505,6 @@ replay_socketcall (int call, unsigned long __user *args)
 				printk ("replay_socketcall(recvmsg): %ld bytes remaining\n", rem_size);
 				syscall_mismatch();
 			}
-#ifdef X_COMPRESS
-			if (is_x_fd (&X_STRUCT_REP, kargs[0])) {
-				if (x_detail) printk ("Pid %d recvmsg for x\n", current->pid);
-				//x_decompress_reply (iovlen, &X_STRUCT_REP, xnode);
-				//validate_decode_buffer (((char*) retvals) + sizeof (struct recvmsg_retvals) + retvals->msg_namelen + retvals->msg_controllen, iovlen, &X_STRUCT_REP);
-				//consume_decode_buffer (iovlen, &X_STRUCT_REP);
-				if (x_proxy) { 
-					long retval = sys_socketcall (call, args);	
-					// it should be the same with RECV; fix if needed
-					BUG ();
-					if (retval != rc) 
-						printk ("Pid %d recvmsg from x fails, expected:%ld, actual:%ld\n", current->pid, rc, retval);
-				}
-
-			}
-#endif
 			argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct recvmsg_retvals)+retvals->msg_namelen+retvals->msg_controllen+rc);
 		}
 		return rc;
@@ -11485,17 +10032,14 @@ record_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 			return -ECHILD;
 		}
 
-#ifdef CACHE_READS
 		if (clone_flags&CLONE_FILES) {
 			// file descriptor table is shared so share handles to clone files
 			tsk->record_thrd = new_record_thread (prg, tsk->pid, current->record_thrd->rp_cache_files);
 		} else {
-#endif
 			tsk->record_thrd = new_record_thread (prg, tsk->pid, NULL); 
-#ifdef CACHE_READS
 			copy_record_cache_files (current->record_thrd->rp_cache_files, tsk->record_thrd->rp_cache_files);
 		}
-#endif
+
 		if (tsk->record_thrd == NULL) {
 			rg_unlock(prg);
 			return -ENOMEM; 
@@ -11527,17 +10071,6 @@ record_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 			printk ("Pid %d fork_replay: error adding argsalloc_node\n", current->pid);
 			return -ENOMEM;
 		}
-#ifdef LOG_COMPRESS_1
-		// xdou: inherit the parent's fd table and pipe table
-		pipe_fds_copy (&tsk->record_thrd->rp_clog.pfds, &current->record_thrd->rp_clog.pfds);
-		slab = VMALLOC (argsalloc_size);
-		if (slab == NULL) return -ENOMEM;
-		if (add_clog_node(tsk->record_thrd, slab, argsalloc_size)) {
-			VFREE (slab);
-			printk ("Pid %d fork_replay: error adding clog_node\n", current->pid);
-			return -ENOMEM;
-		}
-#endif
 
 		MPRINT ("Pid %d records clone returning Record Pid-%d, tsk %p, prp %p\n", current->pid, tsk->pid, tsk, tsk->record_thrd);
 
@@ -11632,17 +10165,13 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 		/* Update our replay_thrd with this information */
 		tsk->record_thrd = NULL;
 		DPRINT ("Cloning new replay thread\n");
-#ifdef CACHE_READS
 		if (clone_flags&CLONE_FILES) {
 			// file descriptor table is shared so share handles to clone files
 			tsk->replay_thrd = new_replay_thread(prg, prt, pid, 0, current->replay_thrd->rp_cache_files);
 		} else {
-#endif
 			tsk->replay_thrd = new_replay_thread(prg, prt, pid, 0, NULL);
-#ifdef CACHE_READS
 			copy_replay_cache_files (current->replay_thrd->rp_cache_files, tsk->replay_thrd->rp_cache_files);
 		}
-#endif
 		BUG_ON (!tsk->replay_thrd);
 
 		// inherit the parent's app_syscall_addr
@@ -11675,12 +10204,6 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 		
 		// read the rest of the log
 		read_log_data (tsk->replay_thrd->rp_record_thread);
-#ifdef LOG_COMPRESS_1
-		// xdou: inherit the parent's fd table and pipe table
-		// this could be wrong if we have several replay_group ? 
-		pipe_fds_copy (&tsk->replay_thrd->rp_record_thread->rp_clog.pfds, &current->replay_thrd->rp_record_thread->rp_clog.pfds);
-		read_clog_data (tsk->replay_thrd->rp_record_thread);
-#endif
 
 		prept = current->replay_thrd;
 		tsk->replay_thrd->rp_status = REPLAY_STATUS_ELIGIBLE; // This lets the parent run first - will this make Pin happy?
@@ -12043,13 +10566,6 @@ record_select (int n, fd_set __user *inp, fd_set __user *outp, fd_set __user *ex
 		}
 	}
 	
-#ifdef TIME_TRICK
-	if (rc == 0 && tvp) {
-		atomic_set (&current->record_thrd->rp_group->rg_det_time.flag, 1);
-		printk ("Pid %d select timeout after %lu, %lu\n", current->pid, tvp->tv_sec, tvp->tv_usec);
-	}
-#endif
-
 	new_syscall_exit (142, pretvals);
 	return rc;
 }
@@ -12104,29 +10620,10 @@ static asmlinkage long
 record_readv (unsigned long fd, const struct iovec __user *vec, unsigned long vlen)
 {
 	long size;
-#ifdef TIME_TRICK
-	int shift_clock = 1;
-#endif
 
 	new_syscall_enter (145);
 	size = sys_readv (fd, vec, vlen);
-
-#ifdef TIME_TRICK
-	if (size <= 0) {
-		shift_clock = 0;
-	}
-	cnew_syscall_done (145, size, -1, shift_clock);
-#else
 	new_syscall_done (145, size);
-#endif
-#ifdef X_COMPRESS
-	if (is_x_fd (&current->record_thrd->rp_clog.x, fd) && size > 0) {
-		change_log_special_second ();
-		if (x_detail) printk ("Pid %d readv for x\n", current->pid);
-		//x_compress_reply (argshead(current->record_thrd) - size, size, &X_STRUCT_REC, node);
-	}
-#endif
-
 	new_syscall_exit (145, copy_iovec_to_args(size, vec, vlen));
 	return size;
 }
@@ -12141,24 +10638,6 @@ replay_readv (unsigned long fd, const struct iovec __user *vec, unsigned long vl
 	if (retparams) {
 		retval = copy_args_to_iovec (retparams, rc, vec, vlen);
 		if (retval < 0) return retval;
-#ifdef X_COMPRESS
-		BUG_ON (retval != rc);
-		if (is_x_fd (&current->replay_thrd->rp_record_thread->rp_clog.x, fd)) {
-			BUG ();
-			//clog_mark_done_replay();
-			if (x_detail) printk ("Pid %d readv for x\n", current->pid);
-			//x_decompress_reply (retval, &X_STRUCT_REP, node);
-			//validate_decode_buffer (argshead(current->replay_thrd->rp_record_thread), retval, &X_STRUCT_REP);
-			//consume_decode_buffer (retval, &X_STRUCT_REP);
-			if (x_proxy) { 
-				long retval = sys_readv (fd, vec, vlen);
-				// it should be the same with RECV, fix if needed;
-				if (retval != rc) 
-					printk ("Pid %d readv from x fails, expected:%ld, actual:%ld\n", current->pid, rc, retval);
-			}
-
-		}
-#endif
 		argsconsume(current->replay_thrd->rp_record_thread, rc);
 	}
 
@@ -12167,105 +10646,7 @@ replay_readv (unsigned long fd, const struct iovec __user *vec, unsigned long vl
 
 asmlinkage long shim_readv (unsigned long fd, const struct iovec __user *vec, unsigned long vlen) SHIM_CALL(readv, 145, fd, vec, vlen);
 
-#ifdef X_COMPRESS
-static asmlinkage long
-record_writev (unsigned long fd, const struct iovec __user * vec, unsigned long vlen) {
-	long rc;				
-	//int i = 0;
-
-	new_syscall_enter (146);		
-	/*
-	if (x_detail) {
-		for (i = 0; i < vlen; ++i) {
-			if (x_detail) {
-				int j = 0;
-				for (; j < vec[i].iov_len; ++j)
-					printk ("%u, ", (unsigned int) *((unsigned char*)(vec[i].iov_base) + j));
-				printk ("\n");
-			}
-		}
-	}
-	*/
-	rc = sys_writev (fd, vec, vlen);
-	if (rc > 0 && is_x_fd (&current->record_thrd->rp_clog.x, fd)) {
-		if (x_detail) printk ("Pid %d writev syscall for x proto:%ld, vlen:%lu\n",current->pid, rc, vlen);
-		change_log_special_second ();
-
-	}
-	new_syscall_done (146, rc);
-	new_syscall_exit (146, NULL);
-	return rc;		
-}
-
-static asmlinkage long
-replay_writev (unsigned long fd, const struct iovec __user * vec, unsigned long vlen) {
-	long size = get_next_syscall (146, NULL);
-	int i = 0;
-	int count = 0;
-        int actual_fd;
-
-	if (size > 0 && (actual_fd = is_x_fd_replay (&X_STRUCT_REP, fd)) > 0) {
-		if (x_detail) printk ("Pid %d writev syscall for x proto:%ld, vlen:%lu\n",current->pid, size, vlen);
-		for (i = 0; i < vlen && count < size; ++i) {
-			if (vec[i].iov_len > 0) {
-				if (count + vec[i].iov_len > size) {
-					//x_compress_req ((char*) vec[i].iov_base, size - count, &X_STRUCT_REP);
-				} else {
-					//x_compress_req ((char*)(vec[i].iov_base),vec[i].iov_len, &X_STRUCT_REP);
-				}
-				count += vec[i].iov_len;
-			}
-		}
-		if (x_proxy) { 
-			long retval;
-			int bytes_count = 0;
-			for (i=0; i < vlen; ++i)
-				if (vec[i].iov_len > 0)
-					bytes_count += vec[i].iov_len;
-			if (bytes_count > size) {
-				int sum = 0;
-				struct iovec *kvec = KMALLOC (sizeof(struct iovec) * vlen, GFP_KERNEL);
-				mm_segment_t old_fs = get_fs ();
-				if (copy_from_user (kvec, vec, sizeof (struct iovec) * vlen)) {
-					printk ("Pid %d writev (modifying) for x cannot copy from user.\n", current->pid);
-					return -EFAULT;
-				}
-
-				if (x_detail) printk ("Pid %d writev for x, to_write is %d bytes.\n", current->pid, bytes_count);
-				for (i = 0; i < vlen; ++i) {
-					if (kvec[i].iov_len <= 0)
-						continue;
-					if (sum == size) {
-						kvec[i].iov_len = 0;
-						continue;
-					}
-					if (sum < size)
-						sum += kvec[i].iov_len;
-					if (sum > size) {
-						kvec[i].iov_len -= (sum - size);
-						sum = size;
-					}
-				}
-				set_fs (KERNEL_DS);
-				retval = sys_writev (actual_fd, kvec, vlen);
-				set_fs (old_fs);
-
-			} else
-				retval = sys_writev (actual_fd, vec, vlen);
-			if (retval != size) {
-				printk ("Pid %d writev from x fails, expected:%ld, actual:%ld\n", current->pid, size, retval);
-				BUG ();
-			}
-		}
-
-	}
-	return size; 
-}
-
-asmlinkage long shim_writev (unsigned long fd, const struct iovec __user *vec, unsigned long vlen) SHIM_CALL(writev, 146, fd, vec, vlen);
-#else
 SIMPLE_SHIM3(writev, 146, unsigned long, fd, const struct iovec __user *, vec, unsigned long, vlen);
-#endif
 SIMPLE_SHIM1(getsid, 147, pid_t, pid);
 SIMPLE_SHIM1(fdatasync, 148, int, fd);
 
@@ -12396,43 +10777,7 @@ asmlinkage long shim_sched_yield (void)
 SIMPLE_SHIM1(sched_get_priority_max, 159, int, policy);
 SIMPLE_SHIM1(sched_get_priority_min, 160, int, policy);
 RET1_SHIM2(sched_rr_get_interval, 161, struct timespec, interval, pid_t, pid, struct timespec __user *,interval);
-#ifdef TIME_TRICK
-static asmlinkage long
-record_nanosleep (struct timespec __user* rqtp, struct timespec __user* rmtp) {
-	long rc;
-	struct timespec* pretval = NULL;
-
-	new_syscall_enter (162);
-	rc = sys_nanosleep (rqtp, rmtp);
-	new_syscall_done (162, rc);
-	if (rc == -1 && rmtp) {
-		pretval = ARGSKMALLOC (sizeof (struct timespec), GFP_KERNEL);
-		if (pretval == NULL) {
-			printk ("record_nanosleep: can't alloc buffer\n");
-			return -ENOMEM;
-		}
-		if (copy_from_user (pretval, rmtp, sizeof (struct timespec))) {
-			printk ("record_nanosleep: can't copy to buffer\n");
-			ARGSKFREE (pretval, sizeof (struct timespec));
-			pretval = NULL;
-			rc = -EFAULT;
-		}
-	}
-	printk ("Pid %d nanosleep \n", current->pid);
-	if (rc == 0) {
-		printk ("Pid %d nanosleep for %lu, %lu\n", current->pid, rqtp->tv_sec, rqtp->tv_nsec);
-		atomic_set (&current->record_thrd->rp_group->rg_det_time.flag, 1);
-	}
-	new_syscall_exit (162, pretval);
-	return rc;
-}
-
-RET1_REPLAY (nanosleep, 162, struct timespec, rmtp, struct timespec __user* rqtp, struct timespec __user* rmtp); 
-
-asmlinkage long shim_nanosleep (struct timespec __user * rqtp, struct timespec __user* rmtp) SHIM_CALL(nanosleep, 162, rqtp, rmtp);
-#else
 RET1_SHIM2(nanosleep, 162, struct timespec, rmtp, struct timespec __user *, rqtp, struct timespec __user *, rmtp);
-#endif
 
 static asmlinkage unsigned long 
 record_mremap (unsigned long addr, unsigned long old_len, unsigned long new_len, unsigned long flags, unsigned long new_addr)
@@ -12474,15 +10819,11 @@ static asmlinkage unsigned long
 replay_mremap (unsigned long addr, unsigned long old_len, unsigned long new_len, unsigned long flags, unsigned long new_addr)
 {
 	u_long retval, rc = get_next_syscall (163, NULL);
-#ifdef LOG_COMPRESS
-	// xdou: this is for the correctness, not for compression
+
 	if (rc == addr)
 		retval = sys_mremap (addr, old_len, new_len, flags, new_addr);
 	else
 		retval = sys_mremap (addr, old_len, new_len, flags | MREMAP_FIXED | MREMAP_MAYMOVE, rc);
-#else
-	retval = sys_mremap (addr, old_len, new_len, flags, new_addr);
-#endif
 	DPRINT ("Pid %d replays mremap with address %lx returning %lx\n", current->pid, addr, retval);
 
 	if (rc != retval) {
@@ -12590,22 +10931,10 @@ record_poll (struct pollfd __user *ufds, unsigned int nfds, long timeout_msecs)
 	char* pretvals = NULL;
 	short* p;
 	int i;
-#ifdef LOG_COMPRESS_1
-	struct clog_node* node;
-#endif
-#ifdef TIME_TRICK
-	int shift_clock = 1;
-	struct record_group* prg = current->record_thrd->rp_group;
-#endif
-	new_syscall_enter (168);
 
+	new_syscall_enter (168);
 	rc = sys_poll (ufds, nfds, timeout_msecs);
-#ifdef TIME_TRICK
-	if (rc <= 0) shift_clock = 0;
-	cnew_syscall_done (168, rc, -1, shift_clock);
-#else
 	new_syscall_done (168, rc);
-#endif
 	if (rc > 0) {
 		pretvals = ARGSKMALLOC(sizeof(int)+nfds*sizeof(short), GFP_KERNEL);
 		if (pretvals == NULL) {
@@ -12613,7 +10942,6 @@ record_poll (struct pollfd __user *ufds, unsigned int nfds, long timeout_msecs)
 			return -ENOMEM;
 		}
 		*((u_long *)pretvals) = nfds*sizeof(short);
-		if (c_detail) printk ("Pid %d nfds %u\n", current->pid, nfds);
 		p = (short *) (pretvals+sizeof(u_long));
 		for (i = 0; i < nfds; i++) {
 			if (copy_from_user (p, &ufds[i].revents, sizeof(short))) {
@@ -12623,24 +10951,9 @@ record_poll (struct pollfd __user *ufds, unsigned int nfds, long timeout_msecs)
 			}
 			p++;
 		}
-#ifdef LOG_COMPRESS_1
-		// compress for the retparams of poll 
-		node = clog_alloc (sizeof (int) + nfds*sizeof(short));
-		encodeCachedValue (nfds*sizeof(short), 32, &current->record_thrd->rp_clog.syscall_cache.poll_size, 0, node);
-		for (i = 0; i < nfds; ++i) {
-			encodeCachedValue (ufds[i].revents, 16, &current->record_thrd->rp_clog.syscall_cache.poll_revents, 0, node);
-		}
-		status_add (&current->record_thrd->rp_clog.syscall_status, 168, (sizeof (int) + nfds*sizeof (short)) << 3, getCumulativeBitsWritten (node));
-#endif
 	}		
 	new_syscall_exit (168, pretvals);
 
-#ifdef TIME_TRICK
-	if (rc == 0 && timeout_msecs > 0) {
-		atomic_set (&prg->rg_det_time.flag, 1);
- 		printk ("Pid %d poll timeout %ld ms.\n", current->pid, timeout_msecs);
-	}
-#endif
 	return rc;
 }
 
@@ -12651,10 +10964,6 @@ replay_poll (struct pollfd __user *ufds, unsigned int nfds, long timeout_msecs)
 	long rc;
 	int i;
 	short* p;
-#ifdef LOG_COMPRESS_1
-	unsigned int tmp;
-	struct clog_node* node;
-#endif
 
 	rc = get_next_syscall (168, (char **) &retparams);
 	if (rc == -ERESTART_RESTARTBLOCK) { // Save info for restart of syscall
@@ -12676,23 +10985,6 @@ replay_poll (struct pollfd __user *ufds, unsigned int nfds, long timeout_msecs)
 			}
 			p++;
 		}
-#ifdef LOG_COMPRESS_1
-		node = clog_mark_done_replay ();
-		decodeCachedValue (&tmp, 32, &current->replay_thrd->rp_record_thread->rp_clog.syscall_cache.poll_size, 0, 0, node);
-		if (c_detail)
-			printk ("record nfds*2:%u, actual: nfds %u\n", tmp, nfds);
-		if (log_compress_debug) BUG_ON (tmp  != nfds*sizeof (short));
-		p = (short *) (retparams+sizeof(u_long));
-		for (i = 0; i< nfds; ++i) {
-			decodeCachedValue (&tmp, 16, &current->replay_thrd->rp_record_thread->rp_clog.syscall_cache.poll_revents, 0, 0, node);  
-			BUG_ON ((short)tmp != *p);
-			if (copy_to_user (&ufds[i].revents, &tmp, sizeof(short))) {
-				printk ("Pid %d cannot copy revent %d to user\n", current->pid, i);
-				syscall_mismatch();
-			}
-			p++;
-		}
-#endif
 		argsconsume(current->replay_thrd->rp_record_thread, sizeof(u_long) + *((u_long *) retparams));
 	} else {
 		for (i = 0; i < nfds; i++) {
@@ -13042,9 +11334,6 @@ record_pread64(unsigned int fd, char __user *buf, size_t count, loff_t pos)
 	struct fdtable *fdt;
 	struct file* filp;
 	int is_cache_file;
-#ifdef LOG_COMPRESS
-	int shift_clock = 1;
-#endif
 
 	new_syscall_enter (180);					
 	DPRINT ("pid %d, record read off of fd %d\n", current->pid, fd);
@@ -13053,18 +11342,7 @@ record_pread64(unsigned int fd, char __user *buf, size_t count, loff_t pos)
 
 	rc = sys_pread64 (fd, buf, count, pos);
 
-#ifdef TIME_TRICK
-	if (rc <= 0) shift_clock = 0;
-#endif
-
-#ifdef LOG_COMPRESS
-	if(rc == count && is_cache_file)
-		cnew_syscall_done (180, rc, count, shift_clock);
-	else
-		new_syscall_done (180, rc);
-#else
 	new_syscall_done (180, rc);
-#endif
 	if (rc > 0 && buf) {
 		// For now, include a flag that indicates whether this is a cached read or not - this is only
 		// needed for parseklog and so we may take it out later
@@ -13207,11 +11485,7 @@ record_pwrite64(unsigned int fd, const char __user *buf, size_t count, loff_t po
 	size = sys_pwrite64 (fd, buf, count, pos);
 
 	DPRINT ("Pid %d records write returning %d\n", current->pid,size);
-#ifdef LOG_COMPRESS
-	cnew_syscall_done (181, size, count, 1);
-#else
 	new_syscall_done (181, size);			       
-#endif		       
 
 #ifdef TRACE_READ_WRITE
 	if (size > 0) {
@@ -13393,9 +11667,7 @@ record_vfork_handler (struct task_struct* tsk)
 	}
 	tsk->replay_thrd = NULL;
 
-#ifdef CACHE_READS
 	copy_record_cache_files (current->record_thrd->rp_cache_files, tsk->record_thrd->rp_cache_files);
-#endif
 
 	tsk->record_thrd->rp_next_thread = current->record_thrd->rp_next_thread;
 	current->record_thrd->rp_next_thread = tsk->record_thrd;
@@ -13419,21 +11691,6 @@ record_vfork_handler (struct task_struct* tsk)
 		printk ("Pid %d record_vfork: error adding argsalloc_node\n", current->pid);
 		return;
 	}
-#ifdef LOG_COMPRESS_1
-	slab = VMALLOC (argsalloc_size);
-	if (slab == NULL) {
-		rg_unlock(prg);
-		printk ("record_vfork_handler: no memory for slab (clog)\n");
-		return;
-	}
-	if (add_clog_node(tsk->record_thrd, slab, argsalloc_size)) {
-		rg_unlock(prg);
-		VFREE (slab);
-		printk ("Pid %d record_vfork: error adding clog_node\n", current->pid);
-		return;
-	}
-#endif
-
 	rg_unlock(prg);
 	DPRINT ("Done with record_vfork_handler\n");
 }
@@ -13510,9 +11767,7 @@ replay_vfork_handler (struct task_struct* tsk)
 	tsk->replay_thrd = new_replay_thread(prg, prt, tsk->pid, 0, NULL);
 	BUG_ON (!tsk->replay_thrd);
 	
-#ifdef CACHE_READS
 	copy_replay_cache_files (current->replay_thrd->rp_cache_files, tsk->replay_thrd->rp_cache_files);
-#endif
 
 	// inherit the parent's app_syscall_addr
 	tsk->replay_thrd->app_syscall_addr = current->replay_thrd->app_syscall_addr;
@@ -13528,9 +11783,6 @@ replay_vfork_handler (struct task_struct* tsk)
 	
 	// read the rest of the log
 	read_log_data (tsk->replay_thrd->rp_record_thread);
-#ifdef LOG_COMPRESS_1
-	read_clog_data (tsk->replay_thrd->rp_record_thread);
-#endif
 	
 	prept = current->replay_thrd;
 	tsk->replay_thrd->rp_status = REPLAY_STATUS_RUNNING; // Child needs to run first to complete vfork
@@ -14180,34 +12432,6 @@ SIMPLE_SHIM2(tkill, 238, int, pid, int, sig);
 
 RET1_SHIM4(sendfile64, 239, loff_t, offset, int, out_fd, int, in_fd, loff_t __user *, offset, size_t, count);
 
-#ifdef TIME_TRICK
-static inline long 
-record_futex_ignored (u32 __user *uaddr, int op, u32 val, struct timespec __user *utime, u32 __user *uaddr2, u32 val3)
-{
-	long rc;
-	rc = sys_futex (uaddr, op, val, utime, uaddr2, val3);
-	if ((op & 1) == FUTEX_WAIT && utime) {
-		if (rc == -ETIMEDOUT) {
-			//add a fake syscall here
-			/*
-			int need_fake_calls = 1;
-			new_syscall_enter (SIGNAL_WHILE_SYSCALL_IGNORED); 
-			new_syscall_done (SIGNAL_WHILE_SYSCALL_IGNORED, 0);
-			new_syscall_exit (SIGNAL_WHILE_SYSCALL_IGNORED, NULL);
-
-			get_user (need_fake_calls, &phead->need_fake_calls);
-			need_fake_calls ++;
-			put_user (need_fake_calls, &phead->need_fake_calls);
-			change_log_special ();*/
-
-			atomic_set (&current->record_thrd->rp_group->rg_det_time.flag, 1);
-			//printk ("Pid %d futex_wait timeout after waiting for %lu nsec, rc = %ld\n", current->pid, utime->tv_nsec, rc);
-		}
-	}
-	return rc;
-}
-#endif
-
 static asmlinkage long 
 record_futex (u32 __user *uaddr, int op, u32 val, struct timespec __user *utime, u32 __user *uaddr2, u32 val3)
 {
@@ -14236,11 +12460,7 @@ replay_futex (u32 __user *uaddr, int op, u32 val, struct timespec __user *utime,
 	return rc;
 }
 
-#ifdef TIME_TRICK
-asmlinkage long shim_futex (u32 __user *uaddr, int op, u32 val, struct timespec __user *utime, u32 __user *uaddr2, u32 val3) SHIM_CALL_IGNORE (futex, 240, uaddr, op, val, utime, uaddr2, val3);
-#else
 asmlinkage long shim_futex (u32 __user *uaddr, int op, u32 val, struct timespec __user *utime, u32 __user *uaddr2, u32 val3) SHIM_CALL (futex, 240, uaddr, op, val, utime, uaddr2, val3);
-#endif
 
 SIMPLE_SHIM3(sched_setaffinity, 241, pid_t, pid, unsigned int, len, unsigned long __user *, user_mask_ptr);
 
@@ -14482,268 +12702,7 @@ RET1_SHIM2(timer_gettime, 261, struct itimerspec, setting, timer_t, timer_id, st
 SIMPLE_SHIM1(timer_getoverrun, 262, timer_t, timer_id);
 SIMPLE_SHIM1(timer_delete, 263, timer_t, timer_id);
 SIMPLE_SHIM2(clock_settime, 264, const clockid_t, which_clock, const struct timespec __user *, tp);
-#ifndef LOG_COMPRESS 
 RET1_SHIM2(clock_gettime, 265, struct timespec, tp, const clockid_t, which_clock, struct timespec __user *, tp);
-#else
-
-#ifdef TIME_TRICK
-static asmlinkage long record_clock_gettime_ignored (const clockid_t which_clock, struct timespec __user* tp) {			
-	long rc;							
-	struct record_group* prg = current->record_thrd->rp_group;
-	long long time_diff;
-	int is_shift = 0;
-	unsigned long current_clock = atomic_read (prg->rg_pkrecord_clock);
-
-	rc = sys_clock_gettime (which_clock, tp);	
-
-	if (!tp) BUG ();/// fix if needed
-	if (DET_TIME_DEBUG) printk ("Pid %d clock_(ignored)_gettime_enter %lu, %lu\n", current->pid, tp->tv_sec, tp->tv_nsec);
-	if (which_clock != CLOCK_MONOTONIC && which_clock != CLOCK_REALTIME) {
-		printk ("Other clock_gettime? which_clock:%d\n", which_clock);
-		atomic_set (&prg->rg_det_time.flag, 1);
-		BUG ();
-	}
-	mutex_lock (&prg->rg_time_mutex);	
-	if (which_clock == CLOCK_REALTIME) {
-		struct timeval tv;
-		tv.tv_sec = tp->tv_sec;
-		tv.tv_usec = (tp->tv_nsec+999)/1000;//round up as time shouldn't go back
-		if (DET_TIME_DEBUG) printk ("Pid %d CLOCK_REALTIME converted to %lu, %lu\n", current->pid, tv.tv_sec, tv.tv_usec);
-		if (!atomic_read (&prg->rg_det_time.flag)) {
-			time_diff = get_diff_gettimeofday (&prg->rg_det_time, &tv, current_clock);
-			if (!(is_shift = is_shift_time (&prg->rg_det_time, time_diff, current_clock))) {
-				calc_det_gettimeofday (&prg->rg_det_time, &tv, current_clock);
-				tp->tv_sec = tv.tv_sec;
-				tp->tv_nsec = tv.tv_usec *1000;
-			}
-		}
-	} else {
-		if (!atomic_read (&prg->rg_det_time.flag)) {
-			time_diff = get_diff_clock_gettime (&prg->rg_det_time, tp, current_clock);
-			if (!(is_shift = is_shift_time (&prg->rg_det_time, time_diff, current_clock))) {
-				calc_det_clock_gettime (&prg->rg_det_time, tp, current_clock);
-			}
-		}
-	}
-	if (DET_TIME_DEBUG) printk ("Pid %d clock_(ignored)_gettime_exit %lu, %lu\n", current->pid, tp->tv_sec, tp->tv_nsec);
-	atomic_set (&prg->rg_det_time.flag, 0);
-	mutex_unlock (&prg->rg_time_mutex);
-	return rc;							
-}
-#endif
-
-static asmlinkage long record_clock_gettime (const clockid_t which_clock, struct timespec __user* tp) {			
-	long rc;							
-	struct timespec *pretval = NULL;						
-#ifdef LOG_COMPRESS_1
-	struct clog_node* node;
-	unsigned int diff;
-#endif
-#ifdef TIME_TRICK
-	int fake_time = 0;
-	struct record_group* prg = current->record_thrd->rp_group;
-	long long time_diff;
-	int is_shift = 0;
-	unsigned long current_clock = new_syscall_enter (265);
-#else
-	new_syscall_enter (265);					
-#endif
-
-	rc = sys_clock_gettime (which_clock, tp);	
-
-#ifdef TIME_TRICK
-	if (!tp) BUG ();/// fix if needed
-	if (DET_TIME_DEBUG) printk ("Pid %d clock_gettime actual time %lu, %lu\n", current->pid, tp->tv_sec, tp->tv_nsec);
-	if (which_clock != CLOCK_MONOTONIC && which_clock != CLOCK_REALTIME) {
-		printk ("Other clock_gettime? which_clock:%d\n", which_clock);
-		atomic_set (&prg->rg_det_time.flag, 1);
-	}
-	mutex_lock (&prg->rg_time_mutex);	
-	if (which_clock == CLOCK_REALTIME) {
-		struct timeval tv;
-		tv.tv_sec = tp->tv_sec;
-		tv.tv_usec = (tp->tv_nsec+999)/1000;//round up as time shouldn't go back
-		printk ("Pid %d CLOCK_REALTIME converted to %lu, %lu\n", current->pid, tv.tv_sec, tv.tv_usec);
-		if (!atomic_read (&prg->rg_det_time.flag)) {
-			time_diff = get_diff_gettimeofday (&prg->rg_det_time, &tv, current_clock);
-			if ((is_shift = is_shift_time (&prg->rg_det_time, time_diff, current_clock))) {
-				change_log_special_second ();
-				update_step_time (time_diff, &prg->rg_det_time, current_clock);
-				update_fake_accum_gettimeofday (&prg->rg_det_time, &tv, current_clock);
-			} else {
-				calc_det_gettimeofday (&prg->rg_det_time, &tv, current_clock);
-				tp->tv_sec = tv.tv_sec;
-				tp->tv_nsec = tv.tv_usec * 1000;
-				if (DET_TIME_DEBUG) printk ("Pid %d clock_gettime returns det time\n", current->pid);
-				fake_time = 1;
-			}
-		}
-	} else {
-		if (atomic_read (&prg->rg_det_time.flag)) {
-			//return the actual time here
-			update_fake_accum_clock_gettime (&prg->rg_det_time, tp, current_clock);
-		} else {
-			time_diff = get_diff_clock_gettime (&prg->rg_det_time, tp, current_clock);
-			if ((is_shift = is_shift_time (&prg->rg_det_time, time_diff, current_clock))) {
-				change_log_special_second ();
-				update_step_time (time_diff, &prg->rg_det_time, current_clock);
-				update_fake_accum_clock_gettime (&prg->rg_det_time, tp, current_clock);
-			} else {
-				calc_det_clock_gettime (&prg->rg_det_time, tp, current_clock);
-				if (DET_TIME_DEBUG) printk ("Pid %d clock_gettime returns det time\n", current->pid);
-				fake_time = 1;
-			}
-		}
-	}
-	if (DET_TIME_DEBUG) printk ("Pid %d clock_gettime finally returns %lu, %lu\n", current->pid, tp->tv_sec, tp->tv_nsec);
-	atomic_set (&prg->rg_det_time.flag, 0);
-	cnew_syscall_done (265, rc, -1, 0);
-	mutex_unlock (&prg->rg_time_mutex);
-#else
-	new_syscall_done (265, rc);			
-#endif
-	if (rc >= 0 && tp) {
-#ifdef TIME_TRICK
-		if (fake_time) {
-			change_log_special ();
-			fake_time = 0;
-		} else {
-#endif
-	        pretval = ARGSKMALLOC (sizeof(struct timespec), GFP_KERNEL);	
-		if (pretval == NULL) {					
-			printk ("record_clock_gettime: can't allocate buffer\n"); 
-			return -ENOMEM;					
-		}							
-		if (copy_from_user (pretval, tp, sizeof (struct timespec))) {	
-			printk ("record_clock_gettime: can't copy to buffer\n"); 
-			ARGSKFREE(pretval, sizeof(struct timespec));		
-			pretval = NULL;					
-			rc = -EFAULT;					
-		}							
-#ifdef LOG_COMPRESS_1
-		node = clog_alloc (sizeof (struct timespec));
-		diff = pretval->tv_sec - SYSCALL_CACHE_REC.tp.tv_sec;
-		if (diff == 0) {
-			encodeValue (0, 1, 0, node);
-		} else {
-			encodeValue (1, 1, 0, node);
-			SYSCALL_CACHE_REC.tp.tv_sec = pretval->tv_sec;
-			encodeValue (diff, 32, 4, node);
-		}
-		diff = pretval->tv_nsec - SYSCALL_CACHE_REC.tp.tv_nsec;
-		SYSCALL_CACHE_REC.tp.tv_nsec = pretval->tv_nsec;
-		encodeValue (diff, 32, 20, node);
-		status_add (&current->record_thrd->rp_clog.syscall_status, 265, sizeof (struct timespec) << 3, getCumulativeBitsWritten (node));
-#endif
-#ifdef TIME_TRICK
-		}
-#endif
-	}								
-									
-	new_syscall_exit (265, pretval);				
-	return rc;							
-}
-
-static asmlinkage long replay_clock_gettime (const clockid_t which_clock, struct timespec __user* tp) {		
-	struct timespec *retparams = NULL;						
-#ifdef TIME_TRICK
-	int fake_time = 0;
-	int is_shift = 0;
-	long long time_diff;
-	u_long start_clock;
-	u_char syscall_flag = 0;
-	struct record_group* prg = current->replay_thrd->rp_group->rg_rec_group;
-	long rc = cget_next_syscall (265, (char **) &retparams, &syscall_flag, 0, &start_clock);	
-#else
-	long rc = get_next_syscall (265, (char **) &retparams);	
-#endif
-
-#ifdef LOG_COMPRESS_1
-	struct clog_node* node;
-	struct timespec c_retparams;
-	unsigned int value;
-#endif
-
-#ifdef TIME_TRICK
-	if (syscall_flag & SR_HAS_SPECIAL_FIRST) fake_time = 1;
-	if (syscall_flag & SR_HAS_SPECIAL_SECOND) is_shift = 1;
-#endif
-									
-	if (retparams) {						
-		if (copy_to_user (tp, retparams, sizeof (struct timespec))) 
-			printk ("replay_clock_gettime: pid %d cannot copy to user\n", current->pid); 
-#ifdef LOG_COMPRESS_1
-		node = clog_mark_done_replay ();
-		decodeValue (&value, 1, 0, 0, node);
-		if (value == 0) {
-			//put_user
-			c_retparams.tv_sec = SYSCALL_CACHE_REP.tp.tv_sec;
-			if (log_compress_debug) BUG_ON (retparams->tv_sec != c_retparams.tv_sec);
-		} else {
-			decodeValue (&value, 32, 4, 0, node);
-			c_retparams.tv_sec = SYSCALL_CACHE_REP.tp.tv_sec + value;
-			//putuser
-			if (log_compress_debug) BUG_ON (retparams->tv_sec != c_retparams.tv_sec);
-			SYSCALL_CACHE_REP.tp.tv_sec += value;
-		}
-		decodeValue (&value, 32, 20, 0, node);
-		c_retparams.tv_nsec = SYSCALL_CACHE_REP.tp.tv_nsec + value;
-		//putuser
-		if (log_compress_debug) BUG_ON (retparams->tv_nsec != c_retparams.tv_nsec);
-		SYSCALL_CACHE_REP.tp.tv_nsec += value;
-		if (copy_to_user (tp, &c_retparams, sizeof (struct timespec))) 
-			printk ("replay_clock_gettime: pid %d cannot copy to user\n", current->pid); 
-#endif
-#ifdef TIME_TRICK
-		if (DET_TIME_DEBUG) printk ("clock_gettime returns actual time. actual %ld, %ld\n", tp->tv_sec, tp->tv_nsec);
-		if (which_clock == CLOCK_MONOTONIC) {
-			if (is_shift) {
-				time_diff = get_diff_clock_gettime (&prg->rg_det_time, tp, start_clock);
-				update_step_time (time_diff, &prg->rg_det_time, start_clock);
-			}
-			update_fake_accum_clock_gettime (&prg->rg_det_time, tp, start_clock);
-		} else if (which_clock == CLOCK_REALTIME) {
-			struct timeval tv;
-			tv.tv_sec = tp->tv_sec;
-			tv.tv_usec = (tp->tv_nsec + 999) / 1000;
-
-			if (is_shift) {
-				time_diff = get_diff_gettimeofday (&prg->rg_det_time, &tv, start_clock);
-				update_step_time (time_diff, &prg->rg_det_time, start_clock);
-			}
-			update_fake_accum_gettimeofday (&prg->rg_det_time, &tv, start_clock);
-		}
-#endif
-		argsconsume (current->replay_thrd->rp_record_thread, sizeof (struct timespec)); 
-	} 
-#ifdef TIME_TRICK
-	else {
-		if (which_clock == CLOCK_MONOTONIC)
-			calc_det_clock_gettime (&prg->rg_det_time, tp, start_clock);
-		else if (which_clock == CLOCK_REALTIME) {
-				struct timeval tv;
-				tv.tv_sec = tp->tv_sec;
-				tv.tv_usec = (tp->tv_nsec +999) / 1000;
-				calc_det_gettimeofday (&prg->rg_det_time, &tv, start_clock);
-				tp->tv_sec = tv.tv_sec;
-				tp->tv_nsec = tv.tv_usec * 1000;
-
-		}
-		if (DET_TIME_DEBUG) printk ("clock_gettime returns deterministic time.\n");
-	}
-	if (DET_TIME_DEBUG) printk ("Pid %d clock_gettime finally returns %lu, %lu\n", current->pid, tp->tv_sec, tp->tv_nsec);
-#endif
-									
-	return rc;							
-}
-
-#ifdef TIME_TRICK
-asmlinkage long shim_clock_gettime (const clockid_t which_clock, struct timespec __user* tp) SHIM_CALL_IGNORE (clock_gettime, 265, which_clock, tp);
-#else
-asmlinkage long shim_clock_gettime (const clockid_t which_clock, struct timespec __user* tp) SHIM_CALL (clock_gettime, 265, which_clock, tp);
-#endif
-
-#endif
 RET1_SHIM2(clock_getres, 266, struct timespec, tp, const clockid_t, which_clock, struct timespec __user *, tp);
 RET1_SHIM4(clock_nanosleep, 267, struct timespec, rmtp, const clockid_t, which_clock, int, flags, const struct timespec __user *, rqtp, struct timespec __user *, rmtp);
 RET1_SHIM3(statfs64, 268, struct statfs64, buf, const char __user *, path, size_t, sz, struct statfs64 __user *, buf);
@@ -15406,9 +13365,6 @@ record_recvmmsg(int fd, struct mmsghdr __user *msg, unsigned int vlen, unsigned 
 
 	new_syscall_enter (337);
 	rc = sys_recvmmsg (fd, msg, vlen, flags, timeout);
-#ifdef X_COPMRESS
-	BUG_ON (is_x_fd (&current->record_thrd->rp_clog.x, fd));
-#endif
 	new_syscall_done (337, rc);
 	if (rc > 0) {
 		retval = log_mmsghdr(msg, rc, plogsize);
@@ -15676,23 +13632,6 @@ struct file* init_log_write (struct record_thread* prect, loff_t* ppos, int* pfd
 		*pfd = sys_open(filename, flags, 0777);
 		MPRINT ("Reopened log file %s, pos = %ld\n", filename, (long) *ppos);
 	} else {
-#ifdef LOG_COMPRESS_1
-		sprintf (filename, "%s/klog.id.%d.clog", prect->rp_group->rg_logdir, prect->rp_record_pid);
-		*pfd = sys_open(filename, O_WRONLY|O_CREAT|O_TRUNC|O_LARGEFILE, 0644);
-		if (*pfd > 0) {
-			rc = sys_fchmod(*pfd, 0777);
-			if (rc == -1) {
-				printk("Pid %d fchmod of klog %s failed\n", current->pid, filename);
-			}
-		}
-		MPRINT ("Opened log file %s\n", filename);
-		if (*pfd < 0) {
-			printk ("%s %d: Cannot open log file %s", __func__, __LINE__, filename);
-			ret = NULL;
-			goto out;
-		}
-		sprintf (filename, "%s/klog.id.%d", prect->rp_group->rg_logdir, prect->rp_record_pid);
-#endif
 		flags = O_WRONLY|O_CREAT|O_TRUNC|O_LARGEFILE;
 		*pfd = sys_open(filename, flags, 0777);
 		//printk("%s %d: Creating log %s\n", __func__, __LINE__, filename);
@@ -15743,13 +13682,6 @@ void write_begin_log (struct file* file, loff_t* ppos, struct record_thread* pre
 	struct timeval tv1;
 	struct timeval tv2;
 
-#ifdef USE_HPC
-	hpc1 = rdtsc(); 
-	do_gettimeofday(&tv1);
-	hpc2 = rdtsc();
-	do_gettimeofday(&tv2);
-#endif
-
 	copyed = vfs_write(file, (char *) &hpc1, sizeof(unsigned long long), ppos);
 	if (copyed != sizeof(unsigned long long)) {
 		printk("[WARN] Pid %d write_hpc_calibration, expected to write %d got %d (1)\n",
@@ -15782,12 +13714,6 @@ static ssize_t write_log_data (struct file* file, loff_t* ppos, struct record_th
 	struct iovec* pvec; // Concurrent writes need their own vector
 	int kcnt = 0;
 	u_long data_len;
-#ifdef USE_HPC
-	unsigned long long hpc1;	
-	unsigned long long hpc2;	
-	struct timeval tv1;
-	struct timeval tv2;
-#endif
 
 	if (count <= 0) return 0;
 
@@ -15798,34 +13724,6 @@ static ssize_t write_log_data (struct file* file, loff_t* ppos, struct record_th
 		printk ("Cannot allocate iovec for write_log_data\n");
 		return 0;
 	}
-
-#ifdef USE_HPC
-	hpc1 = rdtsc(); 
-	do_gettimeofday(&tv1);
-	msleep(1);
-	hpc2 = rdtsc();
-	do_gettimeofday(&tv2);
-
-	copyed = vfs_write(file, (char *) &hpc1, sizeof(unsigned long long), ppos);
-	if (copyed != sizeof(unsigned long long)) {
-		printk("[WARN] Pid %d write_hpc_calibration, expected to write %d got %d (1)\n", current->pid, sizeof(unsigned long long), copyed);
-	}
-
-	copyed = vfs_write(file, (char *) &tv1, sizeof(struct timeval), ppos);
-	if (copyed != sizeof(struct timeval)) {
-		printk("[WARN] Pid %d write_hpc_calibration, expected to write %d got %d (2)\n", current->pid, sizeof(struct timeval), copyed);
-	}
-
-	copyed = vfs_write(file, (char *) &hpc2, sizeof(unsigned long long), ppos);
-	if (copyed != sizeof(unsigned long long)) {
-		printk("[WARN] Pid %d write_hpc_calibration, expected to write %d got %d (3)\n", current->pid, sizeof(unsigned long long), copyed);
-	}
-
-	copyed = vfs_write(file, (char *) &tv2, sizeof(struct timeval), ppos);
-	if (copyed != sizeof(struct timeval)) {
-		printk("[WARN] Pid %d write_hpc_calibration, expected to write %d got %d (4)\n", current->pid, sizeof(struct timeval), copyed);
-	}
-#endif
 
 	/* First write out syscall records in a bunch */
 	copyed = vfs_write(file, (char *) &count, sizeof(count), ppos);
@@ -15895,10 +13793,6 @@ int read_log_data_internal (struct record_thread* prect, struct syscall_result* 
 	struct argsalloc_node* node;
 	char* slab;
 
-#ifdef USE_HPC
-	// for those calibration constants
-	char dummy_buffer[2*sizeof(unsigned long long) + 2*sizeof(struct timeval)];
-#endif
 	old_fs = get_fs();
 	set_fs(KERNEL_DS);
 	
@@ -15913,20 +13807,6 @@ int read_log_data_internal (struct record_thread* prect, struct syscall_result* 
 	}
 
 	file = fget(fd);
-
-#ifdef USE_HPC
-	rc = vfs_read (file, (char *) dummy_buffer, 2*sizeof(unsigned long long) + 2*sizeof(struct timeval), pos);
-	if (rc == 0) {
-		MPRINT ("no more records in the log\n");
-		*syscall_count = 0;
-		goto error;
-	}
-	if (rc != 2*sizeof(unsigned long long) + 2*sizeof(struct timeval)) {
-		printk ("vfs_read returns %d, sizeof calibration constants %d\n", rc, 2*sizeof(unsigned long long) + 2*sizeof(struct timeval));
-		BUG();
-		goto error;
-	}
-#endif
 
 	// read one section of the log (array of syscall results and then the args/retvals/signals)
 	rc = vfs_read (file, (char *) &count, sizeof(count), pos);
@@ -16004,10 +13884,6 @@ skip_and_read_log_data (struct record_thread* prect)
 	struct syscall_result* psr = prect->rp_log;
 	int logid = prect->rp_record_pid;
 
-#ifdef USE_HPC
-	// for those calibration constants
-	char dummy_buffer[2*sizeof(unsigned long long) + 2*sizeof(struct timeval)];
-#endif
 	old_fs = get_fs();
 	set_fs(KERNEL_DS);
 	
@@ -16022,20 +13898,6 @@ skip_and_read_log_data (struct record_thread* prect)
 	}
 
 	file = fget(fd);
-
-#ifdef USE_HPC
-	rc = vfs_read (file, (char *) dummy_buffer, 2*sizeof(unsigned long long) + 2*sizeof(struct timeval), pos);
-	if (rc == 0) {
-		MPRINT ("no more records in the log\n");
-		*syscall_count = 0;
-		goto error;
-	}
-	if (rc != 2*sizeof(unsigned long long) + 2*sizeof(struct timeval)) {
-		printk ("vfs_read returns %d, sizeof calibration constants %d\n", rc, 2*sizeof(unsigned long long) + 2*sizeof(struct timeval));
-		BUG();
-		goto error;
-	}
-#endif
 
 	do {
 		// read one section of the log (array of syscall results and then the args/retvals/signals)
@@ -16222,271 +14084,6 @@ int read_mmap_log (struct record_group* precg)
 	set_fs (old_fs);
 	return rc;
 }
-
-#ifdef LOG_COMPRESS_1
-// only can be called after init_log_write
-struct file* init_clog_write (struct record_thread* prect, loff_t* ppos, int* pfd)
-{
-	char filename[MAX_LOGDIR_STRLEN+20];
-	struct stat64 st;
-	mm_segment_t old_fs;
-	int rc;
-
-	sprintf (filename, "%s/klog.id.%d.clog", prect->rp_group->rg_logdir, prect->rp_record_pid);
-
-	old_fs = get_fs();
-	set_fs(KERNEL_DS);
-	if (prect->rp_klog_opened) {
-		rc = sys_stat64(filename, &st);
-		if (rc < 0) {
-			printk ("Stat of file %s failed\n", filename);
-			return NULL;
-		}
-		*ppos = st.st_size;
-		*pfd = sys_open(filename, O_WRONLY|O_APPEND, 0644);
-		MPRINT ("Reopened log file %s, pos = %ld\n", filename, (long) *ppos);
-	} else {
-		printk ("Pid %d open clog file %s, the uncompressed log is not opened yet.\n", prect->rp_record_pid, filename);
-	}
-	set_fs(old_fs);
-	if (*pfd < 0) {
-		printk ("Cannot open clog file %s, rc = %d\n", filename, *pfd);
-		return NULL;
-	}
-
-	return (fget(*pfd));
-}
-
-void term_clog_write (struct file* file, int fd)
-{
-	int rc;
-
-	fput(file);
-
-	rc = sys_close (fd);
-	if (rc < 0) printk ("term_clog_write: file close failed with rc %d\n", rc);
-}
-
-static ssize_t write_clog_data (struct file* file, loff_t* ppos, struct record_thread* prect, struct syscall_result* psr, int count)
-{
-	struct clog_node* node;
-	ssize_t copyed = 0;
-	struct iovec* pvec; // Concurrent writes need their own vector
-	int kcnt = 0;
-	u_long data_len;
-#ifdef USE_HPC
-	unsigned long long hpc1;	
-	unsigned long long hpc2;	
-	struct timeval tv1;
-	struct timeval tv2;
-#endif
-
-	if (count <= 0) return 0;
-
-	MPRINT ("Pid %d, start write log data\n", current->pid);
-
-	pvec = KMALLOC (sizeof(struct iovec) * UIO_MAXIOV, GFP_KERNEL);
-	if (pvec == NULL) {
-		printk ("Cannot allocate iovec for write_clog_data\n");
-		return 0;
-	}
-
-#ifdef USE_HPC
-	hpc1 = rdtsc(); 
-	do_gettimeofday(&tv1);
-	msleep(1);
-	hpc2 = rdtsc();
-	do_gettimeofday(&tv2);
-
-	copyed = vfs_write(file, (char *) &hpc1, sizeof(unsigned long long), ppos);
-	if (copyed != sizeof(unsigned long long)) {
-		printk("[WARN] Pid %d write_hpc_calibration, expected to write %d got %d (1)\n", current->pid, sizeof(unsigned long long), copyed);
-	}
-
-	copyed = vfs_write(file, (char *) &tv1, sizeof(struct timeval), ppos);
-	if (copyed != sizeof(struct timeval)) {
-		printk("[WARN] Pid %d write_hpc_calibration, expected to write %d got %d (2)\n", current->pid, sizeof(struct timeval), copyed);
-	}
-
-	copyed = vfs_write(file, (char *) &hpc2, sizeof(unsigned long long), ppos);
-	if (copyed != sizeof(unsigned long long)) {
-		printk("[WARN] Pid %d write_hpc_calibration, expected to write %d got %d (3)\n", current->pid, sizeof(unsigned long long), copyed);
-	}
-
-	copyed = vfs_write(file, (char *) &tv2, sizeof(struct timeval), ppos);
-	if (copyed != sizeof(struct timeval)) {
-		printk("[WARN] Pid %d write_hpc_calibration, expected to write %d got %d (4)\n", current->pid, sizeof(struct timeval), copyed);
-	}
-#endif
-
-	/* First write out syscall records in a bunch */
-	/*copyed = vfs_write(file, (char *) &count, sizeof(count), ppos);
-	if (copyed != sizeof(count)) {
-		printk ("write_clog_data: tried to write record count, got rc %d\n", copyed);
-		KFREE (pvec);
-		return -EINVAL;
-	}
-
-	MPRINT ("Pid %d write_clog_data count %d, size %d\n", current->pid, count, sizeof(struct syscall_result)*count);
-
-	copyed = vfs_write(file, (char *) psr, sizeof(struct syscall_result)*count, ppos);
-	if (copyed != sizeof(struct syscall_result)*count) {
-		printk ("write_clog_data: tried to write %d, got rc %d\n", sizeof(struct syscall_result)*count, copyed);
-		KFREE (pvec);
-		return -EINVAL;
-	}*/
-
-	/* Now write ancillary data - count of bytes goes first */
-	data_len = 0;
-	list_for_each_entry_reverse (node, &prect->rp_clog_list, list) {
-		data_len += getDataLength (node);
-	}
-	MPRINT ("Ancillary data written is %lu\n", data_len);
-	copyed = vfs_write(file, (char *) &data_len, sizeof(data_len), ppos);
-	if (copyed != sizeof(count)) {
-		printk ("write_clog_data: tried to write ancillary data length, got rc %d\n", copyed);
-		KFREE (pvec);
-		return -EINVAL;
-	}
-
-	list_for_each_entry_reverse (node, &prect->rp_clog_list, list) {
-		MPRINT ("Pid %d argssize write buffer slab size %d\n", current->pid, node->pos - node->head);
-		pvec[kcnt].iov_base = node->head;
-		pvec[kcnt].iov_len = getDataLength(node);
-		if (++kcnt == UIO_MAXIOV) {
-			copyed = vfs_writev (file, pvec, kcnt, ppos);
-			kcnt = 0;
-		}
-	}
-
-	vfs_writev (file, pvec, kcnt, ppos); // Write any remaining data before exit
-	
-	DPRINT ("Wrote %d bytes to the file for sysnum %d\n", copyed, psr->sysnum);
-	KFREE (pvec);
-
-	return copyed;
-
-}
-
-int read_clog_data (struct record_thread* prect)
-{
- 	int rc;
- 	int count = 0; // num syscalls returned by read
- 	rc = read_clog_data_internal (prect, prect->rp_log, prect->rp_record_pid, &count, &prect->rp_read_clog_pos);
-	MPRINT("Pid %d read_clog_data_internal returned %d syscalls\n", current->pid, count);
-	//note this is only for the debug purpose
-	// as the rp_in_ptr should be setup by read_log_data
-	//BUG_ON (prect->rp_in_ptr != count);
-	//prect->rp_in_ptr = count;
- 	return rc;
-}
-
-int read_clog_data_internal (struct record_thread* prect, struct syscall_result* psr, int logid, int* syscall_count, loff_t* pos)
-{
-	char filename[MAX_LOGDIR_STRLEN+20];
-	struct file* file;
-	int fd, rc, count;
-	mm_segment_t old_fs;
-	u_long data_len;
-	struct clog_node* node;
-	char* slab;
-
-#ifdef USE_HPC
-	// for those calibration constants
-	char dummy_buffer[2*sizeof(unsigned long long) + 2*sizeof(struct timeval)];
-#endif
-	old_fs = get_fs();
-	set_fs(KERNEL_DS);
-	
-	MPRINT ("Reading logid %d starting at pos %lld\n", logid, (long long) *pos);
-	sprintf (filename, "%s/klog.id.%d.clog", prect->rp_group->rg_logdir, logid);
-	MPRINT ("Opening %s\n", filename);
-	fd = sys_open(filename, O_RDONLY, 0644);
-	MPRINT ("Open returns %d\n", fd);
-	if (fd < 0) {
-		printk ("read_clog_data: cannot open log file %s\n", filename);
-		return -EINVAL;
-	}
-
-	file = fget(fd);
-
-#ifdef USE_HPC
-	rc = vfs_read (file, (char *) dummy_buffer, 2*sizeof(unsigned long long) + 2*sizeof(struct timeval), pos);
-	if (rc == 0) {
-		MPRINT ("no more records in the log\n");
-		*syscall_count = 0;
-		goto error;
-	}
-	if (rc != 2*sizeof(unsigned long long) + 2*sizeof(struct timeval)) {
-		printk ("vfs_read returns %d, sizeof calibration constants %d\n", rc, 2*sizeof(unsigned long long) + 2*sizeof(struct timeval));
-		BUG();
-		goto error;
-	}
-#endif
-
-	// read one section of the log (array of syscall results and then the args/retvals/signals)
-	/*rc = vfs_read (file, (char *) &count, sizeof(count), pos);
-	if (rc != sizeof(count)) {
-		MPRINT ("vfs_read returns %d, sizeof(count) %d\n", rc, sizeof(count));
-		*syscall_count = 0;
-		goto error;
-	}
-
-	MPRINT ("read_clog_data syscall count is %d\n", count);
-
-	rc = vfs_read (file, (char *) &psr[0], sizeof(struct syscall_result)*count, pos);
-	if (rc != sizeof(struct syscall_result)*count) {
-		printk ("vfs_read returns %d when %d of records expected\n", rc, sizeof(struct syscall_result)*count);
-		goto error;
-	}*/
-
-	rc = vfs_read (file, (char *) &data_len, sizeof(data_len), pos);
-	if (rc != sizeof(data_len)) {
-		printk ("vfs_read returns %d, sizeof(data_len) %d\n", rc, sizeof(data_len));
-		//*syscall_count = 0;
-		goto error;
-	}
-
-	/* Read in length of ancillary data, and add it to the clog list */
-	MPRINT ("read_clog_data data length is %lu\n", data_len);
-	if (data_len > 0) {
-		slab = VMALLOC(data_len);
-		rc = add_clog_node(prect, slab, data_len);
-		if (rc) {
-			printk("read_clog_data_internal: pid %d argalloc: problem adding clog_node\n", current->pid);
-			VFREE(slab);
-			//*syscall_count = 0;
-			goto error;
-		}
-
-		node = list_first_entry(&prect->rp_clog_list, struct clog_node, list);
-		rc = vfs_read (file, node->pos, data_len, pos);
-		if (rc != data_len) {
-			printk ("read_clog_data_internal: vfs_read of ancillary data returns %d, epected %lu\n", rc, data_len);
-			//*syscall_count = 0;
-			goto error;
-		}
-	}
-
-	//*syscall_count = count;  
-	fput(file);
-
-	rc = sys_close (fd);
-	if (rc < 0) printk ("read_clog_data: file close failed with rc %d\n", rc);
-	set_fs (old_fs);
-
-	return 0;
-
-error:
-	fput(file);
-	rc = sys_close (fd);
-	if (rc < 0) printk ("read_clog_data: file close failed with rc %d\n", rc);
-	set_fs (old_fs);
-	return rc;
-
-}
-
-#endif
 
 int do_is_record(struct ctl_table *table, int write, void __user *buffer, 
 		size_t *lenp, loff_t *ppos) {
@@ -16917,20 +14514,6 @@ static struct ctl_table replay_ctl[] = {
 		.procname	= "replayfs_prints",
 		.mode		= 0555,
 		.child		= print_ctl,
-	},
-	{
-		.procname	= "x_proxy",
-		.data		= &x_proxy,
-		.maxlen		= sizeof(unsigned int),
-		.mode		= 0644,
-		.proc_handler	= &proc_dointvec,
-	},
-	{
-		.procname	= "record_x",
-		.data		= &record_x,
-		.maxlen		= sizeof(unsigned int),
-		.mode		= 0644,
-		.proc_handler	= &proc_dointvec,
 	},
 	{
 		.procname	= "pause_tool",

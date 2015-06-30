@@ -44,8 +44,6 @@
 
 #define NR_SYSCALLS 511
 
-//#define USE_HPC
-
 #ifdef TRACE_READ_WRITE
 struct replayfs_syscache_id {
 	loff_t unique_id : 48; 
@@ -286,10 +284,6 @@ struct name_to_handle_at_retvals {
 };
 
 struct syscall_result {
-#ifdef USE_HPC
-	unsigned long long	hpc_begin;	// Time-stamp counter value when system call started
-	unsigned long long	hpc_end;	// Time-stamp counter value when system call finished
-#endif
 	short			sysnum;		// system call number executed
 	u_char			flags;          // See defs above
 };
@@ -331,12 +325,6 @@ struct klogfile {
 	loff_t num_psrs;
 
 	loff_t cur_idx;
-
-#ifdef USE_HPC
-	struct timeval tv1;
-	unsigned long long hpc2;
-	struct timeval tv2;
-#endif
 
 	loff_t expected_clock;
 
