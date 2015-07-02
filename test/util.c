@@ -208,7 +208,3 @@ pid_t get_current_record_pid(int fd_spec, pid_t nonrecord_pid)
 	return ioctl(fd_spec, SPECI_GET_CURRENT_RECORD_PID, &data);
 }
 
-long get_ckpt_status (int fd_spec, pid_t pid)
-{
-	return ioctl(fd_spec, SPECI_GET_CKPT_STATUS, &pid);
-}

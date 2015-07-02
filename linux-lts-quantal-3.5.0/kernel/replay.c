@@ -700,6 +700,9 @@ struct replay_group {
 	ds_list_t* rg_used_address_list; // List of addresses that will be used by the application (and hence, not by pin)
 	int rg_follow_splits;       // Ture if we should replay any split-off replay groups
 	int rg_checkpoint_at;       // Checkpoint at this system call
+	loff_t rg_attach_sysid;     // If Pin is being attached, will be set to the syscall id to attach to
+	int rg_attach_pid;          // If Pin is being attached, set to the pid to attach to
+	int rg_attach_device;       // The device that is being attached
 };
 
 struct argsalloc_node {
@@ -944,20 +947,10 @@ struct replay_thread {
 	int envc;			// Save the number of environment vars
 	int is_pin_vfork;		// Set 1 when Pin calls clone instead of vfork
 
-	loff_t attach_sysid;  // If Pin is being attached, will be set to the syscall
-	                      // id to attach to
-	int attach_pid;       // If Pin is being attached, set to the pid to attach to
-	int attach_device;    // The device that is being attached
-
 	int gdb_state;	      // State of gdb. 0 = not attached. 1 = attached
-	int rp_ckpt_state;              // 1 if waiting for ckpt signals; 0 otherwise
 	long rp_ckpt_save_args_head;     // Really hard to get this info on restore, so save it
 	long rp_ckpt_save_expected_clock; // Really hard to get this info on restore, so save it
 	struct semaphore* rp_ckpt_restart_sem; // Really hard to get this info on restore, so save it
-
-	// ajyl
-	int pin_redo_syscall;
-
 	struct replay_cache_files* rp_cache_files; // Info about open cache files
 };
 
@@ -1094,17 +1087,22 @@ test_app_syscall(int number)
 }
 
 static inline int
+is_preallocated (void)
+{
+	return (current->replay_thrd->rp_group->rg_attach_device);
+}
+
+static inline int
 is_pin_attached (void)
 {
-	//return (current->replay_thrd->app_syscall_addr != 0 && current->replay_thrd->app_syscall_addr != 1);
-	return (current->replay_thrd->attach_device == ATTACH_PIN
+	return (current->replay_thrd->rp_group->rg_attach_device == ATTACH_PIN
 		&& current->replay_thrd->app_syscall_addr != 0);
 }
 
 static inline int
 gdb_attached(struct replay_thread* prt)
 {
-	return (prt->attach_device == ATTACH_GDB
+	return (prt->rp_group->rg_attach_device == ATTACH_GDB
 		&& prt->gdb_state);
 }
 
@@ -1117,7 +1115,7 @@ is_gdb_attached (void)
 static inline int
 is_gdb_fork_flagged (void)
 {
-	return (current->replay_thrd->attach_device == ATTACH_GDB
+	return (current->replay_thrd->rp_group->rg_attach_device == ATTACH_GDB
 		&& current->replay_thrd->gdb_state == 2);
 }
 
@@ -1139,7 +1137,7 @@ static inline void
 gdb_unlink(struct replay_thread* prt)
 {
 	prt->gdb_state = 0;
-	prt->attach_device = 0;
+	prt->rp_group->rg_attach_device = 0;
 }
 
 int 
@@ -1750,6 +1748,10 @@ new_replay_group (struct record_group* prec_group, int follow_splits)
 
 	prg->rg_checkpoint_at = -1;
 
+	prg->rg_attach_device = 0;
+	prg->rg_attach_sysid = -1;
+	prg->rg_attach_pid = -1;
+
 	// Record group should not be destroyed before replay group
 	get_record_group (prec_group);
 
@@ -2013,7 +2015,6 @@ new_replay_thread (struct replay_group* prg, struct record_thread* prec_thrd, u_
 	prp->rp_signals = 0;
 	prp->rp_saved_psr = NULL;
 	prp->rp_status = REPLAY_STATUS_ELIGIBLE; // We should be able to run immediately
-	prp->pin_redo_syscall = 0;
 	init_waitqueue_head (&prp->rp_waitq);
 
 	// Increment the refcnt of the record thread so the log isn't
@@ -2036,7 +2037,6 @@ new_replay_thread (struct replay_group* prg, struct record_thread* prec_thrd, u_
 	prp->rp_replay_hook = 0;
 
 	prp->is_pin_vfork = 0;
-	prp->rp_ckpt_state = 0;
 
 	if (pfiles) {
 		prp->rp_cache_files = pfiles;
@@ -3344,7 +3344,7 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 		MPRINT("Set linker for replay process to %s\n", linker);
 	}
 
-	prept->attach_device = attach_device;
+	prepg->rg_attach_device = attach_device;
 	
 	/*
 	 * If pin, set the process to sleep, so that we can manually attach pin
@@ -3355,8 +3355,8 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 			attach_device, attach_pid, attach_index);
 
 		rc = read_mmap_log(precg);
-		current->replay_thrd->attach_sysid = attach_index;
-		current->replay_thrd->attach_pid = attach_pid;
+		prepg->rg_attach_sysid = attach_index;
+		prepg->rg_attach_pid = attach_pid;
 		if (rc) {
 			printk("replay_ckpt_wakeup: could not read memory log for Pin support\n");
 			return rc;
@@ -3377,9 +3377,6 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 			schedule();
 			printk("Pid %d woken up.\n", current->pid);
 		}
-	} else {
-		current->replay_thrd->attach_sysid = -1;
-		current->replay_thrd->attach_pid = -1;
 	}
 
 	if (fd >= 0) {
@@ -3644,8 +3641,8 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* 
 			attach_device, attach_pid, attach_index);
 
 		rc = read_mmap_log(precg);
-		current->replay_thrd->attach_sysid = attach_index;
-		current->replay_thrd->attach_pid = attach_pid;
+		prepg->rg_attach_sysid = attach_index;
+		prepg->rg_attach_pid = attach_pid;
 		if (rc) {
 			printk("replay_ckpt_wakeup: could not read memory log for Pin support\n");
 			return rc;
@@ -3666,10 +3663,6 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* 
 			schedule();
 			printk("Pid %d woken up\n", current->pid);
 		}
-	} else {
-		current->replay_thrd->attach_sysid = -1;
-		current->replay_thrd->attach_pid = -1;
-		current->replay_thrd->rp_ckpt_state = 1;
 	}
 	set_thread_flag(TIF_IRET); // We are updating regs so need full iret
 
@@ -4794,15 +4787,6 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 		retval = 0;
 	} else {
 		retval = *((long *) argshead(prect));
-
-		if (IS_ERR((void *) retval) && prt->app_syscall_addr == 1) {
-			// Pin reproduces same syscall
-			DPRINT ("cget_next_syscall_enter: retval of syscall index %ld is IS_ERR\n", prt->rp_out_ptr);
-			DPRINT ("Return from cget_next_syscall_enter without incrementing clock+syscall index\n");
-			current->replay_thrd->pin_redo_syscall = 1;
-			rg_unlock (prg->rg_rec_group);
-			return retval;
-		}
 		argsconsume(prect, sizeof(long));
 	}
 
@@ -5054,6 +5038,33 @@ get_next_syscall_exit_external (struct syscall_result* psr)
 	get_next_syscall_exit (current->replay_thrd, current->replay_thrd->rp_group, psr);
 }
 
+static long
+test_pin_attach (struct replay_thread* prept)
+{
+	struct replay_group* prepg = prept->rp_group;
+
+	if (prepg->rg_attach_sysid > 0 && !is_pin_attached() && !is_gdb_attached() &&
+	    prept->rp_out_ptr == prepg->rg_attach_sysid &&
+	    prept->rp_record_thread->rp_record_pid == prepg->rg_attach_pid) {
+		printk("Pid %d about to sleep at index %lu\n", current->pid, prept->rp_out_ptr);
+
+		if (prepg->rg_attach_device == ATTACH_PIN) {
+			prept->app_syscall_addr = 1;
+		}
+
+		if (prepg->rg_attach_device == ATTACH_GDB) {
+			prept->gdb_state = 1;
+		}
+
+		set_current_state(TASK_INTERRUPTIBLE);
+		schedule();
+		printk("Pid %d woken up.\n", current->pid);
+
+		if (prepg->rg_attach_device == ATTACH_PIN) return -EINTR; // Pin will restart syscall
+	}
+	return 0;
+}
+
 /* This function takes the next syscall of the current task's replay
    log, makes sure the syscall number matches, and returns the
    original return value and any optional data (if ppretparams is set).
@@ -5068,30 +5079,7 @@ get_next_syscall (int syscall, char** ppretparams)
 	long retval = 0;
 	long exit_retval;
 
-	if (prt->attach_sysid > 0 && !is_pin_attached() &&
-				!is_gdb_attached() &&
-				prt->rp_out_ptr == prt->attach_sysid &&
-				prt->rp_record_thread->rp_record_pid == prt->attach_pid) {
-		printk("Pid %d about to sleep at syscall %d, index %lu\n", current->pid, syscall, prt->rp_out_ptr);
-
-		if (prt->attach_device == ATTACH_PIN) {
-			prt->app_syscall_addr = 1;
-		}
-
-		if (prt->attach_device == ATTACH_GDB) {
-			prt->gdb_state = 1;
-		}
-
-		set_current_state(TASK_INTERRUPTIBLE);
-		schedule();
-		printk("Pid %d woken up.\n", current->pid);
-	}
-
 	retval = get_next_syscall_enter (prt, prg, syscall, ppretparams, &psr);
-	if (current->replay_thrd->pin_redo_syscall) {
-		printk ("Pin will regenerate this syscall %d index %lu, don't do anything, return\n", syscall, prt->rp_out_ptr);
-		return retval;
-	}
 
 	// Needed to exit the threads in the correct order with Pin attached.
 	// Essentially, return to Pin after Pin interrupts the syscall with a SIGTRAP.
@@ -5281,20 +5269,6 @@ long check_clock_after_syscall (int syscall)
 	return 0;
 }
 EXPORT_SYMBOL(check_clock_after_syscall);
-
-long
-get_ckpt_state (pid_t pid)
-{
-        struct task_struct* task;
-
-	task = find_task_by_vpid(pid);
-	if (task && task->replay_thrd) {
-		return task->replay_thrd->rp_ckpt_state;
-	} else {
-		return -EINVAL;
-	}
-}
-EXPORT_SYMBOL(get_ckpt_state);
 
 asmlinkage long
 sys_pthread_print (const char __user * buf, size_t count)
@@ -5561,6 +5535,10 @@ asmlinkage long sys_pthread_sysign (void)
 		}							\
 		return F_RECORD;					\
 	}								\
+	if (current->replay_thrd) {					\
+		rc = test_pin_attach (current->replay_thrd);		\
+		if (rc < 0) return rc;					\
+	}								\
 	if (current->replay_thrd && test_app_syscall(number)) {		\
 		if (current->replay_thrd->rp_record_thread->rp_ignore_flag_addr) { \
 			get_user (ignore_flag, current->replay_thrd->rp_record_thread->rp_ignore_flag_addr); \
@@ -5573,11 +5551,6 @@ asmlinkage long sys_pthread_sysign (void)
 		rc = F_REPLAY;						\
 		if (should_take_checkpoint()) replay_full_ckpt(rc);	\
                 return rc;						\
-	}								\
-	else if (current->replay_thrd) {				\
-	  if (*(current->replay_thrd->rp_preplay_clock) > pin_debug_clock) { \
-            DPRINT("Pid %d, pin syscall %d\n", current->pid, number);	\
-	  }								\
 	}								\
 	return F_SYS;							\
 }
@@ -5889,7 +5862,6 @@ static asmlinkage long record_##name (arg0type arg0name, arg1type arg1name, arg2
 	return rc;							\
 }
 
-/*
 #define RET1_REPLAYG(name, sysnum, dest, size, args...)			\
 static asmlinkage long replay_##name (args)				\
 {									\
@@ -5901,25 +5873,6 @@ static asmlinkage long replay_##name (args)				\
 		argsconsume (current->replay_thrd->rp_record_thread, size); \
 	}								\
 									\
-	return rc;							\
-}									\
-*/
-
-#define RET1_REPLAYG(name, sysnum, dest, size, args...)			\
-static asmlinkage long replay_##name (args)				\
-{									\
-	char *retparams = NULL;						\
-	long rc = get_next_syscall (sysnum, (char **) &retparams);	\
-									\
-    if (current->replay_thrd->pin_redo_syscall) { \
-        current->replay_thrd->pin_redo_syscall = 0; \
-    } \
-    else { \
-        if (retparams) {						\
-            if (copy_to_user (dest, retparams, size)) printk ("replay_##name: pid %d cannot copy to user\n", current->pid); \
-            argsconsume (current->replay_thrd->rp_record_thread, size); \
-        }								\
-    }							\
 	return rc;							\
 }									\
 
@@ -7501,19 +7454,13 @@ replay_open (const char __user * filename, int flags, int mode)
 	struct open_retvals* pretvals;
 	long rc, fd;
 
-    rc = get_next_syscall (5, (char **) &pretvals);	
-    if (current->replay_thrd->pin_redo_syscall) {
-        current->replay_thrd->pin_redo_syscall = 0;
-    }
-    else {
-        if (pretvals) {
-            fd = open_cache_file (pretvals->dev, pretvals->ino, pretvals->mtime, flags);
-            DPRINT ("replay_open: opened cache file %s flags %x fd is %ld rc is %ld\n", filename, flags, fd, rc);
-            if (set_replay_cache_file (current->replay_thrd->rp_cache_files, rc, fd) < 0) sys_close (fd);
-            argsconsume (current->replay_thrd->rp_record_thread, sizeof(struct open_retvals)); 
-        }
-    }
-
+	rc = get_next_syscall (5, (char **) &pretvals);	
+	if (pretvals) {
+		fd = open_cache_file (pretvals->dev, pretvals->ino, pretvals->mtime, flags);
+		DPRINT ("replay_open: opened cache file %s flags %x fd is %ld rc is %ld\n", filename, flags, fd, rc);
+		if (set_replay_cache_file (current->replay_thrd->rp_cache_files, rc, fd) < 0) sys_close (fd);
+		argsconsume (current->replay_thrd->rp_record_thread, sizeof(struct open_retvals)); 
+	}
 	return rc;
 }
 
@@ -7898,7 +7845,7 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 		if (is_pin_attached()) {
 			prt->app_syscall_addr = 1; /* We need to reattach the pin tool after exec */
 		}
-		if (prt->attach_sysid >= 0 || is_pin_attached()) {
+		if (is_preallocated()) {
 			preallocate_memory(prt->rp_record_thread->rp_group); /* And preallocate memory again - our previous preallocs were just destroyed */
 			create_used_address_list();
 		}
@@ -8116,7 +8063,7 @@ replay_brk (unsigned long brk)
 		rc = get_next_syscall (45, NULL);
 	}
 
-	if (is_pin_attached()) {
+	if (is_preallocated()) {
 		struct mm_struct *mm = current->mm;
 		down_write(&mm->mmap_sem);
 		// since we actually do the brk we can just grab the old one
@@ -8701,7 +8648,7 @@ replay_munmap (unsigned long addr, size_t len)
 		printk ("Replay munmap returns different value %lu than %lu\n",	retval, rc);
 		return syscall_mismatch();
 	}
-	if (retval == 0 && is_pin_attached()) preallocate_after_munmap (addr, len);
+	if (retval == 0 && is_preallocated()) preallocate_after_munmap (addr, len);
 	
 	return rc;
 }
@@ -9842,7 +9789,7 @@ replay_ipc (uint call, int first, u_long second, u_long third, void __user *ptr,
 
 			// do_shmat checks to see if there are any existing mmaps in the region to be shmat'ed. So we'll have to munmap our preallocations for this region
 			// before proceding.
-			if (is_pin_attached()) {
+			if (is_preallocated()) {
 				struct sysv_shm* tmp;
 				tmp = KMALLOC(sizeof(struct sysv_shm), GFP_KERNEL);
 				if (tmp == NULL) {
@@ -9885,7 +9832,7 @@ replay_ipc (uint call, int first, u_long second, u_long third, void __user *ptr,
 		/*
 		 * For Pin support, we need to preallocate this again if this memory area that was just munmap'ed
 		 */
-		if (!retval && is_pin_attached()) {
+		if (!retval && is_preallocated()) {
 			u_long size = 0;
 			struct sysv_shm* tmp;
 			struct sysv_shm* tmp_safe;
@@ -10212,7 +10159,6 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 		rg_unlock(prg->rg_rec_group);
 
 		//Set up the child so that the gdb state is the same
-		tsk->replay_thrd->attach_device = current->replay_thrd->attach_device;
 		tsk->replay_thrd->gdb_state = current->replay_thrd->gdb_state;
 
 		if (is_gdb_attached())
@@ -10270,7 +10216,7 @@ shim_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_regs 
 			int child_pid;
 			child_pid = replay_clone(clone_flags, stack_start, regs, stack_size, parent_tidptr, child_tidptr);
 			current->replay_thrd->is_pin_vfork = 0;
-            printk("[Pin Clone?]: child_pid = %d\n", child_pid);
+			printk("[Pin Clone?]: child_pid = %d\n", child_pid);
 			return child_pid;
 		}
 		// This is a Pin fork
@@ -10850,7 +10796,7 @@ replay_mremap (unsigned long addr, unsigned long old_len, unsigned long new_len,
 	}
 
 	// If we've moved the mmap or shrunk it, we have to preallocate that mmaping again
-	if (is_pin_attached() && rc != ((u_long) -1)) {
+	if (is_preallocated() && rc != ((u_long) -1)) {
 		// move and no overlap between mappings
 		if (!(rc >= addr && rc < addr + old_len)) {
 			preallocate_after_munmap(addr, old_len);
@@ -11943,13 +11889,13 @@ replay_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, un
 
     DPRINT("mmap(%lu, %lu, %lu, %lu, %lu, %lu)\n", addr, len, prot, flags, fd, pgoff);
 	if (is_pin_attached()) {
-        DPRINT ("replay_mmap_pgoff - is_pin_attached() - pin is attached\n");
+		DPRINT ("replay_mmap_pgoff - is_pin_attached() - pin is attached\n");
 		rc = prt->rp_saved_rc;
 		recbuf = (struct mmap_pgoff_retvals *) prt->rp_saved_retparams;
 		psr = prt->rp_saved_psr;
 		(*(int*)(prt->app_syscall_addr)) = 999;
 	} else {
-        DPRINT ("replay_mmap_pgoff - is_pin_attached() - pin is NOT attached\n");
+		DPRINT ("replay_mmap_pgoff - is_pin_attached() - pin is NOT attached\n");
 		rc = get_next_syscall (192, (char **) &recbuf);
 	}
 

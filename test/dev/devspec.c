@@ -50,7 +50,6 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 	struct filemap_num_data fndata;
 	struct filemap_entry_data fedata;
 	struct get_record_pid_data recordpid_data;
-	pid_t pid;
 	int syscall;
 	u_long app_syscall_addr;
 	char logdir[MAX_LOGDIR_STRLEN+1];
@@ -265,12 +264,6 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 			return -EFAULT;
 		}
 		return get_current_record_pid(recordpid_data.nonrecordPid);
-	case SPECI_GET_CKPT_STATUS:
-		if (copy_from_user(&pid, (void *)data, sizeof(pid_t)))
-		{
-			return -EFAULT;
-		}
-		return get_ckpt_state(pid);
 	default:
 		return -EINVAL;
 	}
