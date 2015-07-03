@@ -1,0 +1,176 @@
+##############################################################
+#
+# This file includes all the test targets as well as all the
+# non-default build rules and test recipes.
+#
+##############################################################
+
+SDEV=../test
+TAINTS_LIB=taints
+TAINTS_OBJ=$(OBJDIR)
+TAINTS_INTERFACE=taint_interface
+REPLAY_LIB += $(SDEV)/libutil.a
+TOOL_LIBS += $(SDEV)/libutil.a
+TOOL_CXXFLAGS += -I$(SDEV)
+GLIB_INCLUDES=-I/usr/include/glib-2.0 -I/usr/lib/i386-linux-gnu/glib-2.0/include
+GLIB_LIB= -lglib-2.0
+TOOL_CXXFLAGS += $(GLIB_INCLUDES) -I$(SDEV)
+TAINT_BACK_OBJS=$(TAINTS_OBJ)taint_full_interface$(OBJ_SUFFIX) $(TAINTS_OBJ)taint_byte_creation$(OBJ_SUFFIX) $(TAINTS_OBJ)taint_debug$(OBJ_SUFFIX)
+TAINT_FORWARD_OBJS=$(TAINTS_OBJ)taint_forward_interface$(OBJ_SUFFIX) $(TAINTS_OBJ)taint_forward_creation$(OBJ_SUFFIX) $(TAINTS_OBJ)taint_forward_debug$(OBJ_SUFFIX)
+TAINT_OBJS=$(OBJDIR)xray_token$(OBJ_SUFFIX) $(OBJDIR)xray_slab_alloc$(OBJ_SUFFIX)
+APP_CC=gcc
+
+##############################################################
+#
+# Test targets
+#
+##############################################################
+
+###### Place all generic definitions here ######
+
+# This defines tests which run tools of the same name.  This is simply for convenience to avoid
+# defining the test name twice (once in TOOL_ROOTS and again in TEST_ROOTS).
+# Tests defined here should not be defined in TOOL_ROOTS and TEST_ROOTS.
+TEST_TOOL_ROOTS := linkage_copy \
+		linkage_data \
+		linkage_offset \
+		linkage_forward_copy \
+		linkage_forward_data \
+		linkage_forward_offset \
+
+# This defines the tests to be run that were not already defined in TEST_TOOL_ROOTS.
+TEST_ROOTS :=
+
+# This defines a list of tests that should run in the "short" sanity. Tests in this list must also
+# appear either in the TEST_TOOL_ROOTS or the TEST_ROOTS list.
+# If the entire directory should be tested in sanity, assign TEST_TOOL_ROOTS and TEST_ROOTS to the
+# SANITY_SUBSET variable in the tests section below (see example in makefile.rules.tmpl).
+SANITY_SUBSET :=
+
+# This defines the tools which will be run during the the tests, and were not already defined in
+# TEST_TOOL_ROOTS.
+TOOL_ROOTS :=
+
+# This defines the static analysis tools which will be run during the the tests. They should not
+# be defined in TEST_TOOL_ROOTS. If a test with the same name exists, it should be defined in
+# TEST_ROOTS.
+# Note: Static analysis tools are in fact executables linked with the Pin Static Analysis Library.
+# This library provides a subset of the Pin APIs which allows the tool to perform static analysis
+# of an application or dll. Pin itself is not used when this tool runs.
+SA_TOOL_ROOTS :=
+
+# This defines all the applications that will be run during the tests.
+APP_ROOTS := postprocess_linkage taint_debugger taint_forward_debugger
+
+# This defines any additional object files that need to be compiled.
+OBJECT_ROOTS := xray_token \
+		taint_byte_creation \
+		taint_full_interface \
+		taint_forward_interface \
+		xray_slab_alloc \
+		taint_debug \
+		taint_forward_creation \
+		taint_forward_debug
+
+# This defines any additional dlls (shared objects), other than the pintools, that need to be compiled.
+DLL_ROOTS :=
+
+# This defines any static libraries (archives), that need to be built.
+LIB_ROOTS :=
+
+
+##############################################################
+#
+# Test recipes
+#
+##############################################################
+
+# This section contains recipes for tests other than the default.
+# See makefile.default.rules for the default test rules.
+# All tests in this section should adhere to the naming convention: <testname>.test
+
+
+##############################################################
+#
+# Build rules
+#
+##############################################################
+$(OBJDIR)xray_token$(OBJ_SUFFIX): xray_token.h xray_token.c
+	$(APP_CC) -Wall -Werror -g -c -o $(OBJDIR)xray_token$(OBJ_SUFFIX) $(GLIB_INCLUDES) xray_token.c
+
+$(OBJDIR)postprocess_linkage: xray_slab_alloc.h postprocess_linkage.c $(OBJDIR)xray_token$(OBJ_SUFFIX)
+	$(APP_CC) -Wall -Werror -g -o $(OBJDIR)postprocess_linkage $(GLIB_INCLUDES) $(OBJDIR)xray_token$(OBJ_SUFFIX) postprocess_linkage.c -lglib-2.0
+
+$(OBJDIR)taint_debugger: $(TAINTS_INTERFACE)/taint_debugger.c
+	$(CXX) $(TOOL_CXXFLAGS) -Wall -Werror -g -o $(OBJDIR)taint_debugger $(GLIB_INCLUDES) $(OBJDIR)xray_token$(OBJ_SUFFIX) $(TAINTS_INTERFACE)/taint_debugger.c -lglib-2.0
+
+$(OBJDIR)taint_forward_debugger: $(TAINTS_INTERFACE)/taint_forward_debugger.c
+	$(CXX) $(TOOL_CXXFLAGS) -Wall -Werror -g -o $(OBJDIR)taint_forward_debugger $(GLIB_INCLUDES) $(OBJDIR)xray_token$(OBJ_SUFFIX) $(TAINTS_INTERFACE)/taint_forward_debugger.c -lglib-2.0
+
+$(OBJDIR)xray_slab_alloc$(OBJ_SUFFIX): xray_slab_alloc.h xray_slab_alloc.c
+	$(APP_CC) -Wall -Werror -g -c -o $(OBJDIR)xray_slab_alloc$(OBJ_SUFFIX) xray_slab_alloc.c
+
+$(OBJDIR)taint_byte_creation$(OBJ_SUFFIX): $(TAINTS_INTERFACE)/taint_byte_creation.c $(TAINTS_INTERFACE)/taint_creation.h
+	$(CXX) $(TOOL_CXXFLAGS) -Wall -Werror -g -c -o $(TAINTS_OBJ)taint_byte_creation$(OBJ_SUFFIX) $(GLIB_INCLUDES) $(TAINTS_INTERFACE)/taint_byte_creation.c
+
+$(OBJDIR)taint_full_interface$(OBJ_SUFFIX): $(TAINTS_INTERFACE)/taint_full_interface.c $(TAINTS_INTERFACE)/taint_interface.h
+	$(CXX) $(TOOL_CXXFLAGS) -Wall -Werror -g -c -o $(TAINTS_OBJ)taint_full_interface$(OBJ_SUFFIX) $(GLIB_INCLUDES) $(TAINTS_INTERFACE)/taint_full_interface.c
+
+$(OBJDIR)taint_forward_creation$(OBJ_SUFFIX): $(TAINTS_INTERFACE)/taint_forward_creation.c $(TAINTS_INTERFACE)/taint_creation.h
+	$(CXX) $(TOOL_CXXFLAGS) -Wall -Werror -g -c -o $(TAINTS_OBJ)taint_forward_creation$(OBJ_SUFFIX) $(GLIB_INCLUDES) $(TAINTS_INTERFACE)/taint_forward_creation.c
+
+$(OBJDIR)taint_forward_interface$(OBJ_SUFFIX): $(TAINTS_INTERFACE)/taint_forward_interface.c $(TAINTS_INTERFACE)/taint_interface.h
+	$(CXX) $(TOOL_CXXFLAGS) -Wall -Werror -g -c -o $(TAINTS_OBJ)taint_forward_interface$(OBJ_SUFFIX) $(GLIB_INCLUDES) $(TAINTS_INTERFACE)/taint_forward_interface.c
+
+$(OBJDIR)taint_debug$(OBJ_SUFFIX): $(TAINTS_INTERFACE)/taint_interface.h $(TAINTS_INTERFACE)/taint_debug.h $(TAINTS_INTERFACE)/taint_debug.c
+	$(CXX) $(TOOL_CXXFLAGS) -Wall -Werror -g -c -o $(TAINTS_OBJ)taint_debug$(OBJ_SUFFIX) $(TAINTS_INTERFACE)/taint_debug.c
+
+$(OBJDIR)taint_forward_debug$(OBJ_SUFFIX): $(TAINTS_INTERFACE)/taint_interface.h $(TAINTS_INTERFACE)/taint_debug.h $(TAINTS_INTERFACE)/taint_forward_debug.c
+	$(CXX) $(TOOL_CXXFLAGS) -Wall -Werror -g -c -o $(TAINTS_OBJ)taint_forward_debug$(OBJ_SUFFIX) $(TAINTS_INTERFACE)/taint_forward_debug.c
+
+$(OBJDIR)linkage_new2$(OBJ_SUFFIX): linkage_new2.cpp xray_slab_alloc.c xray_slab_alloc.h $(TAINTS_INTERFACE)/taint_interface.h $(TAINTS_INTERFACE)/taint_full_interface.c $(TAINTS_INTERFACE)/taint_byte_creation.c
+	$(CXX) -DHAVE_REPLAY $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
+
+$(OBJDIR)linkage_new2$(PINTOOL_SUFFIX): $(OBJDIR)linkage_new2$(OBJ_SUFFIX)
+	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) $(MY_OBJS) $(TAINT_BACK_OBJS) $(TAINT_OBJS) -lglib-2.0
+
+# COPY TOOL
+$(OBJDIR)linkage_copy$(OBJ_SUFFIX): linkage_new2.cpp xray_slab_alloc.c xray_slab_alloc.h $(TAINTS_INTERFACE)/taint_interface.h $(TAINTS_INTERFACE)/taint_full_interface.c $(TAINTS_INTERFACE)/taint_byte_creation.c
+	$(CXX) -DHAVE_REPLAY -DONLY_COPY $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
+
+$(OBJDIR)linkage_copy$(PINTOOL_SUFFIX): $(OBJDIR)linkage_copy$(OBJ_SUFFIX)
+	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) $(MY_OBJS) $(TAINT_BACK_OBJS) $(TAINT_OBJS) -lglib-2.0
+
+# DATA TOOL
+$(OBJDIR)linkage_data$(OBJ_SUFFIX): linkage_new2.cpp xray_slab_alloc.c xray_slab_alloc.h $(TAINTS_INTERFACE)/taint_interface.h $(TAINTS_INTERFACE)/taint_full_interface.c $(TAINTS_INTERFACE)/taint_byte_creation.c
+	$(CXX) -DHAVE_REPLAY -DLINKAGE_DATA $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
+
+$(OBJDIR)linkage_data$(PINTOOL_SUFFIX): $(OBJDIR)linkage_data$(OBJ_SUFFIX)
+	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) $(MY_OBJS) $(TAINT_BACK_OBJS) $(TAINT_OBJS) -lglib-2.0
+
+# DATA+INDEX TOOL
+$(OBJDIR)linkage_offset$(OBJ_SUFFIX): linkage_new2.cpp xray_slab_alloc.c xray_slab_alloc.h $(TAINTS_INTERFACE)/taint_interface.h $(TAINTS_INTERFACE)/taint_full_interface.c $(TAINTS_INTERFACE)/taint_byte_creation.c
+	$(CXX) -DHAVE_REPLAY -DLINKAGE_DATA_OFFSET $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
+
+$(OBJDIR)linkage_offset$(PINTOOL_SUFFIX): $(OBJDIR)linkage_offset$(OBJ_SUFFIX)
+	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) $(MY_OBJS) $(TAINT_BACK_OBJS) $(TAINT_OBJS) -lglib-2.0
+
+$(OBJDIR)linkage_forward_copy$(OBJ_SUFFIX): linkage_new2.cpp xray_slab_alloc.c xray_slab_alloc.h $(TAINTS_INTERFACE)/taint_interface.h $(TAINTS_INTERFACE)/taint_forward_interface.c $(TAINTS_INTERFACE)/taint_forward_creation.c
+	$(CXX) -DHAVE_REPLAY -DONLY_COPY $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
+
+$(OBJDIR)linkage_forward_copy$(PINTOOL_SUFFIX): $(OBJDIR)linkage_forward_copy$(OBJ_SUFFIX)
+	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) $(MY_OBJS) $(TAINT_FORWARD_OBJS) $(TAINT_OBJS) -lglib-2.0
+
+$(OBJDIR)linkage_forward_data$(OBJ_SUFFIX): linkage_new2.cpp xray_slab_alloc.c xray_slab_alloc.h $(TAINTS_INTERFACE)/taint_interface.h $(TAINTS_INTERFACE)/taint_forward_interface.c $(TAINTS_INTERFACE)/taint_forward_creation.c
+	$(CXX) -DHAVE_REPLAY -DLINKAGE_DATA $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
+
+$(OBJDIR)linkage_forward_data$(PINTOOL_SUFFIX): $(OBJDIR)linkage_forward_data$(OBJ_SUFFIX)
+	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) $(MY_OBJS) $(TAINT_FORWARD_OBJS) $(TAINT_OBJS) -lglib-2.0
+
+$(OBJDIR)linkage_forward_offset$(OBJ_SUFFIX): linkage_new2.cpp xray_slab_alloc.c xray_slab_alloc.h $(TAINTS_INTERFACE)/taint_interface.h $(TAINTS_INTERFACE)/taint_forward_interface.c $(TAINTS_INTERFACE)/taint_forward_creation.c
+	$(CXX) -DHAVE_REPLAY -DLINKAGE_DATA_OFFSET $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
+
+$(OBJDIR)linkage_forward_offset$(PINTOOL_SUFFIX): $(OBJDIR)linkage_forward_offset$(OBJ_SUFFIX)
+	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) $(MY_OBJS) $(TAINT_FORWARD_OBJS) $(TAINT_OBJS) -lglib-2.0
+
+
