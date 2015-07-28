@@ -1,12 +1,17 @@
 #include "xray_token.h"
 
-struct token* create_new_token (int type, unsigned long token_num, int syscall_cnt, int byte_offset, uint64_t rg_id, int record_pid, int fileno)
+struct token* create_new_token (int type, u_long token_num, u_long size, int syscall_cnt, int byte_offset, uint64_t rg_id, int record_pid, int fileno)
 {
     struct token* tok; 
     tok = (struct token *) malloc(sizeof(struct token));
+    if (tok == NULL) {
+	fprintf (stderr, "Unable to malloc token\n");
+	assert (0);
+    }
     memset(tok, 0, sizeof(struct token));
     tok->type = type;
     tok->token_num = token_num;
+    tok->size = size;
     tok->syscall_cnt = syscall_cnt;
     tok->byte_offset = byte_offset;
     tok->rg_id = rg_id;
@@ -16,10 +21,11 @@ struct token* create_new_token (int type, unsigned long token_num, int syscall_c
     return tok;
 }
 
-void set_new_token (struct token* tok, int type, unsigned long token_num, int syscall_cnt, int byte_offset, uint64_t rg_id, int record_pid, int fileno)
+void set_new_token (struct token* tok, int type, u_long token_num, u_long size, int syscall_cnt, int byte_offset, uint64_t rg_id, int record_pid, int fileno)
 {
     tok->type = type;
     tok->token_num = token_num;
+    tok->size = size;
     tok->syscall_cnt = syscall_cnt;
     tok->byte_offset = byte_offset;
     tok->rg_id = rg_id;
@@ -35,6 +41,10 @@ struct token* create_new_named_token (unsigned int token_num, char* token_name)
 
     struct token* tok; 
     tok = (struct token *) malloc(sizeof(struct token));
+    if (tok == NULL) {
+	fprintf (stderr, "Unable to malloc token\n");
+	assert (0);
+    }
     tok->token_num = token_num;
     // not necessary for Confaid
     tok->syscall_cnt = 0;
@@ -85,7 +95,6 @@ void write_token_to_file(int outfd, struct token* token)
         fprintf(stderr, "[ERROR] Could not write token to file, got %d, expected %d\n", rc, sizeof(struct token));
         assert (rc == sizeof(struct token)); // fail
     }
-    //fflush(fp);
 
     if (flock(outfd, LOCK_UN) == -1) {
         fprintf(stderr, "Could not unlock tokens file %d\n", errno);
@@ -106,6 +115,10 @@ int read_token_from_file(FILE* fp, struct token* ptoken)
 struct byte_result_header* create_new_byte_result_header(int output_type, int output_fileno, uint64_t rg_id, int record_pid, int syscall_cnt, int size) {
     struct byte_result_header* header;
     header = (struct byte_result_header *) malloc(sizeof(struct byte_result_header));
+    if (header == NULL) {
+	fprintf (stderr, "Unable to malloc header\n");
+	assert (0);
+    }
 
     header->output_type = output_type;
     header->output_fileno = output_fileno;
@@ -260,6 +273,10 @@ void read_buffer_bytes_results(int fd, FILE* output_f) {
 struct byte_result* create_new_byte_result(int output_type, int output_fileno, uint64_t rg_id, int record_pid, int syscall_cnt, int offset, unsigned int token_num) {
     struct byte_result* byte_result;
     byte_result = (struct byte_result *) malloc(sizeof(struct byte_result));
+    if (byte_result == NULL) {
+	fprintf (stderr, "Unable to malloc byte result\n");
+	assert (0);
+    }
     memset(byte_result, 0, sizeof(struct byte_result));
 
     byte_result->output_type = output_type;
@@ -421,6 +438,10 @@ int read_filename_mappings(char* filename, GHashTable* filename_table)
         int file_cnt;
         char* fname;
         fname = (char *) malloc(256);
+	if (fname == NULL) {
+	    fprintf (stderr, "Unable to malloc fname\n");
+	    assert (0);
+	}
         if (read_filename_mapping(fp, &file_cnt, fname)) {
             fprintf(stderr, "could not read filemapping, count is %lu\n", count);
             return -1;
@@ -466,6 +487,10 @@ int read_tokens(char* filename, GHashTable* option_info_table)
     while (count < buf.st_size) {
         struct token* token;
         token = (struct token *) malloc(sizeof(struct token));
+	if (token == NULL) {
+	    fprintf (stderr, "Unable to malloc token\n");
+	    assert (0);
+	}
         if (read_token_from_file(fp, token)) {
             fprintf(stderr, "could not read token, count is %lu\n", count);
         }
@@ -547,6 +572,10 @@ int read_imgname_mappings(char* img_filename, GHashTable* imgname_table)
         int file_cnt;
         char* fname;
         fname = (char *) malloc(256);
+	if (fname == NULL) {
+	    fprintf (stderr, "Unable to malloc fname\n");
+	    assert (0);
+	}
         if (read_image_mapping(fp, &file_cnt, fname)) {
             fprintf(stderr, "could not read filemapping, count is %lu\n", count);
             return -1;

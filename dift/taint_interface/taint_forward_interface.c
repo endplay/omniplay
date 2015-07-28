@@ -46,11 +46,6 @@ void init_taint_structures (char* group_dir)
     assert(shadow_memory);
 }
 
-void write_taint_structures(int outfd)
-{
-    // not required
-}
-
 void print_taint_stats(FILE* fp)
 {
     /*

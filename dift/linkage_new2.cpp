@@ -31,6 +31,7 @@
 #include "xray_slab_alloc.h"
 #include "taint_interface/taint_debug.h"
 #include "trace_x.h"
+#include "splice.h"
 
 // List of available Linkage macros
 // // DO NOT TURN THESE ON HERE. Turn these on in makefile.rules.
@@ -126,6 +127,13 @@ int filter_x = 0;
 int filter_inputs = 0;
 int print_all_opened_files = 0;
 const char* filter_read_filename = NULL;
+int segment_length = 0;
+int splice_output = 0;
+int all_output = 0;
+const char* splice_semname = NULL;
+const char* splice_input = NULL;
+u_long* pregs = NULL; // Only works for single-threaded program
+u_long num_merge_entries = 134217728;
 
 struct slab_alloc open_info_alloc;
 struct slab_alloc thread_data_alloc;
@@ -151,12 +159,33 @@ KNOB<string> KnobFilterByteRange(KNOB_MODE_APPEND,
 KNOB<string> KnobFilterReadFile(KNOB_MODE_WRITEONCE,
     "pintool", "rf", "",
     "filename of filter-file to get bytes to filter input on, only valid with -i on");
+KNOB<int> KnobFilterOutputSyscall(KNOB_MODE_WRITEONCE,
+    "pintool", "ofs", "",
+    "if set, specific syscall for which to report output taint");
 KNOB<bool> KnobTraceX(KNOB_MODE_WRITEONCE,
     "pintool", "x", "",
     "output taints to X");
 KNOB<bool> KnobRecordOpenedFiles(KNOB_MODE_WRITEONCE,
     "pintool", "o", "",
     "print all opened files");
+KNOB<int> KnobSegmentLength(KNOB_MODE_WRITEONCE,
+    "pintool", "l", "",
+    "segment length"); //FIXME: take into consideration offset of being attached later. Remember, this is to specify where to kill application.
+KNOB<bool> KnobSpliceOutput(KNOB_MODE_WRITEONCE,
+    "pintool", "so", "",
+    "generate output splice file");
+KNOB<bool> KnobAllOutput(KNOB_MODE_WRITEONCE,
+    "pintool", "ao", "",
+    "generate output file of changed taints");
+KNOB<string> KnobSpliceInput(KNOB_MODE_WRITEONCE,
+    "pintool", "si", "",
+    "input splice file");
+KNOB<string> KnobSpliceSemaphore(KNOB_MODE_WRITEONCE,
+    "pintool", "sem", "",
+    "input splice semaphore");
+KNOB<int> KnobMergeEntries(KNOB_MODE_WRITEONCE,
+    "pintool", "me", "",
+    "merge entries"); //FIXME: take into consideration offset of being attached later. Remember, this is to specify where to kill application.
 
 // Specific output functions
 // #define HEARTBLEED
@@ -205,10 +234,12 @@ static inline void increment_syscall_cnt (struct thread_data* ptdata, int syscal
             if (!(*(int *)(ptdata->ignore_flag))) {
                 global_syscall_cnt++;
                 ptdata->syscall_cnt++;
+		//printf ("syscall cnt %lu num %d\n", global_syscall_cnt, syscall_num);
             }
         } else {
             global_syscall_cnt++;
             ptdata->syscall_cnt++;
+	    //printf ("syscall cnt %lu num %d\n", global_syscall_cnt, syscall_num);
         }
     }
 #else
@@ -266,6 +297,10 @@ char* get_file_ext(char* filename){
     if(!dot || dot == filename) {
         char* ret;
         ret = (char*) malloc(5 * sizeof(char));
+	if (!ret) {
+	    fprintf (stderr, "Unable to malloc file ext\n");
+	    assert (0);
+	}
         strcpy(ret, "none");
         return ret;
     }
@@ -341,7 +376,8 @@ static inline void sys_read_stop(struct thread_data* ptdata, int rc)
     int read_fileno = -1;
     struct read_info* ri = (struct read_info*) &ptdata->read_info_cache;
 
-    if (rc > 0) {
+    // If global_syscall_cnt == 0, then read handled in previous epoch
+    if (rc > 0 && global_syscall_cnt > 0) {
         struct taint_creation_info tci;
         char* channel_name = (char *) "--";
 
@@ -465,7 +501,6 @@ static void sys_select_stop(struct thread_data* ptdata, int rc)
 }
 #endif
 
-#ifdef MMAP_INPUTS
 static void sys_mmap_start(struct thread_data* ptdata,
                                 u_long addr, int len, int prot, int fd)
 {
@@ -474,15 +509,13 @@ static void sys_mmap_start(struct thread_data* ptdata,
     mmi->length = len;
     mmi->prot = prot;
     mmi->fd = fd;
-    fprintf(stderr, "mmap start fd %d\n", fd);
-
     ptdata->save_syscall_info = (void *) mmi;
 }
 
 static void sys_mmap_stop(struct thread_data* ptdata, int rc)
 {
-    fprintf(stderr, "mmap stop rc is %d\n", rc);
     struct mmap_info* mmi = (struct mmap_info*) ptdata->save_syscall_info;
+#ifdef MMAP_INPUTS
     if (rc != -1 && (mmi->fd != -1)) {
         fprintf(stderr, "mmap stop fd %d\n", mmi->fd);
         int read_fileno = -1;
@@ -514,8 +547,11 @@ static void sys_mmap_stop(struct thread_data* ptdata, int rc)
     }
     ptdata->save_syscall_info = 0;
     SYSCALL_DEBUG (stderr, "sys_mmap_stop done\n");
-}
+#else
+    // Need to at least clear these taints 
+    clear_mem_taints (rc, mmi->length);
 #endif
+}
 
 static inline void sys_write_start(struct thread_data* ptdata,
                                         int fd, char* buf, int size)
@@ -531,7 +567,8 @@ static inline void sys_write_stop(struct thread_data* ptdata, int rc)
 {
     struct write_info* wi = (struct write_info *) &ptdata->write_info_cache;
     int channel_fileno = -1;
-    if (rc > 0) {
+    // If syscall cnt = 0, then write handled in previous epoch
+    if (rc > 0 && global_syscall_cnt > 0) {
         struct taint_creation_info tci;
         SYSCALL_DEBUG (stderr, "write_stop: sucess write of size %d\n", rc);
 
@@ -625,6 +662,10 @@ static void sys_socket_start (struct thread_data* ptdata, int domain,
                                                     int type, int protocol)
 {
     struct socket_info* si = (struct socket_info*) malloc(sizeof(struct socket_info));
+    if (si == NULL) {
+	fprintf (stderr, "Unable to malloc socket info\n");
+	assert (0);
+    }
     si->call = SYS_SOCKET;
     si->domain = domain;
     si->type = type;
@@ -650,6 +691,10 @@ static void sys_connect_start(struct thread_data* ptdata, int sockfd,
     if (monitor_has_fd(open_socks, sockfd)) {
         struct socket_info* si = (struct socket_info*) monitor_get_fd_data(open_socks, sockfd);
         struct connect_info* ci = (struct connect_info *) malloc(sizeof(struct connect_info));
+	if (ci == NULL) {
+	    fprintf (stderr, "Unable to malloc connect_info\n");
+	    assert (0);
+	}
         memset(ci, 0, sizeof(struct connect_info));
         assert(si);
 
@@ -798,7 +843,10 @@ static void sys_recv_stop(struct thread_data* ptdata, int rc) {
 static void sys_recvmsg_start(struct thread_data* ptdata, int fd, struct msghdr* msg, int flags) {
     struct recvmsg_info* rmi;
     rmi = (struct recvmsg_info *) malloc(sizeof(struct recvmsg_info));
-
+    if (rmi == NULL) {
+	fprintf (stderr, "Unable to malloc recvmsg_info\n");
+	assert (0);
+    }
     rmi->fd = fd;
     rmi->msg = msg;
     rmi->flags = flags;
@@ -852,7 +900,10 @@ static void sys_sendmsg_start(struct thread_data* ptdata, int fd,
 {
     struct sendmsg_info* smi;
     smi = (struct sendmsg_info *) malloc(sizeof(struct sendmsg_info));
-
+    if (smi == NULL) {
+	fprintf (stderr, "Unable to malloc sendmsg_info\n");
+	assert (0);
+    }
     smi->fd = fd;
     smi->msg = msg;
     smi->flags = flags;
@@ -977,10 +1028,8 @@ void syscall_start(struct thread_data* ptdata, int sysnum,
         }
         case SYS_mmap:
         case SYS_mmap2:
-#ifdef MMAP_INPUTS
             sys_mmap_start(ptdata, (u_long)syscallarg0, (int)syscallarg1,
                             (int)syscallarg2, (int)syscallarg4);
-#endif
             break;
     }
 }
@@ -1018,9 +1067,7 @@ void syscall_end(struct thread_data* ptdata, int sysnum, ADDRINT ret_value)
 #endif
         case SYS_mmap:
         case SYS_mmap2:
-#ifdef MMAP_INPUTS
             sys_mmap_stop(ptdata, rc);
-#endif
             break;
         case SYS_socketcall:
         {
@@ -1122,6 +1169,11 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
     // reset the syscall number after returning from system call
     increment_syscall_cnt (ptdata, ptdata->sysnum);
     ptdata->sysnum = 0;
+
+    if (global_syscall_cnt == (unsigned long) segment_length) {
+	//fprintf(stderr, "Pin terminating at Pid %d, syscall %d\n", PIN_GetPid(), ptdata->syscall_cnt);
+        PIN_ExitApplication(0);
+    }
 }
 
 void instrument_inst(ADDRINT tls_ptr, ADDRINT ip)
@@ -18402,6 +18454,10 @@ int restore_state_from_disk (struct thread_data* ptdata)
     if (monitor_size) {
         void* monitor_bytes;
         monitor_bytes = (void *) malloc(monitor_size);
+	if (monitor_bytes == NULL) {
+	    fprintf (stderr, "Unable to malloc monitor_bytes\n");
+	    assert (0);
+	}
         rc = read(infd, monitor_bytes, monitor_size);
         if (rc != monitor_size) {
             fprintf(stderr, "could not read open_fds monitor, errno %d\n", errno);
@@ -18420,7 +18476,11 @@ int restore_state_from_disk (struct thread_data* ptdata)
     if (monitor_size) {
         void* monitor_bytes;
         monitor_bytes = (void *) malloc(monitor_size);
-        rc = read(infd, monitor_bytes, monitor_size);
+	if (monitor_bytes == NULL) {
+	    fprintf (stderr, "Unable to malloc monitor_bytes\n");
+	    assert (0);
+	}
+	rc = read(infd, monitor_bytes, monitor_size);
         if (rc != monitor_size) {
             fprintf(stderr, "could not read open_socks monitor, errno %d\n", errno);
             return -1;
@@ -18437,6 +18497,10 @@ int restore_state_from_disk (struct thread_data* ptdata)
     if (monitor_size) {
         void* monitor_bytes;
         monitor_bytes = (void *) malloc(monitor_size);
+	if (monitor_bytes == NULL) {
+	    fprintf (stderr, "Unable to malloc monitor_bytes\n");
+	    assert (0);
+	}
         rc = read(infd, monitor_bytes, monitor_size);
         if (rc != monitor_size) {
             fprintf(stderr, "could not read open_x_fds monitor, errno %d\n", errno);
@@ -18563,6 +18627,10 @@ BOOL follow_child(CHILD_PROCESS child, void* data)
      * pin_binary -follow_execv -t pin_tool new_addr*/
     int new_argc = 5;
     argv = (char**)malloc(sizeof(char*) * new_argc);
+    if (argv == NULL) {
+	fprintf (stderr, "Unable to malloc argv\n");
+	assert (0);
+    }
 
     fprintf(stderr, "follow_child: %p\n", main_prev_argv);
     argv[0] = prev_argv[index++];                   // pin
@@ -18600,12 +18668,22 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 {
     struct thread_data* ptdata;
 
-    fprintf(stderr, "Thread %d starting\n", threadid);
     // TODO Use slab allocator
     ptdata = (struct thread_data *) malloc (sizeof(struct thread_data));
+    if (ptdata == NULL) {
+	fprintf (stderr, "Unable to malloc pdata\n");
+	assert (0);
+    }
     //ptdata = (struct thread_data *) get_slice(&thread_data_alloc);
     assert(ptdata);
     memset(ptdata, 0, sizeof(struct thread_data));
+    if (splice_output) {
+	// FIXME - use unique values for multithreaded programs
+	for (int i = 0; i < NUM_REGS * REG_SIZE; i++) {
+	    ptdata->shadow_reg_table[i] = i+1; // Guaranteed to not be a useful part of the address space
+	}
+    }
+    pregs = ptdata->shadow_reg_table;
 
     ptdata->threadid = threadid;
 #ifdef HAVE_REPLAY
@@ -18766,29 +18844,40 @@ void init_logs(void)
 #endif
 }
 
+extern int dump_mem_taints(int fd);
+extern int dump_reg_taints (int fd, u_long* pregs);
+
 void fini(INT32 code, void* v)
 {
     int taint_fd;
     char taint_structures_file[256];
+    struct timeval tv;
 
-    snprintf(taint_structures_file, 256, "%s/taint_structures",
-            group_directory);
-    /*
-    snprintf(taint_structures_file, 256, "%s/taint_structures_%d",
-            group_directory, PIN_GetPid());
-    */
-    taint_fd = open(taint_structures_file, O_WRONLY | O_CREAT, 0644);
-    assert(taint_fd > 0);
-
-    taint_creation_fini();
-    print_taint_stats(stderr);
-    write_taint_structures(taint_fd);
-    close(taint_fd);
-    {
-        struct timeval tv;
-        gettimeofday(&tv, NULL);
-        fprintf(stderr, "time end %lu sec %lu usec", tv.tv_sec, tv.tv_usec);
+    if (splice_input && splice_input[0]) {
+	// Also need to consider addresses passed from previous segment as output
+	splice_after_segment (splice_input, splice_semname, outfd);
     }
+
+    if (all_output) {
+	snprintf(taint_structures_file, 256, "%s/taint_structures", group_directory);
+
+	taint_fd = open(taint_structures_file, O_WRONLY | O_CREAT | O_LARGEFILE, 0644);
+	assert(taint_fd > 0);
+	
+    	gettimeofday(&tv, NULL);
+	printf("dump start dir %s %lu sec %lu usec\n", group_directory, tv.tv_sec, tv.tv_usec);
+
+	dump_reg_taints(taint_fd, pregs);
+	dump_mem_taints(taint_fd);
+	
+	close(taint_fd);
+    }
+
+    print_taint_stats(stderr);
+#if 0
+    gettimeofday(&tv, NULL);
+    fprintf(stderr, "time end %lu sec %lu usec\n", tv.tv_sec, tv.tv_usec);
+#endif
 }
 
 #if 0
@@ -18838,6 +18927,19 @@ int main(int argc, char** argv)
         }
     }
 
+    // Read in command line args
+    trace_x = KnobTraceX.Value();
+    print_all_opened_files = KnobRecordOpenedFiles.Value();
+    filter_read_filename = KnobFilterReadFile.Value().c_str();
+    segment_length = KnobSegmentLength.Value();
+    splice_output = KnobSpliceOutput.Value();
+    all_output = KnobAllOutput.Value();
+    splice_input = KnobSpliceInput.Value().c_str();
+    splice_semname = KnobSpliceSemaphore.Value().c_str();
+    if (KnobMergeEntries.Value() > 0) {
+	num_merge_entries = KnobMergeEntries.Value();
+    }
+
     init_logs();
     init_taint_structures(group_directory);
     if (!open_fds) {
@@ -18850,27 +18952,12 @@ int main(int argc, char** argv)
         open_x_fds = new_xray_monitor(0);
     }
 
-    fprintf(stderr, "starting init_slab_allocs\n");
+    //fprintf(stderr, "starting init_slab_allocs\n");
     init_slab_allocs();
     // how about 1000 opened files...ever?
     new_slab_alloc((char *)"OPEN_ALLOC", &open_info_alloc, sizeof(struct open_info), 1000);
     // shouldn't expect for than 100 threads?
     new_slab_alloc((char *)"THREAD_ALLOC", &thread_data_alloc, sizeof(struct thread_data), 100);
-
-    trace_x = KnobTraceX.Value();
-    print_all_opened_files = KnobRecordOpenedFiles.Value();
-    filter_read_filename = KnobFilterReadFile.Value().c_str();
-
-    /*
-    outfd = open("/tmp/output", O_WRONLY | O_CREAT, 0644);
-    if (outfd == -1) {
-        fprintf(stderr, "could not open output file, errno %d\n", errno);
-    }
-    tokens_fd = open("/tmp/tokens", O_WRONLY | O_CREAT, 0644);
-    if (tokens_fd == -1) {
-        fprintf(stderr, "could not open tokens file, errno %d\n", errno);
-    }
-    */
 
     if (!child) {
         // input filters
@@ -18904,8 +18991,13 @@ int main(int argc, char** argv)
 
         // output filters
         if (trace_x) {
-            set_filter_outputs(1);
-        }
+	    set_filter_outputs(1, -1);
+        } else {
+	    int filter_syscall = KnobFilterOutputSyscall.Value();
+	    if (filter_syscall > 0) {
+		set_filter_outputs(0, filter_syscall);
+	    }
+	}
     }
 
     // Claim a Pin virtual register to store the pointer to a thread's TLS
@@ -18938,15 +19030,17 @@ int main(int argc, char** argv)
 #endif
 
     PIN_AddSyscallExitFunction(instrument_syscall_ret, 0);
-    fprintf(stderr, "Starting the linkage Pin tool\n");
+    //fprintf(stderr, "Starting the linkage Pin tool\n");
 #ifdef HEARTBLEED
     fprintf(stderr, "heartbleed defined\n");
 #endif
+#if 0
     {
         struct timeval tv;
         gettimeofday(&tv, NULL);
-        fprintf(stderr, "time start %lu sec %lu usec", tv.tv_sec, tv.tv_usec);
+        fprintf(stderr, "time start %lu sec %lu usec\n", tv.tv_sec, tv.tv_usec);
     }
+#endif
 
     PIN_StartProgram();
 

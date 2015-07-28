@@ -11,7 +11,7 @@ struct slab* slab_structs_end = NULL;
 
 #define NUM_SLAB_STRUCTS 2097152
 
-#define ALLOC_STATS
+//#define ALLOC_STATS
 #ifdef ALLOC_STATS
 static u_long slab_allocated = 0;
 #endif
@@ -23,10 +23,9 @@ void init_slab_allocs(void)
         return;
     }
     len = sizeof(struct slab) * NUM_SLAB_STRUCTS;
-    fprintf(stderr, "len is %lu\n", len);
     slab_structs = (struct slab *) mmap(NULL, len, PROT_READ | PROT_WRITE,
                                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if ((u_long)slab_structs == -1) {
+    if (slab_structs == MAP_FAILED) {
         fprintf(stderr, "Could not allocate slab structs, errno %d\n", errno);
         assert(0);
     }
@@ -47,7 +46,10 @@ static struct slab* new_slab_struct(void) {
         len = sizeof(struct slab) * NUM_SLAB_STRUCTS;
         slab_structs = (struct slab *) mmap(NULL, len, PROT_READ | PROT_WRITE,
                                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        assert((u_long)slab_structs != -1);
+	if (slab_structs == MAP_FAILED) {
+	    fprintf(stderr, "Could not allocate slab structs, errno %d\n", errno);
+	    assert(0);
+	}
 #ifdef ALLOC_STATS
 	slab_allocated += len;
 #endif
@@ -64,7 +66,7 @@ static struct slab* new_slab(char* name, int size)
     assert(slab);
     slab->start = mmap(NULL, size, PROT_READ | PROT_WRITE,
                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if ((u_long)slab->start == -1) {
+    if (slab->start == MAP_FAILED) {
         fprintf(stderr, "[%s] ERROR could not allocate new slab of size %d\n",
                             name, size);
         assert(0);
@@ -74,8 +76,8 @@ static struct slab* new_slab(char* name, int size)
 #endif
 
     slab->end = (void *) (((u_long) slab->start) + size);
-    fprintf(stderr, "[%s] creating new slab of size %d\n", name, size);
 #ifdef ALLOC_STATS
+    fprintf(stderr, "[%s] creating new slab of size %d\n", name, size);
     fprintf(stderr, "[%s] total allocated %lu\n", name, slab_allocated);
 #endif    
     return slab;
@@ -88,7 +90,7 @@ void new_slab_alloc(char* alloc_name, struct slab_alloc* alloc,
     strncpy(alloc->alloc_name, alloc_name, 256);
     alloc->slab_size = slice_size * num_slices;
 
-    fprintf(stderr, "[%s] Creating new slab allocate with slab size %d\n", alloc->alloc_name, alloc->slab_size);
+    //fprintf(stderr, "[%s] Creating new slab allocate with slab size %d\n", alloc->alloc_name, alloc->slab_size);
 
     alloc->slice_size = slice_size;
     INIT_LIST_HEAD(&alloc->list);

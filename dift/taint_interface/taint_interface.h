@@ -26,11 +26,8 @@ typedef uint8_t taintvalue_t;
 #endif
 
 
-/* Creates a new taint option */
-taint_t create_taint_option (option_t option, taintvalue_t value);
-taint_t create_and_taint_option (option_t option, taintvalue_t value,
-                                    u_long mem_addr);
-taint_t create_taint(void);
+/* Creates a new taint for a memory input */
+taint_t create_and_taint_option (u_long mem_addr);
 
 /* Get the taint value for an option in the taint structure t */
 taintvalue_t get_taint_value (taint_t t, option_t option);
@@ -48,7 +45,6 @@ int translate_reg(int reg);
  * Call this first before calling any taint function
  * */
 void init_taint_structures(char* group_dir);
-void write_taint_structures(int outfd);
 void* get_non_zero_taints(taint_t t);
 void print_options(FILE* fp, taint_t t);
 

@@ -29,6 +29,7 @@ struct wakeup_data {
 	int           attach_pid;
 	int	      save_mmap;
 	int           ckpt_at;
+	int           record_timing;
 };
 
 struct wakeup_ckpt_data {
@@ -91,5 +92,6 @@ struct get_record_pid_data {
 #define SPECI_GET_CURRENT_RECORD_PID _IOR('u', 15, struct get_record_pid_data)
 #define SPECI_CKPT_RESUME _IOR('u', 16, struct wakeup_ckpt_data)
 #define SPECI_CKPT_PROC_RESUME _IOR('u', 17, struct wakeup_ckpt_data)
+#define SPECI_GET_ATTACH_STATUS _IOR('u', 18, pid_t)
 
 #endif

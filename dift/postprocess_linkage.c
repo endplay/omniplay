@@ -13,10 +13,10 @@
 #include "xray_slab_alloc.h"
 #include "taint_interface/taint_creation.h"
 #include "xray_token.h"
+#include "maputil.h"
 
 //#define USE_MERGE_HASH
 
-int print_values = 0;
 int heartbleed = 0;
 int xoutput = 0;
 int taint_numbers = 0;
@@ -293,9 +293,6 @@ void print_leaf_options(struct taint_creation_info* tci,
                                 tok->syscall_cnt,
                                 tok->byte_offset);
             fprintf(out_f, "\n");
-            if (print_values) {
-                fprintf(stdout, " %d", tok->value);
-            }
             fprintf(stdout, "\n");
         } else {
             if (!g_hash_table_lookup(seen_indices, (gpointer) n->parent1)) {
@@ -464,9 +461,6 @@ void print_taint_options(u_long taint,
                                 tok->syscall_cnt,
                                 tok->byte_offset,
                                 filename);
-            if (print_values) {
-                fprintf(stdout, " %c", tok->value);
-            }
             fprintf(stdout, "\n");
         } else {
             if (!g_hash_table_lookup(seen_indices, (gpointer) n->parent1)) {
@@ -620,9 +614,6 @@ void print_xtaint_options(u_long taint,
                                 tok->syscall_cnt,
                                 tok->byte_offset,
                                 filename);
-            if (print_values) {
-                fprintf(stdout, " %c", tok->value);
-            }
             fprintf(stdout, "\n");
         } else {
             if (!g_hash_table_lookup(seen_indices, (gpointer) n->parent1)) {
@@ -703,10 +694,6 @@ void print_merge_number_xtaint_options(u_long taint_number,
                                 tok->syscall_cnt,
                                 tok->byte_offset,
                                 filename);
-            if (print_values) {
-                //fprintf(stdout, " %c", tok->value);
-                fprintf(stdout, " %d", tok->value);
-            }
             fprintf(stdout, "\n");
         } else {
             if (!g_hash_table_lookup(seen_indices, GUINT_TO_POINTER(tn->p1))) {
@@ -830,7 +817,9 @@ int append_files(char* file1, char* file2, int pid) {
     buffer1 = (char*)malloc(sizeof(char) * (f_size1));
     if (!buffer1) {fprintf(stderr, "error creating buffer\n"); return 0;}
     fseek(fp1, 0, SEEK_SET);
-    fread(buffer1, 1, f_size1, fp1);
+    if (fread(buffer1, 1, f_size1, fp1) != 1) {
+      printf ("fread returns value other than 1\n");
+    }
 
     // Write First File
     size_t result = fwrite(buffer1, 1, f_size1, out_f);
@@ -911,10 +900,6 @@ int read_backwards_results(int argc, char** argv)
         usage();
     }
 
-    if (!strcmp(argv[base], "-v")) {
-        print_values = 1;
-        base++;
-    }
     if (!strcmp(argv[base], "-o")) {
         append = 1;
         base++;
@@ -1164,10 +1149,6 @@ int read_xoutput_results(int argc, char** argv)
         taint_numbers = 1;
         base++;
     }
-    if (!strcmp(argv[base], "-v")) {
-        print_values = 1;
-        base++;
-    }
     group_dir = argv[base];
     snprintf(results_filename, 256, "%s/xoutput.result", group_dir);
     snprintf(filenames_filename, 256, "%s/filenames", group_dir);
@@ -1308,6 +1289,7 @@ void print_merge_number_options(struct taint_creation_info* tci,
             tok = g_hash_table_lookup(option_info_table, GINT_TO_POINTER(n));
             assert(tok);
 
+#ifdef USE_FILENAMES
             // resolve filenames
             if (g_hash_table_contains(filename_table, GINT_TO_POINTER(tok->fileno))) {
                 filename = (char *) g_hash_table_lookup(filename_table, GINT_TO_POINTER(tok->fileno));
@@ -1328,9 +1310,18 @@ void print_merge_number_options(struct taint_creation_info* tci,
                                 tok->syscall_cnt,
                                 tok->byte_offset,
                                 filename);
-            if (print_values) {
-                fprintf(stdout, " %c", tok->value);
-            }
+#else
+            fprintf(stdout, "%llu %d %lu %d ",    
+                                tci->rg_id,
+                                tci->record_pid,
+                                tci->syscall_cnt,
+		    output_byte_offset);
+            fprintf(stdout, "%llu %d %d %d",
+                                tok->rg_id,
+                                tok->record_pid,
+                                tok->syscall_cnt,
+		    tok->byte_offset);
+#endif
 	    fprintf(stdout, "\n");
         } else {
             if (!g_hash_table_lookup(seen_indices, GUINT_TO_POINTER(tn->p1))) {
@@ -1375,45 +1366,61 @@ void print_merge_number_options(struct taint_creation_info* tci,
 	}
 	g_hash_table_add(seen_indices, GUINT_TO_POINTER(n));
 
-	if (n < 0xc0000000) {
+	if (n <= 0xe0000000) {
+#ifdef OUTPUT_MERGE
+#else
+		struct token* tok;
+		// lookup option number to metadata describing that option
+		tok = g_hash_table_lookup(option_info_table, GINT_TO_POINTER(n));
+		assert(tok);
+		
+#ifdef USE_FILENAMES
+		char* filename = (char *) "--";
+		char* out_filename = (char *) "--";
+		// resolve filenames
+		if (g_hash_table_contains(filename_table, GINT_TO_POINTER(tok->fileno))) {
+		    filename = (char *) g_hash_table_lookup(filename_table, GINT_TO_POINTER(tok->fileno));
+		}
+		if (g_hash_table_contains(filename_table, GINT_TO_POINTER(tci->fileno))) {
+		    out_filename = (char *) g_hash_table_lookup(filename_table, GINT_TO_POINTER(tci->fileno));
+		}
 
-            struct token* tok;
-            char* filename = (char *) "--";
-            char* out_filename = (char *) "--";
-            // lookup option number to metadata describing that option
-            tok = g_hash_table_lookup(option_info_table, GINT_TO_POINTER(n));
-            assert(tok);
-
-            // resolve filenames
-            if (g_hash_table_contains(filename_table, GINT_TO_POINTER(tok->fileno))) {
-                filename = (char *) g_hash_table_lookup(filename_table, GINT_TO_POINTER(tok->fileno));
-            }
-            if (g_hash_table_contains(filename_table, GINT_TO_POINTER(tci->fileno))) {
-                out_filename = (char *) g_hash_table_lookup(filename_table, GINT_TO_POINTER(tci->fileno));
-            }
-
-            fprintf(stdout, "%llu %d %lu %d %s ",    
-                                tci->rg_id,
-                                tci->record_pid,
-                                tci->syscall_cnt,
-                                output_byte_offset,
-                                out_filename);
-            fprintf(stdout, "%llu %d %d %d %s",
-                                tok->rg_id,
-                                tok->record_pid,
-                                tok->syscall_cnt,
-                                tok->byte_offset,
-                                filename);
-            if (print_values) {
-                fprintf(stdout, " %c", tok->value);
-            }
-	    fprintf(stdout, "\n");
+		fprintf(stdout, "%llu %d %lu %d %s ",    
+			tci->rg_id,
+			tci->record_pid,
+			tci->syscall_cnt,
+			output_byte_offset,
+			out_filename);
+		fprintf(stdout, "%llu %d %d %d %s",
+			tok->rg_id,
+			tok->record_pid,
+			tok->syscall_cnt,
+			tok->byte_offset,
+			filename);
+#else
+		fprintf(stdout, "%llu %d %lu %d ",    
+			tci->rg_id,
+			tci->record_pid,
+			tci->syscall_cnt,
+			output_byte_offset);
+		fprintf(stdout, "%llu %d %d %d",
+			tok->rg_id,
+			tok->record_pid,
+			tok->syscall_cnt,
+			tok->byte_offset);
+#endif
+		fprintf(stdout, "\n");
+#if 0
+	    }
+#endif
         } else {
-	    pentry = &merge_log[n-0xc0000000];
+	    pentry = &merge_log[n-0xe0000001];
+	    //fprintf (stdout, "%lx -> %lx, %lx\n", n, pentry->p1, pentry->p2);
 	    g_queue_push_tail(queue, GUINT_TO_POINTER(pentry->p1));
 	    g_queue_push_tail(queue, GUINT_TO_POINTER(pentry->p2));
         }
     }
+#endif
     g_queue_free(queue);
     g_hash_table_destroy(seen_indices);
 }
@@ -1511,10 +1518,6 @@ int read_backwards_merge_numbers(int argc, char** argv)
         usage();
     }
 
-    if (!strcmp(argv[base], "-v")) {
-        print_values = 1;
-        base++;
-    }
     if (!strcmp(argv[base], "-o")) {
         base++;
     }
@@ -1554,6 +1557,186 @@ int read_backwards_merge_numbers(int argc, char** argv)
     return 0;
 }
 
+#define OUTBUFSIZE 1000000
+u_long outbuf[OUTBUFSIZE];
+u_long outindex = 0;
+int outfd;
+
+static void flush_outbuf()
+{
+    long rc = write (outfd, outbuf, outindex*sizeof(u_long));
+    if (rc != outindex*sizeof(u_long)) {
+	fprintf (stderr, "write of segment failed, rc=%ld, errno=%d\n", rc, errno);
+	exit (rc);
+    }
+    outindex = 0;
+}
+
+static inline void print_relation (u_long seg, u_long value) 
+{
+  //    if (outindex == OUTBUFSIZE) flush_outbuf();
+  //  outbuf[outindex++] = seg;
+    if (outindex == OUTBUFSIZE) flush_outbuf();
+    outbuf[outindex++] = value;
+}
+
+static inline void print_sentinal ()
+{
+    if (outindex == OUTBUFSIZE) flush_outbuf();
+    outbuf[outindex++] = 0;
+}
+
+void print_merge (u_long taint_number)
+{
+    GHashTable* seen_indices;
+    GQueue* queue;
+    struct taint_entry* pentry;
+
+    seen_indices = g_hash_table_new(g_direct_hash, g_direct_equal);
+    queue = g_queue_new();
+
+    g_queue_push_tail(queue, GUINT_TO_POINTER(taint_number));
+    while(!g_queue_is_empty(queue)) {
+
+        u_long n = GPOINTER_TO_UINT(g_queue_pop_head(queue));
+	if (g_hash_table_contains(seen_indices, GUINT_TO_POINTER(n))) {
+	    continue;
+	}
+	g_hash_table_add(seen_indices, GUINT_TO_POINTER(n));
+
+	if (n <= 0xe0000000) {
+	    print_relation (1, n);
+        } else {
+	    pentry = &merge_log[n-0xe0000001];
+	    g_queue_push_tail(queue, GUINT_TO_POINTER(pentry->p1));
+	    g_queue_push_tail(queue, GUINT_TO_POINTER(pentry->p2));
+        }
+    }
+
+    g_queue_free(queue);
+    g_hash_table_destroy(seen_indices);
+}
+
+int map_shmem (char* filename, int* pfd, u_long* pdatasize, u_long* pmapsize, char** pbuf)
+{
+    char shmemname[256];
+    struct stat st;
+    u_long size;
+    int fd, rc, i;
+    char* buf;
+
+    snprintf(shmemname, 256, "/node_nums_shm%s", filename);
+    for (i = 1; i < strlen(shmemname); i++) {
+	if (shmemname[i] == '/') shmemname[i] = '.';
+    }
+    shmemname[strlen(shmemname)-10] = '\0';
+    fd = shm_open (shmemname, O_RDONLY, 0);
+    if (fd < 0) {
+	fprintf (stderr, "Unable to open %s, rc=%d, errno=%d\n", shmemname, fd, errno);
+	return fd;
+    }
+    rc = fstat(fd, &st);
+    if (rc < 0) {
+	fprintf (stderr, "Unable to stat %s, rc=%d, errno=%d\n", shmemname, rc, errno);
+	return rc;
+    }
+    if (st.st_size%4096) {
+	size = st.st_size + 4096-st.st_size%4096;
+    } else {
+	size = st.st_size;
+    }
+    buf = (char *) mmap (NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (buf == MAP_FAILED) {
+	fprintf (stderr, "Cannot map file %s, errno=%d\n", shmemname, errno);
+	return -1;
+    }
+
+    // This is the last process to use the merge region
+    // This will deallocate it  after we exit
+    rc = shm_unlink (shmemname); 
+    if (rc < 0) perror ("shmem_unlink");
+
+    *pfd = fd;
+    *pdatasize = st.st_size;
+    *pmapsize = size;
+    *pbuf = buf;
+
+    return 0;
+}
+
+int parse_merge (char* results_filename, GHashTable* merge_node_table)
+{
+    int fd, rc, i;
+    u_long outsize, mapsize;
+    char* buf, *pout;
+    u_long value;
+    u_long buf_size;
+
+    rc = map_file (results_filename, &fd, &outsize, &mapsize, &buf);
+    if (rc < 0) return rc;
+
+    pout = buf;
+    while (pout < buf + outsize) {
+
+	pout += sizeof(struct taint_creation_info);
+	pout += sizeof(u_long);
+	buf_size = *((u_long *) pout);
+	pout += sizeof(u_long);
+
+        // now read the taints
+        for (i = 0; i < buf_size; i++) {
+
+	    pout += sizeof(u_long);
+	    value = *((u_long *) pout);
+            if (value) {
+                print_merge (value);
+            }
+	    pout += sizeof(u_long);
+	    print_sentinal();
+        }
+
+    }
+    flush_outbuf();
+
+    return 0;
+}
+
+int read_merge (int argc, char** argv)
+{
+    char* group_dir;
+    char taint_structures_filename[256];
+    char results_filename[256];
+    char out_filename[256];
+    u_long moutsize, mmapsize;
+    int mfd, rc;
+
+    if (argc < 2) {
+        usage();
+    }
+
+    group_dir = argv[2];
+    snprintf(taint_structures_filename, 256, "%s/node_nums", group_dir);
+    snprintf(results_filename, 256, "%s/dataflow.result", group_dir);
+    snprintf (out_filename, 256, "%s/mergeout", group_dir);
+
+    outfd = open (out_filename, O_CREAT|O_WRONLY|O_TRUNC, 0644);
+    if (outfd < 0) {
+        fprintf(stderr, "couldn't open %s\n", out_filename);
+        return outfd;
+    }
+	
+    // merge_node_table is a mapping of taint number to struct taint number
+    merge_node_table = g_hash_table_new(g_direct_hash, g_direct_equal);
+
+    rc = map_shmem (taint_structures_filename, &mfd, &moutsize, &mmapsize, (char **) &merge_log);
+    if (rc < 0) return rc;
+
+    parse_merge(results_filename, merge_node_table);
+
+    return 0;
+}
+
+
 int main(int argc, char** argv)
 {
     // TOOD proper args parsing
@@ -1565,6 +1748,8 @@ int main(int argc, char** argv)
         return read_heartbleed_results(argc, argv);
     } else if (!strcmp(argv[1], "-n")) {
         return read_backwards_merge_numbers(argc, argv);
+    } else if (!strcmp(argv[1], "-m")) {
+        return read_merge(argc, argv);
     }
     return read_backwards_results(argc, argv);
 }

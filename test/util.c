@@ -74,7 +74,8 @@ int replay_fork (int fd_spec, const char** args, const char** env,
 }
 
 int resume_with_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int save_mmap, 
-		      char* logdir, char* linker, loff_t attach_index, int attach_pid, int ckpt_at)
+		      char* logdir, char* linker, loff_t attach_index, int attach_pid, int ckpt_at,
+		      int record_timing)
 {
     struct wakeup_data data;
     data.pin = pin;
@@ -87,14 +88,15 @@ int resume_with_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int save
     data.attach_index = attach_index;
     data.attach_pid = attach_pid;
     data.ckpt_at = ckpt_at;
+    data.record_timing = record_timing;
     return ioctl (fd_spec, SPECI_RESUME, &data);    
 }
 
 int resume (int fd_spec, int pin, int gdb, int follow_splits, int save_mmap, 
-	    char* logdir, char* linker, loff_t attach_index, int attach_pid)
+	    char* logdir, char* linker, loff_t attach_index, int attach_pid, int record_timing)
 {
     return resume_with_ckpt (fd_spec, pin, gdb, follow_splits, save_mmap,
-			     logdir, linker, attach_index, attach_pid, 0);
+			     logdir, linker, attach_index, attach_pid, 0, record_timing);
 }
 
 int resume_after_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int save_mmap, 
@@ -203,8 +205,14 @@ long reset_replay_ndx(int fd_spec)
 
 pid_t get_current_record_pid(int fd_spec, pid_t nonrecord_pid)
 {
-	struct get_record_pid_data data;
-	data.nonrecordPid = nonrecord_pid;
-	return ioctl(fd_spec, SPECI_GET_CURRENT_RECORD_PID, &data);
+    struct get_record_pid_data data;
+    data.nonrecordPid = nonrecord_pid;
+    return ioctl(fd_spec, SPECI_GET_CURRENT_RECORD_PID, &data);
 }
+
+long get_attach_status(int fd_spec, pid_t pid)
+{
+    return ioctl (fd_spec, SPECI_GET_ATTACH_STATUS, &pid);
+}
+
 

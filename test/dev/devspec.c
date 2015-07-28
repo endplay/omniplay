@@ -57,6 +57,7 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 	char* tmp = NULL;
 	long rc;
 	int device;
+	pid_t pid;
 
 	pckpt_proc = new_ckpt_proc = NULL;
 	DPRINT ("pid %d cmd number 0x%08x\n", current->pid, cmd);
@@ -124,7 +125,7 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 
 		rc = replay_ckpt_wakeup(device, logdir, tmp, wdata.fd,
 					wdata.follow_splits, wdata.save_mmap, wdata.attach_index,
-					wdata.attach_pid, wdata.ckpt_at);
+					wdata.attach_pid, wdata.ckpt_at, wdata.record_timing);
 
 		if (tmp) putname (tmp);
 		return rc;
@@ -264,6 +265,17 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 			return -EFAULT;
 		}
 		return get_current_record_pid(recordpid_data.nonrecordPid);
+	case SPECI_GET_ATTACH_STATUS:
+		if (len != sizeof(pid_t))
+		{
+			printk("ioctl SPECI_GET_ATTACH_STATUS fails, len %d\n", len);
+			return -EINVAL;
+		}
+		if (copy_from_user(&pid, (void *)data, sizeof(pid_t)))
+		{
+			return -EFAULT;
+		}
+		return get_attach_status (pid);
 	default:
 		return -EINVAL;
 	}

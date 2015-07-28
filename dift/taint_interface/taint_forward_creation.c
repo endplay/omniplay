@@ -8,6 +8,7 @@
 
 int taint_filter_inputs = 0;
 int taint_filter_outputs = 0;
+u_long taint_filter_outputs_syscall = 0;
 
 int inited_filters = 0;
 
@@ -59,14 +60,10 @@ int filter_input(void)
     return taint_filter_inputs;
 }
 
-void set_filter_outputs(int f)
+void set_filter_outputs(int f, u_long syscall)
 {
     taint_filter_outputs = f;
-}
-
-int filter_output(void)
-{
-    return taint_filter_outputs;
+    taint_filter_outputs_syscall = syscall;
 }
 
 void init_filters()
@@ -211,20 +208,6 @@ int filter_byte_range(int syscall, int byteoffset)
     return 0;
 }
 
-void write_tokens_info(int outfd, option_t option,
-                        struct taint_creation_info* tci,
-                        u_long token_addr,
-                        int offset)
-{
-    struct token tok;
-    set_new_token (&tok, tci->type, option, tci->syscall_cnt,
-                        tci->offset + offset,
-                        tci->rg_id, tci->record_pid, tci->fileno);
-    memcpy(&tok.value, (void *) token_addr, 1);
-
-    write_token_to_file(outfd, &tok);
-}
-
 void create_taints_from_buffer(void* buf, int size, 
 			       struct taint_creation_info* tci,
 			       int outfd,
@@ -345,10 +328,6 @@ void output_buffer_result (void* buf, int size,
 
 void output_xcoords (int outfd, int syscall_cnt, 
                         int dest_x, int dest_y, u_long mem_loc)
-{
-}
-
-void taint_creation_fini(void)
 {
 }
 

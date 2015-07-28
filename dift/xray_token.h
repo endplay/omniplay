@@ -41,27 +41,24 @@ extern "C" {
 /* Select on a file descriptor */
 #define TOK_SELECT 9
 
-/* A token represents an input,
- * e.g. a byte from read
+/* A token represents one or more contiguous inputs,
+ * e.g. a range of bytes from read
  *  	or a configuration token (in ConfAid's case) */
 struct token {
-    int type;               // See types above, the source of the input
-    unsigned long token_num;
+    int type;                  // See types above, the source of the input
+    unsigned long token_num;   // Unique identifier for start of range
+    unsigned long size;        // Size of range (1 for single input)
     int syscall_cnt;
     int byte_offset;
 #ifdef CONFAID
-    char config_token[256]; // Name of the config token
-    int line_num;   // Line number
-    char config_filename[256];  // Name of the config file
+    char config_token[256];    // Name of the config token
+    int line_num;              // Line number
+    char config_filename[256]; // Name of the config file
 #else
-    int fileno; // a mapping to the corresponding file/socket that this token came from
+    int fileno;                // a mapping to the corresponding file/socket that this token came from
 #endif
-    uint64_t rg_id;
-    int record_pid;
-    /* The byte value that this token represents
-     * TODO Make more general than just a byte, but for now do this
-     * */
-    char value;
+    uint64_t rg_id;            // replay group
+    int record_pid;            // record thread/process
 };
 
 struct byte_result_header {
@@ -94,8 +91,8 @@ struct track_result {
 };
 
 /* Operations for tokens */
-struct token* create_new_token (int type, unsigned long token_num, int syscall_cnt, int byte_offset, uint64_t rg_id, int record_pid, int fileno);
-void set_new_token (struct token* tok, int type, unsigned long token_num, int syscall_cnt, int byte_offset, uint64_t rg_id, int record_pid, int fileno);
+struct token* create_new_token (int type, u_long token_num, u_long size, int syscall_cnt, int byte_offset, uint64_t rg_id, int record_pid, int fileno);
+void set_new_token (struct token* tok, int type, u_long token_num, u_long size, int syscall_cnt, int byte_offset, uint64_t rg_id, int record_pid, int fileno);
 const char* get_token_type_string(int token_type);
 void write_token_to_file(int outfd, struct token* token);
 int read_token_from_file(FILE* fp, struct token* ptoken);

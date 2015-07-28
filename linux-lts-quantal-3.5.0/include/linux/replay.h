@@ -18,7 +18,7 @@ int fork_replay (char __user * logdir, const char __user *const __user *args,
 /* Restore ckpt from disk - replaces AS of current process (like exec) */
 /* Linker may be NULL - otherwise points to special libc linker */
 long replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
-			 int follow_splits, int save_mmap, loff_t syscall_index, int attach_pid, int ckpt_at);
+			 int follow_splits, int save_mmap, loff_t syscall_index, int attach_pid, int ckpt_at, int record_timing);
 long replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* linker, int fd, 
 			      int follow_splits, int save_mmap, loff_t syscall_index, int attach_pid);
 long replay_full_ckpt_proc_wakeup (char* logdir, char* filename, int fd);
@@ -117,6 +117,7 @@ long get_replay_stats (struct replay_stats __user * ustats);
 void save_exec_args(unsigned long argv, int argc, unsigned long envp, int envc);
 unsigned long get_replay_args(void);
 unsigned long get_env_vars(void);
+long get_attach_status(pid_t pid);
 
 long get_record_group_id(__u64 __user * prg_id);
 

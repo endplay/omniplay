@@ -30,7 +30,7 @@ struct taint_creation_info {
 void init_filters();
 void set_filter_inputs(int f);
 int filter_input(void);
-void set_filter_outputs(int f);
+void set_filter_outputs(int f, u_long syscall);
 int filter_output(void);
 
 // input filters
@@ -64,8 +64,6 @@ void output_buffer_result (void* buf, int size,
 
 void output_xcoords (int outfd, int syscall_cnt,
 		     int dest_x, int dest_y, u_long mem_loc);
-
-void taint_creation_fini(void);
 
 #ifdef __cplusplus
 }

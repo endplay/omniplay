@@ -690,6 +690,13 @@ struct record_group {
 	char* rg_libpath;           // For glibc hack
 };
 
+#define REPLAY_TIMEBUF_ENTRIES 10000
+struct replay_timing {
+	pid_t     pid;
+	u_long    index;
+	cputime_t ut;
+};
+
 // This structure has task-specific replay data
 struct replay_group {
 	struct record_group* rg_rec_group; // Pointer to record group
@@ -703,6 +710,10 @@ struct replay_group {
 	loff_t rg_attach_sysid;     // If Pin is being attached, will be set to the syscall id to attach to
 	int rg_attach_pid;          // If Pin is being attached, set to the pid to attach to
 	int rg_attach_device;       // The device that is being attached
+
+	struct replay_timing* rg_timebuf; // Buffer for recording timings
+	u_long rg_timecnt;          // Number of entries in the buffer
+	loff_t rg_timepos;          // Write postition in timings file
 };
 
 struct argsalloc_node {
@@ -1095,6 +1106,14 @@ is_preallocated (void)
 static inline int
 is_pin_attached (void)
 {
+	if (current->replay_thrd == NULL) {
+		printk ("is_pin_attached: NULL replay thrd\n");
+		return 0;
+	}
+	if (current->replay_thrd->rp_group == NULL) {
+		printk ("is_pin_attached: NULL replay group\n");
+		return 0;
+	}
 	return (current->replay_thrd->rp_group->rg_attach_device == ATTACH_PIN
 		&& current->replay_thrd->app_syscall_addr != 0);
 }
@@ -1751,6 +1770,10 @@ new_replay_group (struct record_group* prec_group, int follow_splits)
 	prg->rg_attach_device = 0;
 	prg->rg_attach_sysid = -1;
 	prg->rg_attach_pid = -1;
+
+	prg->rg_timebuf = NULL;
+	prg->rg_timecnt = 0;
+	prg->rg_timepos = 0;
 
 	// Record group should not be destroyed before replay group
 	get_record_group (prec_group);
@@ -3265,7 +3288,7 @@ get_linker (void)
 
 long
 replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
-		    int follow_splits, int save_mmap, loff_t attach_index, int attach_pid, int ckpt_at)
+		    int follow_splits, int save_mmap, loff_t attach_index, int attach_pid, int ckpt_at, int record_timing)
 {
 	struct record_group* precg; 
 	struct record_thread* prect;
@@ -3302,6 +3325,11 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 	if (prepg == NULL) {
 		destroy_record_group(precg);
 		return -ENOMEM;
+	}
+	if (record_timing) {
+		printk ("Recording timings\n");
+		prepg->rg_timebuf = KMALLOC(sizeof(struct replay_timing)*REPLAY_TIMEBUF_ENTRIES, GFP_KERNEL);
+		if (prepg->rg_timebuf == NULL) printk ("Cannot allocate timing buffer\n");
 	}
 
 	if (ckpt_at > 0) prepg->rg_checkpoint_at = ckpt_at;
@@ -5038,11 +5066,65 @@ get_next_syscall_exit_external (struct syscall_result* psr)
 	get_next_syscall_exit (current->replay_thrd, current->replay_thrd->rp_group, psr);
 }
 
+
+void write_timings (struct replay_group* prepg)
+{
+	char filename[MAX_LOGDIR_STRLEN+20];
+	int fd, rc; 
+	struct file* file = NULL;
+	mm_segment_t old_fs;
+	int copyed;
+
+	sprintf (filename, "%s/timings", prepg->rg_rec_group->rg_logdir);
+	old_fs = get_fs();
+	set_fs(KERNEL_DS);
+
+	if (prepg->rg_timepos) {
+		fd = sys_open(filename, O_WRONLY, 0644);
+	} else {
+		fd = sys_open(filename, O_WRONLY|O_CREAT|O_TRUNC, 0644);
+	}
+	if (fd < 0) {
+		printk("Pid %d write_timings: could not open file %s, %d\n", current->pid, filename, fd);
+		prepg->rg_timecnt = 0;
+		return;
+	}
+	file = fget(fd);
+
+	copyed = vfs_write(file, (char *) prepg->rg_timebuf, prepg->rg_timecnt*sizeof(struct replay_timing), &prepg->rg_timepos);
+	if (copyed != prepg->rg_timecnt*sizeof(struct replay_timing)) {
+		printk("Unable to write timings data, rc=%d, expected %ld\n", copyed, prepg->rg_timecnt*sizeof(struct replay_timing));
+	}
+
+	fput(file);
+	rc = sys_close (fd);
+	if (rc < 0) printk ("write_timings: file close failed with rc %d\n", rc);
+	set_fs(old_fs);
+	prepg->rg_timecnt = 0;
+}
+
+
+static void
+record_timings (struct replay_thread* prept)
+{
+	cputime_t ut, st;
+	struct replay_group* prepg = prept->rp_group;
+	
+	task_times (current, &ut, &st);
+	//printk ("Pid %d index %lu utime %ld stime %ld\n", current->pid, prept->rp_out_ptr, ut, st);
+	prepg->rg_timebuf[prepg->rg_timecnt].pid = prept->rp_record_thread->rp_record_pid;
+	prepg->rg_timebuf[prepg->rg_timecnt].index = prept->rp_out_ptr;
+	prepg->rg_timebuf[prepg->rg_timecnt++].ut = ut;
+
+	if (prepg->rg_timecnt == REPLAY_TIMEBUF_ENTRIES) write_timings (prepg);
+}
+
 static long
 test_pin_attach (struct replay_thread* prept)
 {
 	struct replay_group* prepg = prept->rp_group;
 
+	if (prepg->rg_timebuf) record_timings (prept);
 	if (prepg->rg_attach_sysid > 0 && !is_pin_attached() && !is_gdb_attached() &&
 	    prept->rp_out_ptr == prepg->rg_attach_sysid &&
 	    prept->rp_record_thread->rp_record_pid == prepg->rg_attach_pid) {
@@ -5241,6 +5323,25 @@ get_replay_stats (struct replay_stats __user * ustats)
 }
 EXPORT_SYMBOL(get_replay_stats);
 #endif
+
+long
+get_attach_status(pid_t pid)
+{
+    struct task_struct* tsk;
+
+    tsk = find_task_by_vpid(pid);
+    if (tsk) {
+	if (tsk->replay_thrd) {
+	    return (tsk->replay_thrd->rp_group->rg_attach_device == ATTACH_PIN
+		    && tsk->replay_thrd->app_syscall_addr != 0);
+	} else {
+	    return -EINVAL; // Not a replay task
+	}
+    } else {
+	return -ESRCH;
+    }
+}
+EXPORT_SYMBOL(get_attach_status);
 
 long check_clock_after_syscall (int syscall)
 {
@@ -6086,7 +6187,6 @@ recplay_exit_start(void)
 		deallocate_user_log (prt); // For multi-threaded programs, we need to reuse the memory
 	} else if (current->replay_thrd) {
 		MPRINT ("Replay thread %d starting to exit, recpid %d\n", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid);
-		
 		// When exiting threads with Pin attached, we need to make sure we exit the threads
 		// in the correct order, while making sure Pin doesn't deadlock
 		if (is_pin_attached() && current->replay_thrd->rp_pin_restart_syscall) {
@@ -6154,6 +6254,7 @@ recplay_exit_middle(void)
 				current->replay_thrd->rp_group->rg_rec_group->rg_save_mmap_flag = 0;
 				rg_unlock (current->replay_thrd->rp_group->rg_rec_group);
 			}
+			if (current->replay_thrd->rp_group->rg_timebuf) write_timings (current->replay_thrd->rp_group);
 		}
 		MPRINT ("Replay thread %d recpid %d in middle of exit\n", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid);	
 		rg_lock (current->replay_thrd->rp_group->rg_rec_group);
@@ -7810,7 +7911,8 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 				// Now start a new group if needed
 				get_logdir_for_replay_id(logid, logdir);
 				return replay_ckpt_wakeup(app_syscall_addr, logdir, linker, -1,
-							  follow_splits, prg->rg_rec_group->rg_save_mmap_flag, -1, -1, 0);
+							  follow_splits, prg->rg_rec_group->rg_save_mmap_flag, -1, -1, 0,
+							  (prg->rg_timebuf != NULL));
 			} else {
 				DPRINT("Don't follow splits - so just exit\n");
 				sys_exit_group(0);

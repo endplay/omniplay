@@ -6,11 +6,11 @@
 #include "taint_interface.h"
 #include "../xray_token.h"
 
-// number of taints created
-option_t taint_option_cnt = 1;
+extern u_long taint_num;
 
 int taint_filter_inputs = 0;
 int taint_filter_outputs = 0;
+u_long taint_filter_outputs_syscall = 0;
 
 int inited_filters = 0;
 
@@ -62,14 +62,10 @@ int filter_input(void)
     return taint_filter_inputs;
 }
 
-void set_filter_outputs(int f)
+void set_filter_outputs(int f, u_long syscall)
 {
     taint_filter_outputs = f;
-}
-
-int filter_output(void)
-{
-    return taint_filter_outputs;
+    taint_filter_outputs_syscall = syscall;
 }
 
 void init_filters()
@@ -90,6 +86,10 @@ void add_input_filter(int type, void* filter)
     if (type == FILTER_FILENAME) {
         struct filter_input_file* fif;
         fif = (struct filter_input_file*) malloc(sizeof(struct filter_input_file));
+	if (fif == NULL) {
+		fprintf (stderr, "Unable to malloc filter input file\n");
+		assert (0);
+	}
         strncpy(fif->filename,
                 (char *) filter,
                 256);
@@ -100,6 +100,10 @@ void add_input_filter(int type, void* filter)
     } else if (type == FILTER_SYSCALL) {
         struct filter_input_syscall* fis;
         fis = (struct filter_input_syscall*) malloc(sizeof(struct filter_input_syscall));
+	if (fis == NULL) {
+		fprintf (stderr, "Unable to malloc filter input syscall\n");
+		assert (0);
+	}
         fis->syscall = atoi((char *) filter);
         list_add_tail(&fis->list, &filter_input_syscalls);
         num_filter_input_syscalls++;
@@ -107,6 +111,10 @@ void add_input_filter(int type, void* filter)
         int rc;
         struct filter_regex* fir;
         fir = (struct filter_regex*) malloc(sizeof(struct filter_regex));
+	if (fir == NULL) {
+		fprintf (stderr, "Unable to malloc filter regex\n");
+		assert (0);
+	}
         rc = regcomp(&fir->regx, (char *) filter, REG_EXTENDED);
         fprintf(stderr, "compile regex %s\n", (char *) filter);
         if (rc) {
@@ -119,6 +127,10 @@ void add_input_filter(int type, void* filter)
         int rc;
         struct filter_byterange* fbr;
         fbr = (struct filter_byterange *) malloc(sizeof(struct filter_byterange));
+	if (fbr == NULL) {
+		fprintf (stderr, "Unable to malloc filter byterange\n");
+		assert (0);
+	}
         rc = sscanf((char *) filter, "%d,%d,%d,%d",
                 &fbr->pid,
                 &fbr->syscall,
@@ -136,6 +148,10 @@ void add_input_filter(int type, void* filter)
     } else if (type == FILTER_PARTFILENAME) {
         struct filter_input_file* fif;
         fif = (struct filter_input_file*) malloc(sizeof(struct filter_input_file));
+	if (fif == NULL) {
+		fprintf (stderr, "Unable to malloc filter input file\n");
+		assert (0);
+	}
         strncpy(fif->filename, (char *) filter, 256);
         list_add_tail(&fif->list, &filter_input_partfiles);
         fprintf(stderr, "Added partial filename to input list: %s\n",
@@ -213,20 +229,13 @@ int filter_byte_range(int syscall, int byteoffset)
     return 0;
 }
 
-void write_tokens_info(int outfd, taint_t option,
-                        struct taint_creation_info* tci,
-                        u_long token_addr,
-                        int offset)
+void write_tokens_info(int outfd, taint_t start,
+		       struct taint_creation_info* tci,
+		       u_long size)
 {
     struct token tok;
-    set_new_token (&tok, tci->type, option, tci->syscall_cnt,
-                        tci->offset + offset,
-                        tci->rg_id, tci->record_pid, tci->fileno);
-    if (token_addr) {
-        memcpy(&tok.value, (void *) token_addr, 1);
-    } else {
-        tok.value = 0;
-    }
+    set_new_token (&tok, tci->type, start, size, tci->syscall_cnt,
+		   tci->offset, tci->rg_id, tci->record_pid, tci->fileno);
 
     write_token_to_file(outfd, &tok);
 }
@@ -237,6 +246,7 @@ void create_taints_from_buffer(void* buf, int size,
 			       char* channel_name)
 {
     int i = 0;
+    u_long start;
     u_long buf_addr = (u_long) buf;
     if (size <= 0) return;
     if (!buf) return;
@@ -268,40 +278,27 @@ void create_taints_from_buffer(void* buf, int size,
         }
     }
 
-    // fprintf(stderr, "create taints at buf %lx, cnt %ld\n", buf_addr, (u_long) taint_option_cnt);
+    start = taint_num;
     for (i = 0; i < size; i++) {
-        taint_t t;
-
         if (filter_input() && num_filter_byte_ranges > 0 &&
                 !filter_byte_range(tci->syscall_cnt, tci->offset + i)) {
+	    if (taint_num != start) {
+		write_tokens_info(outfd, start, tci, taint_num-start);
+		start = taint_num;
+	    }
             continue;
         }
 
-	    //fprintf(stderr, "create taints at buf %lx, cnt %ld\n", buf_addr + i, (u_long) taint_option_cnt);
-        t = create_and_taint_option(taint_option_cnt, MAX_TAINT_VALUE,
-                buf_addr + i);
-        if (size == 1) {
-            fprintf(stderr, "create option taint %lu, %lx\n", t, buf_addr + i);
-        }
-        //assert(t != 0);
-        write_tokens_info(outfd, t, tci, buf_addr + i, i);
-        taint_option_cnt++;
+        create_and_taint_option(buf_addr + i);
     }
+    write_tokens_info(outfd, start, tci, size);
 }
 
 void create_fd_taints(int nfds, fd_set* fds, struct taint_creation_info* tci,
         int outfd)
 {
     taint_t t = create_and_taint_fdset(nfds, fds);
-    write_tokens_info(outfd, t, tci, 0, 0);
-}
-
-taint_t create_single_taint(int outfd, struct taint_creation_info * tci)
-{
-    taint_t t = create_taint();
-    taint_option_cnt++;
-    write_tokens_info(outfd, t, tci, 0, 0);
-    return t;
+    write_tokens_info(outfd, t, tci, 1);
 }
 
 void write_output_taint(int outfd, taint_t t,
@@ -383,11 +380,22 @@ void write_output_taints (int outfd, void* buf, int size)
     }
 }
 
-void output_buffer_result (void* buf, int size,
-                                struct taint_creation_info* tci,
-                                int outfd)
+int filter_outputs (struct taint_creation_info* tci)
 {
-    if (!taint_filter_outputs) {
+    if (taint_filter_outputs) return 1;
+    if (taint_filter_outputs_syscall > 0) {
+	if (tci->syscall_cnt != taint_filter_outputs_syscall) {
+	    return 1;
+	}
+    }
+    return 0;
+}
+
+void output_buffer_result (void* buf, int size,
+			   struct taint_creation_info* tci,
+			   int outfd)
+{
+    if (!filter_outputs(tci)) {
         write_output_header(outfd, tci, buf, size); 
         write_output_taints(outfd, buf, size);
     }
@@ -425,11 +433,6 @@ void output_xcoords (int outfd, int syscall_cnt,
             assert(0);
         }
     }
-}
-
-void taint_creation_fini(void)
-{
-    fprintf(stderr, "Taint option count is %u\n", taint_option_cnt);
 }
 
 int serialize_filters(int outfd)
@@ -536,6 +539,10 @@ int deserialize_filters(int infd)
         struct filter_input_file tmp;
         struct filter_input_file* fif;
         fif = (struct filter_input_file*) malloc(sizeof(struct filter_input_file));
+	if (fif == NULL) {
+		fprintf (stderr, "Unable to malloc filter input file\n");
+		assert (0);
+	}
         rc = read(infd, &tmp, sizeof(struct filter_input_file));
         if (rc != sizeof(struct filter_input_file)) {
             fprintf(stderr, "problem reading filter_input_file node, errno %d\n", errno);
@@ -553,6 +560,10 @@ int deserialize_filters(int infd)
         struct filter_input_syscall tmp;
         struct filter_input_syscall* fis;
         fis = (struct filter_input_syscall*) malloc(sizeof(struct filter_input_syscall));
+	if (fis == NULL) {
+		fprintf (stderr, "Unable to malloc filter input syscall\n");
+		assert (0);
+	}
         rc = read(infd, &tmp, sizeof(struct filter_input_syscall));
         if (rc != sizeof(struct filter_input_syscall)) {
             fprintf(stderr, "problem reading filter_input_syscall node, errno %d\n", errno);
@@ -571,6 +582,10 @@ int deserialize_filters(int infd)
         struct filter_regex tmp;
         struct filter_regex* fir;
         fir = (struct filter_regex*) malloc(sizeof(struct filter_regex));
+	if (fir == NULL) {
+		fprintf (stderr, "Unable to malloc filter regex\n");
+		assert (0);
+	}
         rc = read(infd, &tmp, sizeof(struct filter_regex));
         if (rc != sizeof(struct filter_regex)) {
             fprintf(stderr, "Could not read filter_regex node, errno %d\n", errno);
@@ -588,6 +603,10 @@ int deserialize_filters(int infd)
         struct filter_byterange tmp;
         struct filter_byterange* fbr;
         fbr = (struct filter_byterange *) malloc(sizeof(struct filter_byterange));
+	if (fbr == NULL) {
+		fprintf (stderr, "Unable to malloc filter byterange\n");
+		assert (0);
+	}
         rc = read(infd, &tmp, sizeof(struct filter_byterange));
         if (rc != sizeof(struct filter_byterange)) {
             fprintf(stderr, "Could not read filter_byterange node, errno %d\n", errno);

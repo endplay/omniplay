@@ -29,6 +29,7 @@ int main (int argc, char* argv[])
 	int save_mmap = 0;
 	int ckpt_at = 0;
 	int from_ckpt = 0;
+	int record_timing = 0;
 	char filename[4096], pathname[4096];
 	u_long proc_count, i;
 
@@ -54,7 +55,7 @@ int main (int argc, char* argv[])
 		char opt;
 		int option_index = 0;
 
-		opt = getopt_long(argc, argv, "fpmhg", long_options, &option_index);
+		opt = getopt_long(argc, argv, "fpmhgt", long_options, &option_index);
 		//printf("getopt_long returns %c (%d)\n", opt, opt);
 
 		if (opt == -1) {
@@ -65,7 +66,7 @@ int main (int argc, char* argv[])
 		case 0:
 			switch(option_index) {
 				/* --pthread */
-			case 0: printf("pthread libdir is %s\n", optarg);
+			case 0: 
 				libdir = optarg;
 				break;
 				/* --attach_offset or --attach_pin_later */
@@ -96,7 +97,7 @@ int main (int argc, char* argv[])
 			follow_splits = 1;
 			break;
 		case 'p':
-			printf("attach_pin is on\n");
+			//printf("attach_pin is on\n");
 			attach_pin = 1;
 			
 			break;
@@ -105,8 +106,12 @@ int main (int argc, char* argv[])
 			exit(EXIT_SUCCESS);
 			break;
 		case 'g':
-			printf("attach_gdb is on\n");
+			//printf("attach_gdb is on\n");
 			attach_gdb = 1;
+			break;
+		case 't':
+			//printf("record timing is on\n");
+			record_timing = 1;
 			break;
 		default:
 			fprintf(stderr, "Unrecognized option\n");
@@ -117,7 +122,6 @@ int main (int argc, char* argv[])
 	}
 	base = optind;
 
-	printf("argc = %d, base = %d\n", argc, base);
 	if (argc-base != 1) {
 		fprintf(stderr, "Invalid non-arg arguments!\n");
 		print_help(argv[0]);
@@ -146,11 +150,13 @@ int main (int argc, char* argv[])
 		exit(EXIT_FAILURE);
 	}
 	pid = getpid();
+#if 0
 	printf("libdir: %s, ldpath: %s\n", libdir, ldpath);
 	printf("resume pid %d follow %d\n", pid, follow_splits);
 	printf("resume(%d, %d, %d, %d, %s, %s, %lld, %d)\n", fd, attach_pin,
 		follow_splits, save_mmap, argv[base], libdir, attach_index,
 		attach_pid);
+#endif
 	if (from_ckpt > 0) {
 		sprintf (filename, "ckpt.%d", from_ckpt);
 		sprintf (pathname, "%s/ckpt.%d", argv[base], from_ckpt);
@@ -180,7 +186,7 @@ int main (int argc, char* argv[])
 					attach_index, attach_pid);
 	} else {
 		rc = resume_with_ckpt (fd, attach_pin, attach_gdb, follow_splits, save_mmap, argv[base], libdir,
-				       attach_index, attach_pid, ckpt_at);
+				       attach_index, attach_pid, ckpt_at, record_timing);
 	}
 	if (rc < 0) {
 		perror("resume");

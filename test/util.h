@@ -36,9 +36,9 @@ struct filemap_entry {
 int devspec_init (int* fd_spec);
 int replay_fork (int fd_spec, const char** args, const char** env, char* linkpath, char* logdir, int save_mmap, int output_fd);
 int resume(int fd_spec, int attach_pin, int attach_gdb, int follow_splits, int save_mmap,
-	   char* logdir, char* linker, loff_t attach_index, int attach_pid);
+	   char* logdir, char* linker, loff_t attach_index, int attach_pid, int record_timing);
 int resume_with_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int save_mmap, 
-		      char* logdir, char* linker, loff_t attach_index, int attach_pid, int ckpt_at);
+		      char* logdir, char* linker, loff_t attach_index, int attach_pid, int ckpt_at, int record_timing);
 int resume_after_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int save_mmap, 
 		       char* logdir, char* linker, char* filename, loff_t attach_index, int attach_pid);
 int resume_proc_after_ckpt (int fd_spec, char* logdir, char* filename);
@@ -59,6 +59,7 @@ int get_filemap(int fd_spec, int fd, loff_t offset, int size, void* entries, int
 long reset_replay_ndx(int fd_spec);
 
 pid_t get_current_record_pid(int fd_spec, pid_t nonrecord_pid);
+long get_attach_status (int fd_spec, pid_t pid);
 
 #ifdef __cplusplus
 }
