@@ -110,17 +110,22 @@ int main(int argc, char** argv)
     tsout = (u_long *) tsbuf;
     maps = g_hash_table_new(g_direct_hash, g_direct_equal);
     while ((char *) tsout < tsbuf + tsdatasize) {
-	progenitors = g_hash_table_new(g_direct_hash, g_direct_equal);
-	do {
-	    if (*mbuf) {
-		g_hash_table_add (progenitors, GUINT_TO_POINTER(*mbuf));
-		mbuf++;
-	    } else {
-		mbuf++;
-		break;
-	    }
-	} while (1);
-	g_hash_table_insert (maps, GUINT_TO_POINTER(*tsout), progenitors);
+	if (*mbuf) {
+	    progenitors = g_hash_table_new(g_direct_hash, g_direct_equal);
+	    do {
+		if (*mbuf) {
+		    g_hash_table_add (progenitors, GUINT_TO_POINTER(*mbuf));
+		    mbuf++;
+		} else {
+		    mbuf++;
+		    break;
+		}
+	    } while (1);
+	    g_hash_table_insert (maps, GUINT_TO_POINTER(*tsout), progenitors);
+	} else {
+	    mbuf++;
+	    g_hash_table_insert (maps, GUINT_TO_POINTER(*tsout), NULL);
+	}
 	tsout += 2;
     }
 
@@ -190,7 +195,7 @@ int main(int argc, char** argv)
 				    }
 				} 
 			    } else {
-				// This addr has never been modified - so zero taint
+				// Zero taint
 			    }
 			} else {
 #ifdef UNIQUE
@@ -227,31 +232,36 @@ int main(int argc, char** argv)
 	tsout = (u_long *) tsbuf;
 	new_maps = g_hash_table_new(g_direct_hash, g_direct_equal);
 	while ((char *) tsout < tsbuf + tsdatasize) {
-	    progenitors = g_hash_table_new(g_direct_hash, g_direct_equal);
-	    do {
-		if (*mbuf) {
-		    if (*mbuf > 0xc0000000) {
-			g_hash_table_add (progenitors, GUINT_TO_POINTER(*mbuf-0xc0000000+tokens));
-		    } else {
-			old_progenitors = (GHashTable *) g_hash_table_lookup(maps, GUINT_TO_POINTER(*mbuf));
-			if (old_progenitors) {
-			    if (g_hash_table_size(old_progenitors)) {
-				g_hash_table_iter_init(&iter, old_progenitors);
-				while (g_hash_table_iter_next(&iter, &key, &value)) {
-				    g_hash_table_add (progenitors, key);
-				}
-			    } 
+	    if (*mbuf) {
+		progenitors = g_hash_table_new(g_direct_hash, g_direct_equal);
+		do {
+		    if (*mbuf) {
+			if (*mbuf > 0xc0000000) {
+			    g_hash_table_add (progenitors, GUINT_TO_POINTER(*mbuf-0xc0000000+tokens));
 			} else {
-			    // This addr has never been modified - so zero taint
+			    old_progenitors = (GHashTable *) g_hash_table_lookup(maps, GUINT_TO_POINTER(*mbuf));
+			    if (old_progenitors) {
+				if (g_hash_table_size(old_progenitors)) {
+				    g_hash_table_iter_init(&iter, old_progenitors);
+				    while (g_hash_table_iter_next(&iter, &key, &value)) {
+					g_hash_table_add (progenitors, key);
+				    }
+				} 
+			    } else {
+				// Zero taint
+			    }
 			}
+			mbuf++;
+		    } else {
+			mbuf++;
+			break;
 		    }
-		    mbuf++;
-		} else {
-		    mbuf++;
-		    break;
-		}
-	    } while (1);
-	    g_hash_table_insert (new_maps, GUINT_TO_POINTER(*tsout), progenitors);
+		} while (1);
+		g_hash_table_insert (new_maps, GUINT_TO_POINTER(*tsout), progenitors);
+	    } else {
+		mbuf++;
+		g_hash_table_insert (new_maps, GUINT_TO_POINTER(*tsout), NULL);
+	    }
 	    tsout += 2;
 	}
 
@@ -285,8 +295,8 @@ int main(int argc, char** argv)
 	// Now we need to overwrite any map sets with new values
 	g_hash_table_iter_init (&iter, new_maps);
 	while (g_hash_table_iter_next(&iter, &key, &value)) {
-	    GHashTable* tmp = g_hash_table_lookup (maps, key);
-	    if (tmp) {
+	    if (value) {
+		GHashTable* tmp = (GHashTable *) value;
 		g_hash_table_remove_all (tmp);
 		g_hash_table_destroy (tmp);
 	    }
@@ -329,7 +339,7 @@ int main(int argc, char** argv)
 				  }
 			      } 
 			  } else {
-			      // This address has not been modified - so zero taint
+			      // Zero taint
 			  }
 		    } else {
 #ifdef UNIQUE

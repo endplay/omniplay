@@ -535,9 +535,28 @@ taint_t* get_mem_taints(u_long mem_loc, uint32_t size)
     return second + low_index;
 }
 
+#define DUMPBUFSIZE 1000000
+static u_long dumpbuf[DUMPBUFSIZE];
+static u_long dumpindex = 0;
+
+static void flush_dumpbuf(int dumpfd)
+{
+    long rc = write (dumpfd, dumpbuf, dumpindex*sizeof(u_long));
+    if (rc != (long) (dumpindex*sizeof(u_long))) {
+	fprintf (stderr, "write of segment failed, rc=%ld, errno=%d\n", rc, errno);
+    }
+    dumpindex = 0;
+}
+
+static inline void print_value (int dumpfd, u_long value) 
+{
+    if (dumpindex == DUMPBUFSIZE) flush_dumpbuf(dumpfd);
+    dumpbuf[dumpindex++] = value;
+}
+
+
 int dump_mem_taints(int fd)
 {
-    long rc;
     u_long addr;
     int high_index, mid_index, low_index;
 
@@ -550,48 +569,29 @@ int dump_mem_taints(int fd)
 		    for (low_index = 0; low_index < THIRD_TABLE_SIZE; low_index++) {
 			addr = (high_index<<(SECOND_TABLE_BITS+THIRD_TABLE_BITS)) + (mid_index<<THIRD_TABLE_BITS) + low_index;
 			if (second[low_index] != addr) {
-			    rc = write (fd, &addr, sizeof(u_long));
-			    if (rc < 0) {
-				fprintf (stderr, "dump_mem_taints: write returns %ld, errno=%d\n", 
-					 rc, errno);
-				return rc;
-			    }
-			    rc = write (fd, &second[low_index], sizeof(u_long));
-			    if (rc < 0) {
-				fprintf (stderr, "dump_mem_taints: write returns %ld, errno=%d\n", 
-					 rc, errno);
-				return rc;
-			    }
+			    print_value (fd, addr);
+			    print_value (fd, second[low_index]);
 			}
 		    }
 		}
 	    }
 	}
     }
+    flush_dumpbuf(fd);
     return 0;
 }
 
 int dump_reg_taints (int fd, u_long* pregs)
 {
-    long rc;
     u_long i;
 
     for (i = 0; i < NUM_REGS*REG_SIZE; i++) {
 	if (pregs[i] != i+1) {
-	    rc = write (fd, &i, sizeof(u_long));
-	    if (rc < 0) {
-		fprintf (stderr, "dump_reg_taints: write returns %ld, errno=%d\n", 
-			 rc, errno);
-		return rc;
-	    }
-	    rc = write (fd, &pregs[i], sizeof(u_long));
-	    if (rc < 0) {
-		fprintf (stderr, "dump_reg_taints: write returns %ld, errno=%d\n", 
-			 rc, errno);
-		return rc;
-	    }
+	    print_value (fd, i);
+	    print_value (fd, pregs[i]);
 	}
     }
+
     return 0;
 }
 
