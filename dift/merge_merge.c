@@ -295,11 +295,8 @@ int main(int argc, char** argv)
 	// Now we need to overwrite any map sets with new values
 	g_hash_table_iter_init (&iter, new_maps);
 	while (g_hash_table_iter_next(&iter, &key, &value)) {
-	    if (value) {
-		GHashTable* tmp = (GHashTable *) value;
-		g_hash_table_remove_all (tmp);
-		g_hash_table_destroy (tmp);
-	    }
+	    GHashTable* tmp = g_hash_table_lookup (maps, key);
+	    if (tmp) g_hash_table_destroy (tmp);
 	    g_hash_table_insert (maps, key, value);
 	}
 	g_hash_table_remove_all(new_maps);
@@ -339,7 +336,7 @@ int main(int argc, char** argv)
 				  }
 			      } 
 			  } else {
-			      // Zero taint
+			      // This address has not been modified - so zero taint
 			  }
 		    } else {
 #ifdef UNIQUE
