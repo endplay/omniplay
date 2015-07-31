@@ -60,7 +60,7 @@ TOOL_ROOTS :=
 SA_TOOL_ROOTS :=
 
 # This defines all the applications that will be run during the tests.
-APP_ROOTS := postprocess_linkage splice_merge merge_merge taint_debugger taint_forward_debugger mksplice mkmultisplice mkmerge mkmap mergecmp splicecmp outcmp mergedump mapdump
+APP_ROOTS := postprocess_linkage splice_merge merge_merge merge2 taint_debugger taint_forward_debugger mksplice mkmultisplice mkmerge mkmap mergecmp splicecmp outcmp mergedump mapdump
 
 # This defines any additional object files that need to be compiled.
 OBJECT_ROOTS := xray_token \
@@ -141,6 +141,9 @@ $(OBJDIR)splice_merge: splice_merge.c maputil.c maputil.h
 
 $(OBJDIR)merge_merge: merge_merge.c maputil.c maputil.h
 	$(APP_CC) -Wall -Werror -O2 -o $(OBJDIR)merge_merge $(GLIB_INCLUDES) merge_merge.c maputil.c -lglib-2.0
+
+$(OBJDIR)merge2: merge2.c maputil.c maputil.h
+	$(APP_CC) -Wall -Werror -O2 -o $(OBJDIR)merge2 $(GLIB_INCLUDES) merge2.c maputil.c -lglib-2.0
 
 $(OBJDIR)taint_debugger: $(TAINTS_INTERFACE)/taint_debugger.c
 	$(CXX) $(TOOL_CXXFLAGS) -Wall -Werror -g -o $(OBJDIR)taint_debugger $(GLIB_INCLUDES) $(OBJDIR)xray_token$(OBJ_SUFFIX) $(TAINTS_INTERFACE)/taint_debugger.c -lglib-2.0

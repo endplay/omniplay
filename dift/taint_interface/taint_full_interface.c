@@ -216,7 +216,7 @@ static inline void init_taint_index(char* group_dir)
 	    if (node_num_shmemname[i] == '/') node_num_shmemname[i] = '.';
 	}
         snprintf(node_num_filename, 256, "%s/node_nums", group_dir);
-        node_num_fd = shm_open(node_num_shmemname, O_CREAT | O_RDWR, 0644);
+        node_num_fd = shm_open(node_num_shmemname, O_CREAT | O_TRUNC | O_RDWR, 0644);
         if (node_num_fd < 0) {
             fprintf(stderr, "could not open node num shmem %s, errno %d\n",
 		    node_num_shmemname, errno);

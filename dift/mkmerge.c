@@ -11,6 +11,7 @@
 
 #include "linkage_common.h"
 #include "taint_interface/taint_creation.h"
+#include "xray_token.h"
 #include "maputil.h"
 
 #ifdef STATS
@@ -179,16 +180,19 @@ int map_shmem (char* filename, int* pfd, u_long* pdatasize, u_long* pmapsize, ch
 // list of address for prior segment to track
 static long map_before_segment (char* dirname)
 {
+    struct token token;
     long rc;
     char* output_log, *plog;
     u_long *ts_log;
-    u_long ndatasize, odatasize, mergesize, mapsize, buf_size, value, i, zero = 0;
-    char mergefile[256], outfile[256], tsfile[256], map_name[256];
-    int node_num_fd, mapfd;
+    u_long tokens, ndatasize, odatasize, mergesize, mapsize, buf_size, value, i, zero = 0;
+    char mergefile[256], outfile[256], tsfile[256], map_name[256], tokfile[256];
+    int node_num_fd, mapfd, tfd;
+    struct stat st;
 
     sprintf (mergefile, "%s/node_nums", dirname);
     sprintf (outfile, "%s/dataflow.result", dirname);
     sprintf (tsfile, "%s/taint_structures", dirname);
+    sprintf (tokfile, "%s/tokens", dirname);
 
     rc = map_shmem (mergefile, &node_num_fd, &ndatasize, &mergesize, (char **) &merge_log);
     if (rc < 0) return rc;
@@ -196,10 +200,10 @@ static long map_before_segment (char* dirname)
     rc = map_file (outfile, &mapfd, &odatasize, &mapsize, &output_log);
     if (rc < 0) return rc;
 
-    sprintf (map_name, "%s/merge", dirname);
+    sprintf (map_name, "%s/merge-outputs", dirname);
     outfd = open (map_name, O_CREAT | O_TRUNC | O_WRONLY, 0644);
     if (outfd < 0) {
-	fprintf (stderr, "map_inputs: cannot create splice file, errno=%d\n", errno);
+	fprintf (stderr, "Cannot create merge-outputs file, errno=%d\n", errno);
 	return -1;
     }
 
@@ -226,11 +230,49 @@ static long map_before_segment (char* dirname)
     }
 
     unmap_file (output_log, mapfd, mapsize);
+
+    flush_outbuf ();
+    close (outfd);
+
+    // Get number of tokens for this epoch
+    tfd = open (tokfile, O_RDONLY);
+    if (outfd < 0) {
+	fprintf (stderr, "cannot open token file %s, rc=%d, errno=%d\n", tokfile, tfd, errno);
+	return tfd;
+    }
     
+    rc = fstat (tfd, &st);
+    if (rc < 0) {
+	fprintf (stderr, "Unable to fstat token file %s, rc=%ld, errno=%d\n", tokfile, rc, errno);
+	return rc;
+    }
+
+    if (st.st_size > 0) {
+	rc = pread (tfd, &token, sizeof(token), st.st_size-sizeof(token));
+	if (rc != sizeof(token)) {
+	    fprintf (stderr, "Unable to read last token from file %s, rc=%ld, errno=%d\n", tokfile, rc, errno);
+	    return rc;
+	}
+	
+	tokens = token.token_num+token.size-1;
+    } else {
+	tokens = 0;
+    }
+    close (tfd);
+
+    sprintf (map_name, "%s/merge-addrs", dirname);
+    outfd = open (map_name, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    if (outfd < 0) {
+	fprintf (stderr, "Cannot create merge-outputs file, errno=%d\n", errno);
+	return -1;
+    }
+
     rc = map_file (tsfile, &mapfd, &odatasize, &mapsize, (char **) &ts_log);
     if (rc < 0) return rc;
 
+    print_value (tokens); // First entry is number of tokens
     for (i = 0; i < odatasize/(sizeof(u_long)*2); i++) {
+	print_value (ts_log[2*i]); // addr
 	value = ts_log[2*i+1];
 	if (value) {
 	    if (value < 0xe0000001) {

@@ -8,6 +8,7 @@ epoch_dump_pid = {}
 epoch_dump_time = {}
 epoch_map_time = {}
 epoch_end_time = {}
+epoch_merge_time = {}
 max_epochno = 0
 
 fd = open(sys.argv[1], "r")
@@ -47,6 +48,15 @@ for line in fd:
         sec = int(tokens[4])
         usec = int(tokens[6]) 
         epoch_dump_pid[dirno] = float(sec) + float(usec)/1000000.0
+    if line[:6] == "Merge ":
+        epoch1 = int(tokens[1])
+        epoch2 = int(tokens[2])
+        (sec, usec) = tokens[4].split(".")
+        if (epoch1,epoch2) in epoch_merge_time:
+            epoch_merge_time[(epoch1,epoch2)] += (float(sec) + float(usec)/1000000.0)
+        else:
+            epoch_merge_time[(epoch1,epoch2)] = 0.0-(float(sec) + float(usec)/1000000.0)
+
             
 total_ff_time = 0.0
 total_dift_time = 0.0
@@ -57,7 +67,9 @@ ff_time = {}
 dift_time = {}
 dump_time = {}
 map_time = {}
-max_epoch_time = 0
+total_level = {}
+epoch_time = {}
+max_epoch_time = 0.0
 
 print "Run time: %6.2f"%(end_time - start_time)       
 merge_time = end_time - tool_done_time
@@ -76,16 +88,46 @@ for i in range(max_epochno):
         dump_time[i] = 0
     map_time[i] = epoch_end_time[i]-epoch_map_time[i]
     total_map_time += map_time[i]
-    epoch_time = ff_time[i] + dift_time[i] + dump_time[i] + map_time[i]
-    if epoch_time > max_epoch_time:
-        max_epoch_time = epoch_time
-    print "%5d %6.2f %6.2f %6.2f %6.2f %6.2f"%(i, epoch_start_time[i]-start_time, ff_time[i], dift_time[i], dump_time[i], map_time[i])
+    epoch_time[i] = ff_time[i] + dift_time[i] + dump_time[i] + map_time[i]
+    if epoch_time[i] > max_epoch_time:
+        max_epoch_time = epoch_time[i]
+    print "%5d %6.2f %6.2f %6.2f %6.2f %6.2f"%(i, epoch_start_time[i]-start_time, ff_time[i], dift_time[i], dump_time[i], map_time[i]),
+    mlevel = 2
+    while mlevel <= max_epochno:
+        if (i,i+mlevel-1) in epoch_merge_time:
+            print "%6.2f"%(epoch_merge_time[(i,i+mlevel-1)]),
+            if mlevel in total_level:
+                total_level[mlevel] = total_level[mlevel] + epoch_merge_time[(i,i+mlevel-1)]
+            else:
+                total_level[mlevel] = epoch_merge_time[(i,i+mlevel-1)]
+        else:            
+            print "      ",
+        mlevel = mlevel * 2
+    print
 
-print "             %6.2f %6.2f %6.2f %6.2f %6.2f %7.2f"%(total_ff_time, total_dift_time, total_dump_time, total_map_time, merge_time, 
-                                                          total_ff_time + total_dift_time + total_dump_time + total_map_time + merge_time)
+
+print "             %6.2f %6.2f %6.2f %6.2f"%(total_ff_time, total_dift_time, total_dump_time, total_map_time),
+total_time = total_ff_time + total_dift_time + total_dump_time + total_map_time 
+mlevel = 2
+while mlevel <= max_epochno:
+    print "%6.2f"%(total_level[mlevel]),
+    total_time += total_level[mlevel]
+    mlevel = mlevel * 2
+print "%7.2f"%(total_time)
+
+mlevel = 2
+while mlevel <= max_epochno:
+    for i in range(max_epochno):
+        if (i,i+mlevel-1) in epoch_merge_time:
+            if epoch_time[i] > epoch_time[i+mlevel/2]:
+                epoch_time[i] = epoch_time[i] + epoch_merge_time[(i,i+mlevel-1)]
+            else:
+                epoch_time[i] = epoch_time[i+mlevel/2] + epoch_merge_time[(i,i+mlevel-1)] 
+            #print "finish time for %d level %d is %6.2f"%(i, mlevel, epoch_time[i])
+    mlevel *= 2
 
 print
 print
 print "Longest epoch %6.2f"%(max_epoch_time)
-print "Total time    %6.2f"%(max_epoch_time+merge_time)
+print "Total time    %6.2f"%(epoch_time[0])
 

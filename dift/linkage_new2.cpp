@@ -18726,7 +18726,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
             char name[256];
             // snprintf(name, 256, "%s/tokens_%llu", group_directory, ptdata->rg_id);
             snprintf(name, 256, "%s/tokens", group_directory);
-            tokens_fd = open(name, O_WRONLY | O_CREAT, 0644);
+            tokens_fd = open(name, O_WRONLY | O_CREAT | O_TRUNC, 0644);
             if (tokens_fd == -1) {
                 fprintf(stderr, "Could not open tokens file %s\n", name);
                 exit(-1);
@@ -18834,7 +18834,7 @@ void init_logs(void)
         if (trace_taint_outfd <= 0) {
             snprintf(trace_log_name, 256, "%s/trace_taint_ops",
                     group_directory);
-            trace_taint_outfd = open(trace_log_name, O_WRONLY | O_CREAT | O_LARGEFILE, 0644);
+            trace_taint_outfd = open(trace_log_name, O_WRONLY | O_CREAT | O_TRUNC | O_LARGEFILE, 0644);
             if (trace_taint_outfd < 0) {
                 fprintf(stderr, "could not create trace taint ops log file, errno %d\n", errno);
                 exit(0);
@@ -18861,7 +18861,7 @@ void fini(INT32 code, void* v)
     if (all_output) {
 	snprintf(taint_structures_file, 256, "%s/taint_structures", group_directory);
 
-	taint_fd = open(taint_structures_file, O_WRONLY | O_CREAT | O_LARGEFILE, 0644);
+	taint_fd = open(taint_structures_file, O_WRONLY | O_CREAT | O_TRUNC | O_LARGEFILE, 0644);
 	assert(taint_fd > 0);
 	
     	gettimeofday(&tv, NULL);

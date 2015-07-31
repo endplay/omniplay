@@ -11,6 +11,7 @@
 #include <errno.h>
 #include "util.h"
 
+//#define SEQ_MERGE
 //#define DETAILS
 
 #define STATUS_INIT 0
@@ -45,10 +46,13 @@ int main (int argc, char* argv[])
     char dirname[80];
     int fd, rc, status, epochs, gstart, gend, i, executing, epochs_done;
     struct epoch* epoch;
-    
     pid_t ppid;
     u_long merge_entries = 0;
     int group_by = 0;
+#ifndef SEQ_MERGE
+    struct timeval tv_mergestart, tv_mergeend;
+    int merge_by;
+#endif
 
     if (argc != 2) {
 	fprintf (stderr, "format: partt <epoch description file>\n");
@@ -245,6 +249,7 @@ int main (int argc, char* argv[])
 
     gettimeofday (&tv_start_merge, NULL);
 
+#ifdef SEQ_MERGE
     // Now post-process the results
     ppid = fork();
     if (ppid == 0) {
@@ -273,9 +278,67 @@ int main (int argc, char* argv[])
 	fprintf (stderr, "waitpid returns %d, errno %d for pid %d\n", rc, errno, ppid);
 	return rc;
     }
+#else
+    merge_by = 1;
+    do {
+	merge_by = merge_by * 2;
+	for (i = 0; i < epochs; i += merge_by) {
+	    int start1 = i;
+	    int start2 = i + merge_by/2;
+	    int finish1 = start2 - 1;
+	    int finish2 = i + merge_by - 1;
+	    if (start2 >= epochs) continue; // Odd number so no merge this round
+	    if (finish2 >= epochs) finish2 = epochs-1;
+	    printf ("Merging [%d,%d] and [%d,%d]\n", start1, finish1, start2, finish2);
+	    gettimeofday (&tv_mergestart, NULL);
+	    printf ("Merge %d %d start %ld.%06ld\n", start1, finish2, tv_mergestart.tv_sec, tv_mergestart.tv_usec);
+	    ppid = fork();
+	    if (ppid == 0) {
+		char* args[9];
+		char dir1[80], dir2[80], inname1[80], inname2[80], outname[80];
+		int argcnt = 0;
+		args[argcnt++] = "merge2";
+		sprintf (dir1, "%d", epoch[start1].cpid);
+		args[argcnt++] = dir1;
+		if (start1 == finish1) {
+		    args[argcnt++] = "merge";
+		} else {
+		    sprintf (inname1, "merge.%d.%d", start1, finish1);
+		    args[argcnt++] = inname1;
+		}
+		sprintf (dir2, "%d", epoch[start2].cpid);
+		args[argcnt++] = dir2;
+		if (start2 == finish2) {
+		    args[argcnt++] = "merge";
+		} else {
+		    sprintf (inname2, "merge.%d.%d", start2, finish2);
+		    args[argcnt++] = inname2;
+		}
+		sprintf (outname, "merge.%d.%d", start1, finish2);
+		args[argcnt++] = outname;
+		if (start1 == 0) args[argcnt++] = "-s";
+		if (finish2 == epochs-1) args[argcnt++] = "-f";
+		args[argcnt++] = NULL;
 
-    gettimeofday (&tv_done, NULL);
-    
+		rc = execv ("../dift/obj-ia32/merge2", args);
+		fprintf (stderr, "execv of merge2 failed, rc=%d, errno=%d\n", rc, errno);
+		return -1;
+	    }
+	    
+	    // Wait for analysis to complete
+	    rc = waitpid (ppid, &status, 0);
+	    if (rc < 0) {
+		fprintf (stderr, "waitpid returns %d, errno %d for pid %d\n", rc, errno, ppid);
+		return rc;
+	    }
+	    gettimeofday (&tv_mergeend, NULL);
+	    printf ("Merge %d %d start %ld.%06ld\n", start1, finish2, tv_mergeend.tv_sec, tv_mergeend.tv_usec);
+	}
+    } while (merge_by < epochs);
+#endif
+
+    gettimeofday (&tv_done, NULL); 
+   
     close (fd);
 
     printf ("Overall:\n");
