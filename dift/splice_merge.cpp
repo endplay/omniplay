@@ -8,7 +8,9 @@
 #include <sys/mman.h>
 #include <assert.h>
 #include <fcntl.h>
-#include <glib-2.0/glib.h>
+
+#include <unordered_set>
+#include <unordered_map>
 
 #include "taint_interface/taint_creation.h"
 #include "xray_token.h"
@@ -22,7 +24,7 @@ int outfd;
 static void flush_outbuf()
 {
     long rc = write (outfd, outbuf, outindex*sizeof(u_long));
-    if (rc != outindex*sizeof(u_long)) {
+    if (rc != (long) (outindex*sizeof(u_long))) {
 	fprintf (stderr, "write of segment failed, rc=%ld, errno=%d\n", rc, errno);
 	exit (rc);
     }
@@ -46,12 +48,13 @@ int main(int argc, char** argv)
     char* obuf, *pout;
     long rc;
     u_long buf_size, i, tokens;
-    GHashTable* progenitors, *old_progenitors, *maps, *new_maps;
+    std::unordered_map<u_long, std::unordered_set<u_long>*>* maps;
+    std::unordered_map<u_long, std::unordered_set<u_long>*>* new_maps;
+    std::unordered_set<u_long>* progenitors;
+    std::unordered_set<u_long>* old_progenitors;
 #ifdef UNQIUE
-    GHashTable* outhash;
+    std::unordered_set<u_long> outhash;
 #endif
-    GHashTableIter iter;
-    gpointer key, value;
     struct stat st;
 
     if (argc < 3) {
@@ -63,9 +66,7 @@ int main(int argc, char** argv)
     sprintf (mapfile, "/tmp/%s/map", argv[1]);
     sprintf (outfile, "/tmp/%s/dataflow.result", argv[1]);
     sprintf (tokfile, "/tmp/%s/tokens", argv[1]);
-#ifdef UNIQUE
-    outhash = g_hash_table_new(g_direct_hash, g_direct_equal);
-#endif
+
     outfd = open (mergefile, O_CREAT|O_WRONLY|O_TRUNC, 0644);
     if (outfd < 0) {
 	fprintf (stderr, "cannot open merge output file %s, rc=%d, errno=%d\n", mergefile, outfd, errno);
@@ -79,8 +80,9 @@ int main(int argc, char** argv)
     rc = map_file (mapfile, &mfd, &mdatasize, &mmapsize, (char **) &mbuf);
     if (rc < 0) return rc;
 
+    maps = new std::unordered_map<u_long, std::unordered_set<u_long>*>;
+
     pout = obuf;
-    maps = g_hash_table_new(g_direct_hash, g_direct_equal);
     while (pout < obuf + odatasize) {
 	tci = (struct taint_creation_info*) pout;
 	pout += sizeof(struct taint_creation_info);
@@ -104,17 +106,17 @@ int main(int argc, char** argv)
 	    }
 	} else {
 	    for (i = 0; i < buf_size; i++) {
-		progenitors = g_hash_table_new(g_direct_hash, g_direct_equal);
+		progenitors = new std::unordered_set<u_long>;
 		do {
 		    if (*mbuf) {
-			g_hash_table_add (progenitors, GUINT_TO_POINTER(*mbuf));
+			progenitors->insert(*mbuf);
 			mbuf++;
 		    } else {
 			mbuf++;
 			break;
 		    }
 		} while (1);
-		g_hash_table_insert (maps, GUINT_TO_POINTER(*(u_long *) pout), progenitors);
+		(*maps)[*(u_long *) pout] = progenitors;
 		pout += sizeof(u_long);
 		pout += sizeof(u_long);
 	    }
@@ -152,6 +154,8 @@ int main(int argc, char** argv)
     // Middle stages
     for (s = 2; s < argc-1; s++) {
 
+	new_maps = new std::unordered_map<u_long, std::unordered_set<u_long>*>;
+
 	sprintf (mapfile, "/tmp/%s/map", argv[s]);
 	sprintf (outfile, "/tmp/%s/dataflow.result", argv[s]);
 	sprintf (tokfile, "/tmp/%s/tokens", argv[s]);
@@ -163,7 +167,6 @@ int main(int argc, char** argv)
 	if (rc < 0) return rc;
 
 	pout = obuf;
-	new_maps = g_hash_table_new(g_direct_hash, g_direct_equal);
 	while (pout < obuf + odatasize) {
 	    tci = (struct taint_creation_info*) pout;
 	    pout += sizeof(struct taint_creation_info);
@@ -175,15 +178,16 @@ int main(int argc, char** argv)
 		    do {
 			if (*mbuf) {
 			    if (*mbuf < 0xc0000001) {
-				progenitors = (GHashTable *) g_hash_table_lookup(maps, GUINT_TO_POINTER(*mbuf));
-				if (progenitors) {
-				    if (g_hash_table_size(progenitors)) {
-					g_hash_table_iter_init(&iter, progenitors);
-					while (g_hash_table_iter_next(&iter, &key, &value)) {
+				std::unordered_map<u_long, std::unordered_set<u_long>*>::const_iterator maps_iter = maps->find(*mbuf);
+				if (maps_iter != maps->end() && maps_iter->second) {
+				    progenitors = maps_iter->second;
+				    if (progenitors->size()) {
+					std::unordered_set<u_long>::const_iterator iter;
+					for (iter = progenitors->begin(); iter != progenitors->end(); iter++) {
 #ifdef UNIQUE					    
-					    g_hash_table_add (outhash, key);
+					    outhash.insert(*iter);
 #else
-					    print_value (GPOINTER_TO_UINT(key));
+					    print_value (*iter);
 #endif
 					}
 				    } 
@@ -193,7 +197,7 @@ int main(int argc, char** argv)
 				}
 			    } else {
 #ifdef UNIQUE
-				g_hash_table_add (outhash, GUINT_TO_POINTER((*mbuf)-0xc0000000+tokens));
+				outhash.insert ((*mbuf)-0xc0000000+tokens);
 #else
 				print_value ((*mbuf)-0xc0000000+tokens);
 #endif
@@ -205,11 +209,11 @@ int main(int argc, char** argv)
 			}
 		    } while (1);
 #ifdef UNIQUE
-		    g_hash_table_iter_init (&iter, outhash);
-		    while (g_hash_table_iter_next(&iter, &key, &value)) {
-			print_value (GPOINTER_TO_UINT(key));
+		    std::unordered_set<u_long>::const_iterator iter;
+		    for (iter = outhash.begin(); iter != outhash.end(); iter++) {
+			print_value (*iter);
 		    }
-		    g_hash_table_remove_all(outhash);
+		    outhash.clear();
 #endif
 		    print_value (0);
 		    
@@ -218,18 +222,19 @@ int main(int argc, char** argv)
 		}
 	    } else {
 		for (i = 0; i < buf_size; i++) {
-		    progenitors = g_hash_table_new(g_direct_hash, g_direct_equal);
+		    progenitors = new std::unordered_set<u_long>;
 		    do {
 			if (*mbuf) {
 			    if (*mbuf > 0xc0000000) {
-				g_hash_table_add (progenitors, GUINT_TO_POINTER(*mbuf-0xc0000000+tokens));
+				progenitors->insert (*mbuf-0xc0000000+tokens);
 			    } else {
-				old_progenitors = (GHashTable *) g_hash_table_lookup(maps, GUINT_TO_POINTER(*mbuf));
-				if (old_progenitors) {
-				    if (g_hash_table_size(old_progenitors)) {
-					g_hash_table_iter_init(&iter, old_progenitors);
-					while (g_hash_table_iter_next(&iter, &key, &value)) {
-					    g_hash_table_add (progenitors, key);
+				std::unordered_map<u_long, std::unordered_set<u_long>*>::const_iterator maps_iter = maps->find(*mbuf);
+				if (maps_iter != maps->end() && maps_iter->second) {
+				    old_progenitors = maps_iter->second;
+				    if (old_progenitors->size()) {
+					std::unordered_set<u_long>::const_iterator iter;
+					for (iter = old_progenitors->begin(); iter != old_progenitors->end(); iter++) {
+					    progenitors->insert (*iter);
 					}
 				    } 
 				} else {
@@ -243,7 +248,7 @@ int main(int argc, char** argv)
 			    break;
 			}
 		    } while (1);
-		    g_hash_table_insert (new_maps, GUINT_TO_POINTER((*(u_long *) pout)), progenitors);
+		    (*new_maps)[*(u_long *) pout] = progenitors;
 		    pout += sizeof(u_long);
 		    pout += sizeof(u_long);
 		}
@@ -300,25 +305,26 @@ int main(int argc, char** argv)
 	    do {
 		if (*mbuf) {
 		    if (*mbuf < 0xc0000001) {
-			  progenitors = (GHashTable *) g_hash_table_lookup(maps, GUINT_TO_POINTER(*mbuf));
-			  if (progenitors) {
-			      if (g_hash_table_size(progenitors)) {
-				  g_hash_table_iter_init(&iter, progenitors);
-				  while (g_hash_table_iter_next(&iter, &key, &value)) {
+			std::unordered_map<u_long, std::unordered_set<u_long>*>::const_iterator maps_iter = maps->find(*mbuf);
+			if (maps_iter != maps->end() && maps_iter->second) {
+			    progenitors = maps_iter->second;
+			    if (progenitors->size()) {
+				std::unordered_set<u_long>::const_iterator iter;
+				for (iter = progenitors->begin(); iter != progenitors->end(); iter++) {
 #ifdef UNIQUE
-				      g_hash_table_add (outhash, key);
+				    outhash.insert (*iter);
 #else
-				      print_value (GPOINTER_TO_UINT(key));
+				    print_value (*iter);
 #endif
-				  }
-			      } 
-			  } else {
-			      printf ("NULL\n");
-			      exit (-1);
-			  }
+				}
+			    } 
+			} else {
+			    printf ("NULL\n");
+			    exit (-1);
+			}
 		    } else {
 #ifdef UNIQUE
-			g_hash_table_add (outhash, GUINT_TO_POINTER((*mbuf)-0xc0000000+tokens));
+			outhash.insert ((*mbuf)-0xc0000000+tokens);
 #else
 			print_value ((*mbuf)-0xc0000000+tokens);
 #endif
@@ -330,11 +336,11 @@ int main(int argc, char** argv)
 		}
 	    } while (1);
 #ifdef UNIQUE
-	    g_hash_table_iter_init (&iter, outhash);
-	    while (g_hash_table_iter_next(&iter, &key, &value)) {
-		print_value (GPOINTER_TO_UINT(key));
+	    std::unordered_set<u_long>::const_iterator iter;
+	    for (iter = outhash.begin(); iter != outhash.end(); iter++) {
+		print_value (*iter);
 	    }
-	    g_hash_table_remove_all(outhash);
+	    outhash.clear();
 #endif
 	    print_value (0);
 	    pout += sizeof(u_long);

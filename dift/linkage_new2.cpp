@@ -18858,20 +18858,19 @@ void fini(INT32 code, void* v)
 	splice_after_segment (splice_input, splice_semname, outfd);
     }
 
+    snprintf(taint_structures_file, 256, "%s/taint_structures", group_directory);
+    
+    taint_fd = open(taint_structures_file, O_WRONLY | O_CREAT | O_TRUNC | O_LARGEFILE, 0644);
+    assert(taint_fd > 0);
+    
     if (all_output) {
-	snprintf(taint_structures_file, 256, "%s/taint_structures", group_directory);
-
-	taint_fd = open(taint_structures_file, O_WRONLY | O_CREAT | O_TRUNC | O_LARGEFILE, 0644);
-	assert(taint_fd > 0);
-	
-    	gettimeofday(&tv, NULL);
+	gettimeofday(&tv, NULL);
 	printf("dump start dir %s %lu sec %lu usec\n", group_directory, tv.tv_sec, tv.tv_usec);
 
 	dump_reg_taints(taint_fd, pregs);
 	dump_mem_taints(taint_fd);
-	
-	close(taint_fd);
     }
+    close(taint_fd);
 
     print_taint_stats(stderr);
 #if 0

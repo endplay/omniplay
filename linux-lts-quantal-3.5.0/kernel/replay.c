@@ -694,6 +694,7 @@ struct record_group {
 struct replay_timing {
 	pid_t     pid;
 	u_long    index;
+	short     syscall;
 	cputime_t ut;
 };
 
@@ -3671,6 +3672,7 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* 
 		rc = read_mmap_log(precg);
 		prepg->rg_attach_sysid = attach_index;
 		prepg->rg_attach_pid = attach_pid;
+		prepg->rg_attach_device = attach_device;
 		if (rc) {
 			printk("replay_ckpt_wakeup: could not read memory log for Pin support\n");
 			return rc;
@@ -5105,7 +5107,7 @@ void write_timings (struct replay_group* prepg)
 
 
 static void
-record_timings (struct replay_thread* prept)
+record_timings (struct replay_thread* prept, short syscall)
 {
 	cputime_t ut, st;
 	struct replay_group* prepg = prept->rp_group;
@@ -5114,17 +5116,18 @@ record_timings (struct replay_thread* prept)
 	//printk ("Pid %d index %lu utime %ld stime %ld\n", current->pid, prept->rp_out_ptr, ut, st);
 	prepg->rg_timebuf[prepg->rg_timecnt].pid = prept->rp_record_thread->rp_record_pid;
 	prepg->rg_timebuf[prepg->rg_timecnt].index = prept->rp_out_ptr;
+	prepg->rg_timebuf[prepg->rg_timecnt].syscall = syscall;
 	prepg->rg_timebuf[prepg->rg_timecnt++].ut = ut;
 
 	if (prepg->rg_timecnt == REPLAY_TIMEBUF_ENTRIES) write_timings (prepg);
 }
 
 static long
-test_pin_attach (struct replay_thread* prept)
+test_pin_attach (struct replay_thread* prept, short syscall)
 {
 	struct replay_group* prepg = prept->rp_group;
 
-	if (prepg->rg_timebuf) record_timings (prept);
+	if (prepg->rg_timebuf) record_timings (prept, syscall);
 	if (prepg->rg_attach_sysid > 0 && !is_pin_attached() && !is_gdb_attached() &&
 	    prept->rp_out_ptr == prepg->rg_attach_sysid &&
 	    prept->rp_record_thread->rp_record_pid == prepg->rg_attach_pid) {
@@ -5637,7 +5640,7 @@ asmlinkage long sys_pthread_sysign (void)
 		return F_RECORD;					\
 	}								\
 	if (current->replay_thrd) {					\
-		rc = test_pin_attach (current->replay_thrd);		\
+		rc = test_pin_attach (current->replay_thrd, number);	\
 		if (rc < 0) return rc;					\
 	}								\
 	if (current->replay_thrd && test_app_syscall(number)) {		\

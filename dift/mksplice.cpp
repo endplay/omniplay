@@ -7,58 +7,40 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <assert.h>
-#include <glib-2.0/glib.h>
+
+#include <unordered_set>
 
 #include "linkage_common.h"
 #include "taint_interface/taint_creation.h"
 #include "maputil.h"
 
-#ifdef STATS
-u_long map_merges = 0;
-#endif
+//#define STATS
 
 struct taint_entry {
     u_long p1;
     u_long p2;
 };
-struct taint_entry* merge_log;
-#define OUTBUFSIZE 1000000
-u_long outbuf[OUTBUFSIZE];
-u_long outindex = 0;
-int outfd;
 
-static void flush_outbuf()
-{
-    long rc = write (outfd, outbuf, outindex*sizeof(u_long));
-    if (rc != outindex*sizeof(u_long)) {
-	fprintf (stderr, "write of segment failed, rc=%ld, errno=%d\n", rc, errno);
-	exit (rc);
-    }
-    outindex = 0;
-}
+std::unordered_set<u_long> splice_addrs;
+static struct taint_entry* merge_log;
 
-static inline void print_value (u_long value) 
-{
-    if (outindex == OUTBUFSIZE) flush_outbuf();
-    outbuf[outindex++] = value;
-}
-
-
-GHashTable* seen_indices;
+#ifdef STATS
+u_long merges = 0, zeros = 0, directs = 0, indirects = 0, inputs = 0;
+#endif
 
 #define STACK_SIZE 1000000
 u_long stack[STACK_SIZE];
 
-static void map_iter (u_long value)
+static inline void splice_iter(u_long value)
 {
     struct taint_entry* pentry;
     u_long stack_depth = 0;
-
+    
     pentry = &merge_log[value-0xe0000001];
-#ifdef STATS
-    map_merges++;
-#endif
     //printf ("%lx -> %lx,%lx (%lu)\n", value, pentry->p1, pentry->p2, stack_depth);
+#ifdef STATS
+    merges++;
+#endif
     stack[stack_depth++] = pentry->p1;
     stack[stack_depth++] = pentry->p2;
 
@@ -66,23 +48,62 @@ static void map_iter (u_long value)
 	value = stack[--stack_depth];
 	assert (stack_depth < STACK_SIZE);
 
-	if (g_hash_table_contains(seen_indices, GUINT_TO_POINTER(value))) {
-	    continue;
-	}
-	g_hash_table_add(seen_indices, GUINT_TO_POINTER(value));
-    
-	if (value <= 0xe0000000) {
-	    print_value (value);
-	} else {
-	    pentry = &merge_log[value-0xe0000001];
+	if (splice_addrs.insert(value).second) {
+	
+	    if (value > 0xe0000000) {
+		pentry = &merge_log[value-0xe0000001];
+		//printf ("\t%lx -> %lx,%lx (%lu)\n", value, pentry->p1, pentry->p2, stack_depth);
 #ifdef STATS
-	    map_merges++;
+		merges++;
 #endif
-	    //printf ("%lx -> %lx,%lx (%lu)\n", value, pentry->p1, pentry->p2, stack_depth);
-	    stack[stack_depth++] = pentry->p1;
-	    stack[stack_depth++] = pentry->p2;
+		stack[stack_depth++] = pentry->p1;
+		stack[stack_depth++] = pentry->p2;
+	    }
 	}
     } while (stack_depth);
+}
+ 
+// Format of splice file is an unordered list of "addresses of interest"
+static long print_addrs (char* dirname)
+{
+    char* buf;
+    u_long* p;
+    u_long rc, num_addrs = splice_addrs.size(), wsize;
+    char splice_name[256];
+    int fd;
+
+    buf = (char *) malloc (num_addrs * sizeof(u_long));
+    if (buf == NULL) {
+	fprintf (stderr, "print_addrs: cannot allocate splice buffer of size %lu\n", num_addrs);
+	return -1;
+    }
+
+    std::unordered_set<u_long>::const_iterator iter;
+    p = (u_long *) buf;
+    for (iter = splice_addrs.begin(); iter != splice_addrs.end(); iter++) {
+	if (*iter < 0xc0000001) {
+	    *p = *iter;
+	    p++;
+	}
+    }
+    
+    sprintf (splice_name, "%s/splice", dirname);
+    fd = open (splice_name, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    if (fd < 0) {
+	fprintf (stderr, "print_addrs: cannot create splice file, errno=%d\n", errno);
+	return -1;
+    }
+
+    wsize = (u_long) p - (u_long) buf;
+    rc = write (fd, buf, wsize);
+    if (rc != wsize) {
+	fprintf (stderr, "print_addrs: cannot write splice file, rc=%ld, errno=%d, wsize %lu\n", rc, errno, wsize);
+	return -1;
+    }
+
+    close (fd);
+    free (buf);
+    return 0;
 }
 
 int map_shmem (char* filename, int* pfd, u_long* pdatasize, u_long* pmapsize, char** pbuf)
@@ -90,7 +111,7 @@ int map_shmem (char* filename, int* pfd, u_long* pdatasize, u_long* pmapsize, ch
     char shmemname[256];
     struct stat st, ost;
     u_long size, osize=0;
-    int fd, ofd, rc, i;
+    int fd, ofd, rc;
     char* buf, *fbuf;
 
     ofd = open (filename, O_RDONLY, 0);
@@ -109,7 +130,7 @@ int map_shmem (char* filename, int* pfd, u_long* pdatasize, u_long* pmapsize, ch
     }
 
     snprintf(shmemname, 256, "/node_nums_shm%s", filename);
-    for (i = 1; i < strlen(shmemname); i++) {
+    for (u_long i = 1; i < strlen(shmemname); i++) {
 	if (shmemname[i] == '/') shmemname[i] = '.';
     }
     shmemname[strlen(shmemname)-10] = '\0';
@@ -161,29 +182,24 @@ int map_shmem (char* filename, int* pfd, u_long* pdatasize, u_long* pmapsize, ch
 	}
     }
 
-    // This is the last process to use the merge region
-    // This will deallocate it  after we exit
-    rc = shm_unlink (shmemname); 
-    if (rc < 0) perror ("shmem_unlink");
-
     *pfd = fd;
     *pdatasize = st.st_size;
+    if (ofd >= 0) *pdatasize += ost.st_size;
     *pmapsize = size;
     *pbuf = buf;
 
     return 0;
 }
 
-
 // Generate splice data:
 // list of address for prior segment to track
-static long map_before_segment (char* dirname)
+static long splice_before_segment (char* dirname)
 {
     long rc;
     char* output_log, *plog;
-    u_long ndatasize, odatasize, mergesize, mapsize, buf_size, value, i, zero = 0;
-    char mergefile[256], outfile[256], map_name[256];
-    int node_num_fd, mapfd;
+    u_long ndatasize, odatasize, mergesize, mapsize, buf_size, value, i;
+    char mergefile[256], outfile[256];
+    int node_num_fd, outfd;
 
     sprintf (mergefile, "%s/node_nums", dirname);
     sprintf (outfile, "%s/dataflow.result", dirname);
@@ -191,15 +207,8 @@ static long map_before_segment (char* dirname)
     rc = map_shmem (mergefile, &node_num_fd, &ndatasize, &mergesize, (char **) &merge_log);
     if (rc < 0) return rc;
 
-    rc = map_file (outfile, &mapfd, &odatasize, &mapsize, &output_log);
+    rc = map_file (outfile, &outfd, &odatasize, &mapsize, &output_log);
     if (rc < 0) return rc;
-
-    sprintf (map_name, "%s/map", dirname);
-    outfd = open (map_name, O_CREAT | O_TRUNC | O_WRONLY, 0644);
-    if (outfd < 0) {
-	fprintf (stderr, "map_inputs: cannot create splice file, errno=%d\n", errno);
-	return -1;
-    }
 
     plog = output_log;
     while (plog < output_log + odatasize) {
@@ -211,35 +220,50 @@ static long map_before_segment (char* dirname)
 	    value = *((u_long *) plog);
 	    plog += sizeof(u_long);
 	    if (value) {
-		if (value < 0xe0000001) {
-		    print_value (value);
-
+		if (value < 0xc0000001) {
+		    splice_addrs.insert(value);
+#ifdef STATS
+		    directs++;
+#endif
+		} else if (value >= 0xe0000001) {
+#ifdef STATS
+		    indirects++;
+#endif
+		    splice_iter(value);
+#ifdef STATS
 		} else {
-		    seen_indices = g_hash_table_new(g_direct_hash, g_direct_equal);
-		    map_iter (value);
-		    g_hash_table_destroy(seen_indices);
+		    inputs++;
+#endif
 		}
+#ifdef STATS
+	    } else {
+	      zeros++;
+#endif
 	    }
-	    print_value(zero);
+
 	}
     }
 
-    flush_outbuf ();
-    close (outfd);
+    print_addrs (dirname);
 #ifdef STATS
-    printf ("map merges: %ld\n", map_merges);
+    printf ("splice zeros: %ld\n", zeros);
+    printf ("splice directs: %ld\n", directs);
+    printf ("splice inputs: %ld\n", inputs);
+    printf ("splice indirects: %ld\n", indirects);
+    printf ("splice merges: %ld\n", merges);
 #endif
+
     return 0;
 }
 
 int main (int argc, char* argv[]) 
 {
     if (argc < 2) {
-	fprintf (stderr, "format: mkmap <dirname>\n");
+	fprintf (stderr, "format: mksplice <dirname>\n");
 	return -1;
     }
 
-    map_before_segment (argv[1]);
+    splice_before_segment (argv[1]);
 
     return 0;
 }

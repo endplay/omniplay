@@ -70,6 +70,7 @@ map_time = {}
 total_level = {}
 epoch_time = {}
 max_epoch_time = 0.0
+max_epoch = 0
 
 print "Run time: %6.2f"%(end_time - start_time)       
 merge_time = end_time - tool_done_time
@@ -91,6 +92,7 @@ for i in range(max_epochno):
     epoch_time[i] = ff_time[i] + dift_time[i] + dump_time[i] + map_time[i]
     if epoch_time[i] > max_epoch_time:
         max_epoch_time = epoch_time[i]
+        max_epoch = i
     print "%5d %6.2f %6.2f %6.2f %6.2f %6.2f"%(i, epoch_start_time[i]-start_time, ff_time[i], dift_time[i], dump_time[i], map_time[i]),
     mlevel = 2
     while mlevel <= max_epochno:
@@ -115,6 +117,10 @@ while mlevel <= max_epochno:
     mlevel = mlevel * 2
 print "%7.2f"%(total_time)
 
+bottleneck = {}
+for i in range(max_epochno):
+    bottleneck[i] = i
+
 mlevel = 2
 while mlevel <= max_epochno:
     for i in range(max_epochno):
@@ -123,11 +129,12 @@ while mlevel <= max_epochno:
                 epoch_time[i] = epoch_time[i] + epoch_merge_time[(i,i+mlevel-1)]
             else:
                 epoch_time[i] = epoch_time[i+mlevel/2] + epoch_merge_time[(i,i+mlevel-1)] 
+                bottleneck[i] = bottleneck[i+mlevel/2];
             #print "finish time for %d level %d is %6.2f"%(i, mlevel, epoch_time[i])
     mlevel *= 2
 
 print
 print
-print "Longest epoch %6.2f"%(max_epoch_time)
-print "Total time    %6.2f"%(epoch_time[0])
+print "Longest epoch %6.2f (%d)"%(max_epoch_time, max_epoch)
+print "Total time    %6.2f (%d)"%(epoch_time[0], bottleneck[0])
 

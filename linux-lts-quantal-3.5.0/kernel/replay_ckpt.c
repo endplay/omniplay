@@ -46,6 +46,7 @@ struct mm_info {
 	unsigned long start_code, end_code, start_data, end_data;
 	unsigned long start_brk, brk, start_stack;
 	unsigned long arg_start, arg_end, env_start, env_end;
+	unsigned long saved_auxv[AT_VECTOR_SIZE]; /* for /proc/PID/auxv */
 	void* vdso;
 	//exe file
 #ifdef CONFIG_PROC_FS
@@ -697,6 +698,7 @@ replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pi
 	pmminfo->arg_end = tsk->mm->arg_end;
 	pmminfo->env_start = tsk->mm->env_start;
 	pmminfo->env_end = tsk->mm->env_end;
+	memcpy (pmminfo->saved_auxv, tsk->mm->saved_auxv, sizeof(pmminfo->saved_auxv));
 	pmminfo->vdso = tsk->mm->context.vdso;
 
 #ifdef CONFIG_PROC_FS
@@ -967,6 +969,7 @@ long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, long* p
 	current->mm->arg_end =	pmminfo->arg_end;
 	current->mm->env_start = pmminfo->env_start;
 	current->mm->env_end =	pmminfo->env_end;
+	memcpy (current->mm->saved_auxv, pmminfo->saved_auxv, sizeof(pmminfo->saved_auxv));
 	current->mm->context.vdso = pmminfo->vdso;
 
 	// Restore the VDSO

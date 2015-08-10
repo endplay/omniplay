@@ -70,7 +70,7 @@ long splice_after_segment (const char* splice_input_filename, const char* semnam
 	sem_close (sem);
     }
 
-    printf ("Merge entries: %lu\n", merge_total_count - 0xe0000000);
+    //printf ("Merge entries: %lu\n", merge_total_count - 0xe0000000);
 
     rc = map_file (splice_input_filename, &ifd, &idatasize, &imapsize, (char **) &ibuf);
     printf ("Open of input file %s returns %ld\n", splice_input_filename, rc);

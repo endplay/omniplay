@@ -7,15 +7,18 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <assert.h>
-#include <glib-2.0/glib.h>
+
+#include <unordered_set>
 
 #include "linkage_common.h"
 #include "taint_interface/taint_creation.h"
 #include "xray_token.h"
 #include "maputil.h"
 
+//#define STATS
+
 #ifdef STATS
-u_long map_merges = 0;
+u_long values = 0, directs = 0, indirects = 0, map_merges = 0;
 #endif
 
 struct taint_entry {
@@ -31,7 +34,7 @@ int outfd;
 static void flush_outbuf()
 {
     long rc = write (outfd, outbuf, outindex*sizeof(u_long));
-    if (rc != outindex*sizeof(u_long)) {
+    if (rc != (long) (outindex*sizeof(u_long))) {
 	fprintf (stderr, "write of segment failed, rc=%ld, errno=%d\n", rc, errno);
 	exit (rc);
     }
@@ -44,14 +47,12 @@ static inline void print_value (u_long value)
     outbuf[outindex++] = value;
 }
 
-
-GHashTable* seen_indices;
-
 #define STACK_SIZE 1000000
 u_long stack[STACK_SIZE];
 
 static void map_iter (u_long value)
 {
+    std::unordered_set<u_long> seen_indices;
     struct taint_entry* pentry;
     u_long stack_depth = 0;
 
@@ -67,21 +68,18 @@ static void map_iter (u_long value)
 	value = stack[--stack_depth];
 	assert (stack_depth < STACK_SIZE);
 
-	if (g_hash_table_contains(seen_indices, GUINT_TO_POINTER(value))) {
-	    continue;
-	}
-	g_hash_table_add(seen_indices, GUINT_TO_POINTER(value));
-    
-	if (value <= 0xe0000000) {
-	    print_value (value);
-	} else {
-	    pentry = &merge_log[value-0xe0000001];
+	if (seen_indices.insert(value).second) {
+	    if (value <= 0xe0000000) {
+		print_value (value);
+	    } else {
+		pentry = &merge_log[value-0xe0000001];
 #ifdef STATS
-	    map_merges++;
+		map_merges++;
 #endif
-	    //printf ("%lx -> %lx,%lx (%lu)\n", value, pentry->p1, pentry->p2, stack_depth);
-	    stack[stack_depth++] = pentry->p1;
-	    stack[stack_depth++] = pentry->p2;
+		//printf ("%lx -> %lx,%lx (%lu)\n", value, pentry->p1, pentry->p2, stack_depth);
+		stack[stack_depth++] = pentry->p1;
+		stack[stack_depth++] = pentry->p2;
+	    }
 	}
     } while (stack_depth);
 }
@@ -91,7 +89,7 @@ int map_shmem (char* filename, int* pfd, u_long* pdatasize, u_long* pmapsize, ch
     char shmemname[256];
     struct stat st, ost;
     u_long size, osize=0;
-    int fd, ofd, rc, i;
+    int fd, ofd, rc;
     char* buf, *fbuf;
 
     ofd = open (filename, O_RDONLY, 0);
@@ -110,7 +108,7 @@ int map_shmem (char* filename, int* pfd, u_long* pdatasize, u_long* pmapsize, ch
     }
 
     snprintf(shmemname, 256, "/node_nums_shm%s", filename);
-    for (i = 1; i < strlen(shmemname); i++) {
+    for (u_long i = 1; i < strlen(shmemname); i++) {
 	if (shmemname[i] == '/') shmemname[i] = '.';
     }
     shmemname[strlen(shmemname)-10] = '\0';
@@ -178,7 +176,7 @@ int map_shmem (char* filename, int* pfd, u_long* pdatasize, u_long* pmapsize, ch
 
 // Generate splice data:
 // list of address for prior segment to track
-static long map_before_segment (char* dirname)
+static long map_before_segment (char* dirname, int start_flag)
 {
     struct token token;
     long rc;
@@ -218,13 +216,20 @@ static long map_before_segment (char* dirname)
 	    plog += sizeof(u_long);
 	    if (value) {
 		if (value < 0xe0000001) {
+#ifdef STATS
+		directs++;
+#endif
 		    print_value (value);
 		} else {
-		    seen_indices = g_hash_table_new(g_direct_hash, g_direct_equal);
+#ifdef STATS
+		indirects++;
+#endif
 		    map_iter (value);
-		    g_hash_table_destroy(seen_indices);
 		}
 	    }
+#ifdef STATS
+	values++;
+#endif
 	    print_value(zero);
 	}
     }
@@ -233,6 +238,10 @@ static long map_before_segment (char* dirname)
 
     flush_outbuf ();
     close (outfd);
+
+#ifdef STATS
+    printf ("outputs %s - values: %ld, directs: %ld, indirects: %ld, map merges: %ld\n", dirname, values, directs, indirects, map_merges);
+#endif
 
     // Get number of tokens for this epoch
     tfd = open (tokfile, O_RDONLY);
@@ -256,7 +265,11 @@ static long map_before_segment (char* dirname)
 	
 	tokens = token.token_num+token.size-1;
     } else {
-	tokens = 0;
+	if (start_flag) {
+	    tokens = 0;
+	} else {
+	    tokens = 0xc0000000;
+	}
     }
     close (tfd);
 
@@ -276,13 +289,20 @@ static long map_before_segment (char* dirname)
 	value = ts_log[2*i+1];
 	if (value) {
 	    if (value < 0xe0000001) {
+#ifdef STATS
+		directs++;
+#endif
 		print_value (value);
 	    } else {
-		seen_indices = g_hash_table_new(g_direct_hash, g_direct_equal);
+#ifdef STATS
+		indirects++;
+#endif
 		map_iter (value);
-		g_hash_table_destroy(seen_indices);
 	    }
 	}
+#ifdef STATS
+	values++;
+#endif
 	print_value(zero);
     }
 
@@ -290,19 +310,22 @@ static long map_before_segment (char* dirname)
     close (outfd);
 
 #ifdef STATS
-    printf ("map merges: %ld\n", map_merges);
+    printf ("addrs %s - values: %ld, directs: %ld, indirects: %ld, map merges: %ld\n", dirname, values, directs, indirects, map_merges);
 #endif
     return 0;
 }
 
 int main (int argc, char* argv[]) 
 {
+    int start_flag = 0;
+
     if (argc < 2) {
-	fprintf (stderr, "format: mkmap <dirname>\n");
+	fprintf (stderr, "format: mkmap <dirname> [-s]\n");
 	return -1;
     }
 
-    map_before_segment (argv[1]);
+    if (argc == 3 && !strcmp(argv[2], "-s")) start_flag = 1;
+    map_before_segment (argv[1], start_flag);
 
     return 0;
 }

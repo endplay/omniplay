@@ -18,19 +18,15 @@ int main(int argc, char** argv)
     int resmergefd, mergefd, taintfd;
     u_long resmergedatasize, resmergemapsize, mergedatasize, mergemapsize, taintdatasize, taintmapsize;
     char* resmergebuf, *mergebuf, *taintbuf;
-    char* pout;
-    struct taint_creation_info* tci;
-    u_long buf_size;
     int i, rc;
-    int epoch_cnt = 0, zeros = 0;
-    u_long TARGET, addr, value;
+    int epoch_cnt = 0, zeros = 0, values = 0, resolved = 0;
+    u_long addr;
     u_long* mgbuf, *tout;
 
-    if (argc != 3) {
-	printf ("format: mergedump <dir #> <target output token>\n");
+    if (argc != 2) {
+	printf ("format: mergedump <dir #>\n");
 	exit (0);
     }
-    TARGET = strtoul(argv[2], NULL, 0);
     
     sprintf (mergefile, "/tmp/%s/merge-outputs", argv[1]);
     sprintf (resmergefile, "/tmp/%s/dataflow.result", argv[1]);
@@ -45,41 +41,27 @@ int main(int argc, char** argv)
     rc = map_file (taintfile, &taintfd, &taintdatasize, &taintmapsize, &taintbuf);
     if (rc < 0) return rc;
 
-    pout = resmergebuf;
     mgbuf = (u_long *) mergebuf;
-    while ((char *) pout < resmergebuf + resmergedatasize) {
-	tci = (struct taint_creation_info*) pout;
-	pout += sizeof(struct taint_creation_info);
-	pout += sizeof(u_long); // skip bufaddr
-	buf_size = *((u_long *) pout);
-	pout += sizeof(u_long);
-	if (tci->syscall_cnt) {
-	    for (i = 0; i < buf_size; i++) {
-		epoch_cnt++;
-		if (epoch_cnt == TARGET) {
-		    addr = *((u_long *) pout);
-		    value = *((u_long *) (pout+sizeof(u_long)));
-		    printf ("syscall %lu byte %d addr %lx value %lx mgbuf %p\n", tci->syscall_cnt, i, addr, value, mgbuf);
+    while ((u_long) mgbuf < (u_long) mergebuf + mergedatasize) {
+	epoch_cnt++;
+	if (*mgbuf == 0) zeros++;
+	do {
+	    if (*mgbuf) {
+		values++;
+		if (*mgbuf > 0xc0000000) {
+		    resolved++;
+		} else {
+		    printf ("%lx\n", *mgbuf);
 		}
-		if (*mgbuf == 0) zeros++;
-		do {
-		    if (*mgbuf) {
-			if (epoch_cnt == TARGET) {
-			    printf ("merge value %lx\n", *mgbuf);
-			}
-			mgbuf++;
-		    } else {
-			mgbuf++;
-			break;
-		    }
-		} while (1);
-    		pout += sizeof(u_long);
-		pout += sizeof(u_long);
+		mgbuf++;
+	    } else {
+		mgbuf++;
+		break;
 	    }
-	}
+	} while (1);
     }
 
-    printf ("%d out of %d are zeros\n", zeros, epoch_cnt);
+    printf ("%d out of %d are zeros, %d values, %d resolved\n", zeros, epoch_cnt, values, resolved);
     zeros = epoch_cnt = 0;
     unmap_file ((char *) mergebuf, mergefd, mergemapsize);
     
@@ -92,19 +74,13 @@ int main(int argc, char** argv)
     tout = (u_long *) taintbuf;
     for (i = 0; i < taintdatasize/(sizeof(u_long)*2); i++) {
 	addr = tout[2*i];
-	value = tout[2*i+1];
+	//value = tout[2*i+1];
 	epoch_cnt++;
 	printf ("addr %lx %lx\n", addr, *mgbuf);
 	mgbuf++;
 	if (*mgbuf == 0) zeros++;
-	//if (addr == TARGET) {
-	//printf ("entry %d: addr %lx, target %lx mgbuf %p offset %lx\n", i, addr, value, mgbuf, (u_long) mgbuf - (u_long) mergebuf);
-	//}
 	do {
 	    if (*mgbuf) {
-	      //if (addr == TARGET) {
-	      //printf ("\tmerge value %lx\n", *mgbuf);
-	      //}
 		mgbuf++;
 	    } else {
 		mgbuf++;

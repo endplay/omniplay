@@ -42,7 +42,7 @@ struct epoch {
     struct timeval tv_done;
 };
 
-#define MAX_EPOCHS 256
+#define MAX_EPOCHS 1024
 
 int main (int argc, char* argv[]) 
 {
@@ -152,7 +152,6 @@ int main (int argc, char* argv[])
 	    gstart = 0; // do em all at once
 	    group_by = epochs;
 	}
-	printf ("Doing epochs %d to %d in this group\n", gstart, gend-1);
 
 	// Start all the epochs at once
 	for (i = gstart; i < gend; i++) {

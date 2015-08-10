@@ -26,6 +26,7 @@ struct epoch {
     u_long start_syscall;
     u_long stop_syscall;
     u_long filter_syscall;
+    u_long use_ckpt;
     // This is runtime info
     int    status;
     pid_t  cpid;
@@ -37,7 +38,7 @@ struct epoch {
     struct timeval tv_done;
 };
 
-#define MAX_EPOCHS 256
+#define MAX_EPOCHS 1024
 
 int main (int argc, char* argv[]) 
 {
@@ -94,18 +95,15 @@ int main (int argc, char* argv[])
 		    return -1;
 		}
 
-		rc = sscanf (line, "%d %lu %lu %lu\n", &epoch[i].start_pid, &epoch[i].start_syscall, 
-			     &epoch[i].stop_syscall, &epoch[i].filter_syscall);
+		rc = sscanf (line, "%d %lu %lu %lu %lu\n", &epoch[i].start_pid, &epoch[i].start_syscall, 
+			     &epoch[i].stop_syscall, &epoch[i].filter_syscall, &epoch[i].use_ckpt);
 		if (rc < 3) {
 		    fprintf (stderr, "Unable to parse line of epoch descrtion file: %s\n", line);
 		    return -1;
 		} else if (rc == 3) {
 		    epoch[i].filter_syscall = 0;
-		}
-#if 0
-		printf ("%d %lu %lu %lu\n", epoch[i].start_pid, epoch[i].start_syscall, 
-			epoch[i].stop_syscall, epoch[i].filter_syscall);
-#endif
+		    epoch[i].use_ckpt = 0;
+		} 
 		i++;
 	    }
 	}
@@ -133,14 +131,27 @@ int main (int argc, char* argv[])
 	for (i = gstart; i < gend; i++) {
 	    epoch[i].cpid = fork ();
 	    if (epoch[i].cpid == 0) {
+		char* args[256];
+		int argcnt = 0;
+		char attach[80], ckpt[80];
+
+		args[argcnt++] = "resume";
+		args[argcnt++] = "-p";
+		args[argcnt++] = dirname;
+		args[argcnt++] = "--pthread";
+		args[argcnt++] = "../eglibc-2.15/prefix/lib";
 		if (i > 0) {
-		    char attach[80];
 		    sprintf (attach, "--attach_offset=%d,%lu", epoch[i].start_pid, epoch[i].start_syscall);
-		    rc = execl("./resume", "resume", "-p", dirname, "--pthread", "../eglibc-2.15/prefix/lib", attach, NULL);
-		} else {
-		    rc = execl("./resume", "resume", "-p", dirname, "--pthread", "../eglibc-2.15/prefix/lib", NULL);
+		    args[argcnt++] = attach;
 		}
-		fprintf (stderr, "execl of resume failed, rc=%d, errno=%d\n", rc, errno);
+		if (epoch[i].use_ckpt) {
+		    args[argcnt++] = "--from_ckpt";
+		    sprintf (ckpt, "%lu", epoch[i].use_ckpt);
+		    args[argcnt++] = ckpt;
+		}
+		args[argcnt++] = NULL;
+		rc = execv ("./resume", args);
+		fprintf (stderr, "execv of resume failed, rc=%d, errno=%d\n", rc, errno);
 		return -1;
 	    } else {
 		gettimeofday (&epoch[i].tv_start, NULL);
@@ -179,7 +190,9 @@ int main (int argc, char* argv[])
 			    if (i > 0) {
 				args[argcnt++] = "-so";
 			    }
-			    args[argcnt++] = "-ao";
+			    if (i < epochs-1) {
+				args[argcnt++] = "-ao"; // Last epoch does not need to trace to final addresses
+			    }
 			    if (epoch[i].filter_syscall) {
 				sprintf (output_filter, "%lu", epoch[i].filter_syscall);
 				args[argcnt++] = "-ofs";
@@ -226,7 +239,11 @@ int main (int argc, char* argv[])
 			if (epoch[i].mpid == 0) {
 			    char outname[80];
 			    sprintf (outname, "/tmp/%d", epoch[i].cpid);
-			    rc = execl ("../dift/obj-ia32/mkmerge", "mkmerge", outname, NULL);
+			    if (i == 0) {
+				rc = execl ("../dift/obj-ia32/mkmerge", "mkmerge", outname, "-s", NULL);
+			    } else {
+				rc = execl ("../dift/obj-ia32/mkmerge", "mkmerge", outname, NULL);
+			    }
 			    fprintf (stderr, "execl of mkmerge failed, rc=%d, errno=%d\n", rc, errno);
 			    return -1;
 			} else {
@@ -295,9 +312,9 @@ int main (int argc, char* argv[])
 	    ppid = fork();
 	    if (ppid == 0) {
 		char* args[9];
-		char dir1[80], dir2[80], inname1[80], inname2[80], outname[80];
+		char dir1[80], dir2[80], inname1[80], inname2[80], outname[80], parnum[80];
 		int argcnt = 0;
-		args[argcnt++] = "merge2";
+		args[argcnt++] = "merge3";
 		sprintf (dir1, "%d", epoch[start1].cpid);
 		args[argcnt++] = dir1;
 		if (start1 == finish1) {
@@ -318,10 +335,17 @@ int main (int argc, char* argv[])
 		args[argcnt++] = outname;
 		if (start1 == 0) args[argcnt++] = "-s";
 		if (finish2 == epochs-1) args[argcnt++] = "-f";
+		if (merge_by < 8) {
+		    sprintf (parnum, "%d", merge_by);
+		} else {
+		    sprintf (parnum, "%d", 8);
+		}
+		//args[argcnt++] = "-p";
+		//args[argcnt++] = parnum;
 		args[argcnt++] = NULL;
 
-		rc = execv ("../dift/obj-ia32/merge2", args);
-		fprintf (stderr, "execv of merge2 failed, rc=%d, errno=%d\n", rc, errno);
+		rc = execv ("../dift/obj-ia32/merge3", args);
+		fprintf (stderr, "execv of merge3 failed, rc=%d, errno=%d\n", rc, errno);
 		return -1;
 	    }
 	    
@@ -332,7 +356,7 @@ int main (int argc, char* argv[])
 		return rc;
 	    }
 	    gettimeofday (&tv_mergeend, NULL);
-	    printf ("Merge %d %d start %ld.%06ld\n", start1, finish2, tv_mergeend.tv_sec, tv_mergeend.tv_usec);
+	    printf ("Merge %d %d stop %ld.%06ld\n", start1, finish2, tv_mergeend.tv_sec, tv_mergeend.tv_usec);
 	}
     } while (merge_by < epochs);
 #endif
