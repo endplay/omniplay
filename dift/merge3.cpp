@@ -55,6 +55,9 @@ struct pardata {
     int         start_flag;
     u_long      tokens;
     pthread_t   tid;
+#ifdef STATS
+    u_long lookups, hits, values, zeros, entries, nulls, adjusts, pass_throughs, virgins;
+#endif
 };
 
 struct resbuf {
@@ -63,6 +66,13 @@ struct resbuf {
     u_long         bufindex;
     struct resbuf* next;
 };
+
+#ifdef STATS
+static long ms_diff (struct timeval tv1, struct timeval tv2)
+{
+    return ((tv1.tv_sec - tv2.tv_sec) * 1000 + (tv1.tv_usec - tv2.tv_usec) / 1000);
+}
+#endif
 
 static void flush_outbuf()
 {
@@ -118,7 +128,7 @@ void* parscan (void* arg)
     u_long tokens = args->tokens;
     struct resbuf* results, *curbuf;
 #ifdef STATS
-    u_long lookups = 0, hits = 0, values = 0, zeros = 0;
+    u_long lookups = 0, hits = 0, values = 0, zeros = 0, entries = 0, adjusts = 0, pass_throughs = 0, virgins = 0;
 #endif
 
     curbuf = results = newbuf();
@@ -136,14 +146,14 @@ void* parscan (void* arg)
 			hits++;	
 #endif
 			if (maps_iter->second) {
-#ifdef STATS
-			    values++;
-#endif
 			    for (u_long* mbuf = maps_iter->second; *mbuf; mbuf++) {
 				if (curbuf->bufindex == curbuf->bufsize) {
 				    curbuf->next = newbuf();
 				    curbuf = curbuf->next;
 				}
+#ifdef STATS
+				values++;
+#endif
 				curbuf->buffer[curbuf->bufindex++] = *mbuf;
 			    }
 			} else {
@@ -155,12 +165,18 @@ void* parscan (void* arg)
 		    } else {
 			if (start_flag) {
 			    // This address has not been modified - so zero taint
+#ifdef STATS
+			    virgins++;
+#endif
 			} else {
 			    // Pass through taint from prior epoch
 			    if (curbuf->bufindex == curbuf->bufsize) {
 				curbuf->next = newbuf();
 				curbuf = curbuf->next;
 			    }
+#ifdef STATS
+			    pass_throughs++;
+#endif
 			    curbuf->buffer[curbuf->bufindex++] = *m2buf;
 			}
 		    }
@@ -170,6 +186,9 @@ void* parscan (void* arg)
 			curbuf->next = newbuf();
 			curbuf = curbuf->next;
 		    }
+#ifdef STATS
+		    adjusts++;
+#endif
 		    curbuf->buffer[curbuf->bufindex++] = (*m2buf)-0xc0000000+tokens;
 		}
 		m2buf++;
@@ -182,9 +201,21 @@ void* parscan (void* arg)
 	    curbuf->next = newbuf();
 	    curbuf = curbuf->next;
 	}
+#ifdef STATS
+	entries++;
+#endif
 	curbuf->buffer[curbuf->bufindex++] = 0;
     }
-
+#ifdef STATS
+    args->lookups = lookups;
+    args->hits = hits;
+    args->values = values;
+    args->zeros = zeros;
+    args->entries = entries;
+    args->adjusts = adjusts;
+    args->pass_throughs = pass_throughs;
+    args->virgins = virgins;
+#endif
     return results;
 }
 
@@ -204,9 +235,12 @@ int main(int argc, char** argv)
     u_long entries = 0, first_entries;
 #endif
 #ifdef STATS
-    struct timeval tv;
-    int lookups = 0, hits = 0, values = 0, zeros = 0;
-    int hash_entries = 0, null_entries = 0;
+    char statsfile[256];
+    struct timeval start_tv, read_addr_tv, write_start_tv, write_end_tv, end_tv;
+    long write_time = 0;
+    u_long lookups = 0, hits = 0, values = 0, zeros = 0, entries = 0, adjusts = 0, pass_throughs = 0, virgins = 0;
+    u_long hash_entries = 0, null_entries = 0;
+    FILE* file;
 #endif
     int parallelize = 1;
 
@@ -233,8 +267,7 @@ int main(int argc, char** argv)
 
 
 #ifdef STATS
-    gettimeofday(&tv, NULL);
-    printf ("Start time: %ld.%06ld\n", tv.tv_sec, tv.tv_usec);
+    gettimeofday(&start_tv, NULL);
 #endif
 #ifdef DEBUG
     char* obuf;
@@ -262,7 +295,8 @@ int main(int argc, char** argv)
     unmap_file (obuf, ofd, omapsize);
     printf ("First half entries: %lu\n", entries);
 #endif
-    // First stage
+
+    // First stage - read in addr map
     outfd = open (outputsfile, O_WRONLY|O_APPEND);
     if (outfd < 0) {
 	fprintf (stderr, "cannot open merge output file %s, rc=%d, errno=%d\n", outputsfile, outfd, errno);
@@ -312,12 +346,10 @@ int main(int argc, char** argv)
 #endif
 
 #ifdef STATS
-    gettimeofday(&tv, NULL);
-    printf ("2nd stage time: %ld.%06ld\n", tv.tv_sec, tv.tv_usec);
-    printf ("Null entries: %d, hash entries: %d\n", null_entries, hash_entries);
+    gettimeofday(&read_addr_tv, NULL);
 #endif
 
-    // Last stage
+    // Next stage - map outputs to addrs
     rc = map_file (mergefileo2, &m2fd, &m2datasize, &m2mapsize, (char **) &m2buf);
     if (rc < 0) return rc;
  
@@ -358,8 +390,15 @@ int main(int argc, char** argv)
 		return -1;
 	    }
 #ifdef STATS
-	    gettimeofday(&tv, NULL);
-	    printf ("Prewrite  time: %ld.%06ld\n", tv.tv_sec, tv.tv_usec);
+	    lookups += pdata[i].lookups;
+	    hits += pdata[i].hits;
+	    values += pdata[i].values;
+	    zeros += pdata[i].zeros;
+	    entries += pdata[i].entries;
+	    pass_throughs += pdata[i].pass_throughs;
+	    adjusts += pdata[i].adjusts;
+	    virgins += pdata[i].virgins;
+	    gettimeofday(&write_start_tv, NULL);
 #endif
 	    while (results) {
 		rc = write (outfd, results->buffer, results->bufindex*sizeof(u_long));
@@ -370,8 +409,8 @@ int main(int argc, char** argv)
 		results = results->next;
 	    }
 #ifdef STATS
-	    gettimeofday(&tv, NULL);
-	    printf ("Write done time: %ld.%06ld\n", tv.tv_sec, tv.tv_usec);
+	    gettimeofday(&write_end_tv, NULL);
+	    write_time += ms_diff (write_end_tv, write_start_tv);
 #endif
 	}
     } else {	
@@ -432,26 +471,22 @@ int main(int argc, char** argv)
 #endif
 	    print_value (0);
 	}
+
+#ifdef STATS
+	gettimeofday(&write_start_tv, NULL);
+#endif
+	flush_outbuf();
+#ifdef STATS
+	gettimeofday(&write_end_tv, NULL);
+	write_time = ms_diff (write_end_tv, write_start_tv);
+#endif
+
     }
 
     unmap_file ((char *) morig, m2fd, m2mapsize);
-
-#ifdef STATS
-    printf ("lookups: %d hits %d values %d zeros %d\n", lookups, hits, values, zeros);
-    gettimeofday(&tv, NULL);
-    printf ("Preflush  time: %ld.%06ld\n", tv.tv_sec, tv.tv_usec);
-#endif
-
-
-    flush_outbuf();
     close (outfd);
 
     if (!finish_flag) {
-
-#ifdef STATS
-	gettimeofday(&tv, NULL);
-	printf ("3rd stage time: %ld.%06ld\n", tv.tv_sec, tv.tv_usec);
-#endif
 
 	// Also need to generate an addr file
 	outfd = open (addrsfile, O_CREAT|O_WRONLY|O_TRUNC, 0644);
@@ -546,8 +581,26 @@ int main(int argc, char** argv)
     }
 
 #ifdef STATS
-    gettimeofday(&tv, NULL);
-    printf ("End time: %ld.%06ld\n", tv.tv_sec, tv.tv_usec);
+    gettimeofday(&end_tv, NULL);
+
+    sprintf (statsfile, "/tmp/%s/%s-stats", argv[1], argv[5]);
+    file = fopen (statsfile, "w");
+    if (!file) {
+	fprintf (stderr, "Cannot open stats file %s\n", statsfile);
+	return -1;
+    }
+    fprintf (file, "Use %d threads\n", parallelize);
+    fprintf (file, "Total time:        %6ld ms\n", ms_diff (end_tv, start_tv));
+    fprintf (file, "Read addr time:    %6ld ms\n", ms_diff (read_addr_tv, start_tv));
+    fprintf (file, "Do outputs time:   %6ld ms\n", ms_diff (write_end_tv, read_addr_tv));
+    fprintf (file, "\tWrite output time: %6ld ms\n", write_time);
+    fprintf (file, "Write addr time:   %6ld ms\n\n", ms_diff (end_tv, write_end_tv));
+    fprintf (file, "Null entries: %ld, hash entries: %ld\n", null_entries, hash_entries);
+    fprintf (file, "Lookups: %ld hits %ld values %ld zeros %ld\n", lookups, hits, values, zeros);
+    fprintf (file, "Entries: %ld adjusts %ld pass throughs %ld virgins %ld\n", 
+	     entries, adjusts, pass_throughs, virgins);
+
+    fclose (file);
 #endif
 
     return 0;

@@ -11,15 +11,6 @@ is_vm=$?
 
 ret=0
 
-if [ $is_vm -eq 0 ]; then
-	pushd ..
-	rsync -avz --exclude "*.cmd" --exclude "*.mod.c" --exclude "*.ko" --exclude ".git" --exclude '*.o' --exclude '.tmp*' --exclude '..tmp*' --exclude '*.order' ddevec@volta.eecs.umich.edu:/home/ddevec/share/omniplay/linux-lts-quantal-3.5.0 ~/deps/
-	popd
-
-	pushd ~/deps/linux-lts-quantal-3.5.0
-	rm -f scripts/basic/fixdep
-fi
-
 num_cores=`cat /proc/cpuinfo | grep processor | wc -l`
 build_parallel=$(($num_cores+1))
 do_make
@@ -42,13 +33,6 @@ if [ $rc -eq 0 ]; then
 else
 	echo "Make Failure!"
 	ret=1
-fi
-
-if [ $is_vm -eq 0 ]; then
-	pushd ..
-	rsync -avz --exclude "*.cmd" --exclude ".git" --exclude "*.mod.c" --exclude "*.ko" --exclude '*.o' --exclude '.tmp*' --exclude '..tmp*' --exclude '*.order' linux-lts-quantal-3.5.0 ddevec@volta.eecs.umich.edu:/home/ddevec/share/omniplay/
-	popd
-	popd
 fi
 
 # Beep!

@@ -1,6 +1,7 @@
 #!/usr/bin/python
 
 import sys
+import glob
 
 epoch_start_time = {}
 epoch_dift_time = {}
@@ -9,6 +10,7 @@ epoch_dump_time = {}
 epoch_map_time = {}
 epoch_end_time = {}
 epoch_merge_time = {}
+epoch_pid = {}
 max_epochno = 0
 
 fd = open(sys.argv[1], "r")
@@ -41,6 +43,7 @@ for line in fd:
         epoch_end_time[epochno] = float(sec) + float(usec)/1000000.0
     if line[:5] == "\tPid:":
         pid = int(tokens[1])
+        epoch_pid[epochno] = pid
         if pid in epoch_dump_pid:
             epoch_dump_time[epochno] = epoch_dump_pid[pid]
     if line[:10] == "dump start":
@@ -138,3 +141,32 @@ print
 print "Longest epoch %6.2f (%d)"%(max_epoch_time, max_epoch)
 print "Total time    %6.2f (%d)"%(epoch_time[0], bottleneck[0])
 
+print
+print
+
+total_time = 0
+read_addr_time = 0
+do_outputs_time = 0
+write_addr_time = 0
+write_output_time = 0
+for i in range(max_epochno):
+    for name in glob.glob("/tmp/" + str(epoch_pid[i]) + "/*-stats"):
+        fh = open(name)
+        for line in fh:
+            if line[:11] == "Total time:":
+                total_time += int(line.split()[2])
+            if line[:15] == "Read addr time:":
+                read_addr_time += int(line.split()[3])
+            if line[:16] == "Do outputs time:":
+                do_outputs_time += int(line.split()[3])
+            if line[:19] == "\tWrite output time:":
+                write_output_time += int(line.split()[3])
+            if line[:16] == "Write addr time:":
+                write_addr_time += int(line.split()[3])
+        fh.close()
+
+print "Total time:     %7d"%(total_time)
+print "Read addr time: %7d"%(read_addr_time)
+print "Do outputs time:%7d"%(do_outputs_time)
+print "\tWrite output time:%7d"%(write_output_time)
+print "Write addr time:%7d"%(write_addr_time)

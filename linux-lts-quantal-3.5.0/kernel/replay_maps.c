@@ -23,7 +23,8 @@
 
 #include <linux/replay.h>
 
-#define DPRINT(x,...)
+//#define DPRINT(x,...)
+#define DPRINT printk
 
 char cache_dir[] = "/replay_cache";
 #define COPY_CHUNK 4096

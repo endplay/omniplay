@@ -340,8 +340,8 @@ int main (int argc, char* argv[])
 		} else {
 		    sprintf (parnum, "%d", 8);
 		}
-		//args[argcnt++] = "-p";
-		//args[argcnt++] = parnum;
+		args[argcnt++] = "-p";
+		args[argcnt++] = parnum;
 		args[argcnt++] = NULL;
 
 		rc = execv ("../dift/obj-ia32/merge3", args);
