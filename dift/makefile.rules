@@ -12,6 +12,7 @@ TAINTS_INTERFACE=taint_interface
 REPLAY_LIB += $(SDEV)/libutil.a
 TOOL_LIBS += $(SDEV)/libutil.a
 TOOL_CXXFLAGS += -I$(SDEV)
+#TOOL_CXXFLAGS += -I$(SDEV) -DDEBUGTRACE=0x201e42 -DDEBUGTRACE_OUTPUT=0xcc1f
 GLIB_INCLUDES=-I/usr/include/glib-2.0 -I/usr/lib/i386-linux-gnu/glib-2.0/include
 GLIB_LIB= -lglib-2.0
 TOOL_CXXFLAGS += $(GLIB_INCLUDES) -I$(SDEV)
@@ -60,7 +61,7 @@ TOOL_ROOTS :=
 SA_TOOL_ROOTS :=
 
 # This defines all the applications that will be run during the tests.
-APP_ROOTS := postprocess_linkage splice_merge merge_merge merge3 taint_debugger taint_forward_debugger mksplice mkmultisplice mkmerge mkmap mergecmp splicecmp outcmp mergedump mapdump showall
+APP_ROOTS := postprocess_linkage splice_merge merge_merge merge3 taint_debugger taint_forward_debugger mksplice mkmultisplice mkmerge mkmap mergecmp out2mergecmp splicecmp outcmp mergedump mapdump showall has_dups
 
 # This defines any additional object files that need to be compiled.
 OBJECT_ROOTS := xray_token \
@@ -107,7 +108,7 @@ $(OBJDIR)maputil$(OBJ_SUFFIX): maputil.h maputil.c
 	$(CXX) $(TOOL_CXXFLAGS) -Wall -Werror -O2 -c -o $(OBJDIR)maputil$(OBJ_SUFFIX) $(GLIB_INCLUDES) maputil.c
 
 $(OBJDIR)postprocess_linkage: xray_slab_alloc.h postprocess_linkage.c $(OBJDIR)xray_token$(OBJ_SUFFIX) maputil.c maputil.h
-	$(APP_CC) -Wall -Werror -O2 -o $(OBJDIR)postprocess_linkage $(GLIB_INCLUDES) $(OBJDIR)xray_token$(OBJ_SUFFIX) postprocess_linkage.c maputil.c -lglib-2.0
+	$(APP_CC) $(TOOL_CXXFLAGS) -Wall -Werror -O2 -o $(OBJDIR)postprocess_linkage $(GLIB_INCLUDES) $(OBJDIR)xray_token$(OBJ_SUFFIX) postprocess_linkage.c maputil.c -lglib-2.0
 
 $(OBJDIR)mksplice: mksplice.cpp maputil.c maputil.h
 	$(CXX) -std=c++0x -Wall -Werror -O8 -o $(OBJDIR)mksplice $(GLIB_INCLUDES) mksplice.cpp maputil.c -lrt
@@ -123,6 +124,9 @@ $(OBJDIR)mkmap: mkmap.cpp maputil.c maputil.h
 
 $(OBJDIR)mergecmp: mergecmp.c 
 	$(APP_CC) -Wall -Werror -O2 -o $(OBJDIR)mergecmp $(GLIB_INCLUDES) mergecmp.c -lglib-2.0
+
+$(OBJDIR)out2mergecmp: out2mergecmp.cpp maputil.c maputil.h
+	$(CXX) -std=c++0x -Wall -Werror -g -o $(OBJDIR)out2mergecmp $(GLIB_INCLUDES) out2mergecmp.cpp maputil.c -lrt
 
 $(OBJDIR)outcmp: outcmp.c 
 	$(APP_CC) -Wall -Werror -O2 -o $(OBJDIR)outcmp $(GLIB_INCLUDES) outcmp.c -lglib-2.0
@@ -142,11 +146,14 @@ $(OBJDIR)splicecmp: splicecmp.c
 $(OBJDIR)splice_merge: splice_merge.cpp maputil.c maputil.h
 	$(CXX) -std=c++0x -Wall -Werror -O2 -o $(OBJDIR)splice_merge $(GLIB_INCLUDES) splice_merge.cpp maputil.c -lrt
 
+$(OBJDIR)has_dups: has_dups.cpp maputil.c maputil.h
+	$(CXX) -std=c++0x -Wall -Werror -O2 -o $(OBJDIR)has_dups $(GLIB_INCLUDES) has_dups.cpp maputil.c -lrt
+
 $(OBJDIR)merge_merge: merge_merge.c maputil.c maputil.h
 	$(APP_CC) -Wall -Werror -O2 -o $(OBJDIR)merge_merge $(GLIB_INCLUDES) merge_merge.c maputil.c -lglib-2.0
 
 $(OBJDIR)merge3: merge3.cpp maputil.c maputil.h
-	$(CXX) -std=c++0x -Wall -Werror -O2 -o $(OBJDIR)merge3 merge3.cpp maputil.c -pthread
+	$(CXX) -std=c++0x -Wall -Werror -O8 -o $(OBJDIR)merge3 merge3.cpp maputil.c -pthread
 
 $(OBJDIR)taint_debugger: $(TAINTS_INTERFACE)/taint_debugger.c
 	$(CXX) $(TOOL_CXXFLAGS) -Wall -Werror -g -o $(OBJDIR)taint_debugger $(GLIB_INCLUDES) $(OBJDIR)xray_token$(OBJ_SUFFIX) $(TAINTS_INTERFACE)/taint_debugger.c -lglib-2.0

@@ -34,12 +34,13 @@ struct token {
     int record_pid;            // record thread/process
 };
 
-//#define STATS
-//#define DEBUG
+#define NO_DUPS
+#define STATS
 
-#ifdef DEBUG
-#define ATARGET 0x9992db1
-#define TARGET 67704
+//#define DEBUG_TARGET(x) (x==0xa779 || x==0xa734 || x==0xa733 || x==0x73c9 || x == 0xcc1f)
+//#define DEBUG_ADDR(x) (x==0x995ac54)
+#ifdef DEBUG_TARGET
+FILE* debugfile;
 #endif
 
 #define OUTBUFSIZE 1000000
@@ -47,24 +48,34 @@ u_long outbuf[OUTBUFSIZE];
 u_long outindex = 0;
 int outfd;
 
-// For parallel scan
-struct pardata {
-    u_long*     start_at;
-    u_long*     stop_at;
-    std::unordered_map<u_long,u_long *>* pmaps;
-    int         start_flag;
-    u_long      tokens;
-    pthread_t   tid;
-#ifdef STATS
-    u_long lookups, hits, values, zeros, entries, nulls, adjusts, pass_throughs, virgins;
-#endif
-};
+u_long outubuf[OUTBUFSIZE];
+u_long outuindex = 0;
+int outufd;
 
+u_long outrbuf[OUTBUFSIZE];
+u_long outrindex = 0;
+int outrfd;
+
+// For parallel scan
 struct resbuf {
     u_long*        buffer;
     u_long         bufsize;
     u_long         bufindex;
     struct resbuf* next;
+};
+
+struct pardata {
+    u_long*        start_at;
+    u_long*        stop_at;
+    std::unordered_map<u_long,u_long *>* pmaps;
+    int            start_flag;
+    u_long         otokens;
+    pthread_t      tid;
+    struct resbuf* resbuf;
+    struct resbuf* uresbuf;
+#ifdef STATS
+    u_long lookups, hits, values, zeros, entries, nulls, adjusts, pass_throughs, virgins;
+#endif
 };
 
 #ifdef STATS
@@ -88,6 +99,38 @@ static inline void print_value (u_long value)
 {
     if (outindex == OUTBUFSIZE) flush_outbuf();
     outbuf[outindex++] = value;
+}
+
+static void flush_outubuf()
+{
+    long rc = write (outufd, outubuf, outuindex*sizeof(u_long));
+    if (rc != (long)(outuindex*sizeof(u_long))) {
+	fprintf (stderr, "write of segment failed, rc=%ld, errno=%d\n", rc, errno);
+	exit (rc);
+    }
+    outuindex = 0;
+}
+
+static inline void print_uvalue (u_long value) 
+{
+    if (outuindex == OUTBUFSIZE) flush_outubuf();
+    outubuf[outuindex++] = value;
+}
+
+static void flush_outrbuf()
+{
+    long rc = write (outrfd, outrbuf, outrindex*sizeof(u_long));
+    if (rc != (long)(outrindex*sizeof(u_long))) {
+	fprintf (stderr, "write of segment failed, rc=%ld, errno=%d\n", rc, errno);
+	exit (rc);
+    }
+    outrindex = 0;
+}
+
+static inline void print_rvalue (u_long value) 
+{
+    if (outrindex == OUTBUFSIZE) flush_outrbuf();
+    outrbuf[outrindex++] = value;
 }
 
 static void format ()
@@ -116,6 +159,13 @@ static struct resbuf* newbuf ()
     return (results);
 }
 
+#define PPRINT_VALUE(curbuf, val) { 			\
+    if ((curbuf)->bufindex == (curbuf)->bufsize) {	\
+	(curbuf)->next = newbuf();			\
+	(curbuf) = (curbuf)->next;			\
+    }							\
+    (curbuf)->buffer[(curbuf)->bufindex++] = (val);	\
+} 
 
 // xxx - may wish to support DEBUG later
 void* parscan (void* arg)
@@ -125,86 +175,78 @@ void* parscan (void* arg)
     u_long* stop_at = args->stop_at;
     int start_flag = args->start_flag;
     std::unordered_map<u_long,u_long *>* pmaps = args->pmaps;
-    u_long tokens = args->tokens;
-    struct resbuf* results, *curbuf;
+    u_long otokens = args->otokens;
+    struct resbuf* resbuf, *uresbuf;
+    int resolved_values, unresolved_values;
+    u_long otoken;
 #ifdef STATS
     u_long lookups = 0, hits = 0, values = 0, zeros = 0, entries = 0, adjusts = 0, pass_throughs = 0, virgins = 0;
 #endif
 
-    curbuf = results = newbuf();
-    
+    args->resbuf = resbuf = newbuf();
+    args->uresbuf = uresbuf = newbuf();
+
     while (m2buf < stop_at) {
-	do {
-	    if (*m2buf) {
-		if (*m2buf < 0xc0000001) {
+	otoken = *m2buf + otokens;
+	m2buf++;
+	while (*m2buf) {
 #ifdef STATS
-		    lookups++;
+	    lookups++;
 #endif
-		    std::unordered_map<u_long,u_long*>::const_iterator maps_iter = pmaps->find(*m2buf);
-		    if (maps_iter != pmaps->end()) {
+	    std::unordered_map<u_long,u_long*>::const_iterator maps_iter = pmaps->find(*m2buf);
+	    if (maps_iter != pmaps->end()) {
 #ifdef STATS
-			hits++;	
+		hits++;	
 #endif
-			if (maps_iter->second) {
-			    for (u_long* mbuf = maps_iter->second; *mbuf; mbuf++) {
-				if (curbuf->bufindex == curbuf->bufsize) {
-				    curbuf->next = newbuf();
-				    curbuf = curbuf->next;
-				}
+		if (maps_iter->second) {
 #ifdef STATS
-				values++;
+		    values++;
 #endif
-				curbuf->buffer[curbuf->bufindex++] = *mbuf;
+		    resolved_values = 0;
+		    unresolved_values = 0;
+		    for (u_long* mbuf = maps_iter->second; *mbuf; mbuf++) {
+			if (*mbuf < 0xc0000000 && !start_flag) {
+			    if (!unresolved_values) {
+				PPRINT_VALUE(uresbuf, otoken);
+				unresolved_values = 1;
 			    }
+			    PPRINT_VALUE(uresbuf, *mbuf);
 			} else {
-#ifdef STATS
-			    zeros++;
-#endif
-			    // Zero taint
-			}
-		    } else {
-			if (start_flag) {
-			    // This address has not been modified - so zero taint
-#ifdef STATS
-			    virgins++;
-#endif
-			} else {
-			    // Pass through taint from prior epoch
-			    if (curbuf->bufindex == curbuf->bufsize) {
-				curbuf->next = newbuf();
-				curbuf = curbuf->next;
+			    if (!resolved_values) {
+				PPRINT_VALUE(resbuf, otoken);
+				resolved_values = 1;
 			    }
-#ifdef STATS
-			    pass_throughs++;
-#endif
-			    curbuf->buffer[curbuf->bufindex++] = *m2buf;
+			    if (start_flag) {
+				PPRINT_VALUE(resbuf, *mbuf);
+			    } else {
+				PPRINT_VALUE(resbuf, *mbuf-0xc0000000);
+			    }
 			}
 		    }
+		    if (resolved_values) PPRINT_VALUE(resbuf, 0);
+		    if (unresolved_values) PPRINT_VALUE(uresbuf, 0);
 		} else {
-		    // Must map to an input - so adjust numbering to reflect epoch
-		    if (curbuf->bufindex == curbuf->bufsize) {
-			curbuf->next = newbuf();
-			curbuf = curbuf->next;
-		    }
+		    // Zero taint
 #ifdef STATS
-		    adjusts++;
+		    zeros++;
 #endif
-		    curbuf->buffer[curbuf->bufindex++] = (*m2buf)-0xc0000000+tokens;
 		}
-		m2buf++;
 	    } else {
-		m2buf++;
-		break;
+		if (start_flag) {
+		    // This address has not been modified - so zero taint
+		} else {
+		    // Pass through taint from prior epoch - still unresolved
+		    PPRINT_VALUE (uresbuf, otoken);
+		    PPRINT_VALUE (uresbuf, *m2buf);
+		    PPRINT_VALUE (uresbuf, 0);
+		}
 	    }
-	} while (1);
-	if (curbuf->bufindex == curbuf->bufsize) {
-	    curbuf->next = newbuf();
-	    curbuf = curbuf->next;
+	    m2buf++;
 	}
+	m2buf++;
 #ifdef STATS
 	entries++;
 #endif
-	curbuf->buffer[curbuf->bufindex++] = 0;
     }
 #ifdef STATS
     args->lookups = lookups;
@@ -216,33 +258,32 @@ void* parscan (void* arg)
     args->pass_throughs = pass_throughs;
     args->virgins = virgins;
 #endif
-    return results;
+    return NULL;
 }
 
 int main(int argc, char** argv)
 {
-    char outputsfile[256], addrsfile[256], mergefileo2[256], mergefilea1[256], mergefilea2[256];
+    char outputsufile[256], outputsrfile[256], addrsfile[256], mergefileo2[256], mergefilea1[256], mergefilea2[256];
     int start_flag = 0;
     int finish_flag = 0;
     int mfd, m2fd;
-    u_long mdatasize, mmapsize, m2datasize, m2mapsize, addr;
+    u_long mdatasize, mmapsize, m2datasize, ma2datasize = 0, m2mapsize, addr;
     u_long* mbuf, *m2buf, *morig;
     long rc;
-    u_long tokens, tokens2;
+    u_long tokens, tokens2, otoken, otokens;
     std::unordered_map<u_long,u_long *> maps;
     std::unordered_set<u_long> new_maps;
-#ifdef DEBUG
-    u_long entries = 0, first_entries;
-#endif
 #ifdef STATS
     char statsfile[256];
-    struct timeval start_tv, read_addr_tv, write_start_tv, write_end_tv, end_tv;
+    struct timeval start_tv, read_addr_tv, write_start_tv, write_end_tv, passthru_start_tv, end_tv;
     long write_time = 0;
     u_long lookups = 0, hits = 0, values = 0, zeros = 0, entries = 0, adjusts = 0, pass_throughs = 0, virgins = 0;
     u_long hash_entries = 0, null_entries = 0;
+    u_long addr_entries = 0, addr_resolved = 0, addr_values = 0, addr_passthru = 0;
+    u_long addrmap_entries = 0, addrmap_values = 0, addrmap_passthru = 0;
     FILE* file;
 #endif
-    int parallelize = 1;
+    int resolved_values, unresolved_values, parallelize = 1;
 
     if (argc < 6) {
 	format();
@@ -259,65 +300,39 @@ int main(int argc, char** argv)
 	}
     }
 
-    sprintf (outputsfile, "/tmp/%s/merge-outputs", argv[1]);
+    sprintf (outputsufile, "/tmp/%s/merge-outputs-unresolved", argv[1]);
+    sprintf (outputsrfile, "/tmp/%s/merge-outputs-resolved", argv[1]);
     sprintf (addrsfile, "/tmp/%s/%s-addrs", argv[1], argv[5]);
-    sprintf (mergefileo2, "/tmp/%s/merge-outputs", argv[3]);
+    sprintf (mergefileo2, "/tmp/%s/merge-outputs-unresolved", argv[3]);
     sprintf (mergefilea1, "/tmp/%s/%s-addrs", argv[1], argv[2]);
     sprintf (mergefilea2, "/tmp/%s/%s-addrs", argv[3], argv[4]);
-
 
 #ifdef STATS
     gettimeofday(&start_tv, NULL);
 #endif
-#ifdef DEBUG
-    char* obuf;
-    u_long* optr;
-    int ofd;
-    u_long odatasize, omapsize;
 
-    rc = map_file (outputsfile, &ofd, &odatasize, &omapsize, &obuf);
-    if (rc < 0) return rc;
-
-    optr = (u_long *) obuf;
-    while ((u_long) optr < (u_long) obuf + odatasize) {    
-	if (entries == TARGET) printf ("First half entry: %d offset %lx\n", TARGET, (u_long) optr - (u_long) obuf);
-	do {
-	    if (*optr) {
-		if (entries == TARGET) printf ("\t value %lx\n", *optr);
-		optr++;
-	    } else {
-		optr++;
-		break;
-	    }
-	} while (1);
-	entries++;
+#ifdef DEBUG_TARGET
+    char debugname[256];
+    sprintf (debugname, "/tmp/%s/%s-debug", argv[1], argv[5]);
+    debugfile = fopen (debugname, "w");
+    if (debugfile == NULL) {
+	fprintf (stderr, "Cannot create %s, errno=%d\n", debugname, errno);
+	return -1;
     }
-    unmap_file (obuf, ofd, omapsize);
-    printf ("First half entries: %lu\n", entries);
 #endif
 
     // First stage - read in addr map
-    outfd = open (outputsfile, O_WRONLY|O_APPEND);
-    if (outfd < 0) {
-	fprintf (stderr, "cannot open merge output file %s, rc=%d, errno=%d\n", outputsfile, outfd, errno);
-	return outfd;
-    }
-
     rc = map_file (mergefilea1, &mfd, &mdatasize, &mmapsize, (char **) &mbuf);
     if (rc < 0) return rc;
 
     morig = mbuf;
+    otokens = *mbuf;
+    mbuf++;
     tokens = *mbuf;
-#ifdef DEBUG
-    printf ("Tokens is %lx\n", tokens);
-#endif
     mbuf++;
     while ((u_long) mbuf < (u_long) morig + mdatasize) {
 	addr = *mbuf;
 	mbuf++;
-#ifdef DEBUG
-	if (addr == ATARGET) printf ("addr %lx: mbuf %lx\n", addr, *mbuf);
-#endif
 	if (*mbuf) {
 	    maps[addr] = mbuf;
 	    do {
@@ -340,16 +355,22 @@ int main(int argc, char** argv)
 	}
     }
 
-#ifdef DEBUG
-    printf ("Entries: %ld\n", entries);
-    first_entries = entries;
-#endif
-
 #ifdef STATS
     gettimeofday(&read_addr_tv, NULL);
 #endif
 
     // Next stage - map outputs to addrs
+    outufd = open (outputsufile, O_WRONLY|O_APPEND|O_LARGEFILE);
+    if (outufd < 0) {
+	fprintf (stderr, "cannot open %s, rc=%d, errno=%d\n", outputsufile, outufd, errno);
+	return outufd;
+    }
+    outrfd = open (outputsrfile, O_WRONLY|O_APPEND|O_LARGEFILE);
+    if (outrfd < 0) {
+	fprintf (stderr, "cannot open %s, rc=%d, errno=%d\n", outputsrfile, outrfd, errno);
+	return outrfd;
+    }
+
     rc = map_file (mergefileo2, &m2fd, &m2datasize, &m2mapsize, (char **) &m2buf);
     if (rc < 0) return rc;
  
@@ -374,7 +395,7 @@ int main(int argc, char** argv)
 	    }
 	    pdata[i].pmaps = &maps;
 	    pdata[i].start_flag = start_flag;
-	    pdata[i].tokens = tokens;
+	    pdata[i].otokens = otokens;
 	    rc = pthread_create(&pdata[i].tid, NULL, parscan, &pdata[i]);
 	    if (rc < 0) {
 		fprintf (stderr, "Unable to spawn parscan thread\n");
@@ -400,13 +421,21 @@ int main(int argc, char** argv)
 	    virgins += pdata[i].virgins;
 	    gettimeofday(&write_start_tv, NULL);
 #endif
-	    while (results) {
-		rc = write (outfd, results->buffer, results->bufindex*sizeof(u_long));
+	    for (results = pdata[i].resbuf; results; results = results->next) {
+		rc = write (outrfd, results->buffer, results->bufindex*sizeof(u_long));
 		if (rc != (long)  (results->bufindex*sizeof(u_long))) {
-		    fprintf (stderr, "write of buffer segment failed, rc=%ld, errno=%d\n", rc, errno);
+		    fprintf (stderr, "write of buffer segment failed, rc=%ld, epected %ld, errno=%d\n", 
+			     rc, results->bufindex*sizeof(u_long), errno);
 		    exit (rc);
 		}
-		results = results->next;
+	    }
+	    for (results = pdata[i].uresbuf; results; results = results->next) {
+		rc = write (outufd, results->buffer, results->bufindex*sizeof(u_long));
+		if (rc != (long)  (results->bufindex*sizeof(u_long))) {
+		    fprintf (stderr, "write of buffer segment failed, rc=%ld, epected %ld, errno=%d\n", 
+			     rc, results->bufindex*sizeof(u_long), errno);
+		    exit (rc);
+		}
 	    }
 #ifdef STATS
 	    gettimeofday(&write_end_tv, NULL);
@@ -415,67 +444,103 @@ int main(int argc, char** argv)
 	}
     } else {	
 	while ((u_long) m2buf < (u_long) morig + m2datasize) {
-#ifdef DEBUG
-	    if (entries == TARGET) printf ("Entry %ld (%ld) mbuf %lx offset %lx\n", entries, entries - first_entries, *m2buf, (u_long) m2buf - (u_long) morig);
+	    otoken = *m2buf + otokens;
+	    m2buf++;
+	    while (*m2buf) {
+#ifdef DEBUG_TARGET
+		if (DEBUG_TARGET(otoken)) {
+		    fprintf (debugfile, "\toutput %lx (otokens %lx/%lx) maps to %lx\n", 
+			     otoken, otokens, otoken-otokens, *m2buf);
+		}
 #endif
-	    do {
-		if (*m2buf) {
-#ifdef DEBUG		
-		    if (entries == TARGET) printf ("\tmbuf %lx offset %lx\n", *m2buf, outindex*sizeof(u_long));
-#endif
-		    if (*m2buf < 0xc0000001) {
 #ifdef STATS
-			lookups++;
+		lookups++;
 #endif
-			std::unordered_map<u_long,u_long*>::const_iterator maps_iter = maps.find(*m2buf);
-			if (maps_iter != maps.end()) {
+		std::unordered_map<u_long,u_long*>::const_iterator maps_iter = maps.find(*m2buf);
+		if (maps_iter != maps.end()) {
 #ifdef STATS
-			    hits++;	
+		    hits++;	
 #endif
-			    if (maps_iter->second) {
+		    if (maps_iter->second) {
 #ifdef STATS
-				values++;
+			values++;
 #endif
-				for (mbuf = maps_iter->second; *mbuf; mbuf++) {
-#ifdef DEBUG
-				    if (entries == TARGET) printf ("\t\tvalue %lx offset %lx\n", *mbuf, outindex);
-#endif
-				    print_value(*mbuf);
+			resolved_values = 0;
+			unresolved_values = 0;
+			for (mbuf = maps_iter->second; *mbuf; mbuf++) {
+			    if (*mbuf < 0xc0000000 && !start_flag) {
+				if (!unresolved_values) {
+				    print_uvalue(otoken);
+				    unresolved_values = 1;
 				}
-			    } else {
-				// Zero taint
-#ifdef STATS
-				zeros++;
+				print_uvalue(*mbuf);
+#ifdef DEBUG_TARGET
+				if (DEBUG_TARGET(otoken)) {
+				    fprintf (debugfile, "output %lx (otokens %lx/%lx) -> unresolved addr %lx\n", 
+					     otoken, otokens, otoken-otokens, *mbuf);
+				}
 #endif
-			    }
-			} else {
-			    if (start_flag) {
-				// This address has not been modified - so zero taint
 			    } else {
-				// Pass through taint from prior epoch
-				print_value (*m2buf);
+				if (!resolved_values) {
+				    print_rvalue (otoken);
+				    resolved_values = 1;
+				}
+				if (start_flag) {
+				    print_rvalue(*mbuf);
+#ifdef DEBUG_TARGET
+				    if (DEBUG_TARGET(otoken)) {
+					fprintf (debugfile, "output %lx (otokens %lx/%lx) -> resolved input %lx (start) via %lx\n", 
+						 otoken, otokens, otoken-otokens, *mbuf, *m2buf);
+				    }
+#endif
+				} else {
+				    print_rvalue(*mbuf-0xc0000000);
+#ifdef DEBUG_TARGET
+				    if (DEBUG_TARGET(otoken)) {
+					fprintf (debugfile, "output %lx (otokens %lx/%lx) -> resolved input %lx via %lx\n", 
+						 otoken, otokens, otoken-otokens, *mbuf-0xc0000000, *m2buf);
+				    }
+#endif
+				}
 			    }
 			}
+			if (resolved_values) print_rvalue(0);
+			if (unresolved_values) print_uvalue(0);
 		    } else {
-			// Must map to an input - so adjust numbering to reflect epoch
-			print_value ((*m2buf)-0xc0000000+tokens);
+			// Zero taint
+#ifdef STATS
+			zeros++;
+#endif
 		    }
-		    m2buf++;
 		} else {
-		    m2buf++;
-		    break;
+		    if (start_flag) {
+			// This address has not been modified - so zero taint
+		    } else {
+			// Pass through taint from prior epoch - still unresolved
+			print_uvalue(otoken);
+			print_uvalue(*m2buf);
+#ifdef DEBUG_TARGET
+			if (DEBUG_TARGET(otoken)) {
+			    fprintf (debugfile, "output %lx (otokens %lx/%lx) -> unresolved pass through %lx, offset %lx\n", 
+				     otoken, otokens, otoken-otokens, *m2buf, (u_long) m2buf - (u_long) morig);
+			}
+#endif
+			print_uvalue (0);
+		    }
 		}
-	    } while (1);
-#ifdef DEBUG
+		m2buf++;
+	    }
+#ifdef STATS
 	    entries++;
 #endif
-	    print_value (0);
+	    m2buf++;
 	}
 
 #ifdef STATS
 	gettimeofday(&write_start_tv, NULL);
 #endif
-	flush_outbuf();
+	flush_outubuf();
+	flush_outrbuf();
 #ifdef STATS
 	gettimeofday(&write_end_tv, NULL);
 	write_time = ms_diff (write_end_tv, write_start_tv);
@@ -484,93 +549,134 @@ int main(int argc, char** argv)
     }
 
     unmap_file ((char *) morig, m2fd, m2mapsize);
-    close (outfd);
+    close (outufd);
+    close (outrfd);
 
     if (!finish_flag) {
 
 	// Also need to generate an addr file
-	outfd = open (addrsfile, O_CREAT|O_WRONLY|O_TRUNC, 0644);
+	outfd = open (addrsfile, O_CREAT|O_WRONLY|O_TRUNC|O_LARGEFILE, 0644);
 	if (outfd < 0) {
 	    fprintf (stderr, "cannot open addrs file %s, rc=%d, errno=%d\n", addrsfile, outfd, errno);
 	    return outfd;
 	}
 
-	rc = map_file (mergefilea2, &m2fd, &m2datasize, &m2mapsize, (char **) &m2buf);
+	rc = map_file (mergefilea2, &m2fd, &ma2datasize, &m2mapsize, (char **) &m2buf);
 	if (rc < 0) return rc;
 
 	morig = m2buf;
-	tokens2 = *m2buf - 0xc0000000;
-#ifdef DEBUG
-	printf ("tokens2: %lx m2buf %lx\n", tokens2, *m2buf);
-#endif
+	print_value (otokens + *m2buf); // Add otokens together
 	m2buf++;
+	tokens2 = *m2buf - 0xc0000000;
 	print_value (tokens + tokens2);
-	while ((u_long) m2buf < (u_long) morig + m2datasize) {
+	m2buf++;
+	while ((u_long) m2buf < (u_long) morig + ma2datasize) {
 	    addr = *m2buf;
 	    m2buf++;
-#ifdef DEBUG
-	    if (addr == ATARGET) printf ("2: addr %lx mbuf %lx\n", addr, *m2buf);
+#ifdef STATS
+	    addr_entries++;
 #endif
 	    print_value (addr);
 	    new_maps.insert(addr);
-	    if (*m2buf) {
-		do {
-		    if (*m2buf) {
-			if (*m2buf > 0xc0000000) {
-#ifdef DEBUG
-			    if (addr == ATARGET) printf ("2: token %lx\n", (*m2buf)-0xc0000000+tokens);
+#ifdef NO_DUPS
+	    std::unordered_set<u_long> values;
 #endif
-			    print_value ((*m2buf)-0xc0000000+tokens);
-			} else {
-			    std::unordered_map<u_long,u_long*>::const_iterator maps_iter = maps.find(*m2buf);
-			    if (maps_iter != maps.end()) {
-				if (maps_iter->second) {
-				    for (mbuf = maps_iter->second; *mbuf; mbuf++) {
-#ifdef DEBUG
-					if (addr == ATARGET) printf ("2: mbuf %lx\n", *mbuf);
+	    while (*m2buf) {
+		if (*m2buf > 0xc0000000) {
+#ifdef STATS
+		    addr_resolved++;
 #endif
-					print_value (*mbuf);
-				    }
+#ifdef DEBUG_ADDR
+		    if (DEBUG_ADDR(addr)) {
+			fprintf (debugfile, "Address %lx resolves to %lx m2buf %lx tokens %lx\n", addr, *m2buf-0xc0000000+tokens, *m2buf, tokens);
+		    }
+#endif
+#ifdef NO_DUPS
+		    values.insert ((*m2buf)-0xc0000000+tokens);
+#else
+		    print_value ((*m2buf)-0xc0000000+tokens);
+#endif
+		} else {
+		    std::unordered_map<u_long,u_long*>::const_iterator maps_iter = maps.find(*m2buf);
+		    if (maps_iter != maps.end()) {
+			if (maps_iter->second) {
+			    for (mbuf = maps_iter->second; *mbuf; mbuf++) {
+#ifdef STATS
+				addr_values++;
+#endif
+#ifdef DEBUG_ADDR
+				if (DEBUG_ADDR(addr)) {
+				    fprintf (debugfile, "Address %lx resolves to address %lx via %lx\n", addr, *mbuf, *m2buf);
 				}
-			    } else {
-				if (start_flag) {
-				    // Not found = no taint
-				} else {
-				    // Not modified in first epoch so same address
-				    print_value(*m2buf);
-				}
+#endif
+#ifdef NO_DUPS
+				values.insert (*mbuf);
+#else
+				print_value (*mbuf);
+#endif
 			    }
 			}
-			m2buf++;
 		    } else {
-			m2buf++;
-			break;
+			if (start_flag) {
+			    // Not found = no taint
+			} else {
+			    // Not modified in first epoch so same address
+#ifdef STATS
+			    addr_passthru++;
+#endif
+#ifdef DEBUG_ADDR
+			    if (DEBUG_ADDR(addr)) {
+				fprintf (debugfile, "Address %lx pass through to %lx\n", addr, *m2buf);
+			    }
+#endif
+#ifdef NO_DUPS
+			    values.insert(*m2buf);
+#else
+			    print_value(*m2buf);
+#endif
+			}
 		    }
-		} while (1);
-	    } else {
+		}
 		m2buf++;
 	    }
+#ifdef NO_DUPS
+	    std::unordered_set<u_long>::const_iterator values_iter;
+	    for (values_iter = values.begin(); values_iter != values.end(); values_iter++) {
+		print_value(*values_iter);
+	    }
+#endif
+	    m2buf++;
 	    print_value (0);
 	}
 
+#ifdef STATS
+	gettimeofday(&passthru_start_tv, NULL);
+#endif
 	// Need to write any values no overwritten
 	std::unordered_map<u_long,u_long*>::const_iterator maps_iter;
 	for (maps_iter = maps.begin(); maps_iter != maps.end(); maps_iter++) {
-#ifdef DEBUG
-	    if (maps_iter->first == ATARGET) printf ("addr %lx in maps\n", maps_iter->first);
+#ifdef STATS
+	    addrmap_entries++;
 #endif
 	    if (!new_maps.count(maps_iter->first)) {
+#ifdef STATS
+		addrmap_passthru++;
+#endif
 		print_value (maps_iter->first);
 		if (maps_iter->second) {
 		    for (mbuf = maps_iter->second; *mbuf; mbuf++) {
+#ifdef STATS
+			addrmap_values++;
+#endif
+#ifdef DEBUG_ADDR
+			if (DEBUG_ADDR(maps_iter->first)) {
+			    fprintf (debugfile, "Address %lx pass through to %lx\n", maps_iter->first, *mbuf);
+			}
+#endif
 			print_value (*mbuf);
 		    }
 		}
 		print_value (0);
-	    } else {
-#ifdef DEBUG
-		if (maps_iter->first == ATARGET) printf ("addr %lx in new_maps\n", maps_iter->first);
-#endif
 	    }
 	}
 
@@ -594,11 +700,21 @@ int main(int argc, char** argv)
     fprintf (file, "Read addr time:    %6ld ms\n", ms_diff (read_addr_tv, start_tv));
     fprintf (file, "Do outputs time:   %6ld ms\n", ms_diff (write_end_tv, read_addr_tv));
     fprintf (file, "\tWrite output time: %6ld ms\n", write_time);
-    fprintf (file, "Write addr time:   %6ld ms\n\n", ms_diff (end_tv, write_end_tv));
+    if (!finish_flag) {
+	fprintf (file, "Write addr time:   %6ld ms\n", ms_diff (end_tv, write_end_tv));
+	fprintf (file, "\tPass through time: %6ld ms\n", ms_diff (end_tv, passthru_start_tv));
+    }
+    fprintf (file, "\n\n");
     fprintf (file, "Null entries: %ld, hash entries: %ld\n", null_entries, hash_entries);
     fprintf (file, "Lookups: %ld hits %ld values %ld zeros %ld\n", lookups, hits, values, zeros);
     fprintf (file, "Entries: %ld adjusts %ld pass throughs %ld virgins %ld\n", 
 	     entries, adjusts, pass_throughs, virgins);
+    fprintf (file, "First addr size: %lu, second output size %lu, second addr size %lu\n", 
+	     mdatasize, m2datasize, ma2datasize);
+    fprintf (file, "Address entries: %lu, resolved %lu, values %lu, passthru %lu\n",
+	     addr_entries, addr_resolved, addr_values, addr_passthru);
+    fprintf (file, "Address map entries: %lu, passthru %lu, values %lu\n",
+	     addrmap_entries, addrmap_passthru, addrmap_values);
 
     fclose (file);
 #endif

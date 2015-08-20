@@ -6,6 +6,11 @@
 #include "taint_interface.h"
 #include "../xray_token.h"
 
+#ifdef DEBUGTRACE
+u_long output_cnt = 0;
+extern int is_in_trace_set(u_long val);
+#endif
+
 extern u_long taint_num;
 
 int taint_filter_inputs = 0;
@@ -361,6 +366,12 @@ void write_output_taints (int outfd, void* buf, int size)
             if (rc != sizeof(u_long)) {
                 fprintf(stderr, "Could not write taint addr\n");
             }
+#ifdef DEBUGTRACE
+	    if (is_in_trace_set(value)) {
+		printf ("output %lx at offset %d of %d buf %p otoken %lx\n", value, i, size, buf, output_cnt);
+	    }
+	    output_cnt++;
+#endif
             rc = write(outfd, &value, sizeof(u_long));
             if (rc != sizeof(u_long)) {
                 fprintf(stderr, "Could not write taint value\n");
@@ -372,6 +383,12 @@ void write_output_taints (int outfd, void* buf, int size)
             if (rc != sizeof(u_long)) {
                 fprintf(stderr, "Could not write taint addr\n");
             }
+#ifdef DEBUGTRACE
+	    output_cnt++;
+	    if (output_cnt == 0xcc1f) {
+		printf ("output 0 at offset %d of %d buf %p otoken %lx\n", i, size, buf, output_cnt);
+	    }
+#endif
             rc = write(outfd, &value, sizeof(u_long));
             if (rc != sizeof(u_long)) {
                 fprintf(stderr, "Could not write taint value\n");

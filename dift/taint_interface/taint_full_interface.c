@@ -87,6 +87,31 @@ u_long merge_total_count = 0xe0000001;
 static off64_t merge_offset = 0;
 static char node_num_filename[256];
 
+#ifdef DEBUGTRACE
+
+GHashTable* trace_set = NULL;
+
+static void init_trace_set ()
+{
+    if (trace_set == NULL) {
+	trace_set = g_hash_table_new (NULL, NULL);
+	g_hash_table_add (trace_set, GUINT_TO_POINTER(DEBUGTRACE));
+    }
+}
+
+void add_to_trace_set(u_long val)
+{
+    init_trace_set();
+    g_hash_table_add (trace_set, GUINT_TO_POINTER(val));
+}
+
+int is_in_trace_set(u_long val) 
+{
+    init_trace_set();
+    return g_hash_table_contains (trace_set, GUINT_TO_POINTER(val));
+}
+#endif
+
 static u_long add_merge_number(u_long p1, u_long p2)
 {
     int rc;
@@ -125,6 +150,12 @@ static u_long add_merge_number(u_long p1, u_long p2)
     } 
     merge_buffer[merge_buffer_count].p1 = p1;
     merge_buffer[merge_buffer_count].p2 = p2;
+#ifdef DEBUGTRACE
+    if (is_in_trace_set (p1) || is_in_trace_set (p2)) {
+	printf ("merge: %lx, %lx -> %lx\n", p1, p2, merge_total_count);
+	add_to_trace_set (merge_total_count);
+    }
+#endif
     merge_buffer_count++;
     return merge_total_count++;
 }
@@ -571,6 +602,11 @@ int dump_mem_taints(int fd)
 			if (second[low_index] != addr) {
 			    print_value (fd, addr);
 			    print_value (fd, second[low_index]);
+#ifdef DEBUGTRACE
+			    if (is_in_trace_set(second[low_index])) {
+				printf ("addr %lx has taint value %lx\n", addr, second[low_index]);
+			    }
+#endif
 			}
 		    }
 		}
@@ -585,10 +621,16 @@ int dump_reg_taints (int fd, u_long* pregs)
 {
     u_long i;
 
+    // Increment by 1 because 0 is reserved for "no taint"
     for (i = 0; i < NUM_REGS*REG_SIZE; i++) {
 	if (pregs[i] != i+1) {
-	    print_value (fd, i);
+	    print_value (fd, i+1);
 	    print_value (fd, pregs[i]);
+#ifdef DEBUGTRACE
+	    if (is_in_trace_set(pregs[i])) {
+		printf ("reg %lx has taint value %lx\n", i, pregs[i]);
+	    }
+#endif
 	}
     }
 

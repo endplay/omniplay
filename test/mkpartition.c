@@ -125,9 +125,19 @@ void print_timing (struct replay_timing* timings, int start, int end)
     }
 }
 
-int can_attach (short syscall) 
+static int can_attach (short syscall) 
 {
     return (syscall != 192 && syscall != 91);
+}
+
+static int cnt_interval (struct replay_timing* timings, int start, int end)
+{
+    int i, cnt = 1;
+
+    for (i = start+1; i < end; i++) {
+	if (can_attach(timings[i].syscall)) cnt++;
+    }
+    return cnt;
 }
 
 int gen_timings (struct replay_timing* timings, double* dtimings, int start, int end, int partitions)
@@ -136,6 +146,7 @@ int gen_timings (struct replay_timing* timings, double* dtimings, int start, int
     int gap_start, gap_end, last, i, new_part;
 
     assert (start < end);
+    assert (partitions <= cnt_interval(timings, start, end));
 
     if (partitions == 1) {
 	print_timing (timings, start, end);
@@ -176,11 +187,11 @@ int gen_timings (struct replay_timing* timings, double* dtimings, int start, int
 	if (details) {
 	    printf ("gap - new part %d\n", new_part);
 	}
-	if (partitions - new_part > (end-gap_end)) new_part = partitions-(end-gap_end);
+	if (partitions - new_part > cnt_interval(timings, gap_end, end)) new_part = partitions-cnt_interval(timings, gap_end, end);
 	if (details) {
 	    printf ("gap - new part %d\n", new_part);
 	}
-	if (new_part > gap_start-start) new_part = gap_start-start;
+	if (new_part > cnt_interval(timings, start, gap_start)) new_part = cnt_interval(timings, start, gap_start);
 	if (new_part < 1) new_part = 1;
 	if (new_part > partitions-1) new_part = partitions-1;
 	if (details) {
@@ -197,7 +208,7 @@ int gen_timings (struct replay_timing* timings, double* dtimings, int start, int
 	}
 	for (i = start+1; i < end; i++) {
 	    if (can_attach(timings[i].syscall)) {
-		if (dtimings[i]-dtimings[start] > goal) {
+		if (dtimings[i]-dtimings[start] > goal || cnt_interval(timings, i, end) == partitions-1) {
 		    print_timing (timings, start, i);
 		    return gen_timings(timings, dtimings, i, end, partitions-1);
 		}

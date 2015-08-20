@@ -114,8 +114,8 @@ int main (int argc, char* argv[])
 		return fd2;
 	    }
 	    rc = read (fd2, &tci2, sizeof(struct taint_creation_info));
-	    if (rc != sizeof(struct taint_creation_info)) {
-		fprintf (stderr, "cannot read taint info from %s, rc=%d, errno=%d\n", argv[2], rc, errno);
+	    if (rc != sizeof(struct taint_creation_info) && rc != 0) {
+		fprintf (stderr, "cannot read taint info from %s, rc=%d, errno=%d\n", argv[dir2], rc, errno);
 		return rc;
 	    }
 	}
@@ -156,8 +156,8 @@ int main (int argc, char* argv[])
 	    printf ("Bufsizes do not agree %lu %lu\n", bufsize1, bufsize2);
 	}
 	if (print_details) {
-	    printf ("Taint from syscall %lu size %lu (tokens %lu to %lu)\n", tci1.syscall_cnt+file_offset1, bufsize1,
-		    output_tokens+1, output_tokens+bufsize1);
+	    printf ("Taint from syscall %lu addr %lx size %lx (tokens %lx to %lx)\n", tci1.syscall_cnt+file_offset1, 
+		    bufaddr1, bufsize1, output_tokens+1, output_tokens+bufsize1);
 	    output_tokens += bufsize1;
 	}
 	for (i = 0; i < bufsize1; i++) {
@@ -282,7 +282,7 @@ int main (int argc, char* argv[])
 	    printf ("Token 2 raw syscall %d offset %d\n", tok2.syscall_cnt, file_offset2);
 	} else {
 	    if (print_details) {
-		printf ("Token from syscall %d number %lu size %lu byte offset %d tokens from %lu to %lu\n", tok1.syscall_cnt+file_offset1, 
+		printf ("Token from syscall %d number %lx size %lx byte offset %d tokens from %lx to %lx\n", tok1.syscall_cnt+file_offset1, 
 			tok1.token_num-tok_offset1, tok1.size, tok1.byte_offset, input_tokens+1, input_tokens+tok1.size);
 		input_tokens += tok1.size;
 	    }

@@ -2,6 +2,7 @@
 
 import sys
 import glob
+import os
 
 epoch_start_time = {}
 epoch_dift_time = {}
@@ -149,6 +150,10 @@ read_addr_time = 0
 do_outputs_time = 0
 write_addr_time = 0
 write_output_time = 0
+passthru_time = 0
+first_addr_size = 0
+second_output_size = 0
+second_addr_size = 0
 for i in range(max_epochno):
     for name in glob.glob("/tmp/" + str(epoch_pid[i]) + "/*-stats"):
         fh = open(name)
@@ -163,10 +168,33 @@ for i in range(max_epochno):
                 write_output_time += int(line.split()[3])
             if line[:16] == "Write addr time:":
                 write_addr_time += int(line.split()[3])
+            if line[:19] == "\tPass through time:":
+                passthru_time += int(line.split()[3])
+            if line[:16] == "First addr size:":
+                tokens = line.split(",")
+                first_addr_size += int(tokens[0].split()[3])
+                second_output_size += int(tokens[1].split()[3])
+                second_addr_size += int(tokens[2].split()[3])
         fh.close()
 
-print "Total time:     %7d"%(total_time)
-print "Read addr time: %7d"%(read_addr_time)
-print "Do outputs time:%7d"%(do_outputs_time)
+print "Total time:      %7d"%(total_time)
+print "Read addr time:  %7d"%(read_addr_time)
+print "Do outputs time: %7d"%(do_outputs_time)
 print "\tWrite output time:%7d"%(write_output_time)
-print "Write addr time:%7d"%(write_addr_time)
+print "Write addr time: %7d"%(write_addr_time)
+print "\tPassthru time:%7d"%(passthru_time)
+print "First addr size: %7dM"%(first_addr_size/1000000)
+print "Second outp size:%7dM"%(second_output_size/1000000)
+print "Second addr size:%7dM"%(second_addr_size/1000000)
+
+if (len(sys.argv) == 3):
+    #cmd = "../dift/obj-ia32/outcmp " + sys.argv[2] + " 0" 
+    #for i in range(max_epochno):
+    #    cmd += " " + str(epoch_pid[i])
+    #os.system(cmd)
+
+    cmd = "../dift/obj-ia32/out2mergecmp " + sys.argv[2]
+    for i in range(max_epochno):
+        cmd += " " + str(epoch_pid[i])
+    os.system(cmd)
+

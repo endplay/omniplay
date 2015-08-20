@@ -1574,8 +1574,6 @@ static void flush_outbuf()
 
 static inline void print_relation (u_long seg, u_long value) 
 {
-  //    if (outindex == OUTBUFSIZE) flush_outbuf();
-  //  outbuf[outindex++] = seg;
     if (outindex == OUTBUFSIZE) flush_outbuf();
     outbuf[outindex++] = value;
 }
@@ -1585,6 +1583,10 @@ static inline void print_sentinal ()
     if (outindex == OUTBUFSIZE) flush_outbuf();
     outbuf[outindex++] = 0;
 }
+
+#ifdef DEBUGTRACE_OUTPUT
+u_long output_cnt = 0;
+#endif
 
 void print_merge (u_long taint_number)
 {
@@ -1606,8 +1608,18 @@ void print_merge (u_long taint_number)
 
 	if (n <= 0xe0000000) {
 	    print_relation (1, n);
+#ifdef DEBUGTRACE_OUTPUT
+	    if (output_cnt == DEBUGTRACE_OUTPUT) {
+		printf ("-> %lx\n", n);
+	    }
+#endif
         } else {
 	    pentry = &merge_log[n-0xe0000001];
+#ifdef DEBUGTRACE_OUTPUT
+	    if (output_cnt == DEBUGTRACE_OUTPUT) {
+		printf ("%lx, %lx -> %lx\n", pentry->p1, pentry->p2, n);
+	    }
+#endif
 	    g_queue_push_tail(queue, GUINT_TO_POINTER(pentry->p1));
 	    g_queue_push_tail(queue, GUINT_TO_POINTER(pentry->p2));
         }
@@ -1688,9 +1700,17 @@ int parse_merge (char* results_filename, GHashTable* merge_node_table)
 
 	    pout += sizeof(u_long);
 	    value = *((u_long *) pout);
+#ifdef DEBUGTRACE_OUTPUT
+	    if (output_cnt == DEBUGTRACE_OUTPUT) {
+		printf ("output token %lx value %lx\n", output_cnt, value);
+	    }
+#endif	    
             if (value) {
                 print_merge (value);
             }
+#ifdef DEBUGTRACE_OUTPUT
+	    output_cnt++;
+#endif
 	    pout += sizeof(u_long);
 	    print_sentinal();
         }

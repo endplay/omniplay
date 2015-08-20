@@ -234,13 +234,14 @@ static inline void increment_syscall_cnt (struct thread_data* ptdata, int syscal
             if (!(*(int *)(ptdata->ignore_flag))) {
                 global_syscall_cnt++;
                 ptdata->syscall_cnt++;
-		//printf ("syscall cnt %lu num %d\n", global_syscall_cnt, syscall_num);
             }
         } else {
             global_syscall_cnt++;
             ptdata->syscall_cnt++;
-	    //printf ("syscall cnt %lu num %d\n", global_syscall_cnt, syscall_num);
         }
+#ifdef DEBUGTRACE
+	printf ("syscall cnt %lu num %d\n", global_syscall_cnt, syscall_num);
+#endif
     }
 #else
     global_syscall_cnt++;
@@ -433,7 +434,8 @@ static inline void sys_pread_stop(struct thread_data* ptdata, int rc)
     int read_fileno = -1;
     struct read_info* ri = (struct read_info*) &ptdata->read_info_cache;
 
-    if (rc > 0) {
+    // If global_syscall_cnt == 0, then handled in previous epoch
+    if (rc > 0 && global_syscall_cnt > 0) {
         struct taint_creation_info tci;
         char* channel_name = (char *) "--";
 
@@ -483,7 +485,9 @@ static void sys_select_start(struct thread_data* ptdata,
 static void sys_select_stop(struct thread_data* ptdata, int rc)
 {
     fprintf(stderr, "sys_select returns %d\n", rc);
-    if (rc != -1) {
+
+    // If global_syscall_cnt == 0, then handled in previous epoch
+    if (rc != -1 && global_syscall_cnt > 0) {
         // create a taint
         struct taint_creation_info tci;
         tci.rg_id = ptdata->rg_id;
@@ -516,7 +520,8 @@ static void sys_mmap_stop(struct thread_data* ptdata, int rc)
 {
     struct mmap_info* mmi = (struct mmap_info*) ptdata->save_syscall_info;
 #ifdef MMAP_INPUTS
-    if (rc != -1 && (mmi->fd != -1)) {
+    // If global_syscall_cnt == 0, then handled in previous epoch
+    if (rc != -1 && (mmi->fd != -1) && global_syscall_cnt > 0) {
         fprintf(stderr, "mmap stop fd %d\n", mmi->fd);
         int read_fileno = -1;
         struct open_info* oi = NULL;
@@ -614,7 +619,8 @@ static inline void sys_writev_start(struct thread_data* ptdata,
 
 static inline void sys_writev_stop(struct thread_data* ptdata, int rc)
 {
-    if (rc > 0) {
+    // If syscall cnt = 0, then write handled in previous epoch
+    if (rc > 0 && global_syscall_cnt > 0) {
         struct taint_creation_info tci;
         struct writev_info* wvi = (struct writev_info *) &ptdata->writev_info_cache;
         int channel_fileno = -1;
@@ -799,8 +805,9 @@ static void sys_recv_stop(struct thread_data* ptdata, int rc) {
     struct read_info* ri = (struct read_info *) ptdata->save_syscall_info;
     LOG_PRINT ("Pid %d syscall recv returns %d\n", PIN_GetPid(), rc);
     SYSCALL_DEBUG (stderr, "Pid %d syscall recv returns %d\n", PIN_GetPid(), rc);
-    // new tokens created here
-    if (rc > 0) {
+
+    // If syscall cnt = 0, then write handled in previous epoch
+    if (rc > 0 && global_syscall_cnt > 0) {
         struct taint_creation_info tci;
         char* channel_name = (char *) "--";
         int read_fileno = -1;
@@ -857,7 +864,8 @@ static void sys_recvmsg_start(struct thread_data* ptdata, int fd, struct msghdr*
 static void sys_recvmsg_stop(struct thread_data* ptdata, int rc) {
     struct recvmsg_info* rmi = (struct recvmsg_info *) ptdata->save_syscall_info;
 
-    if (rc > 0) {
+    // If syscall cnt = 0, then write handled in previous epoch
+    if (rc > 0 && global_syscall_cnt > 0) {
         struct taint_creation_info tci;
         char* channel_name = (char *) "recvmsgsocket";
         u_int i;
@@ -917,7 +925,8 @@ static void sys_sendmsg_stop(struct thread_data* ptdata, int rc)
     struct sendmsg_info* smi = (struct sendmsg_info *) ptdata->save_syscall_info;
     int channel_fileno = -1;
 
-    if (rc > 0) {
+    // If syscall cnt = 0, then write handled in previous epoch
+    if (rc > 0 && global_syscall_cnt > 0) {
         struct taint_creation_info tci;
         SYSCALL_DEBUG (stderr, "sendmsg_stop: sucess sendmsg of size %d\n", rc);
         if (monitor_has_fd(open_socks, smi->fd)) {
