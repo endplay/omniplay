@@ -617,6 +617,37 @@ int dump_mem_taints(int fd)
     return 0;
 }
 
+int dump_mem_taints_start(int fd)
+{
+    u_long addr;
+    int high_index, mid_index, low_index;
+
+    for (high_index = 0; high_index < FIRST_TABLE_SIZE; high_index++) {
+	taint_t** first = (taint_t **) mem_loc_high[high_index];
+	if (first) {
+	    for (mid_index = 0; mid_index < SECOND_TABLE_SIZE; mid_index++) {
+		taint_t* second = first[mid_index];
+		if (second) {
+		    for (low_index = 0; low_index < THIRD_TABLE_SIZE; low_index++) {
+			addr = (high_index<<(SECOND_TABLE_BITS+THIRD_TABLE_BITS)) + (mid_index<<THIRD_TABLE_BITS) + low_index;
+			if (second[low_index]) {
+			    print_value (fd, addr);
+			    print_value (fd, second[low_index]);
+#ifdef DEBUGTRACE
+			    if (is_in_trace_set(second[low_index])) {
+				printf ("addr %lx has taint value %lx\n", addr, second[low_index]);
+			    }
+#endif
+			}
+		    }
+		}
+	    }
+	}
+    }
+    flush_dumpbuf(fd);
+    return 0;
+}
+
 int dump_reg_taints (int fd, u_long* pregs)
 {
     u_long i;
@@ -624,6 +655,26 @@ int dump_reg_taints (int fd, u_long* pregs)
     // Increment by 1 because 0 is reserved for "no taint"
     for (i = 0; i < NUM_REGS*REG_SIZE; i++) {
 	if (pregs[i] != i+1) {
+	    print_value (fd, i+1);
+	    print_value (fd, pregs[i]);
+#ifdef DEBUGTRACE
+	    if (is_in_trace_set(pregs[i])) {
+		printf ("reg %lx has taint value %lx\n", i, pregs[i]);
+	    }
+#endif
+	}
+    }
+
+    return 0;
+}
+
+int dump_reg_taints_start (int fd, u_long* pregs)
+{
+    u_long i;
+
+    // Increment by 1 because 0 is reserved for "no taint"
+    for (i = 0; i < NUM_REGS*REG_SIZE; i++) {
+	if (pregs[i]) {
 	    print_value (fd, i+1);
 	    print_value (fd, pregs[i]);
 #ifdef DEBUGTRACE

@@ -1,0 +1,706 @@
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/mman.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <assert.h>
+#include <pthread.h>
+
+#include "linkage_common.h"
+#include "taint_interface/taint_creation.h"
+#include "xray_token.h"
+#include "maputil.h"
+
+#include <unordered_set>
+#include <unordered_map>
+#include <atomic>
+
+using namespace std;
+
+//#define DEBUG(x) ((x)==0x9808 || (x)==0x9808-0x21e || (x)==0x9808-0x24a6)
+#define STATS
+
+struct taint_entry {
+    u_long p1;
+    u_long p2;
+};
+
+#define OUTBUFSIZE 1000000
+
+#define TAINTQSIZE (512*1024*1024)
+#define TAINTENTRIES ((TAINTQSIZE-sizeof(atomic_ulong)*2)/sizeof(u_long))
+struct taintq {
+    atomic_ulong    read_index;
+    atomic_ulong    write_index;
+    u_long          buffer[TAINTENTRIES];
+};
+
+struct epoch_data {
+    const char*         dirname;
+    int                 start_flag;
+    int                 finish_flag;
+    struct taintq*      inputq;
+    u_long              can_read;
+    struct taintq*      outputq;
+    u_long              can_write;
+    struct taint_entry* merge_log;
+    u_long              outrbuf[OUTBUFSIZE];
+    u_long              outrindex;
+    int                 outrfd;
+
+};
+
+unordered_map<u_long,unordered_set<u_long>*> resolved;
+
+#ifdef DEBUG
+FILE* debugfile;
+#endif
+#ifdef STATS
+FILE* statsfile;
+u_long merges = 0, directs = 0, indirects = 0, values = 0, output_merges;
+u_long atokens = 0, passthrus = 0, aresolved = 0, aindirects = 0, avalues = 0, unmodified = 0;
+struct timeval start_tv, output_done_tv, index_created_tv, address_done_tv, end_tv;
+
+static long ms_diff (struct timeval tv1, struct timeval tv2)
+{
+    return ((tv1.tv_sec - tv2.tv_sec) * 1000 + (tv1.tv_usec - tv2.tv_usec) / 1000);
+}
+#endif
+
+#define PRINT_UVALUE(ed,val)						\
+    {									\
+	while (ed->can_write == 0) {					\
+	    if (ed->outputq->write_index >= ed->outputq->read_index) {	\
+		ed->can_write = TAINTENTRIES - (ed->outputq->write_index - ed->outputq->read_index); \
+	    } else {							\
+		ed->can_write = ed->outputq->read_index - ed->outputq->write_index; \
+	    }								\
+	}								\
+	ed->outputq->buffer[ed->outputq->write_index] = (val);		\
+	ed->outputq->write_index++;					\
+	if (ed->outputq->write_index == TAINTENTRIES) ed->outputq->write_index = 0; \
+	ed->can_write--;						\
+    } 
+
+#define PRINT_USENTINEL(ed)			\
+    {						\
+	PRINT_UVALUE(ed, 0);			\
+    }
+
+// This will return a bogus value when the done flag is set and all entries are read
+#define GET_UVALUE(ed,val)						\
+    {									\
+	while (ed->can_read == 0) {					\
+	    if (ed->inputq->read_index > ed->inputq->write_index) {	\
+		ed->can_read = TAINTENTRIES - (ed->inputq->read_index - ed->inputq->write_index); \
+	    } else {							\
+		ed->can_read = ed->inputq->write_index - ed->inputq->read_index; \
+	    }								\
+	}								\
+	(val) = ed->inputq->buffer[ed->inputq->read_index];		\
+	ed->inputq->read_index++;					\
+	if (ed->inputq->read_index == TAINTENTRIES) ed->inputq->read_index = 0; \
+	ed->can_read--;							\
+    }
+
+static void flush_outrbuf(struct epoch_data* ed)
+{
+    long rc = write (ed->outrfd, ed->outrbuf, ed->outrindex*sizeof(u_long));
+    if (rc != (long) (ed->outrindex*sizeof(u_long))) {
+	fprintf (stderr, "write of segment failed, rc=%ld, errno=%d\n", rc, errno);
+	exit (rc);
+    }
+    ed->outrindex = 0;
+}
+
+#define PRINT_RVALUE(ed,value)					\
+    {								\
+	if (ed->outrindex == OUTBUFSIZE) flush_outrbuf(ed);	\
+	ed->outrbuf[ed->outrindex++] = (value);			\
+    }
+
+#define STACK_SIZE 1000000
+u_long stack[STACK_SIZE];
+
+static void map_iter (struct epoch_data* ed, u_long value, u_long output_token, int& unresolved_vals, int& resolved_vals)
+{
+    unordered_set<u_long> seen_indices;
+    struct taint_entry* pentry;
+    u_long stack_depth = 0;
+
+#ifdef STATS
+    merges++;
+#endif
+
+    auto iter = resolved.find(value);
+    if (iter != resolved.end()) {
+	for (auto iter2 = iter->second->begin(); iter2 != iter->second->end(); iter2++) {
+	    if (*iter2 < 0xc0000000 && !ed->start_flag) {
+		if (!unresolved_vals) {
+		    PRINT_UVALUE(ed,output_token);
+		    unresolved_vals = 1;
+		}
+		PRINT_UVALUE (ed,*iter2);
+#ifdef DEBUG
+		if (DEBUG(output_token)) {
+		    fprintf (debugfile, "cached: output %lx to unresolved value %lx (merge)\n", output_token, *iter2);
+		}
+#endif
+	    } else {
+		if (!resolved_vals) {
+		    PRINT_RVALUE (ed, output_token);
+		    resolved_vals = 1;
+		}
+		if (ed->start_flag) {
+		    PRINT_RVALUE (ed, *iter2);
+#ifdef DEBUG
+		    if (DEBUG(output_token)) {
+			fprintf (debugfile, "cahced: output %lx to resolved start input %lx (merge)\n", output_token, *iter2);
+		    }
+#endif
+		} else {
+		    PRINT_RVALUE (ed, *iter2-0xc0000000);
+#ifdef DEBUG
+		    if (DEBUG(output_token)) {
+			fprintf (debugfile, "cached: output %lx to resolved input %lx (merge)\n", output_token,*iter2-0xc0000000);
+		    }
+#endif
+		}
+	    }
+	}
+	return;
+    }
+
+    unordered_set<u_long>* pset = new unordered_set<u_long>;
+    resolved[value] = pset;
+
+    pentry = &ed->merge_log[value-0xe0000001];
+    //printf ("%lx -> %lx,%lx (%lu)\n", value, pentry->p1, pentry->p2, stack_depth);
+    stack[stack_depth++] = pentry->p1;
+    stack[stack_depth++] = pentry->p2;
+
+    do {
+	value = stack[--stack_depth];
+	assert (stack_depth < STACK_SIZE);
+
+	if (seen_indices.insert(value).second) {
+	    if (value <= 0xe0000000) {
+		if (value < 0xc0000000 && !ed->start_flag) {
+		    if (!unresolved_vals) {
+			PRINT_UVALUE(ed,output_token);
+			unresolved_vals = 1;
+		    }
+		    PRINT_UVALUE (ed,value);
+#ifdef DEBUG
+		    if (DEBUG(output_token)) {
+			fprintf (debugfile, "output %lx to unresolved value %lx (merge)\n", output_token, value);
+		    }
+#endif
+		} else {
+		    if (!resolved_vals) {
+			PRINT_RVALUE (ed, output_token);
+			resolved_vals = 1;
+		    }
+		    if (ed->start_flag) {
+			PRINT_RVALUE (ed, value);
+#ifdef DEBUG
+			if (DEBUG(output_token)) {
+			    fprintf (debugfile, "output %lx to resolved start input %lx (merge)\n", output_token, value);
+			}
+#endif
+		    } else {
+			PRINT_RVALUE (ed, value-0xc0000000);
+#ifdef DEBUG
+			if (DEBUG(output_token)) {
+			    fprintf (debugfile, "output %lx to resolved input %lx (merge)\n", output_token, value-0xc0000000);
+			}
+#endif
+		    }
+		}
+	    } else {
+		pentry = &ed->merge_log[value-0xe0000001];
+#ifdef STATS
+		merges++;
+#endif
+		//printf ("%lx -> %lx,%lx (%lu)\n", value, pentry->p1, pentry->p2, stack_depth);
+		stack[stack_depth++] = pentry->p1;
+		stack[stack_depth++] = pentry->p2;
+	    }
+	}
+    } while (stack_depth);
+}
+
+int map_shmem (char* filename, int* pfd, u_long* pdatasize, u_long* pmapsize, char** pbuf)
+{
+    char shmemname[256];
+    struct stat st, ost;
+    u_long size, osize=0;
+    int fd, ofd, rc;
+    char* buf, *fbuf;
+
+    ofd = open (filename, O_RDONLY, 0);
+    if (ofd >= 0) {
+	// This means that an overflow file was created - try to fit it in our address space
+	rc = fstat(ofd, &ost);
+	if (rc < 0) {
+	    fprintf (stderr, "Unable to stat %s, rc=%d, errno=%d\n", filename, rc, errno);
+	    return rc;
+	}
+	if (ost.st_size%4096) {
+	    osize = ost.st_size + 4096-ost.st_size%4096;
+	} else {
+	    osize = ost.st_size;
+	}
+    }
+
+    snprintf(shmemname, 256, "/node_nums_shm%s", filename);
+    for (u_long i = 1; i < strlen(shmemname); i++) {
+	if (shmemname[i] == '/') shmemname[i] = '.';
+    }
+    shmemname[strlen(shmemname)-10] = '\0';
+    fd = shm_open (shmemname, O_RDONLY, 0);
+    if (fd < 0) {
+	fprintf (stderr, "Unable to open %s, rc=%d, errno=%d\n", shmemname, fd, errno);
+	return fd;
+    }
+    rc = fstat(fd, &st);
+    if (rc < 0) {
+	fprintf (stderr, "Unable to stat %s, rc=%d, errno=%d\n", shmemname, rc, errno);
+	return rc;
+    }
+    if (st.st_size%4096) {
+	size = st.st_size + 4096-st.st_size%4096;
+    } else {
+	size = st.st_size;
+    }
+
+    if (ofd >= 0) {
+	char* region;
+
+	// First try to map contiguous redion
+	region = (char *) mmap (NULL, size+osize, PROT_READ, MAP_PRIVATE|MAP_ANON, -1, 0);
+	if (region == MAP_FAILED) {
+	    fprintf (stderr, "Cannot map contiguous region of size %lu, errno=%d\n", size+osize, errno);
+	    return -1;
+	}
+	munmap(region,size+osize);
+
+	// Map shared memory to first portion
+	buf = (char *) mmap (region, size, PROT_READ, MAP_SHARED, fd, 0);
+	if (buf == MAP_FAILED) {
+	    fprintf (stderr, "Cannot map shmem %s, errno=%d\n", shmemname, errno);
+	    return -1;
+	}
+	// And overflow file to second portion
+	fbuf = (char *) mmap (region+size, osize, PROT_READ, MAP_SHARED, ofd, 0);
+	if (fbuf == MAP_FAILED) {
+	    fprintf (stderr, "Cannot map file %s, errno=%d\n", shmemname, errno);
+	    return -1;
+	}
+    } else {
+	// No overflow
+	buf = (char *) mmap (NULL, size, PROT_READ, MAP_SHARED, fd, 0);
+	if (buf == MAP_FAILED) {
+	    fprintf (stderr, "Cannot map file %s, errno=%d\n", shmemname, errno);
+	    return -1;
+	}
+    }
+
+    // This is the last process to use the merge region
+    // This will deallocate it  after we exit
+    rc = shm_unlink (shmemname); 
+    if (rc < 0) perror ("shmem_unlink");
+
+    *pfd = fd;
+    *pdatasize = st.st_size;
+    *pmapsize = size;
+    *pbuf = buf;
+
+    return 0;
+}
+
+// Process one epoch 
+long stream_epoch (struct epoch_data* ed)
+{
+    long rc;
+    char* output_log, *plog;
+    u_long *ts_log;
+    u_long ndatasize, odatasize, mergesize, mapsize, buf_size, value, otoken, i;
+    char mergefile[256], outfile[256], tsfile[256], outrfile[256], addrfile[256], tokfile[256];
+    int node_num_fd, mapfd;
+    u_long output_token = 0;
+
+    // First, resolve all outputs for this epoch
+    sprintf (mergefile, "%s/node_nums", ed->dirname);
+    sprintf (outfile, "%s/dataflow.result", ed->dirname);
+    sprintf (outrfile, "%s/merge-outputs-resolved", ed->dirname);
+    sprintf (addrfile, "%s/merge-addrs", ed->dirname);
+    sprintf (tokfile, "%s/tokens", ed->dirname);
+
+#ifdef DEBUG
+    char debugname[256];
+    sprintf (debugname, "%s/stream-debug", ed->dirname);
+    debugfile = fopen (debugname, "w");
+    if (debugfile == NULL) {
+	fprintf (stderr, "Cannot create %s, errno=%d\n", debugname, errno);
+	return -1;
+    }
+#endif
+#ifdef STATS
+    gettimeofday(&start_tv, NULL);
+#endif
+
+    rc = map_shmem (mergefile, &node_num_fd, &ndatasize, &mergesize, (char **) &ed->merge_log);
+    if (rc < 0) return rc;
+
+    rc = map_file (outfile, &mapfd, &odatasize, &mapsize, &output_log);
+    if (rc < 0) return rc;
+
+    ed->outrfd = open (outrfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    if (ed->outrfd < 0) {
+	fprintf (stderr, "Cannot create %s, errno=%d\n", outrfile, errno);
+	return ed->outrfd;
+    }
+    ed->outrindex = 0;
+
+    plog = output_log;
+    while (plog < output_log + odatasize) {
+	plog += sizeof(struct taint_creation_info) + sizeof(u_long);
+	buf_size = *((u_long *) plog);
+	plog += sizeof(u_long);
+	for (i = 0; i < buf_size; i++) {
+	    plog += sizeof(u_long);
+	    value = *((u_long *) plog);
+	    plog += sizeof(u_long);
+	    if (value) {
+		if (value < 0xe0000001) {
+#ifdef STATS
+		    directs++;
+#endif
+		    if (value < 0xc0000000 && !ed->start_flag) {
+			PRINT_UVALUE (ed, output_token);
+			PRINT_UVALUE (ed, value);
+			PRINT_USENTINEL (ed);
+#ifdef DEBUG
+			if (DEBUG(output_token)) {
+			    fprintf (debugfile, "output %lx to unresolved addr %lx\n", output_token, value);
+			}
+#endif
+			    
+		    } else {
+			PRINT_RVALUE (ed, output_token);
+			if (ed->start_flag) {
+			    PRINT_RVALUE (ed, value);
+#ifdef DEBUG
+			    if (DEBUG(output_token)) {
+				fprintf (debugfile, "output %lx to resolved start input %lx\n", output_token, value);
+			    }
+#endif
+			} else {
+			    PRINT_RVALUE (ed, value-0xc0000000);
+#ifdef DEBUG
+			    if (DEBUG(output_token)) {
+				fprintf (debugfile, "output %lx to resolved input %lx\n", output_token, value-0xc0000000);
+			    }
+#endif
+			}
+			PRINT_RVALUE (ed, 0);
+		    }
+		} else {
+#ifdef STATS
+		    indirects++;
+#endif
+		    int unresolved_vals = 0, resolved_vals = 0;
+		    map_iter (ed, value, output_token, unresolved_vals, resolved_vals);
+		    if (unresolved_vals) PRINT_USENTINEL(ed);
+		    if (resolved_vals) PRINT_RVALUE(ed, 0);
+		}
+	    }
+	    output_token++;
+#ifdef STATS
+	    values++;
+#endif
+ 	}
+    }
+
+    unmap_file (output_log, mapfd, mapsize);
+
+#ifdef STATS
+    gettimeofday(&output_done_tv, NULL);
+    output_merges = merges;
+    merges = 0;
+#endif
+
+    if (!ed->finish_flag) {
+	// Next, build index of output addresses
+	unordered_map<u_long,u_long> address_map;
+	
+	sprintf (tsfile, "%s/taint_structures", ed->dirname);
+	rc = map_file (tsfile, &mapfd, &odatasize, &mapsize, (char **) &ts_log);
+	if (rc < 0) return rc;
+	
+	for (i = 0; i < odatasize/(sizeof(u_long)*2); i++) {
+	    address_map[ts_log[2*i]] = ts_log[2*i+1];
+	}
+
+#ifdef STATS
+	gettimeofday(&index_created_tv, NULL);
+#endif
+	
+	// Now, process input queue of later epoch outputs
+	while (1) {
+	    GET_UVALUE(ed, otoken);
+	    if (otoken == 0xffffffff) break;
+#ifdef STATS
+	    atokens++;
+#endif
+	    int unresolved_vals = 0, resolved_vals = 0;
+
+	    GET_UVALUE(ed, value);
+	    while (value) {
+#ifdef STATS
+		avalues++;
+#endif
+		auto iter = address_map.find(value);
+		if (iter == address_map.end()) {
+		    if (!ed->start_flag) {
+#ifdef STATS
+			passthrus++;
+#endif
+			// Not in this epoch - so pass through to next
+			if (!unresolved_vals) {
+			    PRINT_UVALUE(ed,otoken+output_token);
+			    unresolved_vals = 1;
+			}
+#ifdef DEBUG
+			if (DEBUG(otoken+output_token) || DEBUG(otoken)) {
+			    fprintf (debugfile, "output %lx(%lx/%lx) pass through value %lx\n", otoken+output_token, otoken, output_token, value);
+			}
+#endif
+			PRINT_UVALUE(ed,value);
+		    }
+		} else {
+		    if (iter->second < 0xc0000000 && !ed->start_flag) {
+			if (iter->second) {
+#ifdef STATS
+			    unmodified++;
+#endif
+			    // Not in this epoch - so pass through to next
+			    if (!unresolved_vals) {
+				PRINT_UVALUE(ed,otoken+output_token);
+				unresolved_vals = 1;
+			    }
+#ifdef DEBUG
+			    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+				fprintf (debugfile, "output %lx to unresolved value %lx via %lx\n", otoken+output_token, iter->second, value);
+			    }
+#endif
+			    PRINT_UVALUE(ed,iter->second);
+			} // Else taint was cleared in this epoch
+		    } else if (iter->second < 0xe0000001) {
+			// Maps to input
+#ifdef STATS
+			aresolved++;
+#endif
+			if (!resolved_vals) {
+			    PRINT_RVALUE(ed,otoken+output_token);
+			    resolved_vals = 1;
+			}
+			if (ed->start_flag) {
+#ifdef DEBUG
+			    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+			      fprintf (debugfile, "output %lx to resolved value %lx via %lx\n", otoken+output_token, iter->second, value);
+			    }
+#endif
+			    PRINT_RVALUE(ed,iter->second);
+			} else {
+#ifdef DEBUG
+			    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+			      fprintf (debugfile, "output %lx to resolved value %lx via %lx\n", otoken+output_token, iter->second-0xc0000000, value);
+			    }
+#endif
+			    PRINT_RVALUE(ed,iter->second-0xc0000000);
+			}
+		    } else {
+			// Maps to merge
+#ifdef STATS
+			aindirects++;
+#endif
+#ifdef DEBUG
+			if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+			    fprintf (debugfile, "output %lx to merge chain %lx\n", otoken+output_token, iter->second);
+			}
+#endif
+			map_iter (ed, iter->second, otoken+output_token, unresolved_vals, resolved_vals);
+		    }
+		}
+		GET_UVALUE(ed,value);
+	    }
+	    if (unresolved_vals) PRINT_USENTINEL(ed);
+	    if (resolved_vals) PRINT_RVALUE(ed, 0);
+	}
+#ifdef STATS
+	gettimeofday(&address_done_tv, NULL);
+#endif
+    }
+    if (!ed->start_flag) PRINT_UVALUE(ed,0xffffffff);
+
+    flush_outrbuf (ed);
+    close (ed->outrfd);
+    unmap_file ((char *) ed->merge_log, node_num_fd, mergesize);
+
+    int tfd = open (tokfile, O_RDONLY);
+    if (tfd < 0) {
+	fprintf (stderr, "cannot open token file %s, rc=%d, errno=%d\n", tokfile, tfd, errno);
+	return tfd;
+    }
+    
+    struct stat st;
+    rc = fstat (tfd, &st);
+    if (rc < 0) {
+	fprintf (stderr, "Unable to fstat token file %s, rc=%ld, errno=%d\n", tokfile, rc, errno);
+	return rc;
+    }
+
+    u_long tokens;
+    if (st.st_size > 0) {
+	struct token token;
+	rc = pread (tfd, &token, sizeof(token), st.st_size-sizeof(token));
+	if (rc != sizeof(token)) {
+	    fprintf (stderr, "Unable to read last token from file %s, rc=%ld, errno=%d\n", tokfile, rc, errno);
+	    return rc;
+	}
+	
+	tokens = token.token_num+token.size-1;
+    } else {
+	if (ed->start_flag) {
+	    tokens = 0;
+	} else {
+	    tokens = 0xc0000000;
+	}
+    }
+    close (tfd);
+
+    int afd = open(addrfile, O_CREAT | O_RDWR | O_TRUNC, 0644);
+    if (afd < 0) {
+	fprintf (stderr, "Cannot create address file %s, errno=%d\n", addrfile, errno);
+	return afd;
+    }
+    rc = write (afd, &output_token, sizeof(output_token));
+    if (rc != sizeof(output_token)) {
+	fprintf (stderr, "Unable to write output token, rc=%ld, errno=%d\n", rc, errno);
+	return rc;
+    }
+    rc = write (afd, &tokens, sizeof(tokens));
+    if (rc != sizeof(tokens)) {
+	fprintf (stderr, "Unable to write input token , rc=%ld, errno=%d\n", rc, errno);
+	return rc;
+    }
+    close(afd);
+
+#ifdef STATS
+    gettimeofday(&end_tv, NULL);
+
+    char statsname[256];
+    sprintf (statsname, "%s/stream-stats", ed->dirname);
+    statsfile = fopen (statsname, "w");
+    if (statsfile == NULL) {
+	fprintf (stderr, "Cannot create %s, errno=%d\n", statsname, errno);
+	return -1;
+    }
+
+    fprintf (statsfile, "Total time:              %6ld ms\n", ms_diff (end_tv, start_tv));
+    fprintf (statsfile, "Output processing time:  %6ld ms\n", ms_diff (output_done_tv, start_tv));
+    if (!ed->finish_flag) {
+	fprintf (statsfile, "Index generation time:   %6ld ms\n", ms_diff (index_created_tv, output_done_tv));
+	fprintf (statsfile, "Address processing time: %6ld ms\n", ms_diff (address_done_tv, index_created_tv));
+	fprintf (statsfile, "Finish time:             %6ld ms\n", ms_diff (end_tv, address_done_tv));
+    } else {
+	fprintf (statsfile, "Finish time:             %6ld ms\n", ms_diff (end_tv, output_done_tv));
+    }
+    fprintf (statsfile, "\n");
+    fprintf (statsfile, "Output directs %lu indirects %lu values %lu, merges %lu\n", directs, indirects, values, output_merges);
+    if (!ed->finish_flag) {
+	fprintf (statsfile, "Address tokens %lu passthrus %lu resolved %lu, indirects %lu values %lu unmodified %lu, merges %lu\n", 
+		 atokens, passthrus, aresolved, aindirects, avalues, unmodified, merges);
+    }
+    fprintf (statsfile, "Unique indirects %d\n", resolved.size());
+#endif
+
+    return 0;
+}
+
+void format ()
+{
+    fprintf (stderr, "format: stream <dir> [-iq input_queue] [-oq output_queue]\n");
+    exit (0);
+}
+
+int main (int argc, char* argv[]) 
+{
+    char* input_queue = NULL;
+    char* output_queue = NULL;
+    struct epoch_data ed;
+
+    if (argc < 2) format();
+    ed.dirname = argv[1];
+
+    for (int i = 2; i < argc; i++) {
+	if (!strcmp (argv[i], "-iq")) {
+	    i++;
+	    if (i < argc) {
+		input_queue = argv[i];
+	    } else {
+		format();
+	    }
+	} else if (!strcmp (argv[i], "-oq")) {
+	    i++;
+	    if (i < argc) {
+		output_queue = argv[i];
+	    } else {
+		format();
+	    }
+	} else {
+	    format();
+	}
+    }
+
+    if (input_queue) {
+	int iqfd = shm_open (input_queue, O_RDWR, 0);
+	if (iqfd < 0) {
+	    fprintf (stderr, "Cannot open input queue %s, errno=%d\n", input_queue, errno);
+	    return -1;
+	}
+	ed.inputq = (struct taintq *) mmap (NULL, TAINTQSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, iqfd, 0);
+	if (ed.inputq == MAP_FAILED) {
+	    fprintf (stderr, "Cannot map input queue, errno=%d\n", errno);
+	    return -1;
+	}
+	ed.can_read = 0;
+    } else {
+	ed.inputq = NULL;
+	ed.finish_flag = 1;
+    }
+
+    if (output_queue) {
+	int oqfd = shm_open (output_queue, O_RDWR, 0);
+	if (oqfd < 0) {
+	    fprintf (stderr, "Cannot open input queue %s, errno=%d\n", output_queue, errno);
+	    return -1;
+	}
+	ed.outputq = (struct taintq *) mmap (NULL, TAINTQSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, oqfd, 0);
+	if (ed.outputq == MAP_FAILED) {
+	    fprintf (stderr, "Cannot map input queue, errno=%d\n", errno);
+	    return -1;
+	}
+	ed.can_read = 0;
+    } else {
+	ed.outputq = NULL;
+	ed.start_flag = 1;
+    }
+
+    return stream_epoch (&ed);
+}

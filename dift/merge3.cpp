@@ -59,7 +59,6 @@ int outrfd;
 // For parallel scan
 struct resbuf {
     u_long*        buffer;
-    u_long         bufsize;
     u_long         bufindex;
     struct resbuf* next;
 };
@@ -153,14 +152,13 @@ static struct resbuf* newbuf ()
 	fprintf (stderr, "Cannot allocate results buffer\n");
 	exit (1);
     }
-    results->bufsize = OUTBUFSIZE;
     results->bufindex = 0;
     results->next = NULL;
     return (results);
 }
 
-#define PPRINT_VALUE(curbuf, val) { 			\
-    if ((curbuf)->bufindex == (curbuf)->bufsize) {	\
+#define PPRINT_VALUE(curbuf,val) { 			\
+    if ((curbuf)->bufindex == OUTBUFSIZE) {		\
 	(curbuf)->next = newbuf();			\
 	(curbuf) = (curbuf)->next;			\
     }							\

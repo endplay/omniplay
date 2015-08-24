@@ -18853,8 +18853,10 @@ void init_logs(void)
 #endif
 }
 
-extern int dump_mem_taints(int fd);
+extern int dump_mem_taints (int fd);
 extern int dump_reg_taints (int fd, u_long* pregs);
+extern int dump_mem_taints_start (int fd);
+extern int dump_reg_taints_start (int fd, u_long* pregs);
 
 void fini(INT32 code, void* v)
 {
@@ -18876,8 +18878,13 @@ void fini(INT32 code, void* v)
 	gettimeofday(&tv, NULL);
 	printf("dump start dir %s %lu sec %lu usec\n", group_directory, tv.tv_sec, tv.tv_usec);
 
-	dump_reg_taints(taint_fd, pregs);
-	dump_mem_taints(taint_fd);
+	if (splice_output) {
+	    dump_reg_taints(taint_fd, pregs);
+	    dump_mem_taints(taint_fd);
+	} else {
+	    dump_reg_taints_start(taint_fd, pregs);
+	    dump_mem_taints_start(taint_fd);
+	}
     }
     close(taint_fd);
 

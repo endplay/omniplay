@@ -13,7 +13,7 @@ using namespace std;
 
 #include "taint_interface/taint_creation.h"
 
-//#define TARGET 0xcc1f
+//#define TARGET 0x1cfef
 //#define ITARGET 0x201e42
 
 #define ALLOW_DUPS
@@ -29,10 +29,13 @@ int cmp (const void* p1, const void* p2)
 
 int main (int argc, char* argv[])
 {
-    char mfile[256], ofile[256], afile[256], dfile[256];
+    char mfile[256], ofile[256], dfile[256];
     u_long mdatasize, mmapsize, odatasize, omapsize, ddatasize, dmapsize;
-    u_long output_token, output_tokens = 0, input_token, input_tokens = 0, otoken = 0;
-    int mfd, ofd, afd, dfd;
+    char afile[256];
+    u_long output_token, input_token;
+    int afd;
+    u_long output_tokens = 0, input_tokens = 0, otoken = 0;
+    int mfd, ofd, dfd;
     char* mbuf, *obuf, *dbuf, *dptr;
     u_long* mptr, *optr;
     u_long buf_cnt, buf_size;
@@ -105,8 +108,8 @@ int main (int argc, char* argv[])
 	    while (*optr) {
 #ifdef TARGET
 		if (otoken+output_tokens == TARGET) {
-		    printf ("Output %lx this epoch %lx past %lx -> input %lx this epoch %lx past %lx, epoch %s\n",
-			    otoken+output_tokens, otoken, output_tokens, *optr+input_tokens, *optr, input_tokens, argv[i]);
+		    printf ("Output %lx this epoch %lx past %lx -> input %lx this epoch %lx past %lx, epoch %s offset %lx\n",
+			    otoken+output_tokens, otoken, output_tokens, *optr+input_tokens, *optr, input_tokens, argv[i], (u_long) optr - (u_long) obuf);
 		}
 #endif
 #ifdef ITARGET
@@ -143,7 +146,9 @@ int main (int argc, char* argv[])
 	if (i > 2) input_tokens -= 0xc0000000;
 	output_tokens += output_token;
 	input_tokens += input_token;
-
+#ifdef TARGET
+	printf ("epoch %d, output tokens %lx input tokens %lx\n", i-1, output_tokens, input_tokens);
+#endif
 	close (afd);
     }
 
