@@ -128,8 +128,8 @@ void* do_stream (void* arg)
 			args[argcnt++] = cpids;
 			args[argcnt++] = "-t";
 			args[argcnt++] = "../dift/obj-ia32/linkage_data.so";
-			if (i < epochs-1) {
-			    if (i == 0) {
+			if (i < epochs-1 || !ehdr.finish_flag) {
+			    if (i == 0 && ehdr.start_flag) {
 				sprintf (syscalls, "%ld", edata[i].stop_syscall);
 			    } else {
 				sprintf (syscalls, "%ld", edata[i].stop_syscall-edata[i].start_syscall+1);
@@ -138,7 +138,7 @@ void* do_stream (void* arg)
 			args[argcnt++] = syscalls;
 			args[argcnt++] = "-ao"; // Last epoch does not need to trace to final addresses
 			}
-			if (i > 0) {
+			if (i > 0 || !ehdr.start_flag) {
 			    args[argcnt++] = "-so";
 			} 
 			if (edata[i].filter_syscall) {
@@ -149,7 +149,7 @@ void* do_stream (void* arg)
 			args[argcnt++] = NULL;
 			rc = execv ("../../../pin/pin", (char **) args);
 			fprintf (stderr, "execv of pin tool failed, rc=%d, errno=%d\n", rc, errno);
-		    return NULL;
+			return NULL;
 		    } else {
 			gettimeofday (&ectl[i].tv_start_dift, NULL);
 			ectl[i].status = STATUS_EXECUTING;
