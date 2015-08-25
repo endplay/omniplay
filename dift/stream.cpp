@@ -665,6 +665,8 @@ void* send_output_queue (void* arg)
 	    }
 	    outputq->read_index += rc;					       
 	    if (outputq->buffer[outputq->read_index-1] == 0xffffffff) break; // No more data to send
+	} else {
+	    usleep(100);
 	}
     }
 
@@ -721,7 +723,7 @@ void* recv_input_queue (void* arg)
     // Get data and put on the inputq
     while (1) {
 	u_long can_recv;
-	if (inputq->read_index >= inputq->write_index) {			
+	if (inputq->write_index >= inputq->read_index) {			
 	    can_recv = TAINTENTRIES - inputq->write_index;
 	} else {								
 	    can_recv = inputq->write_index - inputq->read_index;		
@@ -736,6 +738,8 @@ void* recv_input_queue (void* arg)
 		break; // Sender closed connection
 	    }
 	    inputq->write_index += rc;					       
+	} else {
+	    usleep(100);
 	}
     }
 
