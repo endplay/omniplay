@@ -644,10 +644,10 @@ void* send_output_queue (void* arg)
     do {
 	rc = connect (s, (struct sockaddr *) &addr, sizeof(addr));
 	if (rc < 0) {
-	    fprintf (stderr, "Cannot connect, errno=%d\n", errno);
 	    usleep (10000);
 	}
     } while (rc < 0);
+    printf ("Connected\n");
 
     // Listen on output queue and send over network
     while (1) {
@@ -670,6 +670,7 @@ void* send_output_queue (void* arg)
 	    if (outputq->buffer[outputq->read_index-1] == 0xffffffff) break; // No more data to send
 	}
     }
+    printf ("Sent last bytes\n");
 
     close (s);
     return NULL;
