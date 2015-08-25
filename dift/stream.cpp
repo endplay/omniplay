@@ -657,11 +657,8 @@ void* send_output_queue (void* arg)
 	} else {								
 	    can_send = outputq->write_index - outputq->read_index;		
 	}									
-	if (can_send > TAINTENTRIES-inputq->read_index) {
-	    can_send = TAINTENTRIES-inputq->read_index;
-	}
 	if (can_send) {
-	    rc = send (s, inputq->buffer + inputq->read_index, can_send*sizeof(u_long), 0);
+	    rc = send (s, outputq->buffer + outputq->read_index, can_send*sizeof(u_long), 0);
 	    if (rc <= 0) {
 		fprintf (stderr, "send returns %ld,errno=%d\n", rc, errno);
 		break;
@@ -731,6 +728,7 @@ void* recv_input_queue (void* arg)
 	    can_recv = inputq->write_index - inputq->read_index;		
 	}									
 	if (can_recv) {
+	    printf ("Receving %lu bytes from inputq addr %p\n", can_recv*sizeof(u_long), inputq->buffer+inputq->write_index);
 	    rc = recv (s, inputq->buffer + inputq->write_index, can_recv*sizeof(u_long), 0);
 	    if (rc < 0) {
 		fprintf (stderr, "recv returns %ld,errno=%d\n", rc, errno);
