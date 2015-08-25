@@ -94,7 +94,7 @@ void* do_stream (void* arg)
     for (u_long i = 0; i < epochs; i++) {
 	ectl[i].cpid = fork ();
 	if (ectl[i].cpid == 0) {
-	    if (i > 0) {
+	    if (i > 0 || !ehdr.start_flag) {
 		char attach[80];
 		sprintf (attach, "--attach_offset=%d,%lu", edata[i].start_pid, edata[i].start_syscall);
 		rc = execl("./resume", "resume", "-p", ehdr.dirname, "--pthread", "../eglibc-2.15/prefix/lib", attach, NULL);
