@@ -740,7 +740,6 @@ void* recv_input_queue (void* arg)
 	}									
 	if (can_recv) {
 	    can_recv = can_recv*sizeof(u_long)-partial_bytes; // Convert to bytes
-	    printf ("Receiving %lu bytes from inputq addr %p\n", can_recv*sizeof(u_long), inputq->buffer+inputq->write_index);
 	    rc = recv (s, inputq->buffer + inputq->write_index, can_recv, 0);
 	    if (rc < 0) {
 		fprintf (stderr, "recv returns %ld,errno=%d\n", rc, errno);
@@ -783,10 +782,6 @@ int main (int argc, char* argv[])
     long rc;
 
     if (argc < 2) format();
-
-    for (int i = 0; i < argc; i++) {
-	printf ("%s\n", argv[i]);
-    }
 
     for (int i = 2; i < argc; i++) {
 	if (!strcmp (argv[i], "-iq")) {
