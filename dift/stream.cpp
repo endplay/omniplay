@@ -700,6 +700,7 @@ void* recv_input_queue (void* arg)
     addr.sin_port = htons(data->port);
     addr.sin_addr.s_addr = INADDR_ANY;
 
+    printf ("Binding socket\n");
     rc = bind (c, (struct sockaddr *) &addr, sizeof(addr));
     if (rc < 0) {
 	fprintf (stderr, "Cannot bind socket, errno=%d\n", errno);
@@ -755,7 +756,7 @@ int main (int argc, char* argv[])
     char* input_queue = NULL;
     char* output_queue = NULL;
     char* output_host = NULL;
-    bool input_host;
+    bool input_host = false;
     pthread_t oh_tid, ih_tid;
     struct senddata sd;
     struct recvdata rd;
