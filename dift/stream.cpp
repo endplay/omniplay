@@ -730,9 +730,9 @@ void* recv_input_queue (void* arg)
 	    can_recv = inputq->write_index - inputq->read_index;		
 	}									
 	if (can_recv) {
-	    rc = send (s, inputq->buffer + inputq->write_index, can_recv*sizeof(u_long), 0);
+	    rc = recv (s, inputq->buffer + inputq->write_index, can_recv*sizeof(u_long), 0);
 	    if (rc < 0) {
-		fprintf (stderr, "send returns %ld,errno=%d\n", rc, errno);
+		fprintf (stderr, "recv returns %ld,errno=%d\n", rc, errno);
 		break;
 	    } else if (rc == 0) {
 		break; // Sender closed connection

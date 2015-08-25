@@ -134,9 +134,9 @@ void* do_stream (void* arg)
 			    } else {
 				sprintf (syscalls, "%ld", edata[i].stop_syscall-edata[i].start_syscall+1);
 			    }
-			args[argcnt++] = "-l";
-			args[argcnt++] = syscalls;
-			args[argcnt++] = "-ao"; // Last epoch does not need to trace to final addresses
+			    args[argcnt++] = "-l";
+			    args[argcnt++] = syscalls;
+			    args[argcnt++] = "-ao"; // Last epoch does not need to trace to final addresses
 			}
 			if (i > 0 || !ehdr.start_flag) {
 			    args[argcnt++] = "-so";
