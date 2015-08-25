@@ -63,7 +63,7 @@ FILE* debugfile;
 #endif
 #ifdef STATS
 FILE* statsfile;
-u_long merges = 0, directs = 0, indirects = 0, values = 0, output_merges;
+u_long merges = 0, directs = 0, indirects = 0, values = 0, idle = 0, output_merges;
 u_long atokens = 0, passthrus = 0, aresolved = 0, aindirects = 0, avalues = 0, unmodified = 0;
 struct timeval start_tv, output_done_tv, index_created_tv, address_done_tv, end_tv;
 
@@ -77,6 +77,7 @@ static long ms_diff (struct timeval tv1, struct timeval tv2)
     {									\
 	while (can_write == 0) {					\
 	    usleep (100);						\
+	    idle++;							\
 	    if (outputq->write_index >= outputq->read_index) {		\
 		can_write = TAINTENTRIES - (outputq->write_index - outputq->read_index); \
 	    } else {							\
@@ -99,6 +100,7 @@ static long ms_diff (struct timeval tv1, struct timeval tv2)
     {									\
 	while (can_read == 0) {						\
 	    usleep (100);						\
+	    idle++;							\
 	    if (inputq->read_index > inputq->write_index) {		\
 		can_read = TAINTENTRIES - (inputq->read_index - inputq->write_index); \
 	    } else {							\
@@ -598,6 +600,7 @@ long stream_epoch (const char* dirname)
     } else {
 	fprintf (statsfile, "Finish time:             %6ld ms\n", ms_diff (end_tv, output_done_tv));
     }
+    fprintf (statsfile, "Idle                     %6ld ms\n", idle/10);
     fprintf (statsfile, "\n");
     fprintf (statsfile, "Output directs %lu indirects %lu values %lu, merges %lu\n", directs, indirects, values, output_merges);
     if (!finish_flag) {
@@ -708,7 +711,6 @@ void* recv_input_queue (void* arg)
     addr.sin_port = htons(data->port);
     addr.sin_addr.s_addr = INADDR_ANY;
 
-    printf ("Binding socket\n");
     rc = bind (c, (struct sockaddr *) &addr, sizeof(addr));
     if (rc < 0) {
 	fprintf (stderr, "Cannot bind socket, errno=%d\n", errno);
