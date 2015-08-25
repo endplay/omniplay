@@ -647,7 +647,6 @@ void* send_output_queue (void* arg)
 	    usleep (10000);
 	}
     } while (rc < 0);
-    printf ("Connected\n");
 
     // Listen on output queue and send over network
     while (1) {
@@ -678,7 +677,6 @@ void* send_output_queue (void* arg)
 	    usleep(100);
 	}
     }
-    printf ("Sent last bytes\n");
 
     close (s);
     return NULL;
