@@ -25,7 +25,7 @@ using namespace std;
 
 
 //#define DEBUG(x) ((x)==0x9808 || (x)==0x9808-0x21e || (x)==0x9808-0x24a6)
-#define STATS
+//#define STATS
 
 struct senddata {
     char*  host;
@@ -73,11 +73,17 @@ static long ms_diff (struct timeval tv1, struct timeval tv2)
 }
 #endif
 
+#ifdef STATS
+#define IDLE usleep (100); idle++;  
+#else
+#define IDLE usleep (100);
+#endif
+
 #define PRINT_UVALUE(val)						\
     {									\
 	while (can_write == 0) {					\
 	    usleep (100);						\
-	    idle++;							\
+	    IDLE;							\
 	    if (outputq->write_index >= outputq->read_index) {		\
 		can_write = TAINTENTRIES - (outputq->write_index - outputq->read_index); \
 	    } else {							\
@@ -99,8 +105,7 @@ static long ms_diff (struct timeval tv1, struct timeval tv2)
 #define GET_UVALUE(val)							\
     {									\
 	while (can_read == 0) {						\
-	    usleep (100);						\
-	    idle++;							\
+	    IDLE;							\
 	    if (inputq->read_index > inputq->write_index) {		\
 		can_read = TAINTENTRIES - (inputq->read_index - inputq->write_index); \
 	    } else {							\
