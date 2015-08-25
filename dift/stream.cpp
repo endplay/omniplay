@@ -652,7 +652,6 @@ void* send_output_queue (void* arg)
     do {
 	rc = connect (s, (struct sockaddr *) &addr, sizeof(addr));
 	if (rc < 0) {
-	    fprintf (stderr, "Cannot connect, errno=%d\n", errno);
 	    usleep (10000);
 	}
     } while (rc < 0);
