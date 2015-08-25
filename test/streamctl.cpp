@@ -6,13 +6,21 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <netdb.h>
+#include <poll.h>
 
 #include <atomic>
 #include <vector>
+#include <unordered_set>
 
 using namespace std;
 
 #include "streamserver.h"
+
+void format ()
+{
+    fprintf (stderr, "format: streamctl <epoch description file> [-w]\n");
+    exit (0);
+}
 
 int main (int argc, char* argv[]) 
 {
@@ -20,10 +28,19 @@ int main (int argc, char* argv[])
     char dirname[80];
     struct epoch_data epoch;
     vector<struct epoch_data> epochs;
+    unordered_set<int> conns;
+    int wait_for_response = 0;
 
-    if (argc != 2) {
-	fprintf (stderr, "format: streamctl <epoch description file>\n");
-	return -1;
+    if (argc < 2) {
+	format();
+    }
+
+    for (int i = 2; i < argc; i++) {
+	if (!strcmp (argv[i], "-w")) {
+	    wait_for_response = 1;
+	} else {
+	    format();
+	}
     }
 
     // Read in the epoch file
@@ -84,7 +101,6 @@ int main (int argc, char* argv[])
 	    addr.sin_port = htons(STREAMSERVER_PORT);
 	    memcpy (&addr.sin_addr, hp->h_addr, hp->h_length);
 	    
-	    // Receiver may not be started, so spin until connection is accepted
 	    rc = connect (s, (struct sockaddr *) &addr, sizeof(addr));
 	    if (rc < 0) {
 		fprintf (stderr, "Cannot connect to %s, errno=%d\n", estart->hostname, errno);
@@ -92,6 +108,8 @@ int main (int argc, char* argv[])
 	    }
 
 	    struct epoch_hdr ehdr;
+	    ehdr.flags = 0;
+	    if (wait_for_response) ehdr.flags |= SEND_ACK;
 	    strcpy (ehdr.dirname, dirname);
 	    ehdr.epochs = ecnt;
 	    ehdr.start_flag = start_flag;
@@ -117,7 +135,38 @@ int main (int argc, char* argv[])
 		}
 	    }
 	    printf ("%lu epochs to %s\n", ecnt, estart->hostname);
-	    close (s); // No more data to send
+	    if (wait_for_response) {
+		conns.insert(s);
+	    } else {
+		close (s);
+	    }
+	}
+    }
+
+    if (wait_for_response) {
+	while (conns.size()) {
+	    struct pollfd fds[conns.size()];
+	    int n = 0;
+	    for (auto iter = conns.begin(); iter != conns.end(); iter++) {
+		fds[n].fd = *iter;
+		fds[n].events = POLLIN;
+	    }
+	    rc = poll (fds, n, -1);
+	    if (rc < 0) {
+		fprintf (stderr, "poll failed, rc=%d\n", rc);
+		return rc;
+	    }
+	    for (int i = 0; i < n; i++) {
+		if (fds[i].revents) {
+		    long retval;
+		    rc = recv (fds[i].fd, &retval, sizeof(retval), 0);
+		    if (rc != sizeof(retval)) {
+			fprintf (stderr, "Cannot send ack,rc=%d\n", rc);
+		    }
+		    printf ("done reval is %ld!\n", retval);
+		    conns.erase(i);
+		}
+	    }
 	}
     }
 

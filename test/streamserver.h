@@ -3,8 +3,11 @@
 
 #define STREAMSERVER_PORT 19764
 
+#define SEND_ACK 0x1
+
 // Info from description file
 struct epoch_hdr {
+    char   flags;
     char   dirname[256];
     u_long epochs;
     bool   start_flag;

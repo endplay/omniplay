@@ -221,7 +221,15 @@ void* do_stream (void* arg)
     } while (epochs_done < epochs);
 
     gettimeofday (&tv_done, NULL);
-    
+    if (ehdr.flags&SEND_ACK) {
+	long retval = 0;
+	rc = send (s, &retval, sizeof(retval), 0);
+	if (rc != sizeof(retval)) {
+	    fprintf (stderr, "Cannot send ack,rc=%d\n", rc);
+	}
+    }
+    close (s);
+
     // Clean up shared memory regions for queues
     for (u_long i = 0; i < qcnt; i++) {
 	if (i == 0 && ehdr.start_flag) continue; // No queue needed
