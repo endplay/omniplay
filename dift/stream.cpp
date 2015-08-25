@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <assert.h>
 #include <pthread.h>
+#include <netdb.h>
 
 #include "linkage_common.h"
 #include "taint_interface/taint_creation.h"
@@ -20,23 +21,29 @@
 
 using namespace std;
 
+#include "../test/streamserver.h"
+
+
 //#define DEBUG(x) ((x)==0x9808 || (x)==0x9808-0x21e || (x)==0x9808-0x24a6)
 #define STATS
+
+struct senddata {
+    char*  host;
+    short  port;
+};
+
+struct recvdata {
+    short  port;
+};
 
 struct taint_entry {
     u_long p1;
     u_long p2;
 };
 
-#define OUTBUFSIZE 1000000
+#define STREAM_PORT 19765
 
-#define TAINTQSIZE (512*1024*1024)
-#define TAINTENTRIES ((TAINTQSIZE-sizeof(atomic_ulong)*2)/sizeof(u_long))
-struct taintq {
-    atomic_ulong    read_index;
-    atomic_ulong    write_index;
-    u_long          buffer[TAINTENTRIES];
-};
+#define OUTBUFSIZE 1000000
 
 // Globals - mostly here for performance
 unordered_map<u_long,unordered_set<u_long>*> resolved;
@@ -607,9 +614,132 @@ long stream_epoch (const char* dirname)
     return 0;
 }
 
+// Sending to another computer is implemented as separate thread to add asyncrhony
+void* send_output_queue (void* arg)
+{
+    struct senddata* data = (struct senddata *) arg;
+    struct sockaddr_in addr;
+    struct hostent* hp;
+    long rc;
+    int s;
+
+    // Establish a connection to receiving computer
+    hp = gethostbyname (data->host);
+    if (hp == NULL) {
+	fprintf (stderr, "Invalid host %s, errno=%d\n", data->host, h_errno);
+	return NULL;
+    }
+
+    s = socket (AF_INET, SOCK_STREAM, 0);
+    if (s < 0) {
+	fprintf (stderr, "Cannot create socket, errno=%d\n", errno);
+	return NULL;
+    }
+
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(data->port);
+    memcpy (&addr.sin_addr, hp->h_addr, hp->h_length);
+
+    // Receiver may not be started, so spin until connection is accepted
+    do {
+	rc = connect (s, (struct sockaddr *) &addr, sizeof(addr));
+	if (rc < 0) {
+	    fprintf (stderr, "Cannot connect, errno=%d\n", errno);
+	    usleep (10000);
+	}
+    } while (rc < 0);
+
+    // Listen on output queue and send over network
+    while (1) {
+	u_long can_send;
+	if (outputq->read_index > outputq->write_index) {			
+	    can_send = TAINTENTRIES - outputq->read_index;
+	} else {								
+	    can_send = outputq->write_index - outputq->read_index;		
+	}									
+	if (can_send > TAINTENTRIES-inputq->read_index) {
+	    can_send = TAINTENTRIES-inputq->read_index;
+	}
+	if (can_send) {
+	    rc = send (s, inputq->buffer + inputq->read_index, can_send*sizeof(u_long), 0);
+	    if (rc <= 0) {
+		fprintf (stderr, "send returns %ld,errno=%d\n", rc, errno);
+		break;
+	    }
+	    outputq->read_index += rc;					       
+	    if (outputq->buffer[outputq->read_index-1] == 0xffffffff) break; // No more data to send
+	}
+    }
+
+    close (s);
+    return NULL;
+}
+
+void* recv_input_queue (void* arg)
+{
+    struct recvdata* data = (struct recvdata *) arg;
+    struct sockaddr_in addr;
+    long rc;
+    int c, s;
+
+    // Listen for incoming connection - should just be one so close listen socket after connection
+    c = socket (AF_INET, SOCK_STREAM, 0);
+    if (c < 0) {
+	fprintf (stderr, "Cannot create socket, errno=%d\n", errno);
+	return NULL;
+    }
+
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(data->port);
+    addr.sin_addr.s_addr = INADDR_ANY;
+
+    rc = bind (c, (struct sockaddr *) &addr, sizeof(addr));
+    if (rc < 0) {
+	fprintf (stderr, "Cannot bind socket, errno=%d\n", errno);
+	return NULL;
+    }
+
+    rc = listen (c, 5);
+    if (rc < 0) {
+	fprintf (stderr, "Cannot listen on socket, errno=%d\n", errno);
+	return NULL;
+    }
+    
+    s = accept (c, NULL, NULL);
+    if (s < 0) {
+	fprintf (stderr, "Cannot accept connection, errno=%d\n", errno);
+	return NULL;
+    }
+
+    close (c);
+
+    // Get data and put on the inputq
+    while (1) {
+	u_long can_recv;
+	if (inputq->read_index >= inputq->write_index) {			
+	    can_recv = TAINTENTRIES - inputq->write_index;
+	} else {								
+	    can_recv = inputq->write_index - inputq->read_index;		
+	}									
+	if (can_recv) {
+	    rc = send (s, inputq->buffer + inputq->write_index, can_recv*sizeof(u_long), 0);
+	    if (rc < 0) {
+		fprintf (stderr, "send returns %ld,errno=%d\n", rc, errno);
+		break;
+	    } else if (rc == 0) {
+		break; // Sender closed connection
+	    }
+	    inputq->write_index += rc;					       
+	}
+    }
+
+    close (s);
+    return NULL;
+}
+
 void format ()
 {
-    fprintf (stderr, "format: stream <dir> [-iq input_queue] [-oq output_queue]\n");
+    fprintf (stderr, "format: stream <dir> [-iq input_queue] [-oq output_queue] [-oh output_host] [-ih]\n");
     exit (0);
 }
 
@@ -617,6 +747,12 @@ int main (int argc, char* argv[])
 {
     char* input_queue = NULL;
     char* output_queue = NULL;
+    char* output_host = NULL;
+    bool input_host;
+    pthread_t oh_tid, ih_tid;
+    struct senddata sd;
+    struct recvdata rd;
+    long rc;
 
     if (argc < 2) format();
 
@@ -635,6 +771,15 @@ int main (int argc, char* argv[])
 	    } else {
 		format();
 	    }
+	} else if (!strcmp (argv[i], "-oh")) {
+	    i++;
+	    if (i < argc) {
+		output_host = argv[i];
+	    } else {
+		format();
+	    }
+	} else if (!strcmp (argv[i], "-ih")) {
+	    input_host = true;
 	} else {
 	    format();
 	}
@@ -676,5 +821,29 @@ int main (int argc, char* argv[])
 	start_flag = 1;
     }
 
-    return stream_epoch (argv[1]);
+    if (output_host) {
+	sd.host = output_host;
+	sd.port = STREAM_PORT;
+	rc = pthread_create (&oh_tid, NULL, send_output_queue, &sd);
+	if (rc < 0) {
+	    fprintf (stderr, "Cannot create outputq thread\n");
+	    return rc;
+	}
+    }
+
+    if (input_host) {
+	rd.port = STREAM_PORT;
+	rc = pthread_create (&ih_tid, NULL, recv_input_queue, &rd);
+	if (rc < 0) {
+	    fprintf (stderr, "Cannot create inputq thread\n");
+	    return rc;
+	}
+    }
+
+    stream_epoch (argv[1]);
+    
+    if (output_host) pthread_join(oh_tid, NULL);
+    if (input_host) pthread_join(ih_tid, NULL);
+
+    return 0;
 }

@@ -37,6 +37,7 @@ struct epoch {
     u_long start_syscall;
     u_long stop_syscall;
     u_long filter_syscall;
+    char   hostname[256];
 
     // For queues
     char inputqname[256];
@@ -71,7 +72,7 @@ int main (int argc, char* argv[])
     int group_by = 0;
 
     if (argc != 2) {
-	fprintf (stderr, "format: partt <epoch description file>\n");
+	fprintf (stderr, "format: streamtt <epoch description file>\n");
 	return -1;
     }
     
@@ -110,8 +111,8 @@ int main (int argc, char* argv[])
 		    return -1;
 		}
 
-		rc = sscanf (line, "%d %lu %lu %lu\n", &epoch[i].start_pid, &epoch[i].start_syscall, 
-			     &epoch[i].stop_syscall, &epoch[i].filter_syscall);
+		rc = sscanf (line, "%d %lu %lu %lu %s\n", &epoch[i].start_pid, &epoch[i].start_syscall, 
+			     &epoch[i].stop_syscall, &epoch[i].filter_syscall, epoch[i].hostname);
 		if (rc < 3) {
 		    fprintf (stderr, "Unable to parse line of epoch descrtion file: %s\n", line);
 		    return -1;

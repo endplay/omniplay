@@ -119,7 +119,7 @@ $(OBJDIR)mkmultisplice: mkmultisplice.c maputil.c maputil.h
 $(OBJDIR)mkmerge: mkmerge.cpp maputil.c maputil.h
 	$(CXX) -std=c++0x -Wall -Werror -O8 -o $(OBJDIR)mkmerge $(GLIB_INCLUDES) mkmerge.cpp maputil.c -lrt
 
-$(OBJDIR)stream: stream.cpp maputil.c maputil.h
+$(OBJDIR)stream: stream.cpp maputil.c maputil.h ../test/streamserver.h
 	$(CXX) -std=c++0x -Wall -Werror -O8 -o $(OBJDIR)stream $(GLIB_INCLUDES) stream.cpp maputil.c -lrt
 
 $(OBJDIR)mkmap: mkmap.cpp maputil.c maputil.h
