@@ -756,6 +756,10 @@ int main (int argc, char* argv[])
 
     if (argc < 2) format();
 
+    for (int i = 0; i < argc; i++) {
+	printf ("%s\n", argv[i]);
+    }
+
     for (int i = 2; i < argc; i++) {
 	if (!strcmp (argv[i], "-iq")) {
 	    i++;

@@ -54,7 +54,7 @@ streamtt: libutil.a streamtt.cpp
 	c++ -std=c++0x streamtt.cpp libutil.a -pthread -lrt -o streamtt
 
 streamserver: libutil.a streamserver.cpp streamserver.h
-	c++ -std=c++0x streamserver.cpp libutil.a -pthread -lrt -o streamserver
+	c++ -std=c++0x streamserver.cpp libutil.a -pthread -lrt -o streamserver -g
 
 streamctl: streamctl.cpp streamserver.h
 	c++ -std=c++0x streamctl.cpp -o streamctl -g

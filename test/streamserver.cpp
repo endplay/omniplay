@@ -191,14 +191,14 @@ void* do_stream (void* arg)
 			    args[argcnt++] = "-iq";
 			    args[argcnt++] = ectl[i+1].inputqname;
 			}
-			if (i == epochs-1 || !ehdr.finish_flag) {
+			if (i == epochs-1 && !ehdr.finish_flag) {
 			    args[argcnt++] = "-ih";
 			}
 			if (i > 0 || !ehdr.start_flag) {
 			    args[argcnt++] = "-oq";
 			    args[argcnt++] = ectl[i].inputqname;
 			}
-			if (i == 0 || !ehdr.start_flag) {
+			if (i == 0 && !ehdr.start_flag) {
 			    args[argcnt++] = "-oh";
 			    args[argcnt++] = ehdr.next_host;
 			}
