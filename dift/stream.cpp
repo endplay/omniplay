@@ -689,6 +689,13 @@ void* recv_input_queue (void* arg)
 	return NULL;
     }
 
+    int on = 1;
+    rc = setsockopt (c, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+    if (rc < 0) {
+	fprintf (stderr, "Cannot set socket option, errno=%d\n", errno);
+	return NULL;
+    }
+
     addr.sin_family = AF_INET;
     addr.sin_port = htons(data->port);
     addr.sin_addr.s_addr = INADDR_ANY;

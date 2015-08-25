@@ -270,6 +270,13 @@ int main (int argc, char* argv[])
 	return c;
     }
 
+    int on = 1;
+    rc = setsockopt (c, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+    if (rc < 0) {
+	fprintf (stderr, "Cannot set socket option, errno=%d\n", errno);
+	return rc;
+    }
+
     struct sockaddr_in addr;
     addr.sin_family = AF_INET;
     addr.sin_port = htons(STREAMSERVER_PORT);
