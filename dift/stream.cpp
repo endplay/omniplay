@@ -652,18 +652,27 @@ void* send_output_queue (void* arg)
     // Listen on output queue and send over network
     while (1) {
 	u_long can_send;
+	u_long partial_bytes = 0;
 	if (outputq->read_index > outputq->write_index) {			
 	    can_send = TAINTENTRIES - outputq->read_index;
 	} else {								
 	    can_send = outputq->write_index - outputq->read_index;		
-	}									
+	}		
 	if (can_send) {
-	    rc = send (s, outputq->buffer + outputq->read_index, can_send*sizeof(u_long), 0);
+	    can_send = can_send*sizeof(u_long)-partial_bytes; // Convert to bytes
+	    rc = send (s, outputq->buffer + outputq->read_index, can_send, 0);
 	    if (rc <= 0) {
 		fprintf (stderr, "send returns %ld,errno=%d\n", rc, errno);
 		break;
 	    }
-	    outputq->read_index += rc;					       
+	    outputq->read_index += rc/sizeof(u_long);					       
+	    if (rc%sizeof(u_long)) {
+		partial_bytes += rc%sizeof(u_long);
+		if (partial_bytes > sizeof(u_long)) {
+		    outputq->read_index++;
+		    partial_bytes -= sizeof(u_long);
+		}
+	    }
 	    if (outputq->buffer[outputq->read_index-1] == 0xffffffff) break; // No more data to send
 	} else {
 	    usleep(100);
@@ -724,21 +733,30 @@ void* recv_input_queue (void* arg)
     // Get data and put on the inputq
     while (1) {
 	u_long can_recv;
+	u_long partial_bytes = 0;
 	if (inputq->write_index >= inputq->read_index) {			
 	    can_recv = TAINTENTRIES - inputq->write_index;
 	} else {								
 	    can_recv = inputq->write_index - inputq->read_index;		
 	}									
 	if (can_recv) {
-	    printf ("Receving %lu bytes from inputq addr %p\n", can_recv*sizeof(u_long), inputq->buffer+inputq->write_index);
-	    rc = recv (s, inputq->buffer + inputq->write_index, can_recv*sizeof(u_long), 0);
+	    can_recv = can_recv*sizeof(u_long)-partial_bytes; // Convert to bytes
+	    printf ("Receiving %lu bytes from inputq addr %p\n", can_recv*sizeof(u_long), inputq->buffer+inputq->write_index);
+	    rc = recv (s, inputq->buffer + inputq->write_index, can_recv, 0);
 	    if (rc < 0) {
 		fprintf (stderr, "recv returns %ld,errno=%d\n", rc, errno);
 		break;
 	    } else if (rc == 0) {
 		break; // Sender closed connection
 	    }
-	    inputq->write_index += rc;					       
+	    inputq->write_index += rc/sizeof(u_long);					       
+	    if (rc%sizeof(u_long)) {
+		partial_bytes += rc%sizeof(u_long);
+		if (partial_bytes > sizeof(u_long)) {
+		    inputq->write_index++;
+		    partial_bytes -= sizeof(u_long);
+		}
+	    }
 	} else {
 	    usleep(100);
 	}
