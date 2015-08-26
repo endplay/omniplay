@@ -85,6 +85,7 @@ int send_file (int s, const char* pathname, const char* filename)
 	fprintf (stderr, "send_file: cannot stat %s, rc=%ld, errno=%d\n", filename, rc, errno);
 	return rc;
     }
+    printf ("Size of %s (%s) is %ld\n", pathname, filename, (long) st.st_size);
     rc = write (s, &st, sizeof(st));
     if (rc != sizeof(st)) {
 	fprintf (stderr, "send_file: cannot write file %s stats, rc=%ld, errno=%d\n", filename, rc, errno);
@@ -107,6 +108,7 @@ int send_file (int s, const char* pathname, const char* filename)
 	}
 	bytes_written += rc;
     }
+    close (fd);
 
     return rc;
 }

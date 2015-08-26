@@ -50,6 +50,7 @@ long fetch_file (int s, char* dest_dir)
 	fprintf (stderr, "fetch_file: cannot read filename, rc=%ld, errno=%d\n", rc, errno);
 	return rc;
     }
+    printf ("filename is %s\n", filename);
 
     // Get the file stats
     rc = safe_read (s, (char *) &st, sizeof(st));
@@ -57,6 +58,7 @@ long fetch_file (int s, char* dest_dir)
 	fprintf (stderr, "fetch_file: cannot read file %s stats, rc=%ld, errno=%d\n", filename, rc, errno);
 	return rc;
     }
+    printf ("size is %ld\n", (long) st.st_size);
 	
     // Open the new file
     char pathname[256];
@@ -83,6 +85,7 @@ long fetch_file (int s, char* dest_dir)
 	}
 	bytes_read += rc;
     }
+    printf ("done with %s\n", filename);
 
     return rc;
 }
