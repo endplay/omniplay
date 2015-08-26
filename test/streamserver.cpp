@@ -47,6 +47,7 @@ int fd; // Persistent descriptor for replay device
 int send_file (int s, const char* pathname, const char* filename)
 {
     char buf[1024*1024];
+    char sendfilename[256];
     struct stat st;
     u_long bytes_written;
     long rc;
@@ -59,8 +60,9 @@ int send_file (int s, const char* pathname, const char* filename)
     }
 
     // Send the filename
-    rc = write (s, filename, sizeof(filename));
-    if (rc != sizeof(filename)) {
+    strcpy (sendfilename, filename);
+    rc = write (s, sendfilename, sizeof(sendfilename));
+    if (rc != sizeof(sendfilename)) {
 	fprintf (stderr, "send_file: cannot write filename, rc=%ld, errno=%d\n", rc, errno);
 	return rc;
     }

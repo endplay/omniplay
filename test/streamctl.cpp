@@ -24,6 +24,18 @@ struct epoch_ctl {
     int    s;
 };
 
+static long safe_read (int s, char* buf, u_long size) 
+{
+    long bytes_read = 0;
+    
+    while (bytes_read < size) {
+	long rc = read (s, buf, size-bytes_read);	
+	if (rc <= 0) return rc;
+	bytes_read += rc;
+    }
+    return bytes_read;
+}
+
 long fetch_file (int s, char* dest_dir)
 {
     char buf[1024*1024];
@@ -33,14 +45,14 @@ long fetch_file (int s, char* dest_dir)
     long rc;
 
     // Get the filename
-    rc = read (s, filename, sizeof(filename));
+    rc = safe_read (s, filename, sizeof(filename));
     if (rc != sizeof(filename)) {
 	fprintf (stderr, "fetch_file: cannot read filename, rc=%ld, errno=%d\n", rc, errno);
 	return rc;
     }
 
     // Get the file stats
-    rc = read (s, &st, sizeof(st));
+    rc = safe_read (s, (char *) &st, sizeof(st));
     if (rc != sizeof(st)) {
 	fprintf (stderr, "fetch_file: cannot read file %s stats, rc=%ld, errno=%d\n", filename, rc, errno);
 	return rc;
@@ -129,6 +141,15 @@ int main (int argc, char* argv[])
 	    }
 	} else {
 	    format();
+	}
+    }
+
+    if (validate) {
+	// Create directory for results files
+	rc = mkdir (dest_dir, 0755);
+	if (rc < 0) {
+	    fprintf (stderr, "Cannot make dir %s\n", dest_dir);
+	    return rc;
 	}
     }
 
@@ -271,13 +292,6 @@ int main (int argc, char* argv[])
     }
 
     if (validate) {
-	// Create directory for results files
-	rc = mkdir (dest_dir, 0755);
-	if (rc < 0) {
-	    fprintf (stderr, "Cannot make dir %s\n", dest_dir);
-	    return rc;
-	}
-
 	// Fetch the files into each directory 
 	for (auto iter = epochctls.begin(); iter != epochctls.end(); iter++) {
 	    fetch_results (dest_dir, *iter);
