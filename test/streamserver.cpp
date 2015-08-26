@@ -83,12 +83,12 @@ int send_file (int s, const char* pathname, const char* filename)
 	if (to_write > sizeof(buf)) to_write = sizeof(buf);
 	rc = read (fd, buf, to_write);
 	if (rc <= 0) {
-	    fprintf (stderr, "send_file: write of %s returns %ld, errno=%d\n", filename, rc, errno);
+	    fprintf (stderr, "send_file: read of %s returns %ld, errno=%d\n", filename, rc, errno);
 	    break;
 	}
 	long wrc = write(s, buf, rc);
 	if (wrc != rc) {
-	    fprintf (stderr, "send_file: write of %s returns %ld, errno=%d\n", filename, rc, errno);
+	    fprintf (stderr, "send_file: write of %s returns %ld (not %ld), errno=%d\n", filename, wrc, rc, errno);
 	    break;
 	}
 	bytes_written += rc;
@@ -313,7 +313,7 @@ void* do_stream (void* arg)
 	    send_file (s, pathname, "merge-outputs-resolved");
 	    sprintf (pathname, "/tmp/%d/tokens", ectl[i].cpid);
 	    send_file (s, pathname, "tokens");
-	    sprintf (pathname, "/tmp/%d/dataflow.results", ectl[i].cpid);
+	    sprintf (pathname, "/tmp/%d/dataflow.result", ectl[i].cpid);
 	    send_file (s, pathname, "dataflow.results");
 	}
     }

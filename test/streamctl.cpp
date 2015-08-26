@@ -81,7 +81,7 @@ int fetch_results (char* top_dir, struct epoch_ctl ectl)
 
     for (int i = 0; i < ectl.num; i++) {
 	sprintf (dir, "%s/%lu", top_dir, ectl.start+i);
-	long rc = mkdir (dir, 0644);
+	long rc = mkdir (dir, 0755);
 	if (rc < 0) {
 	    fprintf (stderr, "Cannot make dir %s\n", dir);
 	    return rc;
@@ -272,7 +272,7 @@ int main (int argc, char* argv[])
 
     if (validate) {
 	// Create directory for results files
-	rc = mkdir (dest_dir, 0644);
+	rc = mkdir (dest_dir, 0755);
 	if (rc < 0) {
 	    fprintf (stderr, "Cannot make dir %s\n", dest_dir);
 	    return rc;
