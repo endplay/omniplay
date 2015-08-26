@@ -61,7 +61,6 @@ int send_file (int s, const char* pathname, const char* filename)
     char buf[1024*1024];
     char sendfilename[256];
     struct stat st;
-    u_long bytes_written;
     long rc;
 
     // Get the filename
@@ -93,6 +92,7 @@ int send_file (int s, const char* pathname, const char* filename)
     }
 	
     // Send file data
+    u_long bytes_written = 0;
     while (bytes_written < st.st_size) {
 	u_long to_write = st.st_size - bytes_written;
 	if (to_write > sizeof(buf)) to_write = sizeof(buf);

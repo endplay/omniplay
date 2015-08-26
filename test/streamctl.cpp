@@ -70,6 +70,7 @@ long fetch_file (int s, char* dest_dir)
     }
 	
     // Get the file data and write it out
+    bytes_read = 0;
     while (bytes_read < st.st_size) {
 	u_long to_read = st.st_size - bytes_read;
 	if (to_read > sizeof(buf)) to_read = sizeof(buf);
@@ -84,6 +85,7 @@ long fetch_file (int s, char* dest_dir)
 	    break;
 	}
 	bytes_read += rc;
+	printf ("Copied %ld out of %ld bytes\n", bytes_read, st.st_size);
     }
     printf ("done with %s\n", filename);
 
@@ -103,7 +105,7 @@ int fetch_results (char* top_dir, struct epoch_ctl ectl)
 	}
 	// Fetch 4 files: results, addresses, input and output tokens
 	for (int j = 0; j < 4; j++) {
-	    fetch_file(ectl.s, dir);
+	    if (fetch_file(ectl.s, dir) < 0) return -1;
 	}
     }
     return 0;
