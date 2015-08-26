@@ -3,7 +3,8 @@
 
 #define STREAMSERVER_PORT 19764
 
-#define SEND_ACK 0x1
+#define SEND_ACK     0x1
+#define SEND_RESULTS 0x2
 
 // Info from description file
 struct epoch_hdr {

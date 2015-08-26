@@ -44,6 +44,59 @@ struct epoch_ctl {
 
 int fd; // Persistent descriptor for replay device
 
+int send_file (int s, const char* pathname, const char* filename)
+{
+    char buf[1024*1024];
+    struct stat st;
+    u_long bytes_written;
+    long rc;
+
+    // Get the filename
+    int fd = open (pathname, O_RDONLY);
+    if (fd < 0) {
+	fprintf (stderr, "send_file: cannot open %s, rc=%d, errno=%d\n", pathname, fd, errno);
+	return rc;
+    }
+
+    // Send the filename
+    rc = write (s, filename, sizeof(filename));
+    if (rc != sizeof(filename)) {
+	fprintf (stderr, "send_file: cannot write filename, rc=%ld, errno=%d\n", rc, errno);
+	return rc;
+    }
+
+    // Send the file stats
+    rc = fstat (fd, &st);
+    if (rc < 0) {
+	fprintf (stderr, "send_file: cannot stat %s, rc=%ld, errno=%d\n", filename, rc, errno);
+	return rc;
+    }
+    rc = write (s, &st, sizeof(st));
+    if (rc != sizeof(st)) {
+	fprintf (stderr, "send_file: cannot write file %s stats, rc=%ld, errno=%d\n", filename, rc, errno);
+	return rc;
+    }
+	
+    // Send file data
+    while (bytes_written < st.st_size) {
+	u_long to_write = st.st_size - bytes_written;
+	if (to_write > sizeof(buf)) to_write = sizeof(buf);
+	rc = read (fd, buf, to_write);
+	if (rc <= 0) {
+	    fprintf (stderr, "send_file: write of %s returns %ld, errno=%d\n", filename, rc, errno);
+	    break;
+	}
+	long wrc = write(s, buf, rc);
+	if (wrc != rc) {
+	    fprintf (stderr, "send_file: write of %s returns %ld, errno=%d\n", filename, rc, errno);
+	    break;
+	}
+	bytes_written += rc;
+    }
+
+    return rc;
+}
+
 // May eventually want to support >1 taint tracking at the same time, but not for now.
 void* do_stream (void* arg) 
 {
@@ -228,7 +281,6 @@ void* do_stream (void* arg)
 	    fprintf (stderr, "Cannot send ack,rc=%d\n", rc);
 	}
     }
-    close (s);
 
     // Clean up shared memory regions for queues
     for (u_long i = 0; i < qcnt; i++) {
@@ -251,6 +303,22 @@ void* do_stream (void* arg)
 	printf ("\tEpoch end time: %ld.%06ld\n", ectl[i].tv_done.tv_sec, ectl[i].tv_done.tv_usec);
    }
 
+    // send results if requete
+    if (ehdr.flags&SEND_RESULTS) {
+	for (u_long i = 0; i < epochs; i++) {
+	    char pathname[512];
+	    sprintf (pathname, "/tmp/%d/merge-addrs", ectl[i].cpid);
+	    send_file (s, pathname, "merge-addrs");
+	    sprintf (pathname, "/tmp/%d/merge-outputs-resolved", ectl[i].cpid);
+	    send_file (s, pathname, "merge-outputs-resolved");
+	    sprintf (pathname, "/tmp/%d/tokens", ectl[i].cpid);
+	    send_file (s, pathname, "tokens");
+	    sprintf (pathname, "/tmp/%d/dataflow.results", ectl[i].cpid);
+	    send_file (s, pathname, "dataflow.results");
+	}
+    }
+
+    close (s);
     return NULL;
 }
 
