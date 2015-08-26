@@ -29,7 +29,7 @@ static long safe_read (int s, char* buf, u_long size)
     long bytes_read = 0;
     
     while (bytes_read < size) {
-	long rc = read (s, buf, size-bytes_read);	
+	long rc = read (s, buf+bytes_read, size-bytes_read);	
 	if (rc <= 0) return rc;
 	bytes_read += rc;
     }

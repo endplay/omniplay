@@ -44,6 +44,18 @@ struct epoch_ctl {
 
 int fd; // Persistent descriptor for replay device
 
+static long safe_write (int s, char* buf, u_long size) 
+{
+    long bytes_written = 0;
+    
+    while (bytes_written < size) {
+	long rc = write (s, buf+bytes_written, size-bytes_written);	
+	if (rc <= 0) return rc;
+	bytes_written += rc;
+    }
+    return bytes_written;
+}
+
 int send_file (int s, const char* pathname, const char* filename)
 {
     char buf[1024*1024];
@@ -88,7 +100,7 @@ int send_file (int s, const char* pathname, const char* filename)
 	    fprintf (stderr, "send_file: read of %s returns %ld, errno=%d\n", filename, rc, errno);
 	    break;
 	}
-	long wrc = write(s, buf, rc);
+	long wrc = safe_write(s, buf, rc);
 	if (wrc != rc) {
 	    fprintf (stderr, "send_file: write of %s returns %ld (not %ld), errno=%d\n", filename, wrc, rc, errno);
 	    break;
