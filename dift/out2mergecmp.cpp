@@ -13,7 +13,7 @@ using namespace std;
 
 #include "taint_interface/taint_creation.h"
 
-//#define TARGET 0x1cfef
+//#define TARGET 0x2454
 //#define ITARGET 0x201e42
 
 #define ALLOW_DUPS
@@ -42,9 +42,11 @@ int main (int argc, char* argv[])
     set<pair<u_long,u_long>> mapping, omapping;
     set<pair<u_long,u_long>>::iterator miter, oiter;
     long rc;
+    int out_start;
+    const char* out_dir;
 
     if (argc < 3) {
-	fprintf (stderr, "format: out2mergecmp.c <mergeout dir> <list of output dirs>\n");
+	fprintf (stderr, "format: out2mergecmp.c <mergeout dir> [-d dir] <list of output dirs>\n");
 	return -1;
     }
 
@@ -56,6 +58,14 @@ int main (int argc, char* argv[])
     rc = map_file (dfile, &dfd, &ddatasize, &dmapsize, &dbuf);
     if (rc < 0) return rc;
 
+    if (!strcmp(argv[2], "-d")) {
+        out_dir = argv[3];
+	out_start = 4;
+    } else {
+	out_dir = "/tmp";
+	out_start = 2;
+    }
+      
     mptr = (u_long *) mbuf;
     dptr = dbuf;
 #ifdef TARGET
@@ -96,8 +106,8 @@ int main (int argc, char* argv[])
     unmap_file (dbuf, dfd, dmapsize);
 
     // Now handle the output files 
-    for (int i = 2; i < argc; i++) {
-	sprintf (ofile, "/tmp/%s/merge-outputs-resolved", argv[i]);
+    for (int i = out_start; i < argc; i++) {
+	sprintf (ofile, "%s/%s/merge-outputs-resolved", out_dir, argv[i]);
 	rc = map_file (ofile, &ofd, &odatasize, &omapsize, &obuf);
 	if (rc < 0) return rc;	
 
@@ -126,7 +136,7 @@ int main (int argc, char* argv[])
 	
 	unmap_file (obuf, ofd, omapsize);
 
-	sprintf (afile, "/tmp/%s/merge-addrs", argv[i]);
+	sprintf (afile, "%s/%s/merge-addrs", out_dir, argv[i]);
 	afd = open(afile, O_RDONLY);
 	if (afd < 0) {
 	    fprintf (stderr, "Cannot open %s\n", afile);
@@ -143,7 +153,7 @@ int main (int argc, char* argv[])
 	    fprintf (stderr, "Unable to read input token from %s, rc=%ld, errno=%d\n", afile, rc, errno);
 	    return rc;
 	}
-	if (i > 2) input_tokens -= 0xc0000000;
+	if (i > out_start) input_tokens -= 0xc0000000;
 	output_tokens += output_token;
 	input_tokens += input_token;
 #ifdef TARGET

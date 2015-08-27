@@ -50,7 +50,6 @@ long fetch_file (int s, char* dest_dir)
 	fprintf (stderr, "fetch_file: cannot read filename, rc=%ld, errno=%d\n", rc, errno);
 	return rc;
     }
-    printf ("filename is %s\n", filename);
 
     // Get the file stats
     rc = safe_read (s, (char *) &st, sizeof(st));
@@ -58,7 +57,6 @@ long fetch_file (int s, char* dest_dir)
 	fprintf (stderr, "fetch_file: cannot read file %s stats, rc=%ld, errno=%d\n", filename, rc, errno);
 	return rc;
     }
-    printf ("size is %ld\n", (long) st.st_size);
 	
     // Open the new file
     char pathname[256];
@@ -85,9 +83,7 @@ long fetch_file (int s, char* dest_dir)
 	    break;
 	}
 	bytes_read += rc;
-	printf ("Copied %ld out of %ld bytes\n", bytes_read, st.st_size);
     }
-    printf ("done with %s\n", filename);
 
     return rc;
 }
@@ -113,7 +109,7 @@ int fetch_results (char* top_dir, struct epoch_ctl ectl)
 
 void format ()
 {
-    fprintf (stderr, "format: streamctl <epoch description file> [-w]\n");
+    fprintf (stderr, "format: streamctl <epoch description file> [-w] [-v dest_dir cmp_no]\n");
     exit (0);
 }
 
@@ -126,7 +122,7 @@ int main (int argc, char* argv[])
     vector<struct epoch_ctl> epochctls;
     unordered_set<int> conns;
     int wait_for_response = 0, validate = 0;
-    char* dest_dir;
+    char* dest_dir, *cmp_dir;
     u_long epochno = 0, last_epochno = 0;
 
     if (argc < 2) {
@@ -140,7 +136,13 @@ int main (int argc, char* argv[])
 	    i++;
 	    if (i < argc) {
 		dest_dir = argv[i];
-		validate = 1;
+		i++;
+		if (i < argc) {
+		    cmp_dir = argv[i];
+		    validate = 1;
+		} else {
+		    format();
+		}
 	    } else {
 		format();
 	    }
@@ -259,7 +261,7 @@ int main (int argc, char* argv[])
 	    epochctls.push_back(ectl);
 	    last_epochno = epochno;
 
-	    printf ("%lu epochs to %s\n", ecnt, estart->hostname);
+	    //printf ("%lu epochs to %s\n", ecnt, estart->hostname);
 	    conns.insert(s);
 	}
     }
@@ -301,7 +303,17 @@ int main (int argc, char* argv[])
 	for (auto iter = epochctls.begin(); iter != epochctls.end(); iter++) {
 	    fetch_results (dest_dir, *iter);
 	}
-    }
+	// Now actually do the comaprison
+	char cmd[512];
+	sprintf (cmd, "../dift/obj-ia32/out2mergecmp %s -d %s", cmp_dir, dest_dir);
+	for (int i = 0; i < epochs.size(); i++) {
+	    char add[64];
+	    sprintf (add, " %d", i);
+	    strcat (cmd, add);
+	}
+	printf ("%s", cmd);
+	system (cmd);
+     }
 
     return 0;
 }
