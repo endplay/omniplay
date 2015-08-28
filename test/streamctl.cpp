@@ -328,7 +328,6 @@ int main (int argc, char* argv[])
 			    fprintf (stderr, "Bad path name: %s\n", log_files[i].path);
 			    return -1;
 			}
-			printf ("Sending %s name %s to %s\n", log_files[i].path, filename, prev_hostname);
 			rc = send_file (s, log_files[i].path, filename);
 			if (rc < 0) {
 			    fprintf (stderr, "Unable to send log file %s\n", log_files[i].path);
@@ -342,17 +341,17 @@ int main (int argc, char* argv[])
 			struct stat64 st;
 
 			// Find the cache file locally
-			sprintf (cname, "/replay_cache/%lx_%lx", cache_files[i].dev, cache_files[i].ino);
+			sprintf (cname, "/replay_cache/%lx_%lx", cache_files[j].dev, cache_files[j].ino);
 			rc = stat64 (cname, &st);
 			if (rc < 0) {
 			    fprintf (stderr, "cannot stat cache file %s, rc=%d\n", cname, rc);
 			    return rc;
 			}
 
-			if (st.st_mtim.tv_sec != cache_files[i].mtime.tv_sec || st.st_mtim.tv_nsec != cache_files[i].mtime.tv_nsec) {
+			if (st.st_mtim.tv_sec != cache_files[j].mtime.tv_sec || st.st_mtim.tv_nsec != cache_files[j].mtime.tv_nsec) {
 			    // if times do not match, open a past version
-			    sprintf (cname, "/replay_cache/%lx_%lx_%lu_%lu", cache_files[i].dev, cache_files[i].ino, 
-				     cache_files[i].mtime.tv_sec, cache_files[i].mtime.tv_nsec);
+			    sprintf (cname, "/replay_cache/%lx_%lx_%lu_%lu", cache_files[j].dev, cache_files[j].ino, 
+				     cache_files[j].mtime.tv_sec, cache_files[j].mtime.tv_nsec);
 			}
 
 			// Send the file to streamserver

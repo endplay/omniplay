@@ -103,7 +103,6 @@ void* do_stream (void* arg)
 		// Does this file exist?
 		struct stat st;
 		rc = stat (fpath.path, &st);
-		printf ("stat of file %s returns %d\n", fpath.path, rc);
 		if (rc == 0) {
 		    freply[i] = false;
 		} else {
@@ -160,7 +159,6 @@ void* do_stream (void* arg)
 
 		sprintf (cname, "/replay_cache/%lx_%lx", ci.dev, ci.ino);
 		rc = stat64 (cname, &st);
-		printf ("stat of cache file %s returns %d\n", cname, rc);
 		if (rc == 0) {
 		    // Is this the right version?
 		    if (st.st_mtim.tv_sec == ci.mtime.tv_sec && st.st_mtim.tv_nsec == ci.mtime.tv_nsec) {
@@ -169,7 +167,6 @@ void* do_stream (void* arg)
 			// Nope - but maybe we have it?
 			sprintf (cmname, "/replay_cache/%lx_%lx_%lu_%lu", ci.dev, ci.ino, ci.mtime.tv_sec, ci.mtime.tv_nsec);
 			rc = stat64 (cmname, &st);
-			printf ("stat of cache file %s returns %d\n", cmname, rc);
 			if (rc == 0) {
 			    creply[i] = false;
 			} else {
