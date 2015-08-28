@@ -67,7 +67,7 @@ void* do_stream (void* arg)
     struct epoch_ctl ectl[epochs];
 
     rc = safe_read (s, edata, sizeof(struct epoch_data)*epochs);
-    if (rc != sizeof(struct epoch_data)*epochs) {
+    if (rc != (int) (sizeof(struct epoch_data)*epochs)) {
 	fprintf (stderr, "Cannot recieve epochs,rc=%d\n", rc);
 	return NULL;
     }
@@ -111,7 +111,7 @@ void* do_stream (void* arg)
 
 		    // Make sure directory exists
 		    for (int i = strlen(fpath.path); i >= 0; i--) {
-			if (fpath.path[i] = '/') {
+			if (fpath.path[i] == '/') {
 			    fpath.path[i] = '\0';
 			    rc = mkdir (fpath.path, 0777);
 			    if (rc < 0 && errno != EEXIST) {
@@ -126,7 +126,7 @@ void* do_stream (void* arg)
 	    
 	    // Send back response
 	    rc = safe_write (s, freply, sizeof(bool)*fcnt);
-	    if (rc != sizeof(bool)*fcnt) {
+	    if (rc != (int) (sizeof(bool)*fcnt)) {
 		fprintf (stderr, "Cannot send file check reply,rc=%d\n", rc);
 		return NULL;
 	    }
@@ -202,7 +202,7 @@ void* do_stream (void* arg)
 	    
 	    // Send back response
 	    rc = safe_write (s, creply, sizeof(bool)*ccnt);
-	    if (rc != sizeof(bool)*ccnt) {
+	    if (rc != (int) (sizeof(bool)*ccnt)) {
 		fprintf (stderr, "Cannot send cache info check reply,rc=%d\n", rc);
 		return NULL;
 	    }
@@ -437,14 +437,7 @@ void* do_stream (void* arg)
 
 int main (int argc, char* argv[]) 
 {
-    struct timeval tv_start, tv_start_merge, tv_done;
-    char dirname[80];
-    int rc, status, epochs, gstart, gend, i, executing, epochs_done;
-    struct epoch* epoch;
-    
-    pid_t ppid;
-    u_long merge_entries = 0;
-    int group_by = 0;
+    int rc; 
 
     fd = open ("/dev/spec0", O_RDWR);
     if (fd < 0) {

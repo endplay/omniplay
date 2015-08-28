@@ -33,7 +33,7 @@ int fetch_results (char* top_dir, struct epoch_ctl ectl)
 {
     char dir[512];
 
-    for (int i = 0; i < ectl.num; i++) {
+    for (u_long i = 0; i < ectl.num; i++) {
 	sprintf (dir, "%s/%lu", top_dir, ectl.start+i);
 	long rc = mkdir (dir, 0755);
 	if (rc < 0) {
@@ -308,7 +308,7 @@ int main (int argc, char* argv[])
 		// Get back response
 		bool response[log_files.size()+cache_files.size()];
 		rc = safe_read (s, response, sizeof(bool)*(log_files.size()+cache_files.size()));
-		if (rc != sizeof(bool)*(log_files.size()+cache_files.size())) {
+		if (rc != (long) (sizeof(bool)*(log_files.size()+cache_files.size()))) {
 		    fprintf (stderr, "Cannot read sync results, rc=%d\n", rc);
 		    return rc;
 		}
@@ -413,9 +413,9 @@ int main (int argc, char* argv[])
 	// Now actually do the comaprison
 	char cmd[512];
 	sprintf (cmd, "../dift/obj-ia32/out2mergecmp %s -d %s", cmp_dir, dest_dir);
-	for (int i = 0; i < epochs.size(); i++) {
+	for (u_long i = 0; i < epochs.size(); i++) {
 	    char add[64];
-	    sprintf (add, " %d", i);
+	    sprintf (add, " %lu", i);
 	    strcat (cmd, add);
 	}
 	system (cmd);

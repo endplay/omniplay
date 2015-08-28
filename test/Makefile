@@ -54,10 +54,10 @@ streamtt: libutil.a streamtt.cpp
 	c++ -std=c++0x streamtt.cpp libutil.a -pthread -lrt -o streamtt
 
 streamserver: libutil.a streamserver.cpp streamserver.h streamnw.cpp streamnw.h
-	c++ -std=c++0x streamserver.cpp streamnw.cpp libutil.a -pthread -lrt -o streamserver -g
+	c++ -Wall -Werror -std=c++0x streamserver.cpp streamnw.cpp libutil.a -pthread -lrt -o streamserver -g
 
 streamctl: streamctl.cpp streamserver.h parseklib.o streamnw.cpp streamnw.h
-	c++ -std=c++0x streamctl.cpp streamnw.cpp parseklib.o -o streamctl -g
+	c++ -Wall -Werror -std=c++0x streamctl.cpp streamnw.cpp parseklib.o -o streamctl -g
 
 fulltt: libutil.a
 

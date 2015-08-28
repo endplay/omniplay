@@ -18,7 +18,7 @@ long safe_read (int s, void* buf, u_long size)
 {
     long bytes_read = 0;
     
-    while (bytes_read < size) {
+    while (bytes_read < (long) size) {
 	long rc = read (s, (char *) buf+bytes_read, size-bytes_read);	
 	if (rc <= 0) return rc;
 	bytes_read += rc;
@@ -30,7 +30,7 @@ long safe_write (int s, void* buf, u_long size)
 {
     long bytes_written = 0;
     
-    while (bytes_written < size) {
+    while (bytes_written < (long) size) {
 	long rc = write (s, (char *) buf+bytes_written, size-bytes_written);	
 	if (rc <= 0) return rc;
 	bytes_written += rc;
@@ -49,7 +49,7 @@ long send_file (int s, const char* pathname, const char* filename)
     int fd = open (pathname, O_RDONLY);
     if (fd < 0) {
 	fprintf (stderr, "send_file: cannot open %s, rc=%d, errno=%d\n", pathname, fd, errno);
-	return rc;
+	return fd;
     }
 
     // Send the filename
@@ -74,7 +74,7 @@ long send_file (int s, const char* pathname, const char* filename)
 	
     // Send file data
     u_long bytes_written = 0;
-    while (bytes_written < st.st_size) {
+    while (bytes_written < (u_long) st.st_size) {
 	u_long to_write = st.st_size - bytes_written;
 	if (to_write > sizeof(buf)) to_write = sizeof(buf);
 	rc = read (fd, buf, to_write);
@@ -127,7 +127,7 @@ long fetch_file (int s, const char* dest_dir)
 	
     // Get the file data and write it out
     bytes_read = 0;
-    while (bytes_read < st.st_size) {
+    while (bytes_read < (u_long) st.st_size) {
 	u_long to_read = st.st_size - bytes_read;
 	if (to_read > sizeof(buf)) to_read = sizeof(buf);
 	rc = read (s, buf, to_read);
