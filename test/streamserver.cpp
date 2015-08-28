@@ -114,6 +114,7 @@ void* do_stream (void* arg)
 			if (fpath.path[i] = '/') {
 			    fpath.path[i] = '\0';
 			    mkdir (fpath.path, 0777); 
+			    break;
 			}
 		    }
 		    dirs.push_back(fpath);
