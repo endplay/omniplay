@@ -113,7 +113,10 @@ void* do_stream (void* arg)
 		    for (int i = strlen(fpath.path); i >= 0; i--) {
 			if (fpath.path[i] = '/') {
 			    fpath.path[i] = '\0';
-			    mkdir (fpath.path, 0777); 
+			    rc = mkdir (fpath.path, 0777);
+			    if (rc < 0 && errno != EEXIST) {
+				printf ("mkdir of %s returns %d\n", fpath.path, rc);
+			    }
 			    break;
 			}
 		    }

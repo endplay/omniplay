@@ -143,6 +143,17 @@ long fetch_file (int s, const char* dest_dir)
 	bytes_read += rc;
     }
 
+    struct timespec times[2];
+    times[0].tv_sec = st.st_mtim.tv_sec;
+    times[0].tv_nsec = st.st_mtim.tv_nsec;
+    times[1].tv_sec = st.st_mtim.tv_sec;
+    times[1].tv_nsec = st.st_mtim.tv_nsec;
+    rc = futimens (fd, times);
+    if (rc < 0) {
+	fprintf (stderr, "utimensat returns %ld for file %s, errno=%d\n", rc, filename, errno);
+    }
+
+    close (fd);
     return rc;
 }
 
