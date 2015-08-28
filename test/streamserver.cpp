@@ -14,12 +14,13 @@
 #include <errno.h>
 #include <pthread.h>
 
+#include <vector>
 #include <atomic>
 using namespace std;
 
 #include "util.h"
 #include "streamserver.h"
-
+#include "streamnw.h"
 
 //#define DETAILS
 
@@ -44,74 +45,6 @@ struct epoch_ctl {
 
 int fd; // Persistent descriptor for replay device
 
-static long safe_write (int s, char* buf, u_long size) 
-{
-    long bytes_written = 0;
-    
-    while (bytes_written < size) {
-	long rc = write (s, buf+bytes_written, size-bytes_written);	
-	if (rc <= 0) return rc;
-	bytes_written += rc;
-    }
-    return bytes_written;
-}
-
-int send_file (int s, const char* pathname, const char* filename)
-{
-    char buf[1024*1024];
-    char sendfilename[256];
-    struct stat st;
-    long rc;
-
-    // Get the filename
-    int fd = open (pathname, O_RDONLY);
-    if (fd < 0) {
-	fprintf (stderr, "send_file: cannot open %s, rc=%d, errno=%d\n", pathname, fd, errno);
-	return rc;
-    }
-
-    // Send the filename
-    strcpy (sendfilename, filename);
-    rc = write (s, sendfilename, sizeof(sendfilename));
-    if (rc != sizeof(sendfilename)) {
-	fprintf (stderr, "send_file: cannot write filename, rc=%ld, errno=%d\n", rc, errno);
-	return rc;
-    }
-
-    // Send the file stats
-    rc = fstat (fd, &st);
-    if (rc < 0) {
-	fprintf (stderr, "send_file: cannot stat %s, rc=%ld, errno=%d\n", filename, rc, errno);
-	return rc;
-    }
-    rc = write (s, &st, sizeof(st));
-    if (rc != sizeof(st)) {
-	fprintf (stderr, "send_file: cannot write file %s stats, rc=%ld, errno=%d\n", filename, rc, errno);
-	return rc;
-    }
-	
-    // Send file data
-    u_long bytes_written = 0;
-    while (bytes_written < st.st_size) {
-	u_long to_write = st.st_size - bytes_written;
-	if (to_write > sizeof(buf)) to_write = sizeof(buf);
-	rc = read (fd, buf, to_write);
-	if (rc <= 0) {
-	    fprintf (stderr, "send_file: read of %s returns %ld, errno=%d\n", filename, rc, errno);
-	    break;
-	}
-	long wrc = safe_write(s, buf, rc);
-	if (wrc != rc) {
-	    fprintf (stderr, "send_file: write of %s returns %ld (not %ld), errno=%d\n", filename, wrc, rc, errno);
-	    break;
-	}
-	bytes_written += rc;
-    }
-    close (fd);
-
-    return rc;
-}
-
 // May eventually want to support >1 taint tracking at the same time, but not for now.
 void* do_stream (void* arg) 
 {
@@ -123,7 +56,7 @@ void* do_stream (void* arg)
 
     // Receive control data
     struct epoch_hdr ehdr;
-    rc = read (s, &ehdr, sizeof(ehdr));
+    rc = safe_read (s, &ehdr, sizeof(ehdr));
     if (rc != sizeof(ehdr)) {
 	fprintf (stderr, "Cannot recieve header,rc=%d\n", rc);
 	return NULL;
@@ -133,10 +66,168 @@ void* do_stream (void* arg)
     struct epoch_data edata[epochs];
     struct epoch_ctl ectl[epochs];
 
-    rc = read (s, edata, sizeof(struct epoch_data)*epochs);
+    rc = safe_read (s, edata, sizeof(struct epoch_data)*epochs);
     if (rc != sizeof(struct epoch_data)*epochs) {
 	fprintf (stderr, "Cannot recieve epochs,rc=%d\n", rc);
 	return NULL;
+    }
+
+    if (ehdr.flags == SYNC_LOGFILES) {
+	u_long fcnt, ccnt;
+	bool* freply = NULL;
+	bool* creply = NULL;
+	vector<struct replay_path> dirs;
+	vector<struct replay_path> future_filenames;
+
+	rc = safe_read (s, &fcnt, sizeof(fcnt));
+	if (rc != sizeof(fcnt)) {
+	    fprintf (stderr, "Cannot recieve file count,rc=%d\n", rc);
+	    return NULL;
+	}
+	
+	if (fcnt) {
+	    freply = (bool *) malloc(sizeof(bool)*fcnt);
+	    if (freply == NULL) {
+		fprintf (stderr, "Cannot allocate file reply array of size %lu\n", fcnt);
+		return NULL;
+	    }
+
+	    for (u_long i = 0; i < fcnt; i++) {
+		replay_path fpath;
+		rc = safe_read (s, &fpath, sizeof(fpath));
+		if (rc != sizeof(fpath)) {
+		    fprintf (stderr, "Cannot recieve file path,rc=%d\n", rc);
+		    return NULL;
+		}
+		
+		// Does this file exist?
+		struct stat st;
+		rc = stat (fpath.path, &st);
+		if (rc == 0) {
+		    freply[i] = true;
+		} else {
+		    freply[i] = false;
+
+		    // Make sure directory exists
+		    for (int i = strlen(fpath.path); i >= 0; i--) {
+			if (fpath.path[i] = '/') {
+			    fpath.path[i] = '\0';
+			    mkdir (fpath.path, 0777); 
+			}
+		    }
+		    dirs.push_back(fpath);
+		}
+	    }
+	    
+	    // Send back response
+	    rc = safe_write (s, freply, sizeof(bool)*fcnt);
+	    if (rc != sizeof(bool)*fcnt) {
+		fprintf (stderr, "Cannot send file check reply,rc=%d\n", rc);
+		return NULL;
+	    }
+	}
+
+	rc = safe_read (s, &ccnt, sizeof(ccnt));
+	if (rc != sizeof(fcnt)) {
+	    fprintf (stderr, "Cannot recieve cache count,rc=%d\n", rc);
+	    return NULL;
+	}
+
+	if (ccnt) {
+	    creply = (bool *) malloc(sizeof(bool)*ccnt);
+	    if (creply == NULL) {
+		fprintf (stderr, "Cannot allocate cache reply array of size %lu\n", ccnt);
+		return NULL;
+	    }
+
+	    for (u_long i = 0; i < fcnt; i++) {
+		struct cache_info ci;
+		rc = safe_read (s, &ci, sizeof(ci));
+		if (rc != sizeof(ci)) {
+		    fprintf (stderr, "Cannot recieve cache info,rc=%d\n", rc);
+		    return NULL;
+		}
+		
+		// Does this file exist?
+		char cname[PATHLEN], cmname[PATHLEN], crname[PATHLEN];
+		struct stat64 st;
+		struct replay_path future_filename;
+
+		sprintf (cname, "/replay_cache/%lx_%lx", ci.dev, ci.ino);
+		rc = stat64 (cname, &st);
+		if (rc == 0) {
+		    // Is this the right version?
+		    if (st.st_mtim.tv_sec == ci.mtime.tv_sec && st.st_mtim.tv_nsec == ci.mtime.tv_nsec) {
+			creply[i] = true;
+		    } else {
+			// Nope - but maybe we have it?
+			sprintf (cmname, "/replay_cache/%lx_%lx_%lu_%lu", ci.dev, ci.ino, ci.mtime.tv_sec, ci.mtime.tv_nsec);
+			rc = stat64 (cmname, &st);
+			if (rc == 0) {
+			    creply[i] = true;
+			} else {
+			    creply[i] = false;
+			    if (st.st_mtim.tv_sec > ci.mtime.tv_sec || 
+				(st.st_mtim.tv_sec == ci.mtime.tv_sec && st.st_mtim.tv_nsec > ci.mtime.tv_nsec)) {
+				// New file is past version 
+				strcpy (future_filename.path, cmname);
+				future_filenames.push_back(future_filename);
+			    } else {
+				// Existing file is past version
+				sprintf (crname, "/replay_cache/%lx_%lx_%lu_%lu", ci.dev, ci.ino, st.st_mtim.tv_sec, st.st_mtim.tv_nsec);
+				rc = rename (cname, crname);
+				if (rc < 0) {
+				    fprintf (stderr, "Cannot rename cache file %s to %s, rc=%d\n", cname, crname, rc);
+				    return NULL;
+				}
+				strcpy (future_filename.path, cname);
+				future_filenames.push_back(future_filename);
+			    }
+			}
+		    }
+		} else {
+		    // No versions at all
+		    creply[i] = false;
+		    strcpy (future_filename.path, cname);
+		    future_filenames.push_back(future_filename);
+		}
+	    }
+	    
+	    // Send back response
+	    rc = safe_write (s, creply, sizeof(bool)*ccnt);
+	    if (rc != sizeof(bool)*ccnt) {
+		fprintf (stderr, "Cannot send cache info check reply,rc=%d\n", rc);
+		return NULL;
+	    }
+	}
+
+	// Now receive the files we requested
+	u_long dcnt = 0;
+	for (u_long i = 0; i < fcnt; i++) {
+	    if (freply[i]) {
+		rc = fetch_file (s, dirs[dcnt++].path);
+		if (rc < 0) return NULL;
+	    }
+	} 
+
+	u_long ffcnt = 0;
+	for (u_long i = 0; i < ccnt; i++) {
+	    if (creply[i]) {
+		rc = fetch_file (s, "/replay_cache");
+		if (rc < 0) return NULL;
+
+		// Now rename the file to the correct version
+		rc = rename ("/replay_cache/rename_me", future_filenames[ffcnt].path);
+		if (rc < 0) {
+		    fprintf (stderr, "Cannot rename temp cache file to %s, rc=%d\n", future_filenames[ffcnt].path, rc);
+		    return NULL;
+		}
+		ffcnt++;
+	    }
+	} 
+
+	free (freply);
+	free (creply);
     }
 
     // Set up shared memory regions for queues
@@ -321,7 +412,7 @@ void* do_stream (void* arg)
     // send results if requete
     if (ehdr.flags&SEND_RESULTS) {
 	for (u_long i = 0; i < epochs; i++) {
-	    char pathname[512];
+	    char pathname[PATHLEN];
 	    sprintf (pathname, "/tmp/%d/merge-addrs", ectl[i].cpid);
 	    send_file (s, pathname, "merge-addrs");
 	    sprintf (pathname, "/tmp/%d/merge-outputs-resolved", ectl[i].cpid);

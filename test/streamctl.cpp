@@ -1,3 +1,5 @@
+#define __USE_LARGEFILE64
+
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <stdio.h>
@@ -11,11 +13,14 @@
 #include <pthread.h>
 #include <atomic>
 #include <vector>
+#include <dirent.h>
 #include <unordered_set>
 
 using namespace std;
 
 #include "streamserver.h"
+#include "parseklib.h"
+#include "streamnw.h"
 
 // One for each streamserver
 struct epoch_ctl {
@@ -23,70 +28,6 @@ struct epoch_ctl {
     u_long num;
     int    s;
 };
-
-static long safe_read (int s, char* buf, u_long size) 
-{
-    long bytes_read = 0;
-    
-    while (bytes_read < size) {
-	long rc = read (s, buf+bytes_read, size-bytes_read);	
-	if (rc <= 0) return rc;
-	bytes_read += rc;
-    }
-    return bytes_read;
-}
-
-long fetch_file (int s, char* dest_dir)
-{
-    char buf[1024*1024];
-    char filename[256];
-    struct stat st;
-    u_long bytes_read;
-    long rc;
-
-    // Get the filename
-    rc = safe_read (s, filename, sizeof(filename));
-    if (rc != sizeof(filename)) {
-	fprintf (stderr, "fetch_file: cannot read filename, rc=%ld, errno=%d\n", rc, errno);
-	return rc;
-    }
-
-    // Get the file stats
-    rc = safe_read (s, (char *) &st, sizeof(st));
-    if (rc != sizeof(st)) {
-	fprintf (stderr, "fetch_file: cannot read file %s stats, rc=%ld, errno=%d\n", filename, rc, errno);
-	return rc;
-    }
-	
-    // Open the new file
-    char pathname[256];
-    sprintf (pathname, "%s/%s", dest_dir, filename);
-    int fd = open (pathname, O_CREAT|O_WRONLY|O_TRUNC, 0644);
-    if (fd < 0) {
-	fprintf (stderr, "fetch_file: cannot create %s, rc=%ld, errno=%d\n", pathname, rc, errno);
-	return rc;
-    }
-	
-    // Get the file data and write it out
-    bytes_read = 0;
-    while (bytes_read < st.st_size) {
-	u_long to_read = st.st_size - bytes_read;
-	if (to_read > sizeof(buf)) to_read = sizeof(buf);
-	rc = read (s, buf, to_read);
-	if (rc <= 0) {
-	    fprintf (stderr, "fetch_file: read of %s returns %ld, errno=%d\n", filename, rc, errno);
-	    break;
-	}
-	long wrc = write(fd, buf, rc);
-	if (wrc != rc) {
-	    fprintf (stderr, "fetch_file: write of %s returns %ld, errno=%d\n", filename, rc, errno);
-	    break;
-	}
-	bytes_read += rc;
-    }
-
-    return rc;
-}
 
 int fetch_results (char* top_dir, struct epoch_ctl ectl)
 {
@@ -121,10 +62,12 @@ int main (int argc, char* argv[])
     vector<struct epoch_data> epochs;
     vector<struct epoch_ctl> epochctls;
     unordered_set<int> conns;
-    int wait_for_response = 0, validate = 0;
+    int wait_for_response = 0, validate = 0, sync_files = 0;
     char* dest_dir, *cmp_dir;
     u_long epochno = 0, last_epochno = 0;
-
+    struct vector<struct replay_path> log_files;
+    struct vector<struct cache_info> cache_files;
+    
     if (argc < 2) {
 	format();
     }
@@ -132,6 +75,8 @@ int main (int argc, char* argv[])
     for (int i = 2; i < argc; i++) {
 	if (!strcmp (argv[i], "-w")) {
 	    wait_for_response = 1;
+	} else if (!strcmp (argv[i], "-s")) {
+	    sync_files = 1;
 	} else if (!strcmp (argv[i], "-v")) {
 	    i++;
 	    if (i < argc) {
@@ -187,6 +132,70 @@ int main (int argc, char* argv[])
 
     fclose(file);
 
+    if (sync_files) {
+	// First build up a list of files that are needed for this replay
+	struct dirent* de;
+	DIR* dir = opendir(dirname);
+	if (dir == NULL) {
+	    fprintf (stderr, "Cannot open replay dir %s\n", dirname);
+	    return -1;
+	}
+	while ((de = readdir(dir)) != NULL) {
+	    if (!strcmp(de->d_name, "ckpt") || !strcmp(de->d_name, "mlog") || !strncmp(de->d_name, "ulog", 4)) {
+		printf ("%s\n", de->d_name);
+	    } else if (!strncmp(de->d_name, "klog", 4)) {
+		struct klogfile *log;
+		struct klog_result *res;
+		struct replay_path pathname;
+		struct cache_info cinfo;
+
+		printf ("%s", de->d_name);
+		sprintf (pathname.path, "%s/%s", dirname, de->d_name);
+		log_files.push_back(pathname);
+		// Parse to look for more cache files
+		log = parseklog_open(pathname.path);
+		if (!log) {
+		    fprintf(stderr, "%s doesn't appear to be a valid klog file!\n", pathname.path);
+		    return -1;
+		}
+		while ((res = parseklog_get_next_psr(log)) != NULL) {
+		    if (res->psr.sysnum == 5) {
+			struct open_retvals* pretvals = (struct open_retvals *) res->retparams;
+			if (pretvals) {
+			    cinfo.dev = pretvals->dev;
+			    cinfo.ino = pretvals->ino;
+			    cinfo.mtime = pretvals->mtime;
+			    cache_files.push_back(cinfo);
+			    printf ("cache file: %lx %lx %lx.%lx\n", pretvals->dev, pretvals->ino, pretvals->mtime.tv_sec, pretvals->mtime.tv_nsec);
+			}
+		    } else if (res->psr.sysnum == 11) {
+			struct execve_retvals* pretvals = (struct execve_retvals *) res->retparams;
+			if (pretvals) {
+			    cinfo.dev = pretvals->data.same_group.dev;
+			    cinfo.ino = pretvals->data.same_group.ino;
+			    cinfo.mtime = pretvals->data.same_group.mtime;
+			    cache_files.push_back(cinfo);
+			    printf ("cache file: %lx %lx %lx.%lx\n", pretvals->data.same_group.dev, pretvals->data.same_group.ino, 
+				    pretvals->data.same_group.mtime.tv_sec, pretvals->data.same_group.mtime.tv_nsec);
+			}
+		    } else if (res->psr.sysnum == 86 || res->psr.sysnum == 192) {
+			struct mmap_pgoff_retvals* pretvals = (struct mmap_pgoff_retvals *) res->retparams;
+			if (pretvals) {
+			    cinfo.dev = pretvals->dev;
+			    cinfo.ino = pretvals->ino;
+			    cinfo.mtime = pretvals->mtime;
+			    cache_files.push_back(cinfo);
+			    printf ("cache file: %lx %lx %lx.%lx\n", pretvals->dev, pretvals->ino, pretvals->mtime.tv_sec, pretvals->mtime.tv_nsec);
+			}
+		    }
+		}
+		parseklog_close(log);
+	    } 
+	}
+	closedir(dir);
+    }
+
+
     // Now contact the individual servers and send them the epoch data
     // Assumption is that the epochs handled by a server are contiguous
     auto estart = epochs.begin();
@@ -228,6 +237,7 @@ int main (int argc, char* argv[])
 	    ehdr.flags = 0;
 	    if (wait_for_response) ehdr.flags |= SEND_ACK;
 	    if (validate) ehdr.flags |= SEND_RESULTS;
+	    if (sync_files) ehdr.flags |= SYNC_LOGFILES;
 	    strcpy (ehdr.dirname, dirname);
 	    ehdr.epochs = ecnt;
 	    ehdr.start_flag = start_flag;
@@ -238,7 +248,7 @@ int main (int argc, char* argv[])
 	    }
 	    prev_hostname = estart->hostname;
 
-	    rc = write (s, &ehdr, sizeof(ehdr));
+	    rc = safe_write (s, &ehdr, sizeof(ehdr));
 	    if (rc != sizeof(ehdr)) {
 		fprintf (stderr, "Cannot send header to streamserver, rc=%d\n", rc);
 		return rc;
@@ -246,12 +256,104 @@ int main (int argc, char* argv[])
 
 	    for (; estart != efinish; estart++) {
 		struct epoch_data tmp = *estart;
-		rc = write (s, &tmp, sizeof(struct epoch_data));
+		rc = safe_write (s, &tmp, sizeof(struct epoch_data));
 		if (rc != sizeof(struct epoch_data)) {
 		    fprintf (stderr, "Cannot send epoch data to streamserver, rc=%d\n", rc);
 		    return rc;
 		}
 		epochno++;
+	    }
+
+	    if (sync_files) {
+		// First send count of log files
+		u_long cnt = log_files.size();
+		rc = safe_write (s, &cnt, sizeof(cnt));
+		if (rc != sizeof(cnt)) {
+		    fprintf (stderr, "Cannot send log file count to streamserver, rc=%d\n", rc);
+		    return rc;
+		}
+		
+		// Next send log files
+		for (auto iter = log_files.begin(); iter != log_files.end(); iter++) {
+		    struct replay_path p = *iter;
+		    rc = safe_write (s, &p, sizeof(struct replay_path));
+		    if (rc != sizeof(struct replay_path)) {
+			fprintf (stderr, "Cannot send log file to streamserver, rc=%d\n", rc);
+			return rc;
+		    }
+		}
+
+		// Next send count of cache files
+		cnt = cache_files.size();
+		rc = safe_write (s, &cnt, sizeof(cnt));
+		if (rc != sizeof(cnt)) {
+		    fprintf (stderr, "Cannot send cache file count to streamserver, rc=%d\n", rc);
+		    return rc;
+		}
+
+		// And finally the cache files
+		for (auto iter = cache_files.begin(); iter != cache_files.end(); iter++) {
+		    struct cache_info c = *iter;
+		    rc = safe_write (s, &c, sizeof(struct cache_info));
+		    if (rc != sizeof(struct cache_info)) {
+			fprintf (stderr, "Cannot send cache file to streamserver, rc=%d\n", rc);
+			return rc;
+		    }
+		}
+
+		// Get back response
+		bool response[log_files.size()+cache_files.size()];
+		rc = safe_read (s, response, sizeof(bool)*(log_files.size()+cache_files.size()));
+		if (rc != sizeof(bool)*(log_files.size()+cache_files.size())) {
+		    fprintf (stderr, "Cannot read sync results, rc=%d\n", rc);
+		    return rc;
+		}
+		
+		// Send requested files
+		u_long i, j;
+		for (i = 0; i < log_files.size(); i++) {
+		    if (response[i]) {
+			char* filename = NULL;
+			for (int j = strlen(log_files[i].path); j >= 0; j--) {
+			    if (log_files[i].path[j] = '/') {
+				filename = &log_files[i].path[j];
+				break;
+			    } 
+			}
+			if (filename == NULL) {
+			    fprintf (stderr, "Bad path name: %s\n", log_files[i].path);
+			    return -1;
+			}
+			rc = send_file (s, log_files[i].path, filename);
+			if (rc < 0) {
+			    fprintf (stderr, "Unable to send lof file %s\n", log_files[i].path);
+			    return rc;
+			}
+		    }
+		}
+		for (j = 0; j < cache_files.size(); j++) {
+		    if (response[i+j]) {
+			char cname[PATHLEN];
+			struct stat64 st;
+
+			// Find the cache file locally
+			sprintf (cname, "/replay_cache/%lx_%lx", cache_files[i].dev, cache_files[i].ino);
+			rc = stat64 (cname, &st);
+			if (rc < 0) {
+			    fprintf (stderr, "cannot stat cache file %s, rc=%d\n", cname, rc);
+			    return rc;
+			}
+
+			if (st.st_mtim.tv_sec != cache_files[i].mtime.tv_sec || st.st_mtim.tv_nsec != cache_files[i].mtime.tv_nsec) {
+			    // if times do not match, open a past version
+			    sprintf (cname, "/replay_cache/%lx_%lx_%lu_%lu", cache_files[i].dev, cache_files[i].ino, 
+				     cache_files[i].mtime.tv_sec, cache_files[i].mtime.tv_nsec);
+			}
+
+			// Send the file to streamserver
+			rc = send_file (s, cname, "rename_me");
+		    }
+		}
 	    }
 
 	    struct epoch_ctl ectl;
@@ -311,7 +413,6 @@ int main (int argc, char* argv[])
 	    sprintf (add, " %d", i);
 	    strcat (cmd, add);
 	}
-	printf ("%s", cmd);
 	system (cmd);
      }
 

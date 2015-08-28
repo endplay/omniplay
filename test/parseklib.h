@@ -1,6 +1,10 @@
 #ifndef __PARSEKLIB_H
 #define __PARSEKLIB_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/times.h>
@@ -366,6 +370,10 @@ static inline void parseklog_default_print(FILE *out, struct klog_result *res) {
 }
 
 int klog_print(FILE *out, struct klog_result *result);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
 
