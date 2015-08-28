@@ -119,7 +119,7 @@ long fetch_file (int s, const char* dest_dir)
     // Open the new file
     char pathname[PATHLEN];
     sprintf (pathname, "%s/%s", dest_dir, filename);
-    int fd = open (pathname, O_CREAT|O_WRONLY|O_TRUNC, 0644);
+    int fd = open (pathname, O_CREAT|O_WRONLY|O_TRUNC, st.st_mode);
     if (fd < 0) {
 	fprintf (stderr, "fetch_file: cannot create %s, rc=%ld, errno=%d\n", pathname, rc, errno);
 	return rc;
