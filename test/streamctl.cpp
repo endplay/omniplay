@@ -50,7 +50,7 @@ int fetch_results (char* top_dir, struct epoch_ctl ectl)
 
 void format ()
 {
-    fprintf (stderr, "format: streamctl <epoch description file> [-w] [-v dest_dir cmp_no]\n");
+    fprintf (stderr, "format: streamctl <epoch description file> [-w] [-s] [-v dest_dir cmp_no]\n");
     exit (0);
 }
 
@@ -142,14 +142,18 @@ int main (int argc, char* argv[])
 	}
 	while ((de = readdir(dir)) != NULL) {
 	    if (!strcmp(de->d_name, "ckpt") || !strcmp(de->d_name, "mlog") || !strncmp(de->d_name, "ulog", 4)) {
+		struct replay_path pathname;
+
 		printf ("%s\n", de->d_name);
+		sprintf (pathname.path, "%s/%s", dirname, de->d_name);
+		log_files.push_back(pathname);
 	    } else if (!strncmp(de->d_name, "klog", 4)) {
 		struct klogfile *log;
 		struct klog_result *res;
 		struct replay_path pathname;
 		struct cache_info cinfo;
 
-		printf ("%s", de->d_name);
+		printf ("%s\n", de->d_name);
 		sprintf (pathname.path, "%s/%s", dirname, de->d_name);
 		log_files.push_back(pathname);
 		// Parse to look for more cache files
@@ -315,8 +319,8 @@ int main (int argc, char* argv[])
 		    if (response[i]) {
 			char* filename = NULL;
 			for (int j = strlen(log_files[i].path); j >= 0; j--) {
-			    if (log_files[i].path[j] = '/') {
-				filename = &log_files[i].path[j];
+			    if (log_files[i].path[j] == '/') {
+				filename = &log_files[i].path[j+1];
 				break;
 			    } 
 			}
@@ -324,9 +328,10 @@ int main (int argc, char* argv[])
 			    fprintf (stderr, "Bad path name: %s\n", log_files[i].path);
 			    return -1;
 			}
+			printf ("Sending %s name %s to %s\n", log_files[i].path, filename, prev_hostname);
 			rc = send_file (s, log_files[i].path, filename);
 			if (rc < 0) {
-			    fprintf (stderr, "Unable to send lof file %s\n", log_files[i].path);
+			    fprintf (stderr, "Unable to send log file %s\n", log_files[i].path);
 			    return rc;
 			}
 		    }

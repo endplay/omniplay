@@ -103,10 +103,11 @@ void* do_stream (void* arg)
 		// Does this file exist?
 		struct stat st;
 		rc = stat (fpath.path, &st);
+		printf ("stat of file %s returns %d\n", fpath.path, rc);
 		if (rc == 0) {
-		    freply[i] = true;
-		} else {
 		    freply[i] = false;
+		} else {
+		    freply[i] = true;
 
 		    // Make sure directory exists
 		    for (int i = strlen(fpath.path); i >= 0; i--) {
@@ -140,7 +141,7 @@ void* do_stream (void* arg)
 		return NULL;
 	    }
 
-	    for (u_long i = 0; i < fcnt; i++) {
+	    for (u_long i = 0; i < ccnt; i++) {
 		struct cache_info ci;
 		rc = safe_read (s, &ci, sizeof(ci));
 		if (rc != sizeof(ci)) {
@@ -155,18 +156,20 @@ void* do_stream (void* arg)
 
 		sprintf (cname, "/replay_cache/%lx_%lx", ci.dev, ci.ino);
 		rc = stat64 (cname, &st);
+		printf ("stat of cache file %s returns %d\n", cname, rc);
 		if (rc == 0) {
 		    // Is this the right version?
 		    if (st.st_mtim.tv_sec == ci.mtime.tv_sec && st.st_mtim.tv_nsec == ci.mtime.tv_nsec) {
-			creply[i] = true;
+			creply[i] = false;
 		    } else {
 			// Nope - but maybe we have it?
 			sprintf (cmname, "/replay_cache/%lx_%lx_%lu_%lu", ci.dev, ci.ino, ci.mtime.tv_sec, ci.mtime.tv_nsec);
 			rc = stat64 (cmname, &st);
+			printf ("stat of cache file %s returns %d\n", cmname, rc);
 			if (rc == 0) {
-			    creply[i] = true;
-			} else {
 			    creply[i] = false;
+			} else {
+			    creply[i] = true;
 			    if (st.st_mtim.tv_sec > ci.mtime.tv_sec || 
 				(st.st_mtim.tv_sec == ci.mtime.tv_sec && st.st_mtim.tv_nsec > ci.mtime.tv_nsec)) {
 				// New file is past version 
@@ -187,7 +190,7 @@ void* do_stream (void* arg)
 		    }
 		} else {
 		    // No versions at all
-		    creply[i] = false;
+		    creply[i] = true;
 		    strcpy (future_filename.path, cname);
 		    future_filenames.push_back(future_filename);
 		}
