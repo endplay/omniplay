@@ -153,7 +153,6 @@ int main (int argc, char* argv[])
 		struct replay_path pathname;
 		struct cache_info cinfo;
 
-		printf ("%s\n", de->d_name);
 		sprintf (pathname.path, "%s/%s", dirname, de->d_name);
 		log_files.push_back(pathname);
 		// Parse to look for more cache files
@@ -170,7 +169,6 @@ int main (int argc, char* argv[])
 			    cinfo.ino = pretvals->ino;
 			    cinfo.mtime = pretvals->mtime;
 			    cache_files.push_back(cinfo);
-			    printf ("cache file: %lx %lx %lx.%lx\n", pretvals->dev, pretvals->ino, pretvals->mtime.tv_sec, pretvals->mtime.tv_nsec);
 			}
 		    } else if (res->psr.sysnum == 11) {
 			struct execve_retvals* pretvals = (struct execve_retvals *) res->retparams;
@@ -179,8 +177,6 @@ int main (int argc, char* argv[])
 			    cinfo.ino = pretvals->data.same_group.ino;
 			    cinfo.mtime = pretvals->data.same_group.mtime;
 			    cache_files.push_back(cinfo);
-			    printf ("cache file: %lx %lx %lx.%lx\n", pretvals->data.same_group.dev, pretvals->data.same_group.ino, 
-				    pretvals->data.same_group.mtime.tv_sec, pretvals->data.same_group.mtime.tv_nsec);
 			}
 		    } else if (res->psr.sysnum == 86 || res->psr.sysnum == 192) {
 			struct mmap_pgoff_retvals* pretvals = (struct mmap_pgoff_retvals *) res->retparams;
@@ -189,7 +185,6 @@ int main (int argc, char* argv[])
 			    cinfo.ino = pretvals->ino;
 			    cinfo.mtime = pretvals->mtime;
 			    cache_files.push_back(cinfo);
-			    printf ("cache file: %lx %lx %lx.%lx\n", pretvals->dev, pretvals->ino, pretvals->mtime.tv_sec, pretvals->mtime.tv_nsec);
 			}
 		    }
 		}

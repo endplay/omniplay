@@ -72,7 +72,7 @@ void* do_stream (void* arg)
 	return NULL;
     }
 
-    if (ehdr.flags == SYNC_LOGFILES) {
+    if (ehdr.flags&SYNC_LOGFILES) {
 	u_long fcnt, ccnt;
 	bool* freply = NULL;
 	bool* creply = NULL;
