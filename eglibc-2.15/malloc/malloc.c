@@ -872,8 +872,12 @@ int      __posix_memalign(void **, size_t, size_t);
 #define M_MXFAST            1
 #endif
 
+  /* REPLAY - fast bufs are lock free, so don't use them.  Could instrument, but
+     dubious we'd get any performance benefit in that case.  We might consider
+     virtualizing the whole malloc library, not sure... */
 #ifndef DEFAULT_MXFAST
-#define DEFAULT_MXFAST     (64 * SIZE_SZ / 4)
+  //#define DEFAULT_MXFAST     (64 * SIZE_SZ / 4)
+#define DEFAULT_MXFAST     0
 #endif
 
 
@@ -2913,6 +2917,16 @@ public_mALLOc(size_t bytes)
 
   __malloc_ptr_t (*hook) (size_t, __const __malloc_ptr_t)
     = force_reg (__malloc_hook);
+
+#ifdef MUSE_EXTRA_DEBUG_LOG
+  {
+    u_long msg[2];
+    msg[0] = 0x00;
+    msg[1] = (u_long) bytes;
+    mutex_msg (msg, 8);
+  }
+#endif
+
   if (__builtin_expect (hook != NULL, 0))
     return (*hook)(bytes, RETURN_ADDRESS (0));
 
@@ -2943,6 +2957,16 @@ public_mALLOc(size_t bytes)
     (void)mutex_unlock(&ar_ptr->mutex);
   assert(!victim || chunk_is_mmapped(mem2chunk(victim)) ||
 	 ar_ptr == arena_for_chunk(mem2chunk(victim)));
+
+#ifdef MUSE_EXTRA_DEBUG_LOG
+  {
+    u_long msg[2];
+    msg[0] = 0x01;
+    msg[1] = (u_long) victim;
+    mutex_msg (msg, 8);
+  }
+#endif
+
   return victim;
 }
 libc_hidden_def(public_mALLOc)
@@ -2952,6 +2976,15 @@ public_fREe(void* mem)
 {
   mstate ar_ptr;
   mchunkptr p;                          /* chunk corresponding to mem */
+
+#ifdef MUSE_EXTRA_DEBUG_LOG
+  {
+    u_long msg[2];
+    msg[0] = 0x03;
+    msg[1] = (u_long) mem;
+    mutex_msg (msg, 8);
+  }
+#endif
 
   void (*hook) (__malloc_ptr_t, __const __malloc_ptr_t)
     = force_reg (__free_hook);
@@ -2994,6 +3027,17 @@ public_rEALLOc(void* oldmem, size_t bytes)
 
   __malloc_ptr_t (*hook) (__malloc_ptr_t, size_t, __const __malloc_ptr_t) =
     force_reg (__realloc_hook);
+
+#ifdef MUSE_EXTRA_DEBUG_LOG
+  {
+    u_long msg[3];
+    msg[0] = 0x04;
+    msg[1] = (u_long) oldmem;
+    msg[2] = (u_long) bytes;
+    mutex_msg (msg, 12);
+  }
+#endif
+
   if (__builtin_expect (hook != NULL, 0))
     return (*hook)(oldmem, bytes, RETURN_ADDRESS (0));
 
@@ -3073,6 +3117,15 @@ public_rEALLOc(void* oldmem, size_t bytes)
 	  _int_free(ar_ptr, oldp, 0);
 	}
     }
+
+#ifdef MUSE_EXTRA_DEBUG_LOG
+  {
+    u_long msg[2];
+    msg[0] = 0x05;
+    msg[1] = (u_long) newp;
+    mutex_msg (msg, 8);
+  }
+#endif
 
   return newp;
 }
@@ -3432,6 +3485,16 @@ _int_malloc(mstate av, size_t bytes)
   mchunkptr       bck;              /* misc temp for linking */
 
   const char *errstr = NULL;
+
+#ifdef MUSE_EXTRA_DEBUG_LOG
+  {
+    // Log malloc sizes
+    u_long msg[2];
+    msg[0] = 0x10;
+    msg[1] = (u_long) bytes;
+    mutex_msg (msg, 8);
+  }
+#endif
 
   /*
     Convert request size to internal form by adding SIZE_SZ bytes
@@ -5256,9 +5319,10 @@ weak_alias (__malloc_get_state, malloc_get_state)
 weak_alias (__malloc_set_state, malloc_set_state)
 
 /* Begin REPLAY */
-void (*pthread_log_lock)(__libc_lock_t *);
+void (*pthread_log_lock)(__libc_lock_t *) = NULL;
 int (*pthread_log_trylock)(__libc_lock_t *) = NULL;
 void (*pthread_log_unlock)(__libc_lock_t *) = NULL;
+void (*pthread_log_msg)(char*, int) = NULL;
 
 void __libc_malloc_setup (void (*__pthread_log_lock)(__libc_lock_t *),
 			  int (*__pthread_log_trylock)(__libc_lock_t *),
@@ -5295,6 +5359,20 @@ void mutex_unlock(__libc_lock_t *m)
 strong_alias (__libc_malloc_setup, __malloc_setup) strong_alias (__libc_malloc_setup, malloc_setup)
 strong_alias (mutex_lock, __replay_ext_mutex_lock) strong_alias (mutex_lock, replay_ext_mutex_lock)
 strong_alias (mutex_unlock, __replay_ext_mutex_unlock) strong_alias (mutex_unlock, replay_ext_mutex_unlock)
+
+#ifdef MUSE_EXTRA_DEBUG_LOG
+// For debugging
+void __libc_malloc_extra_setup (void (*__pthread_log_msg)(char *, int))
+{
+  pthread_log_msg = __pthread_log_msg;
+}
+strong_alias (__libc_malloc_extra_setup, __malloc_extra_setup) strong_alias (__libc_malloc_extra_setup, malloc_extra_setup)
+
+void mutex_msg (char* msg, int len)
+{
+  if (pthread_log_msg) pthread_log_msg(msg, len);
+}
+#endif
 
 /* End REPLAY */
 

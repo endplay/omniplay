@@ -280,7 +280,9 @@ int check_recording (void)
     head->ignore_flag = 0;
     DPRINT ("Kernel sets log status to %d\n", pthread_log_status);
     malloc_setup(pthread_log_mutex_lock, pthread_log_mutex_trylock, pthread_log_mutex_unlock);
-    //malloc_extra_setup(pthread_log_msg);
+#ifdef USE_EXTRA_DEBUG_LOG
+    malloc_extra_setup(pthread_log_msg);
+#endif
 
     DPRINT("end of check recording, head %p, pthread_log_status %d, ppthread_log_clock %p, *ppthread_log_clock %lu\n", head, pthread_log_status, ppthread_log_clock, *ppthread_log_clock);
 
@@ -573,7 +575,7 @@ pthread_log_replay (unsigned long type, unsigned long check)
     }
 
     while (*ppthread_log_clock < next_clock) {
-	DPRINT ("waiting for clock %lu\n", next_clock);
+	DPRINT ("waiting for clock %lu (type %lx, check %lx)\n", next_clock, type, check);
 	pthread_log_block (next_clock); // Kernel will block us until we can run again
     }
     head->expected_clock = next_clock + 1;
@@ -2783,5 +2785,35 @@ uint64_t pthread_log__sync_sub_and_fetch_uint64(uint64_t* val, uint64_t x)
     ret =  __sync_sub_and_fetch(val, x);
   }
   return ret;
+}
+
+void pthread_log_app_value_rec (u_long val, u_long check)
+{
+  pthread_log_record (0, APP_VALUE_ENTER, check, 1); 
+  pthread_log_record (val, APP_VALUE_EXIT, check, 0); 
+}
+
+u_long pthread_log_app_value_rep (u_long check)
+{
+  pthread_log_replay (APP_VALUE_ENTER, check); 
+  return pthread_log_replay (APP_VALUE_EXIT, check); 
+}
+
+void pthread_app_value (u_long* pval, u_long check)
+{
+    int ret;		  
+    if (is_recording()) { 
+	struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+	GET_OLD_STACKP();
+	SET_NEW_STACKP();
+	pthread_log_app_value_rec (*pval, check);
+	RESET_OLD_STACKP(); 
+    } else if (is_replaying()) { 
+	struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+	GET_OLD_STACKP();
+	SET_NEW_STACKP();
+	*pval = pthread_log_app_value_rep (check);
+	RESET_OLD_STACKP(); 
+    }								   
 }
 
