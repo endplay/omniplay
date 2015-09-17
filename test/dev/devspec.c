@@ -276,6 +276,21 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 			return -EFAULT;
 		}
 		return get_attach_status (pid);
+		
+	case SPECI_WAIT_FOR_REPLAY_GROUP:
+		if (len != sizeof(pid_t))
+		{
+			printk("ioctl SPECI_WAIT_REPLAY_GROUP fails, len %d\n", len);
+			return -EINVAL;
+		}
+		if (copy_from_user(&pid, (void *)data, sizeof(pid_t)))
+		{
+			return -EFAULT;
+		}
+
+		printk("called ioctl SPECI_WAIT_REPLAY_GROUP\n");
+		return wait_for_replay_group(pid);
+
 	default:
 		return -EINVAL;
 	}

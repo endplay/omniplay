@@ -688,6 +688,12 @@ struct record_group {
 	u_long rg_prev_brk;		// the previous maximum brk, for recording memory maps
 	char rg_mismatch_flag;      // Set when an error has occurred and we want to abandon ship
 	char* rg_libpath;           // For glibc hack
+
+	//ARQUINN: we need a queue here for waiters. 
+	wait_queue_head_t finished_queue; // the queue of tasks waiting for this replay to finish
+	int finished;        //Is the replay group finished running? for right now I have this locked by the mutex above... not sure it really makes sense.
+
+
 };
 
 #define REPLAY_TIMEBUF_ENTRIES 10000
@@ -715,6 +721,7 @@ struct replay_group {
 	struct replay_timing* rg_timebuf; // Buffer for recording timings
 	u_long rg_timecnt;          // Number of entries in the buffer
 	loff_t rg_timepos;          // Write postition in timings file
+    
 };
 
 struct argsalloc_node {
@@ -1783,6 +1790,8 @@ new_replay_group (struct record_group* prec_group, int follow_splits)
 	atomic_inc(&rstats.started);
 #endif
 
+
+
 	return prg;
 
 err_replaythreads:
@@ -1837,6 +1846,12 @@ new_record_group (char* logdir)
 	prg->rg_reserved_mem_list = ds_list_create (rm_cmp, 0, 1);
 	prg->rg_prev_brk = 0;
 
+	//ARQUINN: added for the queue of waiting tasks.
+	//         (do we need this finish?) 
+	init_waitqueue_head(&(prg->finished_queue));
+	prg->finished = 0;
+
+
 	MPRINT ("Pid %d new_record_group %lld: exited\n", current->pid, prg->rg_id);
 	return prg;
 
@@ -1878,6 +1893,19 @@ destroy_replay_group (struct replay_group *prepg)
 			ds_list_destroy (prepg->rg_used_address_list);
 		}
 	}
+
+	/*
+	 * ARQUINN: this function is always called with the lock. (look at the calls 
+	 *          to the put_replay_group). So, I don't need to grab the lock for the
+	 *          finished variable below, its already being grabbed. 
+      	 */
+	printk("about to change finished %d\n",prepg->rg_rec_group->finished);
+	prepg->rg_rec_group->finished = 1;
+
+	printk("changed finished %d\n",prepg->rg_rec_group->finished);
+	wake_up(&(prepg->rg_rec_group->finished_queue));
+
+	printk("destroying a replay. finished %d\n",prepg->rg_rec_group->finished);
 
 	// Put record group so it can be destroyed
 	put_record_group (prepg->rg_rec_group);
@@ -3287,6 +3315,8 @@ get_linker (void)
 	}
 }
 
+
+//CODE THAT GETS CALLED FROM RESUME
 long
 replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 		    int follow_splits, int save_mmap, loff_t attach_index, int attach_pid, int ckpt_at, int record_timing)
@@ -5359,6 +5389,48 @@ get_attach_status(pid_t pid)
     }
 }
 EXPORT_SYMBOL(get_attach_status);
+
+//ARQUINN: added here!: 
+// What should I do with the return code? 
+int
+wait_for_replay_group(pid_t pid) 
+{
+	struct task_struct* tsk;
+	tsk = find_task_by_vpid(pid);
+	if (tsk) {
+		if(tsk->replay_thrd) { 
+			//just slightly easier to deal with
+			struct replay_group* rp_group = tsk->replay_thrd->rp_group;
+			struct record_group* rec_group = rp_group->rg_rec_group;
+
+			get_record_group (rec_group);
+			printk("locking the rec_group. finished %d\n", rec_group->finished);
+			rg_lock(rec_group);
+
+			while(!rec_group->finished) { 
+
+				rg_unlock(rec_group);
+				printk("going to sleep\n");
+				wait_event_interruptible(rec_group->finished_queue,rec_group->finished);
+				printk("woken up! finished: %d\n", rec_group->finished );
+				rg_lock(rec_group);
+			};
+
+			rg_unlock(rec_group);
+			printk("finished in wait_for_replay_group \n");
+			put_record_group (rec_group);
+			return pid;
+		}
+		else {
+			return -EINVAL;
+		}
+	} else {
+		printk("wait_for_replay_group task not found\n");
+		return -ESRCH;
+	}
+}
+EXPORT_SYMBOL(wait_for_replay_group);
+
 
 long check_clock_after_syscall (int syscall)
 {

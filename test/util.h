@@ -60,6 +60,7 @@ long reset_replay_ndx(int fd_spec);
 
 pid_t get_current_record_pid(int fd_spec, pid_t nonrecord_pid);
 long get_attach_status (int fd_spec, pid_t pid);
+int wait_for_replay_group(int fd_spec, pid_t pid);
 
 #ifdef __cplusplus
 }

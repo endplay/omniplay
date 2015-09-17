@@ -215,4 +215,7 @@ long get_attach_status(int fd_spec, pid_t pid)
     return ioctl (fd_spec, SPECI_GET_ATTACH_STATUS, &pid);
 }
 
-
+int wait_for_replay_group(int fd_spec, pid_t pid) 
+{
+    return ioctl(fd_spec,SPECI_WAIT_FOR_REPLAY_GROUP, &pid);
+}

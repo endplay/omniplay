@@ -118,6 +118,8 @@ void save_exec_args(unsigned long argv, int argc, unsigned long envp, int envc);
 unsigned long get_replay_args(void);
 unsigned long get_env_vars(void);
 long get_attach_status(pid_t pid);
+int wait_for_replay_group(pid_t pid);
+
 
 long get_record_group_id(__u64 __user * prg_id);
 

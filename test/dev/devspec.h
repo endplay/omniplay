@@ -93,5 +93,6 @@ struct get_record_pid_data {
 #define SPECI_CKPT_RESUME _IOR('u', 16, struct wakeup_ckpt_data)
 #define SPECI_CKPT_PROC_RESUME _IOR('u', 17, struct wakeup_ckpt_data)
 #define SPECI_GET_ATTACH_STATUS _IOR('u', 18, pid_t)
+#define SPECI_WAIT_FOR_REPLAY_GROUP _IOR('u', 19, pid_t)
 
 #endif

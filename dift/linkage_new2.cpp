@@ -81,18 +81,24 @@ int dev_fd; // File descriptor for the replay device
 int get_record_pid(void);
 #endif
 
+void init_logs(void);
 //#define USE_CODEFLUSH_TRACK
 // Debug Macros
 // #define TRACE_TAINT_OPS
 
 //#define MMAP_INPUTS
-//#define EXEC_INPUTS
+#define EXEC_INPUTS
 //#define USE_TLS_SCRATCH
 #ifdef USE_TLS_SCRATCH
 REG tls_reg;
 #else
 TLS_KEY tls_key;
 #endif
+
+//ARQUINN: added constant for copyfile
+#define COPY_BUFFER_SIZE 1024
+
+
 
 struct save_state {
     uint64_t rg_id; // for verification purposes, ask the kernel for these!
@@ -198,6 +204,52 @@ void instrument_before_badmemcpy(void) {
     bad_memcpy_flag = 1;
 }
 #endif
+
+//ARQUINN: added helper methods
+static void copy_file(int src, int dest) { 
+    char buff[COPY_BUFFER_SIZE]; 
+    int read_bytes, written_bytes,rc;
+
+    fprintf(stderr, "copy_file src %d, dest %d\n",src, dest);
+
+    rc = lseek(src,0, SEEK_SET);
+    if(rc < 0) 
+	fprintf(stderr, "There was an error using lseek rc %d, errno %d\n",rc,errno);
+
+    while((read_bytes = read(src,buff,COPY_BUFFER_SIZE)) > 0) 
+    {
+	written_bytes = 0;
+	while(written_bytes < read_bytes) { 
+	    written_bytes += write(dest,buff,read_bytes - written_bytes);
+	}
+	read_bytes = read(src,buff,COPY_BUFFER_SIZE);
+    }
+    if(read_bytes < 0) { 
+	fprintf(stderr, "There was an error reading file (int) rc %d, errno %d\n",read_bytes,errno);
+    }
+}
+
+static void copy_file(FILE* src, FILE* dest) { 
+    char buff[COPY_BUFFER_SIZE]; 
+    int read_chars,written_chars, rc;
+
+    rc = fseek(src,0, SEEK_SET);
+    if(rc < 0) 
+	fprintf(stderr, "There was an error using lseek rc %d, errno %d\n",rc,errno);
+
+
+    while((read_chars = fread(buff,sizeof(char),COPY_BUFFER_SIZE,src)) > 0) 
+    { 
+	written_chars = 0;
+	while(written_chars < read_chars) { 
+	    written_chars += fwrite(buff,sizeof(char),read_chars-written_chars, dest);
+	}
+    }
+    if(read_chars < 0) { 
+	fprintf(stderr, "There was an error reading file (FILE*) rc %d, errno %d\n",read_chars,errno);
+    }
+
+}
 
 ADDRINT find_static_address(ADDRINT ip)
 {
@@ -322,8 +374,11 @@ static inline void sys_open_stop(struct thread_data* ptdata, int rc)
 
         write_filename_mapping(filenames_f, oi->fileno, oi->name);
 
+
+
 #ifdef LINKAGE_FDTRACK
         int cloexec = oi->flags | O_CLOEXEC;
+//	SYSCALL_DEBUG(stderr, "LINKAGE_FDTRACK is defined!");
         add_taint_fd(rc, cloexec);
 #endif
     }
@@ -18675,7 +18730,64 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
     struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
 #endif
     fprintf(stderr, "AfterForkInChild\n");
-    tdata->record_pid = get_record_pid();
+
+    /* grab the old file descriptors for things that we're going to have to copy
+     * - close the old log, open a new log
+     * - copy the filenames file
+     * - copy the tokens file
+     * - creating a new output file
+     * 
+     * are there any log files and things that need to be cleaned? 
+     */
+    
+    fclose(log_f); 
+    log_f = NULL;
+    init_logs();
+
+    int record_pid = get_record_pid();
+    FILE* filenames_f_old = filenames_f; 
+    int tokens_fd_old = tokens_fd;
+
+    //open new filenames
+    char filename_mapping[256];
+    snprintf(filename_mapping, 256, "%s/filenames.%d", group_directory, record_pid);
+    filenames_f = fopen(filename_mapping, "w");
+    if (!filenames_f) {
+      fprintf(stderr, "Could not open filenames mapping file %s\n", filename_mapping);
+      exit(-1);
+    }
+
+   
+    init_filename_mapping(filenames_f);
+
+    char name[256];
+    snprintf(name, 256, "%s/tokens.%d", group_directory, record_pid);
+    tokens_fd = open(name, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    if (tokens_fd == -1) {
+      fprintf(stderr, "Could not open tokens file %s\n", name);
+      exit(-1);
+    }
+
+
+    char output_file_name[256];
+    snprintf(output_file_name, 256, "%s/dataflow.result.%d", group_directory, record_pid);
+    outfd = open(output_file_name, O_CREAT | O_TRUNC | O_LARGEFILE | O_RDWR, 0644);
+    if (outfd < 0) {
+      fprintf(stderr, "could not open output file %s, errno %d\n", output_file_name, errno);
+      exit(-1);
+    }
+
+    //copy the files and close the old ones 
+    fprintf(stderr, "\t- record_pid %d\n", record_pid);
+
+    copy_file(tokens_fd_old, tokens_fd); 
+    copy_file(filenames_f_old, filenames_f); 
+
+    close(tokens_fd_old);
+    fclose(filenames_f_old);
+
+
+    tdata->record_pid = record_pid;
     // reset syscall index for thread
     tdata->syscall_cnt = 0;
 #endif
@@ -18685,8 +18797,6 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
 void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 {
     struct thread_data* ptdata;
-
-    fprintf (stderr, "thread_start\n");
 
     // TODO Use slab allocator
     ptdata = (struct thread_data *) malloc (sizeof(struct thread_data));
@@ -18746,11 +18856,13 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
             char name[256];
             // snprintf(name, 256, "%s/tokens_%llu", group_directory, ptdata->rg_id);
             snprintf(name, 256, "%s/tokens", group_directory);
-            tokens_fd = open(name, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	    //ARQUINN: changed so that we can read this file if forking
+            tokens_fd = open(name, O_RDWR | O_CREAT | O_TRUNC, 0644);
             if (tokens_fd == -1) {
                 fprintf(stderr, "Could not open tokens file %s\n", name);
                 exit(-1);
             }
+	    fprintf(stderr, "parent tokens_fd: %d\n",tokens_fd);
         }
         if (outfd == -1) {
             char output_file_name[256];
@@ -18844,7 +18956,7 @@ void init_logs(void)
     char log_name[256];
     if (!log_f) {
         snprintf(log_name, 256, "%s/confaid.log.%d",
-                group_directory, PIN_GetPid());
+		 group_directory, get_record_pid()); 
         log_f = fopen(log_name, "w");
     }
 

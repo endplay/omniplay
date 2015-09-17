@@ -78,14 +78,23 @@ struct taint_number {
     u_long p2;
 };
 
+
+//ARQUINN: the control_info
+
+struct merge_buffer_control { 
+  u_long merge_buffer_count;
+  u_long merge_total_count;
+  off64_t merge_offset;
+};
+
 extern u_long num_merge_entries;
 #define MERGE_BLOCK_SIZE (num_merge_entries*sizeof(struct taint_number))
 
 static struct taint_number* merge_buffer;
-static u_long merge_buffer_count = 0;
-u_long merge_total_count = 0xe0000001;
-static off64_t merge_offset = 0;
+static struct merge_buffer_control * merge_control_shm;
+
 static char node_num_filename[256];
+
 
 #ifdef DEBUGTRACE
 
@@ -115,9 +124,9 @@ int is_in_trace_set(u_long val)
 static u_long add_merge_number(u_long p1, u_long p2)
 {
     int rc;
-
-    if (merge_buffer_count == num_merge_entries) {
-	if (merge_offset == 0) {
+    //ARQUINN: logic here to remove the merge_buffer_count
+    if (merge_control_shm->merge_buffer_count == num_merge_entries) {
+	if (merge_control_shm->merge_offset == 0) {
 
 	    // Need to close the shmem and open the overflow file
 	    close (node_num_fd);
@@ -129,8 +138,8 @@ static u_long add_merge_number(u_long p1, u_long p2)
 		assert(0);
 	    }
 	}
-	merge_offset += MERGE_BLOCK_SIZE;
-	rc = ftruncate (node_num_fd, merge_offset);
+	merge_control_shm->merge_offset += MERGE_BLOCK_SIZE;
+	rc = ftruncate (node_num_fd, merge_control_shm->merge_offset);
 	if (rc < 0) {
             fprintf(stderr, "could not truncate merge log, errno %d\n", errno);
             assert(0);
@@ -141,23 +150,23 @@ static u_long add_merge_number(u_long p1, u_long p2)
 	}
 	  
 	merge_buffer = (struct taint_number *) mmap (0, MERGE_BLOCK_SIZE, PROT_READ|PROT_WRITE, MAP_SHARED, 
-						     node_num_fd, merge_offset-MERGE_BLOCK_SIZE);
+						     node_num_fd, merge_control_shm->merge_offset-MERGE_BLOCK_SIZE);
 	if (merge_buffer == MAP_FAILED) {
 	    fprintf (stderr, "could not map merge buffer, errno=%d\n", errno);
 	    assert (0);
 	}
-        merge_buffer_count = 0;
+        merge_control_shm->merge_buffer_count = 0;
     } 
-    merge_buffer[merge_buffer_count].p1 = p1;
-    merge_buffer[merge_buffer_count].p2 = p2;
+    merge_buffer[merge_control_shm->merge_buffer_count].p1 = p1;
+    merge_buffer[merge_control_shm->merge_buffer_count].p2 = p2;
 #ifdef DEBUGTRACE
     if (is_in_trace_set (p1) || is_in_trace_set (p2)) {
-	printf ("merge: %lx, %lx -> %lx\n", p1, p2, merge_total_count);
-	add_to_trace_set (merge_total_count);
+	printf ("merge: %lx, %lx -> %lx\n", p1, p2, merge_control_shm->merge_total_count);
+	add_to_trace_set (merge_control_shm->merge_total_count);
     }
 #endif
-    merge_buffer_count++;
-    return merge_total_count++;
+    merge_control_shm->merge_buffer_count++;
+    return merge_control_shm->merge_total_count++;
 }
 
 struct taint_node {
@@ -231,6 +240,50 @@ void check_mem_taints(taint_t* mem_taints, u_long addr, int size)
 }
 #endif
 
+
+//ARQUINN: initialize the shared memory region for the mergeFile
+static inline void init_merge_control_shm(char* group_dir) { 
+    char merge_control_shmemname[256];
+    int rc;
+    u_int i;
+    int merge_control_fd;
+
+    snprintf(merge_control_shmemname, 256, "/taint_shm%s", group_dir);
+    for (i = 1; i < strlen(merge_control_shmemname); i++) {
+        if (merge_control_shmemname[i] == '/') merge_control_shmemname[i] = '.';
+    }
+    merge_control_fd = shm_open(merge_control_shmemname, O_CREAT | O_TRUNC | O_RDWR, 0644);
+    if (merge_control_fd < 0) {
+        fprintf(stderr, "could not open taint control shmem %s, errno %d\n",
+	      merge_control_shmemname, errno);
+      assert(0);
+        }
+    rc = ftruncate (merge_control_fd, sizeof(struct merge_buffer_control));
+    if (rc < 0) {
+      fprintf(stderr, "could not truncate shmem %s, errno %d\n",
+		    merge_control_shmemname, errno);
+      assert(0);
+    }
+    merge_control_shm = (struct merge_buffer_control *) mmap (0, sizeof(struct merge_buffer_control), PROT_READ|PROT_WRITE, MAP_SHARED, merge_control_fd, 0);
+    if (merge_control_shm == MAP_FAILED) {
+      fprintf (stderr, "could not map shared memory for control of merge buffer, errno=%d\n", errno);
+	    assert (0);
+    }
+    
+    /*
+     * initialize with default values:
+     *    merge_buffer_count = 0;
+     *    merge_total_count = 0xe0000001;
+     *    off64_t merge_offset = 0;
+     */
+
+    merge_control_shm->merge_buffer_count = 0;
+    merge_control_shm->merge_total_count = 0xe0000001;
+    merge_control_shm->merge_offset = 0;
+
+    
+}
+
 static inline void init_taint_index(char* group_dir)
 {
 #ifdef USE_MERGE_HASH
@@ -244,7 +297,7 @@ static inline void init_taint_index(char* group_dir)
 
         snprintf(node_num_shmemname, 256, "/node_nums_shm%s", group_dir);
 	for (i = 1; i < strlen(node_num_shmemname); i++) {
-	    if (node_num_shmemname[i] == '/') node_num_shmemname[i] = '.';
+	  if (node_num_shmemname[i] == '/') node_num_shmemname[i] = '.';
 	}
         snprintf(node_num_filename, 256, "%s/node_nums", group_dir);
         node_num_fd = shm_open(node_num_shmemname, O_CREAT | O_TRUNC | O_RDWR, 0644);
@@ -966,6 +1019,9 @@ void init_taint_structures (char* group_dir)
     }
     memset(mem_loc_high, 0, FIRST_TABLE_SIZE * sizeof(void*));
     init_taint_index(group_dir);
+
+    //ARQUINN: added code
+    init_merge_control_shm(group_dir);
 
     if (!taint_fds_table) {
         taint_fds_table = g_hash_table_new(g_direct_hash, g_direct_equal);
