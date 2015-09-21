@@ -222,7 +222,6 @@ static void copy_file(int src, int dest) {
 	while(written_bytes < read_bytes) { 
 	    written_bytes += write(dest,buff,read_bytes - written_bytes);
 	}
-	read_bytes = read(src,buff,COPY_BUFFER_SIZE);
     }
     if(read_bytes < 0) { 
 	fprintf(stderr, "There was an error reading file (int) rc %d, errno %d\n",read_bytes,errno);
@@ -18747,6 +18746,8 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
     int record_pid = get_record_pid();
     FILE* filenames_f_old = filenames_f; 
     int tokens_fd_old = tokens_fd;
+    struct stat buf;
+    int rc;
 
     //open new filenames
     char filename_mapping[256];
@@ -18782,6 +18783,26 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
 
     copy_file(tokens_fd_old, tokens_fd); 
     copy_file(filenames_f_old, filenames_f); 
+    
+    rc = fstat(tokens_fd_old, &buf);
+    if (rc < 0) {
+        fprintf(stderr, "could not stat file, %d\n",tokens_fd_old);
+    }
+
+    if (buf.st_size) {
+        fprintf(stderr, "old file size is %ld\n", buf.st_size);
+    }
+
+    rc = fstat(tokens_fd, &buf);
+    if (rc < 0) {
+        fprintf(stderr, "could not stat file, %d\n", tokens_fd);
+    }
+
+    if (buf.st_size) {
+        fprintf(stderr, "new file size is %ld\n", buf.st_size);
+    }
+
+
 
     close(tokens_fd_old);
     fclose(filenames_f_old);

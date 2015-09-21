@@ -106,7 +106,7 @@ void inst_syscall_end(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD std, V
     increment_syscall_cnt(tdata, tdata->sysnum);
     // reset the syscall number after returning from system call
     tdata->sysnum = 0;
-    increment_syscall_cnt(tdata, tdata->sysnum);
+    //increment_syscall_cnt(tdata, tdata->sysnum); Why was this here? 
 }
 
 // called before every application system call
