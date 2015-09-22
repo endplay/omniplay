@@ -1142,7 +1142,6 @@ void instrument_syscall(ADDRINT syscall_num,
         syscall_start(ptdata, sysnum, syscallarg0, syscallarg1, syscallarg2, 
                                         syscallarg3, syscallarg4, syscallarg5);
 
-	fprintf (stderr, "instrument_syscall addr %p val %d\n", &ptdata->app_syscall, syscall_num);
         ptdata->app_syscall = syscall_num;
     } else {
         fprintf (stderr, "set_address_one: NULL tdata\n");
@@ -18685,8 +18684,6 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
 void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 {
     struct thread_data* ptdata;
-
-    fprintf (stderr, "thread_start\n");
 
     // TODO Use slab allocator
     ptdata = (struct thread_data *) malloc (sizeof(struct thread_data));
