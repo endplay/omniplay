@@ -9,13 +9,15 @@
 #include <fcntl.h>
 #include <glib-2.0/glib.h>
 
+#include "taint_interface/taint.h"
 #include "linkage_common.h"
 #include "xray_slab_alloc.h"
 #include "taint_interface/taint_creation.h"
 #include "xray_token.h"
 #include "maputil.h"
 
-//#define USE_MERGE_HASH
+#include <unordered_set>
+using namespace std;
 
 int heartbleed = 0;
 int xoutput = 0;
@@ -45,13 +47,11 @@ struct taint_number {
     u_long p2;
 };
 
-#ifndef USE_MERGE_HASH
 struct taint_entry {
-    u_long p1;
-    u_long p2;
+    taint_t p1;
+    taint_t p2;
 };
 struct taint_entry* merge_log = NULL;
-#endif
 
 
 int read_merge_numbers(char* taint_numbers_filename,
@@ -74,8 +74,8 @@ void parse_taint_structures(char* taint_structures_filename,
     unsigned long leaf_num_slices = 0;
     unsigned long node_num_slices = 0;
     //int node_num_slices = 0;
-    int leaf_slices_per_slab = 0;
-    int node_slices_per_slab = 0;
+    unsigned long leaf_slices_per_slab = 0;
+    unsigned long node_slices_per_slab = 0;
     int j;
 
     int num_leaves = 0;
@@ -274,7 +274,7 @@ void print_leaf_options(struct taint_creation_info* tci,
             struct taint_leafnode* ln = (struct taint_leafnode *) n;
             
             // lookup option number to metadata describing that option
-            tok = g_hash_table_lookup(option_info_table, GINT_TO_POINTER(ln->option));
+            tok = (struct token *) g_hash_table_lookup(option_info_table, GINT_TO_POINTER(ln->option));
             assert(tok);
 
             // resolve filenames
@@ -354,7 +354,7 @@ void read_interpret_results(char* results_filename,
         struct taint_creation_info tci;
         u_long bufaddr;
         u_long buf_size;
-        int i = 0;
+        u_long i = 0;
 
         // read output header
         rc = read(fd, &tci, sizeof(struct taint_creation_info));
@@ -446,7 +446,7 @@ void print_taint_options(u_long taint,
             struct taint_leafnode* ln = (struct taint_leafnode *) n;
             
             // lookup option number to metadata describing that option
-            tok = g_hash_table_lookup(option_info_table, GINT_TO_POINTER(ln->option));
+            tok = (struct token *) g_hash_table_lookup(option_info_table, GINT_TO_POINTER(ln->option));
             assert(tok);
 
             // resolve filenames
@@ -520,7 +520,7 @@ void parse_heartbleed_results(char* results_filename,
 
     while (bytes_read < buf.st_size) {
         struct memcpy_header header;
-        int i = 0;
+        u_long i = 0;
 
         // read memcpy header
         rc = read(fd, &header, sizeof(struct memcpy_header));
@@ -598,7 +598,7 @@ void print_xtaint_options(u_long taint,
             struct taint_leafnode* ln = (struct taint_leafnode *) n;
             
             // lookup option number to metadata describing that option
-            tok = g_hash_table_lookup(option_info_table, GINT_TO_POINTER(ln->option));
+            tok = (struct token *) g_hash_table_lookup(option_info_table, GINT_TO_POINTER(ln->option));
             assert(tok);
 
             // resolve filenames
@@ -679,7 +679,7 @@ void print_merge_number_xtaint_options(u_long taint_number,
             char* filename = (char *) "--";
             struct token* tok;
             // lookup option number to metadata describing that option
-            tok = g_hash_table_lookup(option_info_table, GINT_TO_POINTER(n));
+            tok = (struct token *) g_hash_table_lookup(option_info_table, GINT_TO_POINTER(n));
             assert(tok);
             // resolve filenames
             if (g_hash_table_contains(filename_table, GINT_TO_POINTER(tok->fileno))) {
@@ -822,7 +822,7 @@ int append_files(char* file1, char* file2, int pid) {
     }
 
     // Write First File
-    size_t result = fwrite(buffer1, 1, f_size1, out_f);
+    off_t result = fwrite(buffer1, 1, f_size1, out_f);
     if (result != f_size1) {
         perror("fwrite");
         exit(EXIT_FAILURE);
@@ -840,7 +840,7 @@ int append_files(char* file1, char* file2, int pid) {
     buffer2 = (char*)malloc(sizeof(char) * (f_size2));
     if (!buffer2) {fprintf(stderr, "error creating buffer\n"); return 0;}
     fseek(fp2, 0, SEEK_SET);
-    if (fread(buffer2, 1, f_size2, fp2) != f_size2) {
+    if ((off_t) fread(buffer2, 1, f_size2, fp2) != f_size2) {
         perror("fread");
         exit(EXIT_FAILURE);
     }
@@ -1198,9 +1198,6 @@ int read_merge_numbers(char* taint_numbers_filename,
     struct stat buf;
     int fd;
     int rc;
-#ifdef USE_MERGE_HASH
-    unsigned long bytes_read = 0;
-#endif
 
     fd = open(taint_numbers_filename, O_RDONLY);
     if (fd < 0) {
@@ -1216,128 +1213,19 @@ int read_merge_numbers(char* taint_numbers_filename,
         return errno;
     }
 
-#ifdef USE_MERGE_HASH
-    assert(buf.st_size % sizeof(struct taint_number) == 0);
-    while(bytes_read < buf.st_size) {
-        struct taint_number *tn;
-        tn = (struct taint_number *) malloc(sizeof(struct taint_number));
-        rc = read(fd, tn, sizeof(struct taint_number));
-        if (rc != sizeof(struct taint_number)) {
-            fprintf(stderr, "problem reading in a taint number, errno %d\n",
-                                errno);
-            rc = errno;
-            goto exit;
-        }
-        // insert into hashtable
-        g_hash_table_insert(merge_node_table, GINT_TO_POINTER(tn->n), tn);
-        bytes_read += rc;
-    }
-    rc = 0;
-exit:
-
-#else
     if (buf.st_size % 4096) buf.st_size += 4096 - (buf.st_size % 4096);
-    merge_log = mmap (NULL, buf.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    merge_log = (taint_entry *) mmap (NULL, buf.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
     if (merge_log == MAP_FAILED) {
 	perror ("mmap");
 	rc = -1;
     } else {
 	rc = 0;
     }
-#endif
 
     close(fd);
     return rc;
 }
 
-#ifdef USE_MERGE_HASH
-void print_merge_number_options(struct taint_creation_info* tci,
-                                u_long taint_number,
-                                int output_byte_offset,
-                                GHashTable* merge_node_table,
-                                GHashTable* option_info_table,
-                                GHashTable* filename_table,
-                                FILE* out_f)
-{
-    GHashTable* seen_indices;
-    GQueue* queue;
-
-    seen_indices = g_hash_table_new(g_direct_hash, g_direct_equal);
-    queue = g_queue_new();
-
-    assert(taint_number);
-    assert(tci);
-
-    g_queue_push_tail(queue, GUINT_TO_POINTER(taint_number));
-    while(!g_queue_is_empty(queue)) {
-        struct taint_number* tn;
-        u_long n = GPOINTER_TO_UINT(g_queue_pop_head(queue));
-        assert(n);
-        tn = (struct taint_number *) g_hash_table_lookup(merge_node_table, GUINT_TO_POINTER(n));
-        assert(tn);
-
-        if (g_hash_table_lookup(seen_indices, GUINT_TO_POINTER(n))) {
-            continue;
-        }
-        g_hash_table_insert(seen_indices, GUINT_TO_POINTER(n), 
-                                            GINT_TO_POINTER(1));
-        if (!tn->p1 && !tn->p2) { // leaf node
-            struct token* tok;
-            char* filename = (char *) "--";
-            char* out_filename = (char *) "--";
-            // lookup option number to metadata describing that option
-            tok = g_hash_table_lookup(option_info_table, GINT_TO_POINTER(n));
-            assert(tok);
-
-#ifdef USE_FILENAMES
-            // resolve filenames
-            if (g_hash_table_contains(filename_table, GINT_TO_POINTER(tok->fileno))) {
-                filename = (char *) g_hash_table_lookup(filename_table, GINT_TO_POINTER(tok->fileno));
-            }
-            if (g_hash_table_contains(filename_table, GINT_TO_POINTER(tci->fileno))) {
-                out_filename = (char *) g_hash_table_lookup(filename_table, GINT_TO_POINTER(tci->fileno));
-            }
-
-            fprintf(stdout, "%llu %d %lu %d %s ",    
-                                tci->rg_id,
-                                tci->record_pid,
-                                tci->syscall_cnt,
-                                output_byte_offset,
-                                out_filename);
-            fprintf(stdout, "%llu %d %d %d %s",
-                                tok->rg_id,
-                                tok->record_pid,
-                                tok->syscall_cnt,
-                                tok->byte_offset,
-                                filename);
-#else
-            fprintf(stdout, "%llu %d %lu %d ",    
-                                tci->rg_id,
-                                tci->record_pid,
-                                tci->syscall_cnt,
-		    output_byte_offset);
-            fprintf(stdout, "%llu %d %d %d",
-                                tok->rg_id,
-                                tok->record_pid,
-                                tok->syscall_cnt,
-		    tok->byte_offset);
-#endif
-	    fprintf(stdout, "\n");
-        } else {
-            if (!g_hash_table_lookup(seen_indices, GUINT_TO_POINTER(tn->p1))) {
-                assert(tn->p1);
-                g_queue_push_tail(queue, GUINT_TO_POINTER(tn->p1));
-            }
-            if (!g_hash_table_lookup(seen_indices, GUINT_TO_POINTER(tn->p2))) {
-                assert(tn->p2);
-                g_queue_push_tail(queue, GUINT_TO_POINTER(tn->p2));
-            }
-        }
-    }
-    g_queue_free(queue);
-    g_hash_table_destroy(seen_indices);
-}
-#else
 void print_merge_number_options(struct taint_creation_info* tci,
                                 u_long taint_number,
                                 int output_byte_offset,
@@ -1367,11 +1255,9 @@ void print_merge_number_options(struct taint_creation_info* tci,
 	g_hash_table_add(seen_indices, GUINT_TO_POINTER(n));
 
 	if (n <= 0xe0000000) {
-#ifdef OUTPUT_MERGE
-#else
 		struct token* tok;
 		// lookup option number to metadata describing that option
-		tok = g_hash_table_lookup(option_info_table, GINT_TO_POINTER(n));
+		tok = (struct token *) g_hash_table_lookup(option_info_table, GINT_TO_POINTER(n));
 		assert(tok);
 		
 #ifdef USE_FILENAMES
@@ -1410,9 +1296,6 @@ void print_merge_number_options(struct taint_creation_info* tci,
 			tok->byte_offset);
 #endif
 		fprintf(stdout, "\n");
-#if 0
-	    }
-#endif
         } else {
 	    pentry = &merge_log[n-0xe0000001];
 	    //fprintf (stdout, "%lx -> %lx, %lx\n", n, pentry->p1, pentry->p2);
@@ -1420,11 +1303,9 @@ void print_merge_number_options(struct taint_creation_info* tci,
 	    g_queue_push_tail(queue, GUINT_TO_POINTER(pentry->p2));
         }
     }
-#endif
     g_queue_free(queue);
     g_hash_table_destroy(seen_indices);
 }
-#endif
 
 int parse_merge_numbers(char* results_filename,
                             GHashTable* merge_node_table,
@@ -1453,7 +1334,7 @@ int parse_merge_numbers(char* results_filename,
         struct taint_creation_info tci;
         u_long bufaddr;
         u_long buf_size;
-        int i = 0;
+        u_long i = 0;
 
         // read output header
         rc = read(fd, &tci, sizeof(struct taint_creation_info));
@@ -1557,6 +1438,12 @@ int read_backwards_merge_numbers(int argc, char** argv)
     return 0;
 }
 
+#ifdef STATS
+static u_long merges = 0;
+static u_long indirects = 0;
+static u_long directs = 0;
+#endif
+
 #define OUTBUFSIZE 1000000
 u_long outbuf[OUTBUFSIZE];
 u_long outindex = 0;
@@ -1564,15 +1451,21 @@ int outfd;
 
 static void flush_outbuf()
 {
-    long rc = write (outfd, outbuf, outindex*sizeof(u_long));
-    if (rc != outindex*sizeof(u_long)) {
-	fprintf (stderr, "write of segment failed, rc=%ld, errno=%d\n", rc, errno);
-	exit (rc);
+    long bytes_written = 0;
+    long size = outindex*sizeof(u_long);
+
+    while (bytes_written < size) {
+	long rc = write (outfd, (char *) outbuf+bytes_written, size-bytes_written);	
+	if (rc <= 0) {
+	    fprintf (stderr, "pp: write of segment failed, rc=%ld, errno=%d\n", rc, errno);
+	    exit (rc);
+	}
+	bytes_written += rc;
     }
     outindex = 0;
 }
 
-static inline void print_relation (u_long seg, u_long value) 
+static inline void print_relation (u_long value) 
 {
     if (outindex == OUTBUFSIZE) flush_outbuf();
     outbuf[outindex++] = value;
@@ -1584,49 +1477,36 @@ static inline void print_sentinal ()
     outbuf[outindex++] = 0;
 }
 
-#ifdef DEBUGTRACE_OUTPUT
-u_long output_cnt = 0;
-#endif
+#define STACK_SIZE 1000000
 
-void print_merge (u_long taint_number)
+static void print_merge (taint_t value)
 {
-    GHashTable* seen_indices;
-    GQueue* queue;
     struct taint_entry* pentry;
+    unordered_set<taint_t> seen_indices;
+    taint_t stack[STACK_SIZE];
+    u_long stack_depth = 0;
 
-    seen_indices = g_hash_table_new(g_direct_hash, g_direct_equal);
-    queue = g_queue_new();
+    pentry = &merge_log[value-0xe0000001];
+    stack[stack_depth++] = pentry->p1;
+    stack[stack_depth++] = pentry->p2;
 
-    g_queue_push_tail(queue, GUINT_TO_POINTER(taint_number));
-    while(!g_queue_is_empty(queue)) {
+    do {
+	value = stack[--stack_depth];
 
-        u_long n = GPOINTER_TO_UINT(g_queue_pop_head(queue));
-	if (g_hash_table_contains(seen_indices, GUINT_TO_POINTER(n))) {
-	    continue;
+	if (seen_indices.insert(value).second) {
+	    if (value <= 0xe0000000) {
+		print_relation (value);
+	    } else {
+#ifdef STATS
+		merges++;
+#endif
+		pentry = &merge_log[value-0xe0000001];
+		stack[stack_depth++] = pentry->p1;
+		stack[stack_depth++] = pentry->p2;
+		assert (stack_depth < STACK_SIZE);
+	    }
 	}
-	g_hash_table_add(seen_indices, GUINT_TO_POINTER(n));
-
-	if (n <= 0xe0000000) {
-	    print_relation (1, n);
-#ifdef DEBUGTRACE_OUTPUT
-	    if (output_cnt == DEBUGTRACE_OUTPUT) {
-		printf ("-> %lx\n", n);
-	    }
-#endif
-        } else {
-	    pentry = &merge_log[n-0xe0000001];
-#ifdef DEBUGTRACE_OUTPUT
-	    if (output_cnt == DEBUGTRACE_OUTPUT) {
-		printf ("%lx, %lx -> %lx\n", pentry->p1, pentry->p2, n);
-	    }
-#endif
-	    g_queue_push_tail(queue, GUINT_TO_POINTER(pentry->p1));
-	    g_queue_push_tail(queue, GUINT_TO_POINTER(pentry->p2));
-        }
-    }
-
-    g_queue_free(queue);
-    g_hash_table_destroy(seen_indices);
+    } while (stack_depth);
 }
 
 int map_shmem (char* filename, int* pfd, u_long* pdatasize, u_long* pmapsize, char** pbuf)
@@ -1634,7 +1514,8 @@ int map_shmem (char* filename, int* pfd, u_long* pdatasize, u_long* pmapsize, ch
     char shmemname[256];
     struct stat st;
     u_long size;
-    int fd, rc, i;
+    int fd, rc;
+    u_long i;
     char* buf;
 
     snprintf(shmemname, 256, "/node_nums_shm%s", filename);
@@ -1678,10 +1559,10 @@ int map_shmem (char* filename, int* pfd, u_long* pdatasize, u_long* pmapsize, ch
 
 int parse_merge (char* results_filename, GHashTable* merge_node_table)
 {
-    int fd, rc, i;
+    int fd, rc;
     u_long outsize, mapsize;
     char* buf, *pout;
-    u_long value;
+    taint_t value;
     u_long buf_size;
 
     rc = map_file (results_filename, &fd, &outsize, &mapsize, &buf);
@@ -1696,7 +1577,7 @@ int parse_merge (char* results_filename, GHashTable* merge_node_table)
 	pout += sizeof(u_long);
 
         // now read the taints
-        for (i = 0; i < buf_size; i++) {
+        for (u_long i = 0; i < buf_size; i++) {
 
 	    pout += sizeof(u_long);
 	    value = *((u_long *) pout);
@@ -1706,12 +1587,23 @@ int parse_merge (char* results_filename, GHashTable* merge_node_table)
 	    }
 #endif	    
             if (value) {
-                print_merge (value);
+		if (value < 0xe0000000)  {
+#ifdef STATS
+		    directs++;
+#endif
+		    print_relation(value);
+		} else {
+#ifdef STATS
+		    indirects++;
+		    merges++;
+#endif
+		    print_merge (value);
+		}
             }
 #ifdef DEBUGTRACE_OUTPUT
 	    output_cnt++;
 #endif
-	    pout += sizeof(u_long);
+	    pout += sizeof(taint_t);
 	    print_sentinal();
         }
 
@@ -1753,6 +1645,9 @@ int read_merge (int argc, char** argv)
 
     parse_merge(results_filename, merge_node_table);
 
+#ifdef STATS
+    printf ("directs %lu, inedirects %lu, merges %lu\n", directs, indirects, merges);
+#endif
     return 0;
 }
 
