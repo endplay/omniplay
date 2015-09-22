@@ -12,8 +12,8 @@
 #define START_AT_SYSCALL 0
 #define STOP_AT_SYSCALL  224999
 
-int print_limit = 10;
-int print_stop = 10;
+int print_limit = 0;
+int print_stop = 2000000000;
 
 KNOB<string> KnobPrintLimit(KNOB_MODE_WRITEONCE, "pintool", "p", "10000000", "syscall print limit");
 KNOB<string> KnobPrintStop(KNOB_MODE_WRITEONCE, "pintool", "s", "10000000", "syscall print stop");
@@ -42,6 +42,30 @@ var_map_t variables;
 static inline bool inrange() {
     return ((syscall_cnt >= print_limit) 
         && (syscall_cnt <= print_stop));
+}
+
+int get_record_pid()
+{
+    //calling kernel for this replay thread's record log
+    int record_log_id;
+
+    record_log_id = get_log_id (fd);
+    if (record_log_id == -1) {
+        int pid = PIN_GetPid();
+        fprintf(stderr, "Could not get the record pid from kernel, pid is %d\n", pid);
+        return pid;
+    }
+    return record_log_id;
+}
+
+ADDRINT find_static_address(ADDRINT ip)
+{
+	PIN_LockClient();
+	IMG img = IMG_FindByAddress(ip);
+	if (!IMG_Valid(img)) return ip;
+	ADDRINT offset = IMG_LoadOffset(img);
+	PIN_UnlockClient();
+	return ip - offset;
 }
 
 bool detect_race(THREADID tid, VOID *ref_addr, ADDRINT size, VOID *ip, int ref_type) {
@@ -148,34 +172,20 @@ bool type_is_enter (ADDRINT type) {
 
 void log_replay_enter (ADDRINT type, ADDRINT check)
 {
-//    if (inrange()) {
-//        fprintf (stderr, "Thread %5d Repl type %d check %08lx\n", PIN_ThreadId(), (int) type, (u_long) check);
-//    }
-    
-    // edited by hyihe
     long curr_clock = get_clock_value(fd);
     if(type_is_enter(type)) {
-    	// *_ENTER type
         // Indicates the end of an interval
         thd_entr_type[PIN_ThreadId()] = type;
         //fprintf (stderr, "Thread %5d reaches sync point (%d) at clock %ld\n", PIN_ThreadId(), type, curr_clock);
         update_interval_speculate(thd_ints, PIN_ThreadId(), curr_clock);
     } else {
-    	// *_EXIT type
-        // do not do anything
-        // Indicates the start of a new interval
         thd_entr_type[PIN_ThreadId()] = type;
         //fprintf (stderr, "Thread %5d resumes (%d) at clock %ld\n", PIN_ThreadId(), type, curr_clock);
-    	//thd_ints[PIN_ThreadId()] = new_interval(curr_clock);
     }
 }
 
 void record_read (VOID* ip, VOID* addr, ADDRINT size)
 {
-//    if (inrange()) {
-//        fprintf (stderr, "Thread %5d read address %p size 0x%lx (inst %p)\n", PIN_ThreadId(), addr, (u_long) size, ip);
-//    }
-    // edited by hyihe
     if(detect_race(PIN_ThreadId(), addr, size, ip, MEM_REF_READ))
         exit(1);
 }
@@ -189,27 +199,25 @@ void record_read2 (VOID* ip, VOID* addr)
 
 void record_write (VOID* ip, VOID* addr, ADDRINT size)
 {
-//    if (syscall_cnt > START_AT_SYSCALL) {
-//        fprintf (stderr, "Thread %5d wrote address %p size 0x%lx (inst %p)\n", PIN_ThreadId(), addr, (u_long) size, ip);
-//    }
-    // edited by hyihe
     if(detect_race(PIN_ThreadId(), addr, size, ip, MEM_REF_WRITE))
         exit(1);
 }
 
-void record_locked (VOID* ip)
+void record_locked (ADDRINT ip)
 {
-	if (inrange()) {
-	    fprintf (stderr, "Thread %5d locked inst %p\n", PIN_ThreadId(), ip);
+    if (inrange()) {
+	PIN_LockClient();
+	fprintf (stderr, "Thread %5d (record pid %d) locked inst %08x\n", PIN_ThreadId(), get_record_pid(), ip);
+	if (IMG_Valid(IMG_FindByAddress(ip))) {
+		fprintf(stderr, "%s -- img %s static %#x\n", RTN_FindNameByAddress(ip).c_str(), 
+			IMG_Name(IMG_FindByAddress(ip)).c_str(), find_static_address(ip));
+	}
+	PIN_UnlockClient();
     }
 }
 
 void log_replay_exit ()
 {
-//    if (syscall_cnt > START_AT_SYSCALL) {
-//        fprintf (stderr, "Thread %5d Repl Exit\n", PIN_ThreadId());
-//    }
-
     int type = thd_entr_type[PIN_ThreadId()];
     if(!type_is_enter(type)) {
         long curr_clock = get_clock_value(fd) - 1;
@@ -218,7 +226,6 @@ void log_replay_exit ()
     }
 }
 
-// edited by hyihe
 // Update the exit time of the current interval upon context switch
 void log_replay_block(ADDRINT block_until) {
     long curr_clock = get_clock_value(fd);
@@ -238,7 +245,6 @@ void track_function(RTN rtn, void* v)
 		       IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_END);
         RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR) log_replay_exit, IARG_END);
     } else if (!strcmp (name, "pthread_log_block")) {
-        // edited by hyihe
         RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR) log_replay_block, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_END);
     }
     RTN_Close(rtn);

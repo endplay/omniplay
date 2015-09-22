@@ -4932,6 +4932,13 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 				}
 
 				printk ("Pid %d: entering syscall cannot wait due to signal - try again\n", current->pid);
+#ifdef FATAL_DIE
+				if (fatal_signal_pending(current)) {
+					printk ("Signal is fatal - so just try to exit\n");
+					rg_unlock (prg->rg_rec_group);
+					sys_exit(0);
+				}
+#endif
 				rg_unlock (prg->rg_rec_group);
 				msleep (1000);
 				rg_lock (prg->rg_rec_group);
@@ -5034,6 +5041,13 @@ get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, stru
 				}
 
 				printk ("Pid %d: exiting syscall cannot wait due to signal w/clock %lu - try again\n", current->pid, *(prt->rp_preplay_clock));
+#ifdef FATAL_DIE
+				if (fatal_signal_pending(current)) {
+					printk ("Signal is fatal - so just try to exit\n");
+					rg_unlock (prg->rg_rec_group);
+					sys_exit(0);
+				}
+#endif
 				print_replay_threads();
 				rg_unlock (prg->rg_rec_group);
 				msleep (1000);
@@ -5115,7 +5129,7 @@ record_timings (struct replay_thread* prept, short syscall)
 	task_times (current, &ut, &st);
 	//printk ("Pid %d index %lu utime %ld stime %ld\n", current->pid, prept->rp_out_ptr, ut, st);
 	prepg->rg_timebuf[prepg->rg_timecnt].pid = prept->rp_record_thread->rp_record_pid;
-	prepg->rg_timebuf[prepg->rg_timecnt].index = prept->rp_out_ptr;
+	prepg->rg_timebuf[prepg->rg_timecnt].index = prept->rp_record_thread->rp_count;
 	prepg->rg_timebuf[prepg->rg_timecnt].syscall = syscall;
 	prepg->rg_timebuf[prepg->rg_timecnt++].ut = ut;
 
@@ -5129,9 +5143,9 @@ test_pin_attach (struct replay_thread* prept, short syscall)
 
 	if (prepg->rg_timebuf) record_timings (prept, syscall);
 	if (prepg->rg_attach_sysid > 0 && !is_pin_attached() && !is_gdb_attached() &&
-	    prept->rp_out_ptr == prepg->rg_attach_sysid &&
+	    prept->rp_record_thread->rp_count == prepg->rg_attach_sysid &&
 	    prept->rp_record_thread->rp_record_pid == prepg->rg_attach_pid) {
-		printk("Pid %d about to sleep at index %lu\n", current->pid, prept->rp_out_ptr);
+		printk("Pid %d about to sleep at index %llu\n", current->pid, prept->rp_record_thread->rp_count);
 
 		if (prepg->rg_attach_device == ATTACH_PIN) {
 			prept->app_syscall_addr = 1;
@@ -5552,6 +5566,13 @@ sys_pthread_block (u_long clock)
 			if (prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && (prt->rp_record_thread->rp_in_ptr == prt->rp_out_ptr))) break; // exit condition below
 			if (ret == -ERESTARTSYS) {
 				printk ("Pid %d: blocking syscall cannot wait due to signal - try again (%d)\n", current->pid, prg->rg_rec_group->rg_mismatch_flag);
+#ifdef FATAL_DIE
+				if (fatal_signal_pending(current)) {
+					printk ("Signal is fatal - so just try to exit\n");
+					rg_unlock (prg->rg_rec_group);
+					sys_exit(0);
+				}
+#endif
 				rg_unlock (prg->rg_rec_group);
 				msleep (1000);
 				rg_lock (prg->rg_rec_group);
@@ -5647,7 +5668,7 @@ asmlinkage long sys_pthread_sysign (void)
 		if (current->replay_thrd->rp_record_thread->rp_ignore_flag_addr) { \
 			get_user (ignore_flag, current->replay_thrd->rp_record_thread->rp_ignore_flag_addr); \
 			if (ignore_flag) { \
-				printk ("syscall %d ignored\n", number); \
+				MPRINT ("syscall %d ignored\n", number); \
 				return F_SYS;				\
 			}						\
 		}							\
@@ -6156,9 +6177,7 @@ deallocate_user_log (struct record_thread* prt)
 
 	struct pthread_log_head* phead = (struct pthread_log_head __user *) prt->rp_user_log_addr;
 	MPRINT ("Pid %d -- deallocate user log phead %p\n", current->pid, phead);
-	printk ("Pid %d -- deallocate user log phead %p\n", current->pid, phead);
 	rc = sys_munmap ((u_long) phead, PTHREAD_LOG_SIZE+4096);
-	printk ("Pid %d -- deallocate user log phead %p return value = %ld\n", current->pid, phead, rc);
 	if (rc < 0) printk ("pid %d: deallocate_user_log failed, rc=%ld\n", current->pid, rc);
 }
 
@@ -6186,7 +6205,6 @@ recplay_exit_start(void)
 		write_user_extra_log (prt);
 #endif
 		MPRINT ("Pid %d -- Deallocate the user log", current->pid);
-        printk("about to deallocate \n");
 		deallocate_user_log (prt); // For multi-threaded programs, we need to reuse the memory
 	} else if (current->replay_thrd) {
 		MPRINT ("Replay thread %d starting to exit, recpid %d\n", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid);
@@ -6411,8 +6429,8 @@ shim_exit(int error_code)
 {
 	if (current->record_thrd) MPRINT ("Recording Pid %d naturally exiting\n", current->pid);
 	if (current->replay_thrd && test_app_syscall(1)) {
-	  MPRINT ("Replaying Pid %d naturally exiting\n", current->pid);
-	  dump_stack();
+	    MPRINT ("Replaying Pid %d naturally exiting\n", current->pid);
+	    //dump_stack();
 	}
 	return sys_exit (error_code);
 }
@@ -12701,7 +12719,6 @@ replay_epoll_wait(int epfd, struct epoll_event __user *events, int maxevents, in
 		}
 		argsconsume(current->replay_thrd->rp_record_thread, rc * sizeof(struct epoll_event));
 	}
-
 	return rc;
 }
 

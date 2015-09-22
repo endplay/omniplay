@@ -61,7 +61,7 @@ TOOL_ROOTS :=
 SA_TOOL_ROOTS :=
 
 # This defines all the applications that will be run during the tests.
-APP_ROOTS := postprocess_linkage splice_merge merge_merge merge3 taint_debugger taint_forward_debugger mksplice mkmultisplice mkmerge stream mkmap mergecmp out2mergecmp splicecmp outcmp mergedump mapdump showall has_dups stream
+APP_ROOTS := postprocess_linkage parse_outputs splice_merge merge_merge merge3 taint_debugger taint_forward_debugger mksplice mkmultisplice mkmerge stream mkmap mergecmp out2mergecmp splicecmp outcmp mergedump mapdump showall has_dups stream
 
 # This defines any additional object files that need to be compiled.
 OBJECT_ROOTS := xray_token \
@@ -109,6 +109,10 @@ $(OBJDIR)maputil$(OBJ_SUFFIX): maputil.h maputil.c
 
 $(OBJDIR)postprocess_linkage: xray_slab_alloc.h postprocess_linkage.c $(OBJDIR)xray_token$(OBJ_SUFFIX) maputil.c maputil.h
 	$(APP_CC) $(TOOL_CXXFLAGS) -Wall -Werror -O2 -o $(OBJDIR)postprocess_linkage $(GLIB_INCLUDES) $(OBJDIR)xray_token$(OBJ_SUFFIX) postprocess_linkage.c maputil.c -lglib-2.0
+
+$(OBJDIR)parse_outputs: xray_slab_alloc.h parse_outputs.c $(OBJDIR)xray_token$(OBJ_SUFFIX) maputil.c maputil.h
+	$(APP_CC) $(TOOL_CXXFLAGS) -Wall -Werror -O2 -o $(OBJDIR)parse_outputs $(GLIB_INCLUDES) $(OBJDIR)xray_token$(OBJ_SUFFIX) parse_outputs.c maputil.c -lglib-2.0
+
 
 $(OBJDIR)mksplice: mksplice.cpp maputil.c maputil.h
 	$(CXX) -std=c++0x -Wall -Werror -O8 -o $(OBJDIR)mksplice $(GLIB_INCLUDES) mksplice.cpp maputil.c -lrt
