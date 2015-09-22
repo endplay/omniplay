@@ -10,7 +10,7 @@
 #include <sys/types.h>
 #include <sys/mman.h>
 
-//#define USE_MERGE_HASH
+#define USE_MERGE_HASH
 #define TAINT_STATS
 
 extern int splice_output;

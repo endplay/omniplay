@@ -141,6 +141,10 @@ struct pthread_extra_log_head {
 #define PTHREAD_JOINID_ENTER                  81
 #define PTHREAD_JOINID_EXIT                   82
 
+/* App specific ops */
+#define APP_VALUE_ENTER                       85
+#define APP_VALUE_EXIT                        86
+
 /* Sync. operations */
 #define SYNC_ADD_AND_FETCH_ENTER              91
 #define SYNC_ADD_AND_FETCH_EXIT               92

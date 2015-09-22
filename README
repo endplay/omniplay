@@ -13,6 +13,9 @@ $ git clone gitlab@endplay:replay/omniplay.git
 This will create a number of sub-directories that contain the user-level and kernel source
 for omniplay.
 
+Make sure you have your private key uploaded to gitlab or you won't have
+permission to clone the directory.
+
 3) Build and install
 
 Assuming that <omniplay> is the root directory where you installed the source:

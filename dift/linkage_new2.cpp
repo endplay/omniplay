@@ -1155,11 +1155,18 @@ void syscall_end(struct thread_data* ptdata, int sysnum, ADDRINT ret_value)
 
 #ifdef HAVE_REPLAY
 // called before every application system call
-void instrument_syscall(ADDRINT syscall_num, ADDRINT tls_ptr,
-                                ADDRINT syscallarg0, ADDRINT syscallarg1, ADDRINT syscallarg2,
-                                ADDRINT syscallarg3, ADDRINT syscallarg4, ADDRINT syscallarg5)
+void instrument_syscall(ADDRINT syscall_num, 
+#ifdef USE_TLS_SCRATCH
+			ADDRINT tls_ptr,
+#endif
+			ADDRINT syscallarg0, ADDRINT syscallarg1, ADDRINT syscallarg2,
+			ADDRINT syscallarg3, ADDRINT syscallarg4, ADDRINT syscallarg5)
 {   
+#ifdef USE_TLS_SCRATCH
     struct thread_data* ptdata = (struct thread_data *) tls_ptr;
+#else
+    struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+#endif
     if (ptdata) {
         int sysnum = (int) syscall_num;
         ptdata->sysnum = sysnum;
@@ -1189,9 +1196,17 @@ void instrument_syscall(ADDRINT syscall_num, ADDRINT tls_ptr,
     }
 }
 
-void syscall_after (ADDRINT ip, ADDRINT tls_ptr)
+void syscall_after (ADDRINT ip
+#ifdef USE_TLS_SCRATCH
+		    , ADDRINT tls_ptr
+#endif
+		    )
 {
+#ifdef USE_TLS_SCRATCH
     struct thread_data* tdata = (struct thread_data *) tls_ptr;
+#else
+    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+#endif
     if (tdata) {
         if (tdata->app_syscall == 999) {
             if (check_clock_after_syscall (dev_fd) == 0) {
@@ -1259,15 +1274,10 @@ void instrument_inst(ADDRINT tls_ptr, ADDRINT ip)
 void track_inst(INS ins, void* data) 
 {
     if(INS_IsSyscall(ins)) {
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(instrument_syscall),
                 IARG_SYSCALL_NUMBER, 
 #ifdef USE_TLS_SCRATCH
                 IARG_REG_VALUE, tls_reg,
-#else
-                IARG_ADDRINT, (void*)tdata,
 #endif
                 IARG_SYSARG_VALUE, 0, 
                 IARG_SYSARG_VALUE, 1,
@@ -1402,10 +1412,8 @@ void track_trace(TRACE trace, void* data)
                             IARG_REG_VALUE, tls_reg,
                             IARG_END);
 #else
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-    TRACE_InsertCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_after, 
+    TRACE_InsertCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_after,
                             IARG_INST_PTR,
-                            IARG_ADDRINT, (void*) tdata,
                             IARG_END);
 #endif
 }

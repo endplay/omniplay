@@ -323,6 +323,20 @@ static void print_stat(FILE *out, struct klog_result *res) {
 	}
 }
 
+static void print_epoll_wait(FILE *out, struct klog_result *res) {
+	struct syscall_result *psr = &res->psr;
+	parseklog_default_print(out, res);
+
+	if (psr->flags & SR_HAS_RETPARAMS) {
+		long i;
+		for (i = 0; i < res->retval; i++) {
+			struct epoll_event* pe = (struct epoll_event *) res->retparams;
+			fprintf(out, "         epoll_event flags %x data %p\n", 
+				pe[i].events, pe[i].data.ptr);
+		}
+	}
+}
+
 static void print_execve(FILE *out, struct klog_result *res) {
 	struct syscall_result *psr = &res->psr;
 
@@ -419,6 +433,7 @@ int main(int argc, char **argv) {
 		parseklog_set_printfcn(log, print_stat, 195);
 		parseklog_set_printfcn(log, print_stat, 196);
 		parseklog_set_printfcn(log, print_stat, 197);
+		parseklog_set_printfcn(log, print_epoll_wait, 256);
 		parseklog_set_printfcn(log, print_clock_gettime, 265);
 	} else if (type == GRAPH) {
 		parseklog_set_default_printfcn(log, empty_printfcn);
