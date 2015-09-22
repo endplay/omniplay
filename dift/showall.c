@@ -14,7 +14,6 @@ int main (int argc, char* argv[])
     u_long* mptr;
     u_long buf_size, i;
     long rc;
-    int maxdiff = 0;
 
     if (argc != 2) {
 	fprintf (stderr, "format: showall <dirno>\n");
@@ -45,18 +44,13 @@ int main (int argc, char* argv[])
 	    do {
 		if (*mptr) {
 		    u_long tokval = *mptr;
-		    //printf ("output syscall %lu offset %lu <- ", syscall, i);
+		    printf ("output syscall %lu offset %lu <- ", syscall, i);
 		    struct token* ptok = (struct token *) tbuf;
 		    while (tokval > ptok->size) {
 			tokval -= ptok->size;
 			ptok++;
 		    } 
-		    //printf ("input syscall %d offset %lu\n", ptok->syscall_cnt, tokval);
-		    if (syscall - ptok->syscall_cnt > maxdiff) {
-			maxdiff = syscall - ptok->syscall_cnt; 
-			printf ("output syscall %lu offset %lu <- ", syscall, i);
-			printf ("input syscall %d offset %lu\n", ptok->syscall_cnt, tokval);
-		    }
+		    printf ("input syscall %d offset %lu\n", ptok->syscall_cnt, tokval);
 		    mptr++;
 		} else {
 		    mptr++;

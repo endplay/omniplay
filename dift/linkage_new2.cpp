@@ -132,8 +132,8 @@ int splice_output = 0;
 int all_output = 0;
 const char* splice_semname = NULL;
 const char* splice_input = NULL;
-u_long* pregs = NULL; // Only works for single-threaded program
-u_long num_merge_entries = 134217728;
+taint_t* pregs = NULL; // Only works for single-threaded program
+u_long num_merge_entries = 0x40000000/(sizeof(taint_t)*2);
 
 struct slab_alloc open_info_alloc;
 struct slab_alloc thread_data_alloc;
@@ -198,6 +198,54 @@ void instrument_before_badmemcpy(void) {
     bad_memcpy_flag = 1;
 }
 #endif
+
+static int terminated = 0;
+extern int check_mem_taints();
+extern int dump_mem_taints (int fd);
+extern int dump_reg_taints (int fd, taint_t* pregs);
+extern int dump_mem_taints_start (int fd);
+extern int dump_reg_taints_start (int fd, taint_t* pregs);
+
+static void dift_done ()
+{
+    int taint_fd;
+    char taint_structures_file[256];
+    struct timeval tv;
+
+    if (terminated) return;  // Only do this once
+    terminated = 1;
+
+    if (splice_input && splice_input[0]) {
+	// Also need to consider addresses passed from previous segment as output
+	splice_after_segment (splice_input, splice_semname, outfd);
+    }
+
+    snprintf(taint_structures_file, 256, "%s/taint_structures", group_directory);
+    
+    taint_fd = open(taint_structures_file, O_WRONLY | O_CREAT | O_TRUNC | O_LARGEFILE, 0644);
+    assert(taint_fd > 0);
+    
+    if (all_output) {
+	gettimeofday(&tv, NULL);
+	printf("dump start dir %s %lu sec %lu usec\n", group_directory, tv.tv_sec, tv.tv_usec);
+
+	if (splice_output) {
+	    dump_reg_taints(taint_fd, pregs);
+	    dump_mem_taints(taint_fd);
+	} else {
+	    dump_reg_taints_start(taint_fd, pregs);
+	    dump_mem_taints_start(taint_fd);
+	}
+    }
+    close(taint_fd);
+
+    finish_and_print_taint_stats(stdout);
+#if 0
+    gettimeofday(&tv, NULL);
+    fprintf(stderr, "time end %lu sec %lu usec\n", tv.tv_sec, tv.tv_usec);
+#endif
+    printf("DIFT done\n");
+}
 
 ADDRINT find_static_address(ADDRINT ip)
 {
@@ -1179,8 +1227,11 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
     increment_syscall_cnt (ptdata, ptdata->sysnum);
     ptdata->sysnum = 0;
 
-    if (global_syscall_cnt == (unsigned long) segment_length) {
-	//fprintf(stderr, "Pin terminating at Pid %d, syscall %d\n", PIN_GetPid(), ptdata->syscall_cnt);
+    if (segment_length && global_syscall_cnt == (unsigned long) segment_length) {
+	// Done with this replay - do exit stuff now because we may not get clean unwind
+	fprintf(stderr, "Pin terminating at Pid %d, syscall %d\n", PIN_GetPid(), ptdata->syscall_cnt);
+	dift_done ();
+	//try_to_exit(dev_fd, PIN_GetPid());
         PIN_ExitApplication(0);
     }
 }
@@ -15641,7 +15692,7 @@ void instrument_mov (INS ins)
         instrument_taint_mem2reg(ins, reg, 0);
 #else
  #ifndef LINKAGE_DATA_OFFSET
-        instrument_taint_mem2reg(ins, reg, 0);
+       instrument_taint_mem2reg(ins, reg, 0);
  #else
         REG dst_reg = INS_OperandReg(ins, 0);
         REG index_reg = INS_OperandMemoryIndexReg(ins, 1);
@@ -18027,9 +18078,27 @@ void instrument_pmovmskb(INS ins)
 }
 
 #ifdef TRACE_TAINT_OPS
+int oops = 0;
 void trace_inst(ADDRINT ptr)
 {
-    inst_count++;
+    if (!oops) {
+	inst_count++;
+	PIN_LockClient();
+        printf("[INST] %#x\n", ptr);
+	if (IMG_Valid(IMG_FindByAddress(ptr))) {
+		printf("%s -- img %s static %#x\n", RTN_FindNameByAddress(ptr).c_str(), IMG_Name(IMG_FindByAddress(ptr)).c_str(), find_static_address(ptr));
+	}
+	PIN_UnlockClient();
+	for (int i = 0; i < NUM_REGS * REG_SIZE; i++) {
+	    if (pregs[i] > 0x100000000) {
+		printf ("reg %d: %llx (addr %p, pregs %p)\n", i, pregs[i], &pregs[i], pregs);
+		oops = 1;
+	    }
+	}
+	if (!check_mem_taints()) {
+	    oops = 1;
+	}
+    }
 }
 #endif
 
@@ -18080,7 +18149,6 @@ void instruction_instrumentation(INS ins, void *v)
             instrumented = 1;
             break;
     }
-
 
 #ifdef USE_CODEFLUSH_TRICK
     if (option_cnt != 0) {
@@ -18688,7 +18756,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
     memset(ptdata, 0, sizeof(struct thread_data));
     if (splice_output) {
 	// FIXME - use unique values for multithreaded programs
-	for (int i = 0; i < NUM_REGS * REG_SIZE; i++) {
+	for (taint_t i = 0; i < NUM_REGS * REG_SIZE; i++) {
 	    ptdata->shadow_reg_table[i] = i+1; // Guaranteed to not be a useful part of the address space
 	}
     }
@@ -18700,7 +18768,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
     ptdata->record_pid = get_record_pid();
     get_record_group_id(dev_fd, &(ptdata->rg_id));
 
-    //set_pin_addr (dev_fd, (u_long) &(ptdata->app_syscall));
+    set_pin_addr (dev_fd, (u_long) &(ptdata->app_syscall));
 #endif
 
     if (child) {
@@ -18853,46 +18921,9 @@ void init_logs(void)
 #endif
 }
 
-extern int dump_mem_taints (int fd);
-extern int dump_reg_taints (int fd, u_long* pregs);
-extern int dump_mem_taints_start (int fd);
-extern int dump_reg_taints_start (int fd, u_long* pregs);
-
 void fini(INT32 code, void* v)
 {
-    int taint_fd;
-    char taint_structures_file[256];
-    struct timeval tv;
-
-    if (splice_input && splice_input[0]) {
-	// Also need to consider addresses passed from previous segment as output
-	splice_after_segment (splice_input, splice_semname, outfd);
-    }
-
-    snprintf(taint_structures_file, 256, "%s/taint_structures", group_directory);
-    
-    taint_fd = open(taint_structures_file, O_WRONLY | O_CREAT | O_TRUNC | O_LARGEFILE, 0644);
-    assert(taint_fd > 0);
-    
-    if (all_output) {
-	gettimeofday(&tv, NULL);
-	printf("dump start dir %s %lu sec %lu usec\n", group_directory, tv.tv_sec, tv.tv_usec);
-
-	if (splice_output) {
-	    dump_reg_taints(taint_fd, pregs);
-	    dump_mem_taints(taint_fd);
-	} else {
-	    dump_reg_taints_start(taint_fd, pregs);
-	    dump_mem_taints_start(taint_fd);
-	}
-    }
-    close(taint_fd);
-
-    print_taint_stats(stderr);
-#if 0
-    gettimeofday(&tv, NULL);
-    fprintf(stderr, "time end %lu sec %lu usec\n", tv.tv_sec, tv.tv_usec);
-#endif
+    dift_done ();
 }
 
 #if 0

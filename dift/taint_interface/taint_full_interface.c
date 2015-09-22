@@ -11,6 +11,8 @@
 #include <sys/mman.h>
 
 //#define USE_MERGE_HASH
+#define TAINT_STATS
+
 extern int splice_output;
 
 #define FIRST_TABLE_SIZE 131072
@@ -49,12 +51,12 @@ void* mem_loc_high[FIRST_TABLE_SIZE];  // Top-level table for memory taints
 GHashTable* taint_fds_table = NULL;
 GHashTable* taint_fds_cloexec = NULL;
 
-//#define TAINT_STATS
 #ifdef TAINT_STATS
 struct taint_stats_profile {
     unsigned long num_second_tables;
     unsigned long num_third_tables;
     unsigned long merges;
+    unsigned long merges_saved;
     unsigned long options;
 };
 struct taint_stats_profile tsp;
@@ -68,23 +70,25 @@ struct slab_alloc node_alloc;
 struct slab_alloc uint_alloc;
 
 // use taint numbers instead
-u_long taint_num;
+taint_t taint_num;
 int node_num_fd = -1;
 
 // Strategy for merge log is to put the first n bytes in named shared memory (fast)
 // If this is too small, use an on-disk file for the overlow data (slow)
 struct taint_number {
-    u_long p1;
-    u_long p2;
+    taint_t p1;
+    taint_t p2;
 };
 
 extern u_long num_merge_entries;
 #define MERGE_BLOCK_SIZE (num_merge_entries*sizeof(struct taint_number))
+#define MERGE_FILE_ENTRIES 0x100000
+#define MERGE_FILE_CHUNK (MERGE_FILE_ENTRIES*sizeof(struct taint_number))
 
 static struct taint_number* merge_buffer;
+static bool merge_buf_overflow = false;
 static u_long merge_buffer_count = 0;
-u_long merge_total_count = 0xe0000001;
-static off64_t merge_offset = 0;
+taint_t merge_total_count = 0xe0000001;
 static char node_num_filename[256];
 
 #ifdef DEBUGTRACE
@@ -112,14 +116,33 @@ int is_in_trace_set(u_long val)
 }
 #endif
 
-static u_long add_merge_number(u_long p1, u_long p2)
+static void 
+flush_merge_buffer ()
 {
-    int rc;
+    long bytes_written = 0;
+    long size = num_merge_entries*sizeof(struct taint_number);
+    
+    while (bytes_written < size) {
+	long rc = write (node_num_fd, (char *) merge_buffer+bytes_written, size-bytes_written);	
+	if (rc <= 0) {
+	    fprintf (stderr, "Canot write to merge log, rc=%ld\n", rc);
+	    assert (0);
+	}
+	bytes_written += rc;
+    }
+}
 
+static taint_t 
+add_merge_number(taint_t p1, taint_t p2)
+{
     if (merge_buffer_count == num_merge_entries) {
-	if (merge_offset == 0) {
+	if (!merge_buf_overflow) {
 
 	    // Need to close the shmem and open the overflow file
+	    if (munmap (merge_buffer, MERGE_BLOCK_SIZE) < 0) {
+		fprintf (stderr, "could not munmap merge buffer, errno=%d\n", errno);
+		assert (0);
+	    }
 	    close (node_num_fd);
 
 	    node_num_fd = open(node_num_filename, O_CREAT | O_TRUNC | O_RDWR | O_LARGEFILE, 0644);
@@ -128,25 +151,18 @@ static u_long add_merge_number(u_long p1, u_long p2)
 			node_num_filename, errno);
 		assert(0);
 	    }
+
+	    merge_buffer = (struct taint_number *) malloc(MERGE_FILE_CHUNK);
+	    if (merge_buffer == NULL) {
+		fprintf (stderr, "Cannnot allocate file write buffer\n");
+		assert (0);
+	    }
+	    num_merge_entries = MERGE_FILE_ENTRIES;
+	    merge_buf_overflow = true;
+	} else {
+	    flush_merge_buffer();
 	}
-	merge_offset += MERGE_BLOCK_SIZE;
-	rc = ftruncate (node_num_fd, merge_offset);
-	if (rc < 0) {
-            fprintf(stderr, "could not truncate merge log, errno %d\n", errno);
-            assert(0);
-        }
-	if (munmap (merge_buffer, MERGE_BLOCK_SIZE) < 0) {
-	    fprintf (stderr, "could not munmap merge buffer, errno=%d\n", errno);
-	    assert (0);
-	}
-	  
-	merge_buffer = (struct taint_number *) mmap (0, MERGE_BLOCK_SIZE, PROT_READ|PROT_WRITE, MAP_SHARED, 
-						     node_num_fd, merge_offset-MERGE_BLOCK_SIZE);
-	if (merge_buffer == MAP_FAILED) {
-	    fprintf (stderr, "could not map merge buffer, errno=%d\n", errno);
-	    assert (0);
-	}
-        merge_buffer_count = 0;
+	merge_buffer_count = 0;
     } 
     merge_buffer[merge_buffer_count].p1 = p1;
     merge_buffer[merge_buffer_count].p2 = p2;
@@ -170,9 +186,16 @@ struct taint_leafnode {
     option_t option;
 };
 
+
 #ifdef USE_MERGE_HASH
-// structure for holding merged indices
-GHashTable* taint_merge_index = NULL;
+
+// simple hash for holding merged indices
+#define SIMPLE_HASH_SIZE 0x100000
+struct simple_bucket {
+    taint_t p1, p2, n;
+};
+struct simple_bucket simple_hash[SIMPLE_HASH_SIZE];
+
 #endif
 
 #ifdef TAINT_STRUCTS_WRITEOUT
@@ -234,7 +257,10 @@ void check_mem_taints(taint_t* mem_taints, u_long addr, int size)
 static inline void init_taint_index(char* group_dir)
 {
 #ifdef USE_MERGE_HASH
-    taint_merge_index = g_hash_table_new (g_int64_hash, g_int64_equal);
+    memset(&simple_hash,0,sizeof(simple_hash));
+#endif
+#ifdef TAINT_STATS
+    memset(&tsp, 0, sizeof(tsp));
 #endif
     init_slab_allocs();
     {
@@ -338,22 +364,6 @@ static inline guint64* get_new_64()
     return (guint64 *) get_slice(&uint_alloc);
 }
 
-static inline guint64 hash_indices(guint32 index1, guint32 index2) {
-    guint64 hash;
-    // make index 2 always be the bigger number
-    if (index1 > index2) {
-        guint32 tmp;
-        tmp = index2;
-        index2 = index1;
-        index1 = tmp;
-    }
-
-    hash = index1;
-    hash = hash << 32;
-    hash += index2;
-    return hash;
-}
-
 taint_t merge_taints(taint_t dst, taint_t src)
 {
     if (dst == 0) {
@@ -367,28 +377,30 @@ taint_t merge_taints(taint_t dst, taint_t src)
     }
 
 #ifdef USE_MERGE_HASH
-    guint64 hash = hash_indices((guint32) dst, (guint32) src);
-    u_long n = (u_long) g_hash_table_lookup(taint_merge_index, &hash);
-    if (n) {
-	return n;
+    taint_t h = src + dst;
+    struct simple_bucket& bucket = simple_hash[h%SIMPLE_HASH_SIZE];
+    if (bucket.p1 == src && bucket.p2 == dst) {
+#ifdef TAINT_STATS
+	tsp.merges_saved++;
+#endif
+	return bucket.n;
     } else {
-	guint64* phash;
-	struct taint_number* t;
-        phash = (guint64 *) get_new_64();
-	t = (struct taint_number *) phash;
-	t->p1 = src;
-	t->p2 = dst;
-	n = add_merge_number (dst, src);
-	g_hash_table_insert(taint_merge_index, phash, GUINT_TO_POINTER(n));
+	taint_t n = add_merge_number (dst, src);
+	bucket.p1 = src;
+	bucket.p2 = dst;
+	bucket.n = n;
+#ifdef TAINT_STATS
+	tsp.merges++;
+#endif
 	return n;
     }
-#endif
+#else
 
 #ifdef TAINT_STATS
     tsp.merges++;
 #endif
-
     return add_merge_number(dst, src);
+#endif
 }
 
 static inline unsigned get_high_index(u_long mem_loc)
@@ -439,7 +451,6 @@ static inline int get_mem_split(u_long mem_loc, uint32_t size)
             return size;
         } else {
             unsigned bytes_left = (THIRD_TABLE_BITS + 1) - (mem_loc & 5);
-            // u_long bytes_left = 0x20 - ((mem_loc & 0x1f));
             if ((size) > bytes_left) {
                 assert(bytes_left != 0);
                 return bytes_left;
@@ -484,14 +495,17 @@ taintvalue_t get_taint_value (taint_t t, option_t option)
 }
 
 
-void print_taint_stats(FILE* fp)
+void finish_and_print_taint_stats(FILE* fp)
 {
+    if (merge_buf_overflow) flush_merge_buffer ();
+
 #ifdef TAINT_STATS
     fprintf(fp, "Taint statistics:\n");
     fprintf(fp, "Second tables allocated: %lu\n", tsp.num_second_tables);
     fprintf(fp, "Third tables allocated: %lu\n", tsp.num_third_tables);
     fprintf(fp, "Num taint options: %lu\n", tsp.options);
     fprintf(fp, "Num merges: %lu\n", tsp.merges);
+    fprintf(fp, "Num merges saved: %lu\n", tsp.merges_saved);
     fflush(fp);
 #endif
 }
@@ -567,24 +581,23 @@ taint_t* get_mem_taints(u_long mem_loc, uint32_t size)
 }
 
 #define DUMPBUFSIZE 1000000
-static u_long dumpbuf[DUMPBUFSIZE];
+static taint_t dumpbuf[DUMPBUFSIZE];
 static u_long dumpindex = 0;
 
 static void flush_dumpbuf(int dumpfd)
 {
-    long rc = write (dumpfd, dumpbuf, dumpindex*sizeof(u_long));
-    if (rc != (long) (dumpindex*sizeof(u_long))) {
+    long rc = write (dumpfd, dumpbuf, dumpindex*sizeof(taint_t));
+    if (rc != (long) (dumpindex*sizeof(taint_t))) {
 	fprintf (stderr, "write of segment failed, rc=%ld, errno=%d\n", rc, errno);
     }
     dumpindex = 0;
 }
 
-static inline void print_value (int dumpfd, u_long value) 
+static inline void print_value (int dumpfd, taint_t value) 
 {
     if (dumpindex == DUMPBUFSIZE) flush_dumpbuf(dumpfd);
     dumpbuf[dumpindex++] = value;
 }
-
 
 int dump_mem_taints(int fd)
 {
@@ -648,7 +661,7 @@ int dump_mem_taints_start(int fd)
     return 0;
 }
 
-int dump_reg_taints (int fd, u_long* pregs)
+int dump_reg_taints (int fd, taint_t* pregs)
 {
     u_long i;
 
@@ -668,7 +681,7 @@ int dump_reg_taints (int fd, u_long* pregs)
     return 0;
 }
 
-int dump_reg_taints_start (int fd, u_long* pregs)
+int dump_reg_taints_start (int fd, taint_t* pregs)
 {
     u_long i;
 
@@ -748,7 +761,7 @@ static void set_mem_taints(u_long mem_loc, uint32_t size, taint_t* values)
     low_index = mem_loc & LOW_INDEX_MASK;
     second_t = first_t[mid_index];
 
-    memcpy((void *) (second_t + low_index), values, size * sizeof(u_long));
+    memcpy((void *) (second_t + low_index), values, size * sizeof(taint_t));
 #ifdef TAINT_FULL_DEBUG
     {
         int i = 0;
@@ -794,7 +807,7 @@ uint32_t set_cmem_taints(u_long mem_loc, uint32_t size, taint_t* values)
     low_index = mem_loc & LOW_INDEX_MASK;
     second_t = first_t[mid_index];
 
-    memcpy((void *) (second_t + low_index), values, set_size * sizeof(u_long));
+    memcpy((void *) (second_t + low_index), values, set_size * sizeof(taint_t));
 #ifdef TAINT_FULL_DEBUG
     {
         int i = 0;
@@ -838,7 +851,7 @@ uint32_t set_cmem_taints_one(u_long mem_loc, uint32_t size, taint_t value)
     low_index = mem_loc & LOW_INDEX_MASK;
     second_t = first_t[mid_index];
 
-    memset((void *) (second_t + low_index), value, set_size * sizeof(u_long));
+    memset((void *) (second_t + low_index), value, set_size * sizeof(taint_t));
 #ifdef TAINT_FULL_DEBUG
     {
         int i = 0;
@@ -888,7 +901,7 @@ uint32_t clear_cmem_taints(u_long mem_loc, uint32_t size)
     }
 
     unsigned low_index = location & LOW_INDEX_MASK;
-    memset(second + low_index, 0, set_size * sizeof(u_long));
+    memset(second + low_index, 0, set_size * sizeof(taint_t));
 #ifdef TAINT_FULL_DEBUG
     {
         int i = 0;
@@ -922,7 +935,7 @@ static inline void clear_reg_value(struct thread_data* ptdata,
 {
     taint_t* shadow_reg_table = ptdata->shadow_reg_table;
     memset(&shadow_reg_table[reg * REG_SIZE + offset], 0,
-            size * sizeof(u_long));
+            size * sizeof(taint_t));
 #ifdef TAINT_FULL_DEBUG
     check_reg_taints(ptdata, reg);
 #endif
@@ -933,7 +946,7 @@ static inline void set_reg_value(struct thread_data* ptdata,
 {
     taint_t* shadow_reg_table = ptdata->shadow_reg_table;
     memcpy(&shadow_reg_table[reg * REG_SIZE + offset], values,
-            size * sizeof(u_long));
+            size * sizeof(taint_t));
 #ifdef TAINT_FULL_DEBUG
     check_reg_taints(ptdata, reg);
 #endif
@@ -944,7 +957,7 @@ static inline void zero_partial_reg (void* ptdata, int reg, int offset)
     struct thread_data* tdata = (struct thread_data *) ptdata;
     taint_t* shadow_reg_table = tdata->shadow_reg_table;
     memset(&shadow_reg_table[reg * REG_SIZE + offset], 0,
-            (REG_SIZE - offset) * sizeof(u_long));
+            (REG_SIZE - offset) * sizeof(taint_t));
 }
 
 static inline void zero_partial_reg_until (void* ptdata, int reg,
@@ -954,7 +967,7 @@ static inline void zero_partial_reg_until (void* ptdata, int reg,
     assert(until > offset);
     taint_t* shadow_reg_table = tdata->shadow_reg_table;
     memset(&shadow_reg_table[reg * REG_SIZE + offset], 0,
-            (until - offset) * sizeof(u_long));
+            (until - offset) * sizeof(taint_t));
 }
 
 void init_taint_structures (char* group_dir)
@@ -970,29 +983,6 @@ void init_taint_structures (char* group_dir)
     if (!taint_fds_table) {
         taint_fds_table = g_hash_table_new(g_direct_hash, g_direct_equal);
         taint_fds_cloexec = g_hash_table_new(g_direct_hash, g_direct_equal);
-    }
-}
-
-void write_merge_kv_pair(gpointer key, gpointer value, gpointer user_data)
-{
-    int rc;
-    int outfd;
-    uint64_t* phash;
-
-    outfd = GPOINTER_TO_INT(user_data);
-    phash = (uint64_t *) key;
-
-    assert(outfd > 0);
-
-    rc = write(outfd, phash, sizeof(uint64_t));
-    if (rc != sizeof(uint64_t)) {
-        fprintf(stderr, "write_merge_kv_pair could not write key\n");
-        assert(0);
-    }
-    rc = write(outfd, &value, sizeof(u_long));
-    if (rc != sizeof(u_long)) {
-        fprintf(stderr, "write_merge_kv_pair could not write value\n");
-        assert(0);
     }
 }
 
@@ -2126,7 +2116,7 @@ static inline void taint_reg2reg (void* ptdata, int dst_reg, int src_reg, uint32
     struct thread_data* tdata = (struct thread_data *) ptdata;
     taint_t* shadow_reg_table = tdata->shadow_reg_table;
     memcpy(&shadow_reg_table[dst_reg * REG_SIZE],
-            &shadow_reg_table[src_reg * REG_SIZE], size * sizeof(u_long));
+            &shadow_reg_table[src_reg * REG_SIZE], size * sizeof(taint_t));
 #ifdef TAINT_FULL_DEBUG
     check_reg_taints(ptdata, dst_reg);
     check_reg_taints(ptdata, src_reg);

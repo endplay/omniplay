@@ -7,6 +7,7 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include "taint_interface/taint.h"
 
 // constants
 #define DF_MASK 0x0400
@@ -97,12 +98,11 @@ struct syscall_info {
 // Per-thread data structure
 struct thread_data {
     int                      threadid;
-#ifdef HAVE_REPLAY
+    // This stuff only used for replay
     u_long                   app_syscall; // Per thread address for specifying pin vs. non-pin system calls
     int                      record_pid;  // Ask kernel for corresponding record pid and save it here
-    uint64_t rg_id;                 // record group id
-    u_long ignore_flag;             // location of the ignore flag
-#endif
+    uint64_t                 rg_id;       // record group id
+    u_long                   ignore_flag; // location of the ignore flag
     int                      sysnum; // Stores number of system calls for return
     int                      syscall_cnt; // per-thread syscall cnt, resets on fork
     
@@ -117,7 +117,7 @@ struct thread_data {
     void* save_syscall_info;
     int socketcall;
     int syscall_handled;            // flag to indicate if a syscall is handled at the glibc wrapper instead
-    u_long shadow_reg_table[NUM_REGS * REG_SIZE];
+    taint_t shadow_reg_table[NUM_REGS * REG_SIZE];
     struct syscall_info syscall_info_cache;
     struct thread_data*      next;
     struct thread_data*      prev;

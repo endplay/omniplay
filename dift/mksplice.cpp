@@ -17,11 +17,11 @@
 //#define STATS
 
 struct taint_entry {
-    u_long p1;
-    u_long p2;
+    taint_t p1;
+    taint_t p2;
 };
 
-std::unordered_set<u_long> splice_addrs;
+std::unordered_set<taint_t> splice_addrs;
 static struct taint_entry* merge_log;
 
 #ifdef STATS
@@ -31,7 +31,7 @@ u_long merges = 0, zeros = 0, directs = 0, indirects = 0, inputs = 0;
 #define STACK_SIZE 1000000
 u_long stack[STACK_SIZE];
 
-static inline void splice_iter(u_long value)
+static inline void splice_iter(taint_t value)
 {
     struct taint_entry* pentry;
     u_long stack_depth = 0;
@@ -78,9 +78,8 @@ static long print_addrs (char* dirname)
 	return -1;
     }
 
-    std::unordered_set<u_long>::const_iterator iter;
     p = (u_long *) buf;
-    for (iter = splice_addrs.begin(); iter != splice_addrs.end(); iter++) {
+    for (auto iter = splice_addrs.begin(); iter != splice_addrs.end(); iter++) {
 	if (*iter < 0xc0000001) {
 	    *p = *iter;
 	    p++;
@@ -197,7 +196,8 @@ static long splice_before_segment (char* dirname)
 {
     long rc;
     char* output_log, *plog;
-    u_long ndatasize, odatasize, mergesize, mapsize, buf_size, value, i;
+    taint_t value;
+    u_long ndatasize, odatasize, mergesize, mapsize, buf_size, i;
     char mergefile[256], outfile[256];
     int node_num_fd, outfd;
 
@@ -218,7 +218,7 @@ static long splice_before_segment (char* dirname)
 	for (i = 0; i < buf_size; i++) {
 	    plog += sizeof(u_long);
 	    value = *((u_long *) plog);
-	    plog += sizeof(u_long);
+	    plog += sizeof(taint_t);
 	    if (value) {
 		if (value < 0xc0000001) {
 		    splice_addrs.insert(value);

@@ -12,6 +12,7 @@
 #include <unordered_set>
 #include <unordered_map>
 
+#include "taint_interface/taint.h"
 #include "taint_interface/taint_creation.h"
 #include "xray_token.h"
 #include "maputil.h"
@@ -102,7 +103,7 @@ int main(int argc, char** argv)
 		} while (1);
 		print_value (0);
 		pout += sizeof(u_long);
-		pout += sizeof(u_long);
+		pout += sizeof(taint_t);
 	    }
 	} else {
 	    for (i = 0; i < buf_size; i++) {
@@ -118,7 +119,7 @@ int main(int argc, char** argv)
 		} while (1);
 		(*maps)[*(u_long *) pout] = progenitors;
 		pout += sizeof(u_long);
-		pout += sizeof(u_long);
+		pout += sizeof(taint_t);
 	    }
 	}
     }

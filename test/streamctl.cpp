@@ -143,8 +143,6 @@ int main (int argc, char* argv[])
 	while ((de = readdir(dir)) != NULL) {
 	    if (!strcmp(de->d_name, "ckpt") || !strcmp(de->d_name, "mlog") || !strncmp(de->d_name, "ulog", 4)) {
 		struct replay_path pathname;
-
-		printf ("%s\n", de->d_name);
 		sprintf (pathname.path, "%s/%s", dirname, de->d_name);
 		log_files.push_back(pathname);
 	    } else if (!strncmp(de->d_name, "klog", 4)) {

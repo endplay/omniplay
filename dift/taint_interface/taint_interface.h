@@ -6,12 +6,12 @@
 #include <stdio.h>
 #include <sys/select.h>
 #include "pin.H"
+#include "taint.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef u_long taint_t;
 typedef uint32_t option_t;
 typedef uint8_t taintvalue_t;
 
@@ -52,7 +52,7 @@ void print_options(FILE* fp, taint_t t);
 /* Any sort of cleanup goes here */
 void taint_fini(void);
 
-void print_taint_stats(FILE* fp);
+void finish_and_print_taint_stats(FILE* fp);
 
 taint_t* get_reg_taints(void* ptdata, int reg);
 

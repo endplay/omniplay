@@ -107,8 +107,8 @@ $(OBJDIR)splice$(OBJ_SUFFIX): splice.h splice.c
 $(OBJDIR)maputil$(OBJ_SUFFIX): maputil.h maputil.c
 	$(CXX) $(TOOL_CXXFLAGS) -Wall -Werror -O2 -c -o $(OBJDIR)maputil$(OBJ_SUFFIX) $(GLIB_INCLUDES) maputil.c
 
-$(OBJDIR)postprocess_linkage: xray_slab_alloc.h postprocess_linkage.c $(OBJDIR)xray_token$(OBJ_SUFFIX) maputil.c maputil.h
-	$(APP_CC) $(TOOL_CXXFLAGS) -Wall -Werror -O2 -o $(OBJDIR)postprocess_linkage $(GLIB_INCLUDES) $(OBJDIR)xray_token$(OBJ_SUFFIX) postprocess_linkage.c maputil.c -lglib-2.0
+$(OBJDIR)postprocess_linkage: xray_slab_alloc.h postprocess_linkage.cpp $(OBJDIR)xray_token$(OBJ_SUFFIX) maputil.c maputil.h
+	$(CXX) -std=c++0x $(TOOL_CXXFLAGS) -Wall -Werror -O2 -o $(OBJDIR)postprocess_linkage $(GLIB_INCLUDES) $(OBJDIR)xray_token$(OBJ_SUFFIX) postprocess_linkage.cpp maputil.c -lglib-2.0
 
 $(OBJDIR)mksplice: mksplice.cpp maputil.c maputil.h
 	$(CXX) -std=c++0x -Wall -Werror -O8 -o $(OBJDIR)mksplice $(GLIB_INCLUDES) mksplice.cpp maputil.c -lrt

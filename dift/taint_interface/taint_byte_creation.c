@@ -11,7 +11,7 @@ u_long output_cnt = 0;
 extern int is_in_trace_set(u_long val);
 #endif
 
-extern u_long taint_num;
+extern taint_t taint_num;
 
 int taint_filter_inputs = 0;
 int taint_filter_outputs = 0;
@@ -251,7 +251,7 @@ void create_taints_from_buffer(void* buf, int size,
 			       char* channel_name)
 {
     int i = 0;
-    u_long start;
+    taint_t start;
     u_long buf_addr = (u_long) buf;
     if (size <= 0) return;
     if (!buf) return;
@@ -361,7 +361,7 @@ void write_output_taints (int outfd, void* buf, int size)
 
         if (mem_taints) {
             int rc;
-            u_long value = mem_taints[0];
+            taint_t value = mem_taints[0];
             rc = write(outfd, &addr, sizeof(u_long));
             if (rc != sizeof(u_long)) {
                 fprintf(stderr, "Could not write taint addr\n");
@@ -372,13 +372,13 @@ void write_output_taints (int outfd, void* buf, int size)
 	    }
 	    output_cnt++;
 #endif
-            rc = write(outfd, &value, sizeof(u_long));
-            if (rc != sizeof(u_long)) {
+            rc = write(outfd, &value, sizeof(taint_t));
+            if (rc != sizeof(taint_t)) {
                 fprintf(stderr, "Could not write taint value\n");
             }
         } else {
             int rc;
-            u_long value = 0;
+            taint_t value = 0;
             rc = write(outfd, &addr, sizeof(u_long));
             if (rc != sizeof(u_long)) {
                 fprintf(stderr, "Could not write taint addr\n");
@@ -389,8 +389,8 @@ void write_output_taints (int outfd, void* buf, int size)
 		printf ("output 0 at offset %d of %d buf %p otoken %lx\n", i, size, buf, output_cnt);
 	    }
 #endif
-            rc = write(outfd, &value, sizeof(u_long));
-            if (rc != sizeof(u_long)) {
+            rc = write(outfd, &value, sizeof(taint_t));
+            if (rc != sizeof(taint_t)) {
                 fprintf(stderr, "Could not write taint value\n");
             }
         }
