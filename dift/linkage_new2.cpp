@@ -200,7 +200,6 @@ void instrument_before_badmemcpy(void) {
 #endif
 
 static int terminated = 0;
-extern int check_mem_taints();
 extern int dump_mem_taints (int fd);
 extern int dump_reg_taints (int fd, taint_t* pregs);
 extern int dump_mem_taints_start (int fd);
@@ -18086,27 +18085,9 @@ void instrument_pmovmskb(INS ins)
 }
 
 #ifdef TRACE_TAINT_OPS
-int oops = 0;
 void trace_inst(ADDRINT ptr)
 {
-    if (!oops) {
-	inst_count++;
-	PIN_LockClient();
-        printf("[INST] %#x\n", ptr);
-	if (IMG_Valid(IMG_FindByAddress(ptr))) {
-		printf("%s -- img %s static %#x\n", RTN_FindNameByAddress(ptr).c_str(), IMG_Name(IMG_FindByAddress(ptr)).c_str(), find_static_address(ptr));
-	}
-	PIN_UnlockClient();
-	for (int i = 0; i < NUM_REGS * REG_SIZE; i++) {
-	    if (pregs[i] > 0x100000000) {
-		printf ("reg %d: %llx (addr %p, pregs %p)\n", i, pregs[i], &pregs[i], pregs);
-		oops = 1;
-	    }
-	}
-	if (!check_mem_taints()) {
-	    oops = 1;
-	}
-    }
+    inst_count++;
 }
 #endif
 
@@ -18764,7 +18745,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
     memset(ptdata, 0, sizeof(struct thread_data));
     if (splice_output) {
 	// FIXME - use unique values for multithreaded programs
-	for (taint_t i = 0; i < NUM_REGS * REG_SIZE; i++) {
+	for (int i = 0; i < NUM_REGS * REG_SIZE; i++) {
 	    ptdata->shadow_reg_table[i] = i+1; // Guaranteed to not be a useful part of the address space
 	}
     }
