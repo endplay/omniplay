@@ -13,7 +13,7 @@ using namespace std;
 
 #include "taint_interface/taint_creation.h"
 
-//#define TARGET 0x2454
+#define TARGET 0x24eb
 //#define ITARGET 0x201e42
 
 #define ALLOW_DUPS
@@ -182,6 +182,8 @@ int main (int argc, char* argv[])
     }
     if (oiter != omapping.end()) {
 	printf ("output files have entries remaining but mergeout does not\n");
+	printf ("Ar mapping %d\n", cnt);
+	printf ("extra outputs <%lx,%lx>\n", oiter->first, oiter->second);
 	return 1;
     }
     printf ("compared OK\n");

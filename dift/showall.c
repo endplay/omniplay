@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "taint_interface/taint.h"
 #include "taint_interface/taint_creation.h"
 #include "xray_token.h"
 #include "maputil.h"
@@ -14,6 +15,7 @@ int main (int argc, char* argv[])
     u_long* mptr;
     u_long buf_size, i;
     long rc;
+    u_long ocnt = 0;
 
     if (argc != 2) {
 	fprintf (stderr, "format: showall <dirno>\n");
@@ -44,7 +46,7 @@ int main (int argc, char* argv[])
 	    do {
 		if (*mptr) {
 		    u_long tokval = *mptr;
-		    printf ("output syscall %lu offset %lu <- ", syscall, i);
+		    printf ("output syscall %lu offset %lu (%lx) <- (%lx)", syscall, i, ocnt, *mptr);
 		    struct token* ptok = (struct token *) tbuf;
 		    while (tokval > ptok->size) {
 			tokval -= ptok->size;
@@ -57,7 +59,8 @@ int main (int argc, char* argv[])
 		    break;
 		}
 	    } while (1);
-	    obuf += sizeof(u_long) * 2;
+	    obuf += sizeof(u_long) + sizeof(taint_t);
+	    ocnt++;
 	}
     }
 

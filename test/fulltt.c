@@ -179,11 +179,7 @@ int main (int argc, char* argv[])
 			    args[argcnt++] = "-t";
 			    args[argcnt++] = "../dift/obj-ia32/linkage_data.so";
 			    if (i < epochs-1) {
-				if (i == 0) {
-				    sprintf (syscalls, "%ld", epoch[i].stop_syscall);
-				} else {
-				    sprintf (syscalls, "%ld", epoch[i].stop_syscall-epoch[i].start_syscall+1);
-				}
+				sprintf (syscalls, "%ld", epoch[i].stop_syscall);
 				args[argcnt++] = "-l";
 				args[argcnt++] = syscalls;
 			    }

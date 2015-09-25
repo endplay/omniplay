@@ -50,8 +50,8 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 	struct filemap_num_data fndata;
 	struct filemap_entry_data fedata;
 	struct get_record_pid_data recordpid_data;
+	struct set_pin_address_data pin_data;
 	int syscall;
-	u_long app_syscall_addr;
 	char logdir[MAX_LOGDIR_STRLEN+1];
 	char filename[MAX_LOGDIR_STRLEN+1];
 	char* tmp = NULL;
@@ -196,13 +196,13 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 		return rc;
 
 	case SPECI_SET_PIN_ADDR:
-		if (len != sizeof(u_long)) {
+		if (len != sizeof(struct set_pin_address_data)) {
 			printk ("ioctl SPECI_SET_PIN_ADDR fails, len %d\n", len);
 			return -EINVAL;
 		}
-		if (copy_from_user (&app_syscall_addr, (void *) data, sizeof(app_syscall_addr)))
+		if (copy_from_user (&pin_data, (void *) data, sizeof(pin_data)))
 			return -EFAULT;
-		return set_pin_address (app_syscall_addr);
+		return set_pin_address (pin_data.pin_address, pin_data.pthread_data, pin_data.pcurthread);
 	case SPECI_CHECK_BEFORE:
 		if (len != sizeof(int)) {
 			printk ("ioctl SPECI_CHECK_BEFORE fails, len %d\n", len);
@@ -276,6 +276,17 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 			return -EFAULT;
 		}
 		return get_attach_status (pid);
+	case SPECI_TRY_TO_EXIT:
+		if (len != sizeof(pid_t))
+		{
+			printk("ioctl SPECI_TRY_TO_EXIT fails, len %d\n", len);
+			return -EINVAL;
+		}
+		if (copy_from_user(&pid, (void *)data, sizeof(pid_t)))
+		{
+			return -EFAULT;
+		}
+		return try_to_exit (pid);
 	default:
 		return -EINVAL;
 	}

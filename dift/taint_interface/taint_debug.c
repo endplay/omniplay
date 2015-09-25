@@ -10,7 +10,7 @@
 // not thread safe
 static int write_exit = 0;
 
-int is_dst_zero(void* ptdata, taint_op_t taint_op, u_long dst)
+int is_dst_zero(taint_op_t taint_op, u_long dst)
 {
     if (is_dst_reg(taint_op)) {
         int i = 0;
@@ -18,7 +18,7 @@ int is_dst_zero(void* ptdata, taint_op_t taint_op, u_long dst)
         taint_t* reg_taints;
 
         size = get_dst_size(taint_op);
-        reg_taints = get_reg_taints(ptdata, (int) dst);
+        reg_taints = get_reg_taints((int) dst);
         for (i = 0; i < size; i++) {
             if (reg_taints[i]) {
                 return 0;
@@ -44,7 +44,7 @@ int is_dst_zero(void* ptdata, taint_op_t taint_op, u_long dst)
     return 1;
 }
 
-int is_src_zero(void* ptdata, taint_op_t taint_op, u_long src)
+int is_src_zero(taint_op_t taint_op, u_long src)
 {
     if (is_src_reg(taint_op)) {
         int i = 0;
@@ -52,7 +52,7 @@ int is_src_zero(void* ptdata, taint_op_t taint_op, u_long src)
         taint_t* reg_taints;
 
         size = get_src_size(taint_op);
-        reg_taints = get_reg_taints(ptdata, (int) src);
+        reg_taints = get_reg_taints((int) src);
         for (i = 0; i < size; i++) {
             if (reg_taints[i]) {
                 return 0;
@@ -78,7 +78,7 @@ int is_src_zero(void* ptdata, taint_op_t taint_op, u_long src)
     return 1;
 }
 
-void trace_syscall_op(void* ptdata, int outfd, int threadid,
+void trace_syscall_op(int outfd, int threadid,
                         u_long ip, taint_op_t taint_op,
                         u_long syscall_num,
                         u_long syscall_cnt)
@@ -98,15 +98,12 @@ void trace_syscall_op(void* ptdata, int outfd, int threadid,
     }
 }
 
-void trace_taint_op(void* ptdata, int outfd, int threadid,
-                        u_long ip, taint_op_t taint_op,
-                        u_long dst, u_long src)
+void trace_taint_op(int outfd, int threadid, u_long ip, taint_op_t taint_op, u_long dst, u_long src)
 {
     int rc;
     struct taint_op op;
 
-    if (is_dst_zero(ptdata, taint_op, dst) && 
-            is_src_zero(ptdata, taint_op, src)) {
+    if (is_dst_zero(taint_op, dst) && is_src_zero(taint_op, src)) {
         return;
     }
 
@@ -138,7 +135,7 @@ void trace_taint_op(void* ptdata, int outfd, int threadid,
         taint_t* reg_taints;
 
         size = get_src_size(taint_op);
-        reg_taints = get_reg_taints(ptdata, (int) src);
+        reg_taints = get_reg_taints((int) src);
 
         rc = write(outfd, reg_taints, sizeof(taint_t) * size);
         if (rc != (sizeof(taint_t) * size)) {
@@ -175,7 +172,7 @@ void trace_taint_op(void* ptdata, int outfd, int threadid,
         taint_t* reg_taints;
 
         size = get_dst_size(taint_op);
-        reg_taints = get_reg_taints(ptdata, (int) dst);
+        reg_taints = get_reg_taints((int) dst);
 
         rc = write(outfd, reg_taints, sizeof(taint_t) * size);
         if (rc != (sizeof(taint_t) * size)) {
@@ -208,16 +205,13 @@ void trace_taint_op(void* ptdata, int outfd, int threadid,
     }
 }
 
-void trace_taint_op_enter(void* ptdata, int outfd, int threadid,
-                        u_long ip, taint_op_t taint_op,
-                        u_long dst, u_long src)
+void trace_taint_op_enter(int outfd, int threadid, u_long ip, taint_op_t taint_op, u_long dst, u_long src)
 {
     int rc;
     struct taint_op op;
     int bytes_written = 0;
 
-    if (is_dst_zero(ptdata, taint_op, dst) && 
-            is_src_zero(ptdata, taint_op, src)) {
+    if (is_dst_zero(taint_op, dst) && is_src_zero(taint_op, src)) {
         return;
     }
 
@@ -241,7 +235,7 @@ void trace_taint_op_enter(void* ptdata, int outfd, int threadid,
         taint_t* reg_taints;
 
         size = get_src_size(taint_op);
-        reg_taints = get_reg_taints(ptdata, (int) src);
+        reg_taints = get_reg_taints((int) src);
 
         rc = write(outfd, reg_taints, sizeof(taint_t) * size);
         if (rc != (sizeof(taint_t) * size)) {
@@ -277,9 +271,7 @@ void trace_taint_op_enter(void* ptdata, int outfd, int threadid,
     }
 }
 
-void trace_taint_op_exit(void* ptdata, int outfd, int threadid,
-                        u_long ip, taint_op_t taint_op,
-                        u_long dst, u_long src)
+void trace_taint_op_exit(int outfd, int threadid, u_long ip, taint_op_t taint_op, u_long dst, u_long src)
 {
     int rc;
     int bytes_written = 0;
@@ -298,7 +290,7 @@ void trace_taint_op_exit(void* ptdata, int outfd, int threadid,
         taint_t* reg_taints;
 
         size = get_dst_size(taint_op);
-        reg_taints = get_reg_taints(ptdata, (int) dst);
+        reg_taints = get_reg_taints((int) dst);
 
         rc = write(outfd, reg_taints, sizeof(taint_t) * size);
         if (rc != (sizeof(taint_t) * size)) {

@@ -61,6 +61,9 @@ streamctl: streamctl.cpp streamserver.h parseklib.o streamnw.cpp streamnw.h
 
 fulltt: libutil.a
 
+mkpartition: libutil.a mkpartition.cpp 
+	c++ -std=c++0x mkpartition.cpp libutil.a -pthread -lrt -o mkpartition
+
 .PHONY: clean
 clean:
 	rm -f *.a *.o $(TARGETS)

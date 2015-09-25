@@ -32,7 +32,7 @@ struct used_address {
     u_long end;
 };
 
-int set_pin_address (u_long pin_address);
+int set_pin_address (u_long pin_address, u_long thread_data, u_long __user* curthread_ptr);
 long get_log_id (void);
 unsigned long get_clock_value (void);
 long check_clock_before_syscall (int syscall);
@@ -135,5 +135,8 @@ long reset_replay_ndx(void);
 /* Used for gdb attachment */
 int replay_gdb_attached(void);
 void replay_unlink_gdb(struct task_struct* tsk);
+
+/* Set to force a replay to exit on fatal signal */
+long try_to_exit (u_long pid);
 
 #endif

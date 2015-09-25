@@ -5,6 +5,8 @@
 #include <string.h>
 #include <assert.h>
 
+extern struct thread_data* current_thread;
+
 uint8_t* shadow_memory = NULL;
 
 // #define LOGGING_ON
@@ -58,45 +60,39 @@ void print_taint_stats(FILE* fp)
     */
 }
 
-taint_t* get_reg_taints(void* ptdata, int reg)
+taint_t* get_reg_taints(int reg)
 {
-    struct thread_data* tdata = (struct thread_data *) ptdata;
-    return &(tdata->shadow_reg_table[reg]);
+    return &(current_thread->shadow_reg_table[reg]);
 }
 
-void clear_reg (void* ptdata, int reg, int size)
+void clear_reg (int reg, int size)
 {
-    struct thread_data* tdata = (struct thread_data *) ptdata;
     uint16_t bitfield = (0x1 << size) - 1;
-    tdata->shadow_reg_table[reg] &= ~bitfield;
+    current_thread->shadow_reg_table[reg] &= ~bitfield;
 }
 
 // clears the register using the inverse of the provided mask
-static inline void clear_reg_mask(void* ptdata, int reg, uint16_t mask)
+static inline void clear_reg_mask(int reg, uint16_t mask)
 {
-    struct thread_data* tdata = (struct thread_data *) ptdata;
-    tdata->shadow_reg_table[reg] &= ~mask;
+    current_thread->shadow_reg_table[reg] &= ~mask;
 }
 
-static inline void set_reg_taint(void* ptdata, int reg, uint16_t reg_taint)
+static inline void set_reg_taint(int reg, uint16_t reg_taint)
 {
-    struct thread_data* tdata = (struct thread_data *) ptdata;
-    tdata->shadow_reg_table[reg] = reg_taint;
+    current_thread->shadow_reg_table[reg] = reg_taint;
 }
 
-static inline uint16_t get_reg_taint(void* ptdata, int reg)
+static inline uint16_t get_reg_taint(int reg)
 {
-    struct thread_data* tdata = (struct thread_data *) ptdata;
-    return (uint16_t) tdata->shadow_reg_table[reg];
+    return (uint16_t) current_thread->shadow_reg_table[reg];
 }
 
-static inline void merge_reg_taint(void* ptdata, int reg, uint16_t reg_taint)
+static inline void merge_reg_taint(int reg, uint16_t reg_taint)
 {
-    struct thread_data* tdata = (struct thread_data *) ptdata;
-    tdata->shadow_reg_table[reg] |= reg_taint;
+    current_thread->shadow_reg_table[reg] |= reg_taint;
 }
 
-static inline void clear_mem_mask(void* ptdata, u_long mem_loc, uint16_t mask)
+static inline void clear_mem_mask(u_long mem_loc, uint16_t mask)
 {
     uint32_t* qw_mem;
     int idx = mem_loc >> 3;
@@ -106,7 +102,7 @@ static inline void clear_mem_mask(void* ptdata, u_long mem_loc, uint16_t mask)
     *qw_mem &= ~(mask << offset);
 }
 
-static inline void set_mem_taint(void* ptdata, u_long mem_loc, uint16_t taint)
+static inline void set_mem_taint(u_long mem_loc, uint16_t taint)
 {
     uint32_t* qw_mem;
     int idx = mem_loc >> 3;
@@ -115,7 +111,7 @@ static inline void set_mem_taint(void* ptdata, u_long mem_loc, uint16_t taint)
     *qw_mem &= (taint << offset);
 }
 
-static inline void merge_mem_taint(void* ptdata, u_long mem_loc, uint16_t taint)
+static inline void merge_mem_taint(u_long mem_loc, uint16_t taint)
 {
     uint32_t* qw_mem;
     int idx = mem_loc >> 3;
@@ -124,7 +120,7 @@ static inline void merge_mem_taint(void* ptdata, u_long mem_loc, uint16_t taint)
     *qw_mem |= (taint << offset);
 }
 
-static inline uint16_t get_mem_taint(void* ptdata, u_long mem_loc)
+static inline uint16_t get_mem_taint(u_long mem_loc)
 {
     uint32_t* qw_mem;
     int idx = mem_loc >> 3;
@@ -148,10 +144,10 @@ void clear_mem_taints(u_long mem_loc, uint32_t size)
     while(1) {
         if (nsize < 16) {
             uint16_t mask = (0x1 << size) - 1;
-            clear_mem_mask(NULL, tmp, mask);
+            clear_mem_mask(tmp, mask);
             break;
         }
-        clear_mem_mask(NULL, tmp, QW_MASK);
+        clear_mem_mask(tmp, QW_MASK);
         tmp += 16;
         nsize -= 16;
     }
@@ -168,26 +164,25 @@ void taint_mem(u_long mem_loc, taint_t t)
     *qw_mem |= bitfield;
 }
 
-void shift_reg_taint_right(void* ptdata, int reg, int shift)
+void shift_reg_taint_right(int reg, int shift)
 {
     assert(shift > 0);
     if (shift > 15) {
-        clear_reg(ptdata, reg, REG_SIZE);
+        clear_reg(reg, REG_SIZE);
     } else {
         uint16_t t;
-        t = get_reg_taint(ptdata, reg);
+        t = get_reg_taint(reg);
         t = t >> shift;
-        set_reg_taint(ptdata, reg, t);
+        set_reg_taint(reg, t);
     }
 }
 
-void reverse_reg_taint(void* ptdata, int reg, int size)
+void reverse_reg_taint(int reg, int size)
 {
-    // assert(0);
     assert(size == 4);
     uint16_t t;
     uint16_t tmp;
-    t = get_reg_taint(ptdata, reg);
+    t = get_reg_taint(reg);
 
     // first bit
     tmp = t & 0x1;
@@ -198,1256 +193,1256 @@ void reverse_reg_taint(void* ptdata, int reg, int size)
     tmp = tmp << 1;
     tmp |= ((t >> 3) & 0x1);
 
-    set_reg_taint(ptdata, reg, tmp);
+    set_reg_taint(reg, tmp);
 }
 
 // interface for different taint transfers
 // mem2reg
-TAINTSIGN taint_mem2lbreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_mem2lbreg (u_long mem_loc, int reg)
 {
     TAINT_START("taint_mem2lbreg");
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    clear_reg_mask(ptdata, reg, LB_MASK);
-    merge_reg_taint(ptdata, reg, t & LB_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    clear_reg_mask(reg, LB_MASK);
+    merge_reg_taint(reg, t & LB_MASK);
 }
 
-TAINTSIGN taint_mem2ubreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_mem2ubreg (u_long mem_loc, int reg)
 {
     TAINT_START("taint_mem2ubreg");
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    clear_reg_mask(ptdata, reg, UB_MASK);
-    merge_reg_taint(ptdata, reg, t & UB_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    clear_reg_mask(reg, UB_MASK);
+    merge_reg_taint(reg, t & UB_MASK);
 }
 
-TAINTSIGN taint_mem2hwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_mem2hwreg (u_long mem_loc, int reg)
 {
     TAINT_START("taint_mem2hwreg");
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    clear_reg_mask(ptdata, reg, HW_MASK);
-    merge_reg_taint(ptdata, reg, t & HW_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    clear_reg_mask(reg, HW_MASK);
+    merge_reg_taint(reg, t & HW_MASK);
 }
 
-TAINTSIGN taint_mem2wreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_mem2wreg (u_long mem_loc, int reg)
 {
     TAINT_START("taint_mem2wreg");
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    clear_reg_mask(ptdata, reg, W_MASK);
-    merge_reg_taint(ptdata, reg, t & W_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    clear_reg_mask(reg, W_MASK);
+    merge_reg_taint(reg, t & W_MASK);
 }
 
-TAINTSIGN taint_mem2dwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_mem2dwreg (u_long mem_loc, int reg)
 {
     TAINT_START("taint_mem2dwreg");
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    clear_reg_mask(ptdata, reg, DW_MASK);
-    merge_reg_taint(ptdata, reg, t & DW_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    clear_reg_mask(reg, DW_MASK);
+    merge_reg_taint(reg, t & DW_MASK);
 }
 
-TAINTSIGN taint_mem2qwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_mem2qwreg (u_long mem_loc, int reg)
 {
     TAINT_START("taint_mem2qwreg");
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    clear_reg_mask(ptdata, reg, QW_MASK);
-    merge_reg_taint(ptdata, reg, t & QW_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    clear_reg_mask(reg, QW_MASK);
+    merge_reg_taint(reg, t & QW_MASK);
 }
 
-TAINTSIGN taint_bmem2hwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_bmem2hwreg (u_long mem_loc, int reg)
 {
-    taint_mem2lbreg(ptdata, mem_loc, reg);
+    taint_mem2lbreg(mem_loc, reg);
 }
 
-TAINTSIGN taint_bmem2wreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_bmem2wreg (u_long mem_loc, int reg)
 {
-    taint_mem2lbreg(ptdata, mem_loc, reg);
+    taint_mem2lbreg(mem_loc, reg);
 }
 
-TAINTSIGN taint_bmem2dwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_bmem2dwreg (u_long mem_loc, int reg)
 {
-    taint_mem2lbreg(ptdata, mem_loc, reg);
+    taint_mem2lbreg(mem_loc, reg);
 }
 
-TAINTSIGN taint_bmem2qwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_bmem2qwreg (u_long mem_loc, int reg)
 {
-    taint_mem2lbreg(ptdata, mem_loc, reg);
+    taint_mem2lbreg(mem_loc, reg);
 }
 
-TAINTSIGN taint_hwmem2wreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_hwmem2wreg (u_long mem_loc, int reg)
 {
-    taint_mem2wreg(ptdata, mem_loc, reg);
+    taint_mem2wreg(mem_loc, reg);
 }
 
-TAINTSIGN taint_hwmem2dwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_hwmem2dwreg (u_long mem_loc, int reg)
 {
-    taint_mem2hwreg(ptdata, mem_loc, reg);
+    taint_mem2hwreg(mem_loc, reg);
 }
 
-TAINTSIGN taint_hwmem2qwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_hwmem2qwreg (u_long mem_loc, int reg)
 {
-    taint_mem2hwreg(ptdata, mem_loc, reg);
+    taint_mem2hwreg(mem_loc, reg);
 }
 
-TAINTSIGN taint_wmem2dwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_wmem2dwreg (u_long mem_loc, int reg)
 {
-    taint_mem2wreg(ptdata, mem_loc, reg);
+    taint_mem2wreg(mem_loc, reg);
 }
 
-TAINTSIGN taint_wmem2qwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_wmem2qwreg (u_long mem_loc, int reg)
 {
-    taint_mem2wreg(ptdata, mem_loc, reg);
+    taint_mem2wreg(mem_loc, reg);
 }
 
-TAINTSIGN taint_dwmem2qwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_dwmem2qwreg (u_long mem_loc, int reg)
 {
-    taint_mem2dwreg(ptdata, mem_loc, reg);
+    taint_mem2dwreg(mem_loc, reg);
 }
 
 // mem2reg extend
-TAINTSIGN taintx_bmem2hwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taintx_bmem2hwreg (u_long mem_loc, int reg)
 {
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    clear_reg_mask(ptdata, reg, HW_MASK);
-    merge_reg_taint(ptdata, reg, t & LB_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    clear_reg_mask(reg, HW_MASK);
+    merge_reg_taint(reg, t & LB_MASK);
 }
 
-TAINTSIGN taintx_bmem2wreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taintx_bmem2wreg (u_long mem_loc, int reg)
 {
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    clear_reg_mask(ptdata, reg, W_MASK);
-    merge_reg_taint(ptdata, reg, t & LB_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    clear_reg_mask(reg, W_MASK);
+    merge_reg_taint(reg, t & LB_MASK);
 }
 
-TAINTSIGN taintx_bmem2dwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taintx_bmem2dwreg (u_long mem_loc, int reg)
 {
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    clear_reg_mask(ptdata, reg, DW_MASK);
-    merge_reg_taint(ptdata, reg, t & LB_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    clear_reg_mask(reg, DW_MASK);
+    merge_reg_taint(reg, t & LB_MASK);
 }
 
-TAINTSIGN taintx_bmem2qwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taintx_bmem2qwreg (u_long mem_loc, int reg)
 {
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    clear_reg_mask(ptdata, reg, QW_MASK);
-    merge_reg_taint(ptdata, reg, t & LB_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    clear_reg_mask(reg, QW_MASK);
+    merge_reg_taint(reg, t & LB_MASK);
 }
 
-TAINTSIGN taintx_hwmem2wreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taintx_hwmem2wreg (u_long mem_loc, int reg)
 {
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    clear_reg_mask(ptdata, reg, W_MASK);
-    merge_reg_taint(ptdata, reg, t & HW_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    clear_reg_mask(reg, W_MASK);
+    merge_reg_taint(reg, t & HW_MASK);
 }
 
-TAINTSIGN taintx_hwmem2dwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taintx_hwmem2dwreg (u_long mem_loc, int reg)
 {
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    clear_reg_mask(ptdata, reg, DW_MASK);
-    merge_reg_taint(ptdata, reg, t & HW_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    clear_reg_mask(reg, DW_MASK);
+    merge_reg_taint(reg, t & HW_MASK);
 }
 
-TAINTSIGN taintx_hwmem2qwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taintx_hwmem2qwreg (u_long mem_loc, int reg)
 {
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    clear_reg_mask(ptdata, reg, QW_MASK);
-    merge_reg_taint(ptdata, reg, t & HW_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    clear_reg_mask(reg, QW_MASK);
+    merge_reg_taint(reg, t & HW_MASK);
 }
 
-TAINTSIGN taintx_wmem2dwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taintx_wmem2dwreg (u_long mem_loc, int reg)
 {
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    clear_reg_mask(ptdata, reg, DW_MASK);
-    merge_reg_taint(ptdata, reg, t & W_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    clear_reg_mask(reg, DW_MASK);
+    merge_reg_taint(reg, t & W_MASK);
 }
 
-TAINTSIGN taintx_wmem2qwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taintx_wmem2qwreg (u_long mem_loc, int reg)
 {
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    clear_reg_mask(ptdata, reg, QW_MASK);
-    merge_reg_taint(ptdata, reg, t & W_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    clear_reg_mask(reg, QW_MASK);
+    merge_reg_taint(reg, t & W_MASK);
 }
 
-TAINTSIGN taintx_dwmem2qwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taintx_dwmem2qwreg (u_long mem_loc, int reg)
 {
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    clear_reg_mask(ptdata, reg, QW_MASK);
-    merge_reg_taint(ptdata, reg, t & DW_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    clear_reg_mask(reg, QW_MASK);
+    merge_reg_taint(reg, t & DW_MASK);
 }
 
 // mem2reg add
-TAINTSIGN taint_add_bmem2lbreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_bmem2lbreg (u_long mem_loc, int reg)
 {
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    merge_reg_taint(ptdata, reg, t & LB_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    merge_reg_taint(reg, t & LB_MASK);
 }
 
-TAINTSIGN taint_add_bmem2ubreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_bmem2ubreg (u_long mem_loc, int reg)
 {
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    merge_reg_taint(ptdata, reg, t & UB_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    merge_reg_taint(reg, t & UB_MASK);
 }
 
-TAINTSIGN taint_add_hwmem2hwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_hwmem2hwreg (u_long mem_loc, int reg)
 {
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    merge_reg_taint(ptdata, reg, t & HW_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    merge_reg_taint(reg, t & HW_MASK);
 }
 
-TAINTSIGN taint_add_wmem2wreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_wmem2wreg (u_long mem_loc, int reg)
 {
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    merge_reg_taint(ptdata, reg, t & W_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    merge_reg_taint(reg, t & W_MASK);
 }
 
-TAINTSIGN taint_add_dwmem2dwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_dwmem2dwreg (u_long mem_loc, int reg)
 {
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    merge_reg_taint(ptdata, reg, t & DW_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    merge_reg_taint(reg, t & DW_MASK);
 }
 
-TAINTSIGN taint_add_qwmem2qwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_qwmem2qwreg (u_long mem_loc, int reg)
 {
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    merge_reg_taint(ptdata, reg, t & QW_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    merge_reg_taint(reg, t & QW_MASK);
 }
 
-TAINTSIGN taint_add_bmem2hwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_bmem2hwreg (u_long mem_loc, int reg)
 {
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    merge_reg_taint(ptdata, reg, t & LB_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    merge_reg_taint(reg, t & LB_MASK);
 }
 
-TAINTSIGN taint_add_bmem2wreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_bmem2wreg (u_long mem_loc, int reg)
 {
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    merge_reg_taint(ptdata, reg, t & LB_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    merge_reg_taint(reg, t & LB_MASK);
 }
 
-TAINTSIGN taint_add_bmem2dwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_bmem2dwreg (u_long mem_loc, int reg)
 {
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    merge_reg_taint(ptdata, reg, t & LB_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    merge_reg_taint(reg, t & LB_MASK);
 }
 
-TAINTSIGN taint_add_bmem2qwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_bmem2qwreg (u_long mem_loc, int reg)
 {
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    merge_reg_taint(ptdata, reg, t & LB_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    merge_reg_taint(reg, t & LB_MASK);
 }
 
-TAINTSIGN taint_add_hwmem2wreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_hwmem2wreg (u_long mem_loc, int reg)
 {
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    merge_reg_taint(ptdata, reg, t & HW_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    merge_reg_taint(reg, t & HW_MASK);
 }
 
-TAINTSIGN taint_add_hwmem2dwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_hwmem2dwreg (u_long mem_loc, int reg)
 {
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    merge_reg_taint(ptdata, reg, t & HW_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    merge_reg_taint(reg, t & HW_MASK);
 }
 
-TAINTSIGN taint_add_hwmem2qwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_hwmem2qwreg (u_long mem_loc, int reg)
 {
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    merge_reg_taint(ptdata, reg, t & HW_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    merge_reg_taint(reg, t & HW_MASK);
 }
 
-TAINTSIGN taint_add_wmem2dwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_wmem2dwreg (u_long mem_loc, int reg)
 {
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    merge_reg_taint(ptdata, reg, t & W_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    merge_reg_taint(reg, t & W_MASK);
 }
 
-TAINTSIGN taint_add_wmem2qwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_wmem2qwreg (u_long mem_loc, int reg)
 {
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    merge_reg_taint(ptdata, reg, t & W_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    merge_reg_taint(reg, t & W_MASK);
 }
 
-TAINTSIGN taint_add_dwmem2qwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_dwmem2qwreg (u_long mem_loc, int reg)
 {
-    uint16_t t = get_mem_taint(ptdata, mem_loc);
-    merge_reg_taint(ptdata, reg, t & DW_MASK);
+    uint16_t t = get_mem_taint(mem_loc);
+    merge_reg_taint(reg, t & DW_MASK);
 }
 
 // mem2reg xchg
-TAINTSIGN taint_xchg_bmem2lbreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_xchg_bmem2lbreg (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    uint16_t mem_taint = get_mem_taint(ptdata, mem_loc);
-    clear_reg_mask(ptdata, reg, LB_MASK);
-    merge_reg_taint(ptdata, reg, mem_taint & LB_MASK);
-    clear_mem_mask(ptdata, mem_loc, LB_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & LB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    uint16_t mem_taint = get_mem_taint(mem_loc);
+    clear_reg_mask(reg, LB_MASK);
+    merge_reg_taint(reg, mem_taint & LB_MASK);
+    clear_mem_mask(mem_loc, LB_MASK);
+    merge_mem_taint(mem_loc, reg_taint & LB_MASK);
 }
 
-TAINTSIGN taint_xchg_bmem2ubreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_xchg_bmem2ubreg (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    uint16_t mem_taint = get_mem_taint(ptdata, mem_loc);
-    clear_reg_mask(ptdata, reg, UB_MASK);
-    merge_reg_taint(ptdata, reg, mem_taint & UB_MASK);
-    clear_mem_mask(ptdata, mem_loc, LB_MASK);
-    merge_mem_taint(ptdata, mem_loc, (reg_taint >> 1 )& LB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    uint16_t mem_taint = get_mem_taint(mem_loc);
+    clear_reg_mask(reg, UB_MASK);
+    merge_reg_taint(reg, mem_taint & UB_MASK);
+    clear_mem_mask(mem_loc, LB_MASK);
+    merge_mem_taint(mem_loc, (reg_taint >> 1 )& LB_MASK);
 }
 
-TAINTSIGN taint_xchg_hwmem2hwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_xchg_hwmem2hwreg (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    uint16_t mem_taint = get_mem_taint(ptdata, mem_loc);
-    clear_reg_mask(ptdata, reg, HW_MASK);
-    merge_reg_taint(ptdata, reg, mem_taint & HW_MASK);
-    clear_mem_mask(ptdata, mem_loc, HW_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & HW_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    uint16_t mem_taint = get_mem_taint(mem_loc);
+    clear_reg_mask(reg, HW_MASK);
+    merge_reg_taint(reg, mem_taint & HW_MASK);
+    clear_mem_mask(mem_loc, HW_MASK);
+    merge_mem_taint(mem_loc, reg_taint & HW_MASK);
 }
 
-TAINTSIGN taint_xchg_wmem2wreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_xchg_wmem2wreg (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    uint16_t mem_taint = get_mem_taint(ptdata, mem_loc);
-    clear_reg_mask(ptdata, reg, W_MASK);
-    merge_reg_taint(ptdata, reg, mem_taint & W_MASK);
-    clear_mem_mask(ptdata, mem_loc, W_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & W_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    uint16_t mem_taint = get_mem_taint(mem_loc);
+    clear_reg_mask(reg, W_MASK);
+    merge_reg_taint(reg, mem_taint & W_MASK);
+    clear_mem_mask(mem_loc, W_MASK);
+    merge_mem_taint(mem_loc, reg_taint & W_MASK);
 }
 
-TAINTSIGN taint_xchg_dwmem2dwreg (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_xchg_dwmem2dwreg (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    uint16_t mem_taint = get_mem_taint(ptdata, mem_loc);
-    clear_reg_mask(ptdata, reg, DW_MASK);
-    merge_reg_taint(ptdata, reg, mem_taint & DW_MASK);
-    clear_mem_mask(ptdata, mem_loc, DW_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & DW_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    uint16_t mem_taint = get_mem_taint(mem_loc);
+    clear_reg_mask(reg, DW_MASK);
+    merge_reg_taint(reg, mem_taint & DW_MASK);
+    clear_mem_mask(mem_loc, DW_MASK);
+    merge_mem_taint(mem_loc, reg_taint & DW_MASK);
 }
 
-TAINTSIGN taint_xchg_qwmem2qwreg( void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_xchg_qwmem2qwreg( u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    uint16_t mem_taint = get_mem_taint(ptdata, mem_loc);
-    clear_reg_mask(ptdata, reg, QW_MASK);
-    merge_reg_taint(ptdata, reg, mem_taint & QW_MASK);
-    clear_mem_mask(ptdata, mem_loc, QW_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & QW_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    uint16_t mem_taint = get_mem_taint(mem_loc);
+    clear_reg_mask(reg, QW_MASK);
+    merge_reg_taint(reg, mem_taint & QW_MASK);
+    clear_mem_mask(mem_loc, QW_MASK);
+    merge_mem_taint(mem_loc, reg_taint & QW_MASK);
 }
 
 // reg2mem
-TAINTSIGN taint_lbreg2mem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_lbreg2mem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, LB_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & LB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, LB_MASK);
+    merge_mem_taint(mem_loc, reg_taint & LB_MASK);
 }
 
-TAINTSIGN taint_ubreg2mem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_ubreg2mem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, UB_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & UB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, UB_MASK);
+    merge_mem_taint(mem_loc, reg_taint & UB_MASK);
 }
 
-TAINTSIGN taint_hwreg2mem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_hwreg2mem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, HW_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & HW_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, HW_MASK);
+    merge_mem_taint(mem_loc, reg_taint & HW_MASK);
 }
 
-TAINTSIGN taint_wreg2mem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_wreg2mem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, W_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & W_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, W_MASK);
+    merge_mem_taint(mem_loc, reg_taint & W_MASK);
 }
 
-TAINTSIGN taint_dwreg2mem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_dwreg2mem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, DW_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & DW_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, DW_MASK);
+    merge_mem_taint(mem_loc, reg_taint & DW_MASK);
 }
 
-TAINTSIGN taint_qwreg2mem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_qwreg2mem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, QW_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & QW_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, QW_MASK);
+    merge_mem_taint(mem_loc, reg_taint & QW_MASK);
 }
 
-TAINTSIGN taint_lbreg2hwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_lbreg2hwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, LB_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & LB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, LB_MASK);
+    merge_mem_taint(mem_loc, reg_taint & LB_MASK);
 }
 
-TAINTSIGN taint_lbreg2wmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_lbreg2wmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, LB_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & LB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, LB_MASK);
+    merge_mem_taint(mem_loc, reg_taint & LB_MASK);
 }
 
-TAINTSIGN taint_lbreg2dwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_lbreg2dwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, LB_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & LB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, LB_MASK);
+    merge_mem_taint(mem_loc, reg_taint & LB_MASK);
 }
 
-TAINTSIGN taint_lbreg2qwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_lbreg2qwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, LB_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & LB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, LB_MASK);
+    merge_mem_taint(mem_loc, reg_taint & LB_MASK);
 }
 
-TAINTSIGN taint_ubreg2hwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_ubreg2hwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, UB_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & UB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, UB_MASK);
+    merge_mem_taint(mem_loc, reg_taint & UB_MASK);
 }
 
-TAINTSIGN taint_ubreg2wmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_ubreg2wmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, UB_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & UB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, UB_MASK);
+    merge_mem_taint(mem_loc, reg_taint & UB_MASK);
 }
 
-TAINTSIGN taint_ubreg2dwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_ubreg2dwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, UB_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & UB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, UB_MASK);
+    merge_mem_taint(mem_loc, reg_taint & UB_MASK);
 }
 
-TAINTSIGN taint_ubreg2qwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_ubreg2qwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, UB_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & UB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, UB_MASK);
+    merge_mem_taint(mem_loc, reg_taint & UB_MASK);
 }
 
-TAINTSIGN taint_hwreg2wmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_hwreg2wmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, HW_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & HW_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, HW_MASK);
+    merge_mem_taint(mem_loc, reg_taint & HW_MASK);
 }
 
-TAINTSIGN taint_hwreg2dwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_hwreg2dwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, HW_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & HW_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, HW_MASK);
+    merge_mem_taint(mem_loc, reg_taint & HW_MASK);
 }
 
-TAINTSIGN taint_hwreg2qwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_hwreg2qwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, HW_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & HW_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, HW_MASK);
+    merge_mem_taint(mem_loc, reg_taint & HW_MASK);
 }
 
-TAINTSIGN taint_wreg2dwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_wreg2dwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, W_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & W_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, W_MASK);
+    merge_mem_taint(mem_loc, reg_taint & W_MASK);
 }
 
-TAINTSIGN taint_wreg2qwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_wreg2qwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, W_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & W_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, W_MASK);
+    merge_mem_taint(mem_loc, reg_taint & W_MASK);
 }
 
-TAINTSIGN taint_dwreg2qwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_dwreg2qwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, DW_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & DW_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, DW_MASK);
+    merge_mem_taint(mem_loc, reg_taint & DW_MASK);
 }
 
 // reg2mem extend
-TAINTSIGN taintx_lbreg2hwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taintx_lbreg2hwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, HW_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & LB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, HW_MASK);
+    merge_mem_taint(mem_loc, reg_taint & LB_MASK);
 }
 
-TAINTSIGN taintx_lbreg2wmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taintx_lbreg2wmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, W_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & LB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, W_MASK);
+    merge_mem_taint(mem_loc, reg_taint & LB_MASK);
 }
 
-TAINTSIGN taintx_lbreg2dwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taintx_lbreg2dwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, DW_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & LB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, DW_MASK);
+    merge_mem_taint(mem_loc, reg_taint & LB_MASK);
 }
 
-TAINTSIGN taintx_lbreg2qwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taintx_lbreg2qwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, QW_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & LB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, QW_MASK);
+    merge_mem_taint(mem_loc, reg_taint & LB_MASK);
 }
 
-TAINTSIGN taintx_ubreg2hwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taintx_ubreg2hwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, HW_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & UB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, HW_MASK);
+    merge_mem_taint(mem_loc, reg_taint & UB_MASK);
 }
 
-TAINTSIGN taintx_ubreg2wmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taintx_ubreg2wmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, W_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & UB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, W_MASK);
+    merge_mem_taint(mem_loc, reg_taint & UB_MASK);
 }
 
-TAINTSIGN taintx_ubreg2dwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taintx_ubreg2dwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, DW_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & UB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, DW_MASK);
+    merge_mem_taint(mem_loc, reg_taint & UB_MASK);
 }
 
-TAINTSIGN taintx_ubreg2qwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taintx_ubreg2qwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, QW_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & UB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, QW_MASK);
+    merge_mem_taint(mem_loc, reg_taint & UB_MASK);
 }
 
 
-TAINTSIGN taintx_hwreg2wmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taintx_hwreg2wmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, W_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & HW_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, W_MASK);
+    merge_mem_taint(mem_loc, reg_taint & HW_MASK);
 }
 
-TAINTSIGN taintx_hwreg2dwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taintx_hwreg2dwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, DW_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & HW_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, DW_MASK);
+    merge_mem_taint(mem_loc, reg_taint & HW_MASK);
 }
 
-TAINTSIGN taintx_hwreg2qwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taintx_hwreg2qwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, QW_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & HW_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, QW_MASK);
+    merge_mem_taint(mem_loc, reg_taint & HW_MASK);
 }
 
-TAINTSIGN taintx_wreg2dwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taintx_wreg2dwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, DW_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & W_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, DW_MASK);
+    merge_mem_taint(mem_loc, reg_taint & W_MASK);
 }
 
-TAINTSIGN taintx_wreg2qwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taintx_wreg2qwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, QW_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & W_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, QW_MASK);
+    merge_mem_taint(mem_loc, reg_taint & W_MASK);
 }
 
-TAINTSIGN taintx_dwreg2qwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taintx_dwreg2qwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    clear_mem_mask(ptdata, mem_loc, QW_MASK);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & DW_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    clear_mem_mask(mem_loc, QW_MASK);
+    merge_mem_taint(mem_loc, reg_taint & DW_MASK);
 }
 
 // reg2mem add
-TAINTSIGN taint_add_lbreg2mem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_lbreg2mem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & LB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    merge_mem_taint(mem_loc, reg_taint & LB_MASK);
 }
 
-TAINTSIGN taint_add_ubreg2mem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_ubreg2mem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & UB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    merge_mem_taint(mem_loc, reg_taint & UB_MASK);
 }
 
-TAINTSIGN taint_add_hwreg2mem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_hwreg2mem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & HW_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    merge_mem_taint(mem_loc, reg_taint & HW_MASK);
 }
 
-TAINTSIGN taint_add_wreg2mem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_wreg2mem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & W_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    merge_mem_taint(mem_loc, reg_taint & W_MASK);
 }
 
-TAINTSIGN taint_add_dwreg2mem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_dwreg2mem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & DW_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    merge_mem_taint(mem_loc, reg_taint & DW_MASK);
 }
 
-TAINTSIGN taint_add_qwreg2mem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_qwreg2mem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & QW_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    merge_mem_taint(mem_loc, reg_taint & QW_MASK);
 }
 
-TAINTSIGN taint_add_lbreg2hwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_lbreg2hwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & LB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    merge_mem_taint(mem_loc, reg_taint & LB_MASK);
 }
 
-TAINTSIGN taint_add_lbreg2wmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_lbreg2wmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & LB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    merge_mem_taint(mem_loc, reg_taint & LB_MASK);
 }
 
-TAINTSIGN taint_add_lbreg2dwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_lbreg2dwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & LB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    merge_mem_taint(mem_loc, reg_taint & LB_MASK);
 }
 
-TAINTSIGN taint_add_lbreg2qwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_lbreg2qwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & LB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    merge_mem_taint(mem_loc, reg_taint & LB_MASK);
 }
 
-TAINTSIGN taint_add_ubreg2hwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_ubreg2hwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & UB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    merge_mem_taint(mem_loc, reg_taint & UB_MASK);
 }
 
-TAINTSIGN taint_add_ubreg2wmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_ubreg2wmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & UB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    merge_mem_taint(mem_loc, reg_taint & UB_MASK);
 }
 
-TAINTSIGN taint_add_ubreg2dwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_ubreg2dwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & UB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    merge_mem_taint(mem_loc, reg_taint & UB_MASK);
 }
 
-TAINTSIGN taint_add_ubreg2qwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_ubreg2qwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & UB_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    merge_mem_taint(mem_loc, reg_taint & UB_MASK);
 }
 
-TAINTSIGN taint_add_hwreg2wmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_hwreg2wmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & HW_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    merge_mem_taint(mem_loc, reg_taint & HW_MASK);
 }
 
-TAINTSIGN taint_add_hwreg2dwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_hwreg2dwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & HW_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    merge_mem_taint(mem_loc, reg_taint & HW_MASK);
 }
 
-TAINTSIGN taint_add_hwreg2qwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_hwreg2qwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & HW_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    merge_mem_taint(mem_loc, reg_taint & HW_MASK);
 }
 
-TAINTSIGN taint_add_wreg2dwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_wreg2dwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & W_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    merge_mem_taint(mem_loc, reg_taint & W_MASK);
 }
 
-TAINTSIGN taint_add_wreg2qwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_wreg2qwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & W_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    merge_mem_taint(mem_loc, reg_taint & W_MASK);
 }
 
-TAINTSIGN taint_add_dwreg2qwmem (void* ptdata, u_long mem_loc, int reg)
+TAINTSIGN taint_add_dwreg2qwmem (u_long mem_loc, int reg)
 {
-    uint16_t reg_taint = get_reg_taint(ptdata, reg);
-    merge_mem_taint(ptdata, mem_loc, reg_taint & DW_MASK);
+    uint16_t reg_taint = get_reg_taint(reg);
+    merge_mem_taint(mem_loc, reg_taint & DW_MASK);
 }
 
 // reg2mem rep
-TAINTSIGN taint_rep_lbreg2mem (void* ptdata, u_long mem_loc, int reg, int count)
+TAINTSIGN taint_rep_lbreg2mem (u_long mem_loc, int reg, int count)
 {
     // TODO this can be optimized
     int i = 0;
     for (i = 0; i < count; i++) {
-        taint_lbreg2mem(ptdata, mem_loc + i, reg);
+        taint_lbreg2mem(mem_loc + i, reg);
     }
 }
 
-TAINTSIGN taint_rep_ubreg2mem (void* ptdata, u_long mem_loc, int reg, int count)
+TAINTSIGN taint_rep_ubreg2mem (u_long mem_loc, int reg, int count)
 {
     // TODO this can be optimized
     int i = 0;
     for (i = 0; i < count; i++) {
-        taint_ubreg2mem(ptdata, mem_loc + i, reg);
+        taint_ubreg2mem(mem_loc + i, reg);
     }
 }
 
-TAINTSIGN taint_rep_hwreg2mem (void* ptdata, u_long mem_loc, int reg, int count)
+TAINTSIGN taint_rep_hwreg2mem (u_long mem_loc, int reg, int count)
 {
     int i = 0;
     for (i = 0; i < count; i++) {
-        taint_hwreg2mem(ptdata, mem_loc + (i * 2), reg);
+        taint_hwreg2mem(mem_loc + (i * 2), reg);
     }
 }
 
-TAINTSIGN taint_rep_wreg2mem (void* ptdata, u_long mem_loc, int reg, int count)
+TAINTSIGN taint_rep_wreg2mem (u_long mem_loc, int reg, int count)
 {
     int i = 0;
     for (i = 0; i < count; i++) {
-        taint_wreg2mem(ptdata, mem_loc + (i * 4), reg);
+        taint_wreg2mem(mem_loc + (i * 4), reg);
     }
 }
 
-TAINTSIGN taint_rep_dwreg2mem (void* ptdata, u_long mem_loc, int reg, int count)
+TAINTSIGN taint_rep_dwreg2mem (u_long mem_loc, int reg, int count)
 {
     int i = 0;
     for (i = 0; i < count; i++) {
-        taint_dwreg2mem(ptdata, mem_loc + (i * 8), reg);
+        taint_dwreg2mem(mem_loc + (i * 8), reg);
     }
 }
 
-TAINTSIGN taint_rep_qwreg2mem (void* ptdata, u_long mem_loc, int reg, int count)
+TAINTSIGN taint_rep_qwreg2mem (u_long mem_loc, int reg, int count)
 {
     int i = 0;
     for (i = 0; i < count; i++) {
-        taint_qwreg2mem(ptdata, mem_loc + (i * 16), reg);
+        taint_qwreg2mem(mem_loc + (i * 16), reg);
     }
 }
 
 // reg2reg
-TAINTSIGN taint_lbreg2lbreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_lbreg2lbreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, LB_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & LB_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, LB_MASK);
+    merge_reg_taint(dst_reg, t & LB_MASK);
 }
 
-TAINTSIGN taint_ubreg2lbreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_ubreg2lbreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
+    uint16_t t = get_reg_taint(src_reg);
     t &= UB_MASK;
     t = t >> 1;
-    clear_reg_mask(ptdata, dst_reg, LB_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & LB_MASK);
+    clear_reg_mask(dst_reg, LB_MASK);
+    merge_reg_taint(dst_reg, t & LB_MASK);
 }
 
-TAINTSIGN taint_lbreg2ubreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_lbreg2ubreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
+    uint16_t t = get_reg_taint(src_reg);
     t &= LB_MASK;
     t = t << 1;
-    clear_reg_mask(ptdata, dst_reg, UB_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & UB_MASK);
+    clear_reg_mask(dst_reg, UB_MASK);
+    merge_reg_taint(dst_reg, t & UB_MASK);
 }
 
-TAINTSIGN taint_ubreg2ubreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_ubreg2ubreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, UB_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & UB_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, UB_MASK);
+    merge_reg_taint(dst_reg, t & UB_MASK);
 }
 
-TAINTSIGN taint_hwreg2hwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_hwreg2hwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, HW_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & HW_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, HW_MASK);
+    merge_reg_taint(dst_reg, t & HW_MASK);
 }
 
-TAINTSIGN taint_wreg2wreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_wreg2wreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, W_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & W_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, W_MASK);
+    merge_reg_taint(dst_reg, t & W_MASK);
 }
 
-TAINTSIGN taint_dwreg2dwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_dwreg2dwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, DW_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & DW_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, DW_MASK);
+    merge_reg_taint(dst_reg, t & DW_MASK);
 }
 
-TAINTSIGN taint_qwreg2qwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_qwreg2qwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, QW_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & QW_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, QW_MASK);
+    merge_reg_taint(dst_reg, t & QW_MASK);
 }
 
-TAINTSIGN taint_lbreg2wreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_lbreg2wreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, LB_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & LB_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, LB_MASK);
+    merge_reg_taint(dst_reg, t & LB_MASK);
 }
 
-TAINTSIGN taint_lbreg2hwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_lbreg2hwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, LB_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & LB_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, LB_MASK);
+    merge_reg_taint(dst_reg, t & LB_MASK);
 }
 
-TAINTSIGN taint_lbreg2dwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_lbreg2dwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, LB_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & LB_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, LB_MASK);
+    merge_reg_taint(dst_reg, t & LB_MASK);
 }
 
-TAINTSIGN taint_lbreg2qwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_lbreg2qwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, LB_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & LB_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, LB_MASK);
+    merge_reg_taint(dst_reg, t & LB_MASK);
 }
 
-TAINTSIGN taint_ubreg2hwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_ubreg2hwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, UB_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & UB_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, UB_MASK);
+    merge_reg_taint(dst_reg, t & UB_MASK);
 }
 
-TAINTSIGN taint_ubreg2wreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_ubreg2wreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
+    uint16_t t = get_reg_taint(src_reg);
     t &= UB_MASK;
     t = t >> 1;
-    clear_reg_mask(ptdata, dst_reg, LB_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & LB_MASK);
+    clear_reg_mask(dst_reg, LB_MASK);
+    merge_reg_taint(dst_reg, t & LB_MASK);
 }
 
-TAINTSIGN taint_ubreg2dwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_ubreg2dwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
+    uint16_t t = get_reg_taint(src_reg);
     t &= UB_MASK;
     t = t >> 1;
-    clear_reg_mask(ptdata, dst_reg, LB_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & LB_MASK);
+    clear_reg_mask(dst_reg, LB_MASK);
+    merge_reg_taint(dst_reg, t & LB_MASK);
 }
 
-TAINTSIGN taint_ubreg2qwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_ubreg2qwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
+    uint16_t t = get_reg_taint(src_reg);
     t &= UB_MASK;
     t = t >> 1;
-    clear_reg_mask(ptdata, dst_reg, LB_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & LB_MASK);
+    clear_reg_mask(dst_reg, LB_MASK);
+    merge_reg_taint(dst_reg, t & LB_MASK);
 }
 
-TAINTSIGN taint_hwreg2wreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_hwreg2wreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, HW_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & HW_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, HW_MASK);
+    merge_reg_taint(dst_reg, t & HW_MASK);
 }
 
-TAINTSIGN taint_hwreg2dwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_hwreg2dwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, HW_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & HW_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, HW_MASK);
+    merge_reg_taint(dst_reg, t & HW_MASK);
 }
 
-TAINTSIGN taint_hwreg2qwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_hwreg2qwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, HW_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & HW_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, HW_MASK);
+    merge_reg_taint(dst_reg, t & HW_MASK);
 }
 
-TAINTSIGN taint_wreg2dwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_wreg2dwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, W_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & W_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, W_MASK);
+    merge_reg_taint(dst_reg, t & W_MASK);
 }
 
-TAINTSIGN taint_wreg2qwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_wreg2qwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, W_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & W_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, W_MASK);
+    merge_reg_taint(dst_reg, t & W_MASK);
 }
 
-TAINTSIGN taint_dwreg2qwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_dwreg2qwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, DW_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & DW_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, DW_MASK);
+    merge_reg_taint(dst_reg, t & DW_MASK);
 }
 
 // reg2reg extend
-TAINTSIGN taintx_lbreg2wreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taintx_lbreg2wreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, W_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & LB_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, W_MASK);
+    merge_reg_taint(dst_reg, t & LB_MASK);
 }
 
-TAINTSIGN taintx_lbreg2hwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taintx_lbreg2hwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, HW_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & LB_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, HW_MASK);
+    merge_reg_taint(dst_reg, t & LB_MASK);
 }
 
-TAINTSIGN taintx_lbreg2dwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taintx_lbreg2dwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, DW_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & LB_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, DW_MASK);
+    merge_reg_taint(dst_reg, t & LB_MASK);
 }
 
-TAINTSIGN taintx_lbreg2qwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taintx_lbreg2qwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, QW_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & LB_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, QW_MASK);
+    merge_reg_taint(dst_reg, t & LB_MASK);
 }
 
-TAINTSIGN taintx_ubreg2wreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taintx_ubreg2wreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, W_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & UB_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, W_MASK);
+    merge_reg_taint(dst_reg, t & UB_MASK);
 }
 
-TAINTSIGN taintx_ubreg2hwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taintx_ubreg2hwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, HW_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & UB_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, HW_MASK);
+    merge_reg_taint(dst_reg, t & UB_MASK);
 }
 
-TAINTSIGN taintx_ubreg2dwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taintx_ubreg2dwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, DW_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & UB_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, DW_MASK);
+    merge_reg_taint(dst_reg, t & UB_MASK);
 }
 
-TAINTSIGN taintx_ubreg2qwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taintx_ubreg2qwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, QW_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & UB_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, QW_MASK);
+    merge_reg_taint(dst_reg, t & UB_MASK);
 }
 
-TAINTSIGN taintx_hwreg2wreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taintx_hwreg2wreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, W_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & HW_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, W_MASK);
+    merge_reg_taint(dst_reg, t & HW_MASK);
 }
 
-TAINTSIGN taintx_hwreg2dwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taintx_hwreg2dwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, DW_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & HW_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, DW_MASK);
+    merge_reg_taint(dst_reg, t & HW_MASK);
 }
 
-TAINTSIGN taintx_hwreg2qwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taintx_hwreg2qwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, QW_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & HW_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, QW_MASK);
+    merge_reg_taint(dst_reg, t & HW_MASK);
 }
 
-TAINTSIGN taintx_wreg2dwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taintx_wreg2dwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, DW_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & W_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, DW_MASK);
+    merge_reg_taint(dst_reg, t & W_MASK);
 }
 
-TAINTSIGN taintx_wreg2qwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taintx_wreg2qwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, QW_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & W_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, QW_MASK);
+    merge_reg_taint(dst_reg, t & W_MASK);
 }
 
-TAINTSIGN taintx_dwreg2qwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taintx_dwreg2qwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, QW_MASK);
-    merge_reg_taint(ptdata, dst_reg, t & DW_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, QW_MASK);
+    merge_reg_taint(dst_reg, t & DW_MASK);
 }
 
 // reg2reg add
-TAINTSIGN taint_add_lbreg2lbreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_add_lbreg2lbreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    merge_reg_taint(ptdata, dst_reg, t & LB_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    merge_reg_taint(dst_reg, t & LB_MASK);
 }
 
-TAINTSIGN taint_add_ubreg2lbreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_add_ubreg2lbreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
+    uint16_t t = get_reg_taint(src_reg);
     t &= UB_MASK;
     t = t >> 1;
-    merge_reg_taint(ptdata, dst_reg, t & LB_MASK);
+    merge_reg_taint(dst_reg, t & LB_MASK);
 }
 
-TAINTSIGN taint_add_lbreg2ubreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_add_lbreg2ubreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
+    uint16_t t = get_reg_taint(src_reg);
     t &= LB_MASK;
     t = t << 1;
-    merge_reg_taint(ptdata, dst_reg, t & UB_MASK);
+    merge_reg_taint(dst_reg, t & UB_MASK);
 }
 
-TAINTSIGN taint_add_ubreg2ubreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_add_ubreg2ubreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    merge_reg_taint(ptdata, dst_reg, t & UB_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    merge_reg_taint(dst_reg, t & UB_MASK);
 }
 
-TAINTSIGN taint_add_wreg2wreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_add_wreg2wreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    merge_reg_taint(ptdata, dst_reg, t & W_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    merge_reg_taint(dst_reg, t & W_MASK);
 }
 
-TAINTSIGN taint_add_hwreg2hwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_add_hwreg2hwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    merge_reg_taint(ptdata, dst_reg, t & HW_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    merge_reg_taint(dst_reg, t & HW_MASK);
 }
 
-TAINTSIGN taint_add_dwreg2dwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_add_dwreg2dwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    merge_reg_taint(ptdata, dst_reg, t & DW_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    merge_reg_taint(dst_reg, t & DW_MASK);
 }
 
-TAINTSIGN taint_add_qwreg2qwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_add_qwreg2qwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    merge_reg_taint(ptdata, dst_reg, t & QW_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    merge_reg_taint(dst_reg, t & QW_MASK);
 }
 
-TAINTSIGN taint_add_lbreg2wreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_add_lbreg2wreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    merge_reg_taint(ptdata, dst_reg, t & LB_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    merge_reg_taint(dst_reg, t & LB_MASK);
 }
 
-TAINTSIGN taint_add_lbreg2hwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_add_lbreg2hwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    merge_reg_taint(ptdata, dst_reg, t & LB_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    merge_reg_taint(dst_reg, t & LB_MASK);
 }
 
-TAINTSIGN taint_add_lbreg2dwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_add_lbreg2dwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    merge_reg_taint(ptdata, dst_reg, t & LB_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    merge_reg_taint(dst_reg, t & LB_MASK);
 }
 
-TAINTSIGN taint_add_lbreg2qwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_add_lbreg2qwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    merge_reg_taint(ptdata, dst_reg, t & LB_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    merge_reg_taint(dst_reg, t & LB_MASK);
 }
 
-TAINTSIGN taint_add_ubreg2hwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_add_ubreg2hwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
+    uint16_t t = get_reg_taint(src_reg);
     t &= UB_MASK;
     t = t >> 1;
-    merge_reg_taint(ptdata, dst_reg, t & LB_MASK);
+    merge_reg_taint(dst_reg, t & LB_MASK);
 }
 
-TAINTSIGN taint_add_ubreg2wreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_add_ubreg2wreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
+    uint16_t t = get_reg_taint(src_reg);
     t &= UB_MASK;
     t = t >> 1;
-    merge_reg_taint(ptdata, dst_reg, t & LB_MASK);
+    merge_reg_taint(dst_reg, t & LB_MASK);
 }
 
-TAINTSIGN taint_add_ubreg2dwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_add_ubreg2dwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
+    uint16_t t = get_reg_taint(src_reg);
     t &= UB_MASK;
     t = t >> 1;
-    merge_reg_taint(ptdata, dst_reg, t & LB_MASK);
+    merge_reg_taint(dst_reg, t & LB_MASK);
 }
 
-TAINTSIGN taint_add_ubreg2qwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_add_ubreg2qwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
+    uint16_t t = get_reg_taint(src_reg);
     t &= UB_MASK;
     t = t >> 1;
-    merge_reg_taint(ptdata, dst_reg, t & LB_MASK);
+    merge_reg_taint(dst_reg, t & LB_MASK);
 }
 
-TAINTSIGN taint_add_hwreg2wreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_add_hwreg2wreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    merge_reg_taint(ptdata, dst_reg, t & HW_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    merge_reg_taint(dst_reg, t & HW_MASK);
 }
 
-TAINTSIGN taint_add_hwreg2dwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_add_hwreg2dwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    merge_reg_taint(ptdata, dst_reg, t & HW_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    merge_reg_taint(dst_reg, t & HW_MASK);
 }
 
-TAINTSIGN taint_add_hwreg2qwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_add_hwreg2qwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    merge_reg_taint(ptdata, dst_reg, t & HW_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    merge_reg_taint(dst_reg, t & HW_MASK);
 }
 
-TAINTSIGN taint_add_wreg2dwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_add_wreg2dwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    merge_reg_taint(ptdata, dst_reg, t & W_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    merge_reg_taint(dst_reg, t & W_MASK);
 }
 
-TAINTSIGN taint_add_wreg2qwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_add_wreg2qwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    merge_reg_taint(ptdata, dst_reg, t & W_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    merge_reg_taint(dst_reg, t & W_MASK);
 }
 
-TAINTSIGN taint_add_dwreg2qwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_add_dwreg2qwreg (int dst_reg, int src_reg)
 {
-    uint16_t t = get_reg_taint(ptdata, src_reg);
-    merge_reg_taint(ptdata, dst_reg, t & DW_MASK);
+    uint16_t t = get_reg_taint(src_reg);
+    merge_reg_taint(dst_reg, t & DW_MASK);
 }
 
 // reg2reg xchg
-TAINTSIGN taint_xchg_lbreg2lbreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_xchg_lbreg2lbreg (int dst_reg, int src_reg)
 {
-    uint16_t dst_taint = get_reg_taint(ptdata, src_reg);
-    uint16_t src_taint = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, LB_MASK);
-    clear_reg_mask(ptdata, src_reg, LB_MASK);
-    merge_reg_taint(ptdata, dst_reg, src_taint & LB_MASK);
-    merge_reg_taint(ptdata, src_reg, dst_taint & LB_MASK);
+    uint16_t dst_taint = get_reg_taint(src_reg);
+    uint16_t src_taint = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, LB_MASK);
+    clear_reg_mask(src_reg, LB_MASK);
+    merge_reg_taint(dst_reg, src_taint & LB_MASK);
+    merge_reg_taint(src_reg, dst_taint & LB_MASK);
 }
 
-TAINTSIGN taint_xchg_ubreg2ubreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_xchg_ubreg2ubreg (int dst_reg, int src_reg)
 {
-    uint16_t dst_taint = get_reg_taint(ptdata, src_reg);
-    uint16_t src_taint = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, UB_MASK);
-    clear_reg_mask(ptdata, src_reg, UB_MASK);
-    merge_reg_taint(ptdata, dst_reg, src_taint & UB_MASK);
-    merge_reg_taint(ptdata, src_reg, dst_taint & UB_MASK);
+    uint16_t dst_taint = get_reg_taint(src_reg);
+    uint16_t src_taint = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, UB_MASK);
+    clear_reg_mask(src_reg, UB_MASK);
+    merge_reg_taint(dst_reg, src_taint & UB_MASK);
+    merge_reg_taint(src_reg, dst_taint & UB_MASK);
 }
 
-TAINTSIGN taint_xchg_ubreg2lbreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_xchg_ubreg2lbreg (int dst_reg, int src_reg)
 {
-    uint16_t dst_taint = get_reg_taint(ptdata, src_reg);
-    uint16_t src_taint = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, LB_MASK);
-    clear_reg_mask(ptdata, src_reg, UB_MASK);
-    merge_reg_taint(ptdata, dst_reg, (src_taint >> 1) & LB_MASK);
-    merge_reg_taint(ptdata, src_reg, (dst_taint << 1) & UB_MASK);
+    uint16_t dst_taint = get_reg_taint(src_reg);
+    uint16_t src_taint = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, LB_MASK);
+    clear_reg_mask(src_reg, UB_MASK);
+    merge_reg_taint(dst_reg, (src_taint >> 1) & LB_MASK);
+    merge_reg_taint(src_reg, (dst_taint << 1) & UB_MASK);
 }
 
-TAINTSIGN taint_xchg_lbreg2ubreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_xchg_lbreg2ubreg (int dst_reg, int src_reg)
 {
-    uint16_t dst_taint = get_reg_taint(ptdata, src_reg);
-    uint16_t src_taint = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, UB_MASK);
-    clear_reg_mask(ptdata, src_reg, LB_MASK);
-    merge_reg_taint(ptdata, dst_reg, (src_taint << 1) & UB_MASK);
-    merge_reg_taint(ptdata, src_reg, (dst_taint >> 1) & LB_MASK);
+    uint16_t dst_taint = get_reg_taint(src_reg);
+    uint16_t src_taint = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, UB_MASK);
+    clear_reg_mask(src_reg, LB_MASK);
+    merge_reg_taint(dst_reg, (src_taint << 1) & UB_MASK);
+    merge_reg_taint(src_reg, (dst_taint >> 1) & LB_MASK);
 }
 
-TAINTSIGN taint_xchg_hwreg2hwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_xchg_hwreg2hwreg (int dst_reg, int src_reg)
 {
-    uint16_t dst_taint = get_reg_taint(ptdata, src_reg);
-    uint16_t src_taint = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, HW_MASK);
-    clear_reg_mask(ptdata, src_reg, HW_MASK);
-    merge_reg_taint(ptdata, dst_reg, src_taint & HW_MASK);
-    merge_reg_taint(ptdata, src_reg, dst_taint & HW_MASK);
+    uint16_t dst_taint = get_reg_taint(src_reg);
+    uint16_t src_taint = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, HW_MASK);
+    clear_reg_mask(src_reg, HW_MASK);
+    merge_reg_taint(dst_reg, src_taint & HW_MASK);
+    merge_reg_taint(src_reg, dst_taint & HW_MASK);
 }
 
-TAINTSIGN taint_xchg_wreg2wreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_xchg_wreg2wreg (int dst_reg, int src_reg)
 {
-    uint16_t dst_taint = get_reg_taint(ptdata, src_reg);
-    uint16_t src_taint = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, W_MASK);
-    clear_reg_mask(ptdata, src_reg, W_MASK);
-    merge_reg_taint(ptdata, dst_reg, src_taint & W_MASK);
-    merge_reg_taint(ptdata, src_reg, dst_taint & W_MASK);
+    uint16_t dst_taint = get_reg_taint(src_reg);
+    uint16_t src_taint = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, W_MASK);
+    clear_reg_mask(src_reg, W_MASK);
+    merge_reg_taint(dst_reg, src_taint & W_MASK);
+    merge_reg_taint(src_reg, dst_taint & W_MASK);
 }
 
-TAINTSIGN taint_xchg_dwreg2dwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_xchg_dwreg2dwreg (int dst_reg, int src_reg)
 {
-    uint16_t dst_taint = get_reg_taint(ptdata, src_reg);
-    uint16_t src_taint = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, DW_MASK);
-    clear_reg_mask(ptdata, src_reg, DW_MASK);
-    merge_reg_taint(ptdata, dst_reg, src_taint & DW_MASK);
-    merge_reg_taint(ptdata, src_reg, dst_taint & DW_MASK);
+    uint16_t dst_taint = get_reg_taint(src_reg);
+    uint16_t src_taint = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, DW_MASK);
+    clear_reg_mask(src_reg, DW_MASK);
+    merge_reg_taint(dst_reg, src_taint & DW_MASK);
+    merge_reg_taint(src_reg, dst_taint & DW_MASK);
 }
 
-TAINTSIGN taint_xchg_qwreg2qwreg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_xchg_qwreg2qwreg (int dst_reg, int src_reg)
 {
-    uint16_t dst_taint = get_reg_taint(ptdata, src_reg);
-    uint16_t src_taint = get_reg_taint(ptdata, src_reg);
-    clear_reg_mask(ptdata, dst_reg, QW_MASK);
-    clear_reg_mask(ptdata, src_reg, QW_MASK);
-    merge_reg_taint(ptdata, dst_reg, src_taint & QW_MASK);
-    merge_reg_taint(ptdata, src_reg, dst_taint & QW_MASK);
+    uint16_t dst_taint = get_reg_taint(src_reg);
+    uint16_t src_taint = get_reg_taint(src_reg);
+    clear_reg_mask(dst_reg, QW_MASK);
+    clear_reg_mask(src_reg, QW_MASK);
+    merge_reg_taint(dst_reg, src_taint & QW_MASK);
+    merge_reg_taint(src_reg, dst_taint & QW_MASK);
 }
 
-TAINTSIGN taint_mask_reg2reg (void* ptdata, int dst_reg, int src_reg)
+TAINTSIGN taint_mask_reg2reg (int dst_reg, int src_reg)
 {
     // TODO
 }
 
 // mem2mem
-TAINTSIGN taint_mem2mem (void* ptdata, u_long src_loc, u_long dst_loc,
+TAINTSIGN taint_mem2mem (u_long src_loc, u_long dst_loc,
                                                         uint32_t size)
 {
     if (size == 1) {
-        taint_mem2mem_b(ptdata, src_loc, dst_loc);
+        taint_mem2mem_b(src_loc, dst_loc);
     } else if (size == 2) {
-        taint_mem2mem_hw(ptdata, src_loc, dst_loc);
+        taint_mem2mem_hw(src_loc, dst_loc);
     } else if (size == 4) {
-        taint_mem2mem_w(ptdata, src_loc, dst_loc);
+        taint_mem2mem_w(src_loc, dst_loc);
     } else {
         u_long count = 0;
         uint32_t nsize = size;
@@ -1456,14 +1451,14 @@ TAINTSIGN taint_mem2mem (void* ptdata, u_long src_loc, u_long dst_loc,
             if (nsize < 16) {
                 uint16_t mask;
                 mask = (0x1 << nsize) - 1;
-                t = get_mem_taint(ptdata, src_loc + count);
-                clear_mem_mask(ptdata, dst_loc + count, mask);
-                merge_mem_taint(ptdata, dst_loc + count, t & mask);
+                t = get_mem_taint(src_loc + count);
+                clear_mem_mask(dst_loc + count, mask);
+                merge_mem_taint(dst_loc + count, t & mask);
                 break;
             }
-            t = get_mem_taint(ptdata, src_loc + count);
-            clear_mem_mask(ptdata, dst_loc + count, QW_MASK);
-            merge_mem_taint(ptdata, dst_loc + count, t);
+            t = get_mem_taint(src_loc + count);
+            clear_mem_mask(dst_loc + count, QW_MASK);
+            merge_mem_taint(dst_loc + count, t);
             count += 16;
             nsize -= 16;
         }
@@ -1495,112 +1490,112 @@ TAINTSIGN taint_mem2mem (void* ptdata, u_long src_loc, u_long dst_loc,
     }
 }
 
-TAINTSIGN taint_mem2mem_b (void* ptdata, u_long src_loc, u_long dst_loc)
+TAINTSIGN taint_mem2mem_b (u_long src_loc, u_long dst_loc)
 {
-    uint16_t t = get_mem_taint(ptdata, src_loc);
-    clear_mem_mask(ptdata, dst_loc, LB_MASK);
-    merge_mem_taint(ptdata, dst_loc, t & LB_MASK);
+    uint16_t t = get_mem_taint(src_loc);
+    clear_mem_mask(dst_loc, LB_MASK);
+    merge_mem_taint(dst_loc, t & LB_MASK);
 }
 
-TAINTSIGN taint_mem2mem_hw (void* ptdata, u_long src_loc, u_long dst_loc)
+TAINTSIGN taint_mem2mem_hw (u_long src_loc, u_long dst_loc)
 {
-    uint16_t t = get_mem_taint(ptdata, src_loc);
-    clear_mem_mask(ptdata, dst_loc, HW_MASK);
-    merge_mem_taint(ptdata, dst_loc, t & HW_MASK);
+    uint16_t t = get_mem_taint(src_loc);
+    clear_mem_mask(dst_loc, HW_MASK);
+    merge_mem_taint(dst_loc, t & HW_MASK);
 }
 
-TAINTSIGN taint_mem2mem_w (void* ptdata, u_long src_loc, u_long dst_loc)
+TAINTSIGN taint_mem2mem_w (u_long src_loc, u_long dst_loc)
 {
-    uint16_t t = get_mem_taint(ptdata, src_loc);
-    clear_mem_mask(ptdata, dst_loc, W_MASK);
-    merge_mem_taint(ptdata, dst_loc, t & W_MASK);
+    uint16_t t = get_mem_taint(src_loc);
+    clear_mem_mask(dst_loc, W_MASK);
+    merge_mem_taint(dst_loc, t & W_MASK);
 }
 
-TAINTSIGN taint_mem2mem_dw (void* ptdata, u_long src_loc, u_long dst_loc)
+TAINTSIGN taint_mem2mem_dw (u_long src_loc, u_long dst_loc)
 {
-    uint16_t t = get_mem_taint(ptdata, src_loc);
-    clear_mem_mask(ptdata, dst_loc, DW_MASK);
-    merge_mem_taint(ptdata, dst_loc, t & DW_MASK);
+    uint16_t t = get_mem_taint(src_loc);
+    clear_mem_mask(dst_loc, DW_MASK);
+    merge_mem_taint(dst_loc, t & DW_MASK);
 }
 
-TAINTSIGN taint_mem2mem_qw (void* ptdata, u_long src_loc, u_long dst_loc)
+TAINTSIGN taint_mem2mem_qw (u_long src_loc, u_long dst_loc)
 {
-    uint16_t t = get_mem_taint(ptdata, src_loc);
-    clear_mem_mask(ptdata, dst_loc, QW_MASK);
-    merge_mem_taint(ptdata, dst_loc, t & QW_MASK);
+    uint16_t t = get_mem_taint(src_loc);
+    clear_mem_mask(dst_loc, QW_MASK);
+    merge_mem_taint(dst_loc, t & QW_MASK);
 }
 
-TAINTSIGN taint_add_mem2mem_b (void* ptdata, u_long src_loc, u_long dst_loc)
+TAINTSIGN taint_add_mem2mem_b (u_long src_loc, u_long dst_loc)
 {
-    uint16_t t = get_mem_taint(ptdata, src_loc);
-    merge_mem_taint(ptdata, dst_loc, t & LB_MASK);
+    uint16_t t = get_mem_taint(src_loc);
+    merge_mem_taint(dst_loc, t & LB_MASK);
 }
 
-TAINTSIGN taint_add_mem2mem_hw (void* ptdata, u_long src_loc, u_long dst_loc)
+TAINTSIGN taint_add_mem2mem_hw (u_long src_loc, u_long dst_loc)
 {
-    uint16_t t = get_mem_taint(ptdata, src_loc);
-    merge_mem_taint(ptdata, dst_loc, t & HW_MASK);
+    uint16_t t = get_mem_taint(src_loc);
+    merge_mem_taint(dst_loc, t & HW_MASK);
 }
 
-TAINTSIGN taint_add_mem2mem_w (void* ptdata, u_long src_loc, u_long dst_loc)
+TAINTSIGN taint_add_mem2mem_w (u_long src_loc, u_long dst_loc)
 {
-    uint16_t t = get_mem_taint(ptdata, src_loc);
-    merge_mem_taint(ptdata, dst_loc, t & W_MASK);
+    uint16_t t = get_mem_taint(src_loc);
+    merge_mem_taint(dst_loc, t & W_MASK);
 }
 
-TAINTSIGN taint_add_mem2mem_dw (void* ptdata, u_long src_loc, u_long dst_loc)
+TAINTSIGN taint_add_mem2mem_dw (u_long src_loc, u_long dst_loc)
 {
-    uint16_t t = get_mem_taint(ptdata, src_loc);
-    merge_mem_taint(ptdata, dst_loc, t & DW_MASK);
+    uint16_t t = get_mem_taint(src_loc);
+    merge_mem_taint(dst_loc, t & DW_MASK);
 }
 
-TAINTSIGN taint_add_mem2mem_qw (void* ptdata, u_long src_loc, u_long dst_loc)
+TAINTSIGN taint_add_mem2mem_qw (u_long src_loc, u_long dst_loc)
 {
-    uint16_t t = get_mem_taint(ptdata, src_loc);
-    merge_mem_taint(ptdata, dst_loc, t & DW_MASK);
+    uint16_t t = get_mem_taint(src_loc);
+    merge_mem_taint(dst_loc, t & DW_MASK);
 }
 
 // 3-way operations (for supporting instructions like mul and div)
-TAINTSIGN taint_add2_bmemlbreg_hwreg (void* ptdata, u_long mem_loc, int src_reg, int dst_reg)
+TAINTSIGN taint_add2_bmemlbreg_hwreg (u_long mem_loc, int src_reg, int dst_reg)
 {
     uint16_t t;
-    t = get_mem_taint(ptdata, mem_loc);
+    t = get_mem_taint(mem_loc);
     // merge with lower byte of src reg
-    t |= get_reg_taint(ptdata, src_reg);
+    t |= get_reg_taint(src_reg);
     t &= LB_MASK;
 
     // set the two lower bytes of dst_reg to be t
-    clear_reg_mask(ptdata, dst_reg, HW_MASK);
+    clear_reg_mask(dst_reg, HW_MASK);
     t |= (t << 1);
-    merge_reg_taint(ptdata, dst_reg, t);
+    merge_reg_taint(dst_reg, t);
 }
 
-TAINTSIGN taint_add2_hwmemhwreg_2hwreg (void* ptdata, u_long mem_loc, int src_reg,
+TAINTSIGN taint_add2_hwmemhwreg_2hwreg (u_long mem_loc, int src_reg,
                                     int dst_reg1, int dst_reg2)
 {
     uint16_t t;
-    t = get_mem_taint(ptdata, mem_loc);
+    t = get_mem_taint(mem_loc);
     // merge with lower half word of src reg
-    t |= get_reg_taint(ptdata, src_reg);
+    t |= get_reg_taint(src_reg);
     t &= HW_MASK;
     t |= (t >> 1); // set the lower bit to be the merged result
     t &= LB_MASK;
     t |= (t << 1); // t[0] and t[1] should have the same result now
 
     // set the lower half word of dst_reg1 and dst_reg2 to be t
-    clear_reg_mask(ptdata, dst_reg1, HW_MASK);
-    clear_reg_mask(ptdata, dst_reg2, HW_MASK);
-    merge_reg_taint(ptdata, dst_reg1, t);
-    merge_reg_taint(ptdata, dst_reg2, t);
+    clear_reg_mask(dst_reg1, HW_MASK);
+    clear_reg_mask(dst_reg2, HW_MASK);
+    merge_reg_taint(dst_reg1, t);
+    merge_reg_taint(dst_reg2, t);
 }
 
-TAINTSIGN taint_add2_wmemwreg_2wreg (void* ptdata, u_long mem_loc, int src_reg,
+TAINTSIGN taint_add2_wmemwreg_2wreg (u_long mem_loc, int src_reg,
                                     int dst_reg1, int dst_reg2)
 {
     uint16_t t;
-    t = get_mem_taint(ptdata, mem_loc);
+    t = get_mem_taint(mem_loc);
     // merge with lower word of src reg
-    t |= get_reg_taint(ptdata, src_reg);
+    t |= get_reg_taint(src_reg);
     t &= W_MASK;
     // set t[0] to be the merge result of t[0:4]
     t |= (t >> 1);
@@ -1612,46 +1607,46 @@ TAINTSIGN taint_add2_wmemwreg_2wreg (void* ptdata, u_long mem_loc, int src_reg,
     t |= (t << 3);
     // set t[0:4] to be the same as t[0]
 
-    clear_reg_mask(ptdata, dst_reg1, W_MASK);
-    merge_reg_taint(ptdata, dst_reg1, t);
-    clear_reg_mask(ptdata, dst_reg2, W_MASK);
-    merge_reg_taint(ptdata, dst_reg2, t);
+    clear_reg_mask(dst_reg1, W_MASK);
+    merge_reg_taint(dst_reg1, t);
+    clear_reg_mask(dst_reg2, W_MASK);
+    merge_reg_taint(dst_reg2, t);
 }
 
-TAINTSIGN taint_add2_lbreglbreg_hwreg (void* ptdata, int src_reg1, int src_reg2, int dst_reg)
+TAINTSIGN taint_add2_lbreglbreg_hwreg (int src_reg1, int src_reg2, int dst_reg)
 {
     uint16_t merged_taint;
-    merged_taint = (get_reg_taint(ptdata, src_reg1) & LB_MASK) |
-                        (get_reg_taint(ptdata, src_reg2) & LB_MASK);
+    merged_taint = (get_reg_taint(src_reg1) & LB_MASK) |
+                        (get_reg_taint(src_reg2) & LB_MASK);
     merged_taint &= LB_MASK;
     merged_taint |= (merged_taint << 1);
-    clear_reg_mask(ptdata, dst_reg, HW_MASK);
-    merge_reg_taint(ptdata, dst_reg, merged_taint);
+    clear_reg_mask(dst_reg, HW_MASK);
+    merge_reg_taint(dst_reg, merged_taint);
 }
 
-TAINTSIGN taint_add2_hwreghwreg_2hwreg (void* ptdata, int src_reg1, int src_reg2,
+TAINTSIGN taint_add2_hwreghwreg_2hwreg (int src_reg1, int src_reg2,
                                     int dst_reg1, int dst_reg2)
 {
     uint16_t merged_taint;
-    merged_taint = (get_reg_taint(ptdata, src_reg1) & HW_MASK) |
-                        (get_reg_taint(ptdata, src_reg2) & HW_MASK);
+    merged_taint = (get_reg_taint(src_reg1) & HW_MASK) |
+                        (get_reg_taint(src_reg2) & HW_MASK);
     merged_taint &= HW_MASK;
     merged_taint |= (merged_taint >> 1);
     merged_taint &= LB_MASK;
     merged_taint |= (merged_taint << 1);
 
-    clear_reg_mask(ptdata, dst_reg1, HW_MASK);
-    merge_reg_taint(ptdata, dst_reg1, merged_taint);
-    clear_reg_mask(ptdata, dst_reg2, HW_MASK);
-    merge_reg_taint(ptdata, dst_reg2, merged_taint);
+    clear_reg_mask(dst_reg1, HW_MASK);
+    merge_reg_taint(dst_reg1, merged_taint);
+    clear_reg_mask(dst_reg2, HW_MASK);
+    merge_reg_taint(dst_reg2, merged_taint);
 }
 
-TAINTSIGN taint_add2_wregwreg_2wreg (void* ptdata, int src_reg1, int src_reg2,
+TAINTSIGN taint_add2_wregwreg_2wreg (int src_reg1, int src_reg2,
                                     int dst_reg1, int dst_reg2)
 {
     uint16_t merged_taint;
-    merged_taint = (get_reg_taint(ptdata, src_reg1) & W_MASK) |
-                        (get_reg_taint(ptdata, src_reg2) & W_MASK);
+    merged_taint = (get_reg_taint(src_reg1) & W_MASK) |
+                        (get_reg_taint(src_reg2) & W_MASK);
     merged_taint &= W_MASK;
     merged_taint |= (merged_taint >> 1);
     merged_taint |= (merged_taint >> 2);
@@ -1661,34 +1656,34 @@ TAINTSIGN taint_add2_wregwreg_2wreg (void* ptdata, int src_reg1, int src_reg2,
     merged_taint |= (merged_taint << 2);
     merged_taint |= (merged_taint << 3);
 
-    clear_reg_mask(ptdata, dst_reg1, W_MASK);
-    merge_reg_taint(ptdata, dst_reg1, merged_taint);
-    clear_reg_mask(ptdata, dst_reg2, W_MASK);
-    merge_reg_taint(ptdata, dst_reg2, merged_taint);
+    clear_reg_mask(dst_reg1, W_MASK);
+    merge_reg_taint(dst_reg1, merged_taint);
+    clear_reg_mask(dst_reg2, W_MASK);
+    merge_reg_taint(dst_reg2, merged_taint);
 }
 
-TAINTSIGN taint_add2_hwmemhwreg_2breg (void* ptdata, u_long mem_loc,
+TAINTSIGN taint_add2_hwmemhwreg_2breg (u_long mem_loc,
                                     int src_reg, int dst_reg1, int dst_reg2)
 {
     uint16_t t;
-    t = get_mem_taint(ptdata, mem_loc);
-    t |= get_reg_taint(ptdata, src_reg);
+    t = get_mem_taint(mem_loc);
+    t |= get_reg_taint(src_reg);
     t &= HW_MASK;
     t |= (t >> 1);
     t &= LB_MASK;
 
-    clear_reg_mask(ptdata, dst_reg1, LB_MASK);
-    merge_reg_taint(ptdata, dst_reg1, t);
-    clear_reg_mask(ptdata, dst_reg2, LB_MASK);
-    merge_reg_taint(ptdata, dst_reg2, t);
+    clear_reg_mask(dst_reg1, LB_MASK);
+    merge_reg_taint(dst_reg1, t);
+    clear_reg_mask(dst_reg2, LB_MASK);
+    merge_reg_taint(dst_reg2, t);
 }
 
-TAINTSIGN taint_add2_wmemwreg_2hwreg (void* ptdata, u_long mem_loc, int src_reg,
+TAINTSIGN taint_add2_wmemwreg_2hwreg (u_long mem_loc, int src_reg,
                                     int dst_reg1, int dst_reg2)
 {
     uint16_t t;
-    t = get_mem_taint(ptdata, mem_loc);
-    t |= get_reg_taint(ptdata, src_reg);
+    t = get_mem_taint(mem_loc);
+    t |= get_reg_taint(src_reg);
     t &= W_MASK;
     t |= (t >> 1);
     t |= (t >> 2);
@@ -1696,21 +1691,21 @@ TAINTSIGN taint_add2_wmemwreg_2hwreg (void* ptdata, u_long mem_loc, int src_reg,
     t &= LB_MASK;
     t |= (t << 1);
 
-    clear_reg_mask(ptdata, dst_reg1, HW_MASK);
-    merge_reg_taint(ptdata, dst_reg1, t);
-    clear_reg_mask(ptdata, dst_reg2, HW_MASK);
-    merge_reg_taint(ptdata, dst_reg2, t);
+    clear_reg_mask(dst_reg1, HW_MASK);
+    merge_reg_taint(dst_reg1, t);
+    clear_reg_mask(dst_reg2, HW_MASK);
+    merge_reg_taint(dst_reg2, t);
 }
 
-TAINTSIGN taint_add3_dwmem2wreg_2wreg (void* ptdata, u_long mem_loc,
+TAINTSIGN taint_add3_dwmem2wreg_2wreg (u_long mem_loc,
                                     int src_reg1, int src_reg2,
                                     int dst_reg1, int dst_reg2)
 {
     uint16_t t;
-    t = get_mem_taint(ptdata, mem_loc);
+    t = get_mem_taint(mem_loc);
     t &= DW_MASK;
-    t |= get_reg_taint(ptdata, src_reg1);
-    t |= ((get_reg_taint(ptdata, src_reg2) & W_MASK) << 4);
+    t |= get_reg_taint(src_reg1);
+    t |= ((get_reg_taint(src_reg2) & W_MASK) << 4);
 
     t |= (t >> 1);
     t |= (t >> 2);
@@ -1724,36 +1719,36 @@ TAINTSIGN taint_add3_dwmem2wreg_2wreg (void* ptdata, u_long mem_loc,
     t |= (t << 2);
     t |= (t << 3);
 
-    clear_reg_mask(ptdata, dst_reg1, W_MASK);
-    merge_reg_taint(ptdata, dst_reg1, t);
-    clear_reg_mask(ptdata, dst_reg2, W_MASK);
-    merge_reg_taint(ptdata, dst_reg2, t);
+    clear_reg_mask(dst_reg1, W_MASK);
+    merge_reg_taint(dst_reg1, t);
+    clear_reg_mask(dst_reg2, W_MASK);
+    merge_reg_taint(dst_reg2, t);
 }
 
-TAINTSIGN taint_add2_2hwreg_2breg (void* ptdata, int src_reg1, int src_reg2,
+TAINTSIGN taint_add2_2hwreg_2breg (int src_reg1, int src_reg2,
                                 int dst_reg1, int dst_reg2)
 {
     uint16_t t;
-    t = get_reg_taint(ptdata, src_reg1) | get_reg_taint(ptdata, src_reg2);
+    t = get_reg_taint(src_reg1) | get_reg_taint(src_reg2);
     t &= HW_MASK;
     t |= (t >> 1);
     t &= LB_MASK;
 
-    clear_reg_mask(ptdata, dst_reg1, LB_MASK);
-    merge_reg_taint(ptdata, dst_reg1, t);
-    clear_reg_mask(ptdata, dst_reg2, LB_MASK);
-    merge_reg_taint(ptdata, dst_reg2, t);
+    clear_reg_mask(dst_reg1, LB_MASK);
+    merge_reg_taint(dst_reg1, t);
+    clear_reg_mask(dst_reg2, LB_MASK);
+    merge_reg_taint(dst_reg2, t);
 }
 
-TAINTSIGN taint_add3_2hwreg_2hwreg (void* ptdata, int src_reg1, int src_reg2,
+TAINTSIGN taint_add3_2hwreg_2hwreg (int src_reg1, int src_reg2,
                                     int src_reg3,
                                     int dst_reg1, int dst_reg2)
 {
     uint16_t t;
-    t = get_reg_taint(ptdata, src_reg1) | get_reg_taint(ptdata, src_reg3);
+    t = get_reg_taint(src_reg1) | get_reg_taint(src_reg3);
     t &= HW_MASK;
-    t |= (get_reg_taint(ptdata, src_reg2) | 
-            ((get_reg_taint(ptdata, src_reg3) >> 2) & HW_MASK)) << 2;
+    t |= (get_reg_taint(src_reg2) | 
+            ((get_reg_taint(src_reg3) >> 2) & HW_MASK)) << 2;
     t &= W_MASK;
 
     t |= (t >> 1);
@@ -1762,21 +1757,21 @@ TAINTSIGN taint_add3_2hwreg_2hwreg (void* ptdata, int src_reg1, int src_reg2,
     t &= LB_MASK;
     t |= (t << 1);
 
-    clear_reg_mask(ptdata, dst_reg1, HW_MASK);
-    merge_reg_taint(ptdata, dst_reg1, t);
-    clear_reg_mask(ptdata, dst_reg2, HW_MASK);
-    merge_reg_taint(ptdata, dst_reg2, t);
+    clear_reg_mask(dst_reg1, HW_MASK);
+    merge_reg_taint(dst_reg1, t);
+    clear_reg_mask(dst_reg2, HW_MASK);
+    merge_reg_taint(dst_reg2, t);
 }
 
-TAINTSIGN taint_add3_2wreg_2wreg (void* ptdata, int src_reg1, int src_reg2,
+TAINTSIGN taint_add3_2wreg_2wreg (int src_reg1, int src_reg2,
                                     int src_reg3,
                                     int dst_reg1, int dst_reg2)
 {
     uint16_t t;
-    t = get_reg_taint(ptdata, src_reg1) | get_reg_taint(ptdata, src_reg3);
+    t = get_reg_taint(src_reg1) | get_reg_taint(src_reg3);
     t &= W_MASK;
-    t |= (get_reg_taint(ptdata, src_reg2) |
-            ((get_reg_taint(ptdata, src_reg3) >> 4) & W_MASK)) << 4;
+    t |= (get_reg_taint(src_reg2) |
+            ((get_reg_taint(src_reg3) >> 4) & W_MASK)) << 4;
     t &= DW_MASK;
 
     t |= (t >> 1);
@@ -1791,181 +1786,181 @@ TAINTSIGN taint_add3_2wreg_2wreg (void* ptdata, int src_reg1, int src_reg2,
     t |= (t >> 2);
     t |= (t >> 3);
 
-    clear_reg_mask(ptdata, dst_reg1, W_MASK);
-    merge_reg_taint(ptdata, dst_reg1, t);
-    clear_reg_mask(ptdata, dst_reg2, W_MASK);
-    merge_reg_taint(ptdata, dst_reg2, t);
+    clear_reg_mask(dst_reg1, W_MASK);
+    merge_reg_taint(dst_reg1, t);
+    clear_reg_mask(dst_reg2, W_MASK);
+    merge_reg_taint(dst_reg2, t);
 }
 
 // immval2mem
-TAINTSIGN taint_immvalb2mem (void* ptdata, u_long mem_loc)
+TAINTSIGN taint_immvalb2mem (u_long mem_loc)
 {
-    clear_mem_mask(ptdata, mem_loc, LB_MASK);
+    clear_mem_mask(mem_loc, LB_MASK);
 }
 
-TAINTSIGN taint_immvalhw2mem (void* ptdata, u_long mem_loc)
+TAINTSIGN taint_immvalhw2mem (u_long mem_loc)
 {
-    clear_mem_mask(ptdata, mem_loc, HW_MASK);
+    clear_mem_mask(mem_loc, HW_MASK);
 }
 
-TAINTSIGN taint_immvalw2mem (void* ptdata, u_long mem_loc)
+TAINTSIGN taint_immvalw2mem (u_long mem_loc)
 {
-    clear_mem_mask(ptdata, mem_loc, W_MASK);
+    clear_mem_mask(mem_loc, W_MASK);
 }
 
-TAINTSIGN taint_immvaldw2mem (void* ptdata, u_long mem_loc)
+TAINTSIGN taint_immvaldw2mem (u_long mem_loc)
 {
-    clear_mem_mask(ptdata, mem_loc, DW_MASK);
+    clear_mem_mask(mem_loc, DW_MASK);
 }
 
-TAINTSIGN taint_immvalqw2mem (void* ptdata, u_long mem_loc)
+TAINTSIGN taint_immvalqw2mem (u_long mem_loc)
 {
-    clear_mem_mask(ptdata, mem_loc, QW_MASK);
+    clear_mem_mask(mem_loc, QW_MASK);
 }
 
 // immval2mem add
-TAINTSIGN taint_add_immvalb2mem (void* ptdata, u_long mem_loc)
+TAINTSIGN taint_add_immvalb2mem (u_long mem_loc)
 {
 }
 
-TAINTSIGN taint_add_immvalhw2mem (void* ptdata, u_long mem_loc)
+TAINTSIGN taint_add_immvalhw2mem (u_long mem_loc)
 {
 }
 
-TAINTSIGN taint_add_immvalw2mem (void* ptdata, u_long mem_loc)
+TAINTSIGN taint_add_immvalw2mem (u_long mem_loc)
 {
 }
 
-TAINTSIGN taint_add_immvaldw2mem (void* ptdata, u_long mem_loc)
+TAINTSIGN taint_add_immvaldw2mem (u_long mem_loc)
 {
 }
 
-TAINTSIGN taint_add_immvalqw2mem (void* ptdata, u_long mem_loc)
+TAINTSIGN taint_add_immvalqw2mem (u_long mem_loc)
 {
 }
 
 // immval2reg
-TAINTSIGN taint_immval2lbreg(void* ptdata, int reg)
+TAINTSIGN taint_immval2lbreg(int reg)
 {
-    clear_reg_mask(ptdata, reg, LB_MASK);
+    clear_reg_mask(reg, LB_MASK);
 }
 
-TAINTSIGN taint_immval2ubreg(void* ptdata, int reg)
+TAINTSIGN taint_immval2ubreg(int reg)
 {
-    clear_reg_mask(ptdata, reg, UB_MASK);
+    clear_reg_mask(reg, UB_MASK);
 }
 
-TAINTSIGN taint_immval2hwreg(void* ptdata, int reg)
+TAINTSIGN taint_immval2hwreg(int reg)
 {
-    clear_reg_mask(ptdata, reg, HW_MASK);
+    clear_reg_mask(reg, HW_MASK);
 }
 
-TAINTSIGN taint_immval2wreg(void* ptdata, int reg)
+TAINTSIGN taint_immval2wreg(int reg)
 {
-    clear_reg_mask(ptdata, reg, W_MASK);
+    clear_reg_mask(reg, W_MASK);
 }
 
-TAINTSIGN taint_immval2dwreg(void* ptdata, int reg)
+TAINTSIGN taint_immval2dwreg(int reg)
 {
-    clear_reg_mask(ptdata, reg, DW_MASK);
+    clear_reg_mask(reg, DW_MASK);
 }
 
-TAINTSIGN taint_immval2qwreg(void* ptdata, int reg)
+TAINTSIGN taint_immval2qwreg(int reg)
 {
-    clear_reg_mask(ptdata, reg, QW_MASK);
+    clear_reg_mask(reg, QW_MASK);
 }
 
 // immval2reg add
-TAINTSIGN taint_add_immval2lbreg(void* ptdata, int reg)
+TAINTSIGN taint_add_immval2lbreg(int reg)
 {
     return;
 }
 
-TAINTSIGN taint_add_immval2ubreg(void* ptdata, int reg)
+TAINTSIGN taint_add_immval2ubreg(int reg)
 {
     return;
 }
 
-TAINTSIGN taint_add_immval2hwreg(void* ptdata, int reg)
+TAINTSIGN taint_add_immval2hwreg(int reg)
 {
     return;
 }
 
-TAINTSIGN taint_add_immval2wreg(void* ptdata, int reg)
+TAINTSIGN taint_add_immval2wreg(int reg)
 {
     return;
 }
 
-TAINTSIGN taint_add_immval2dwreg(void* ptdata, int reg)
+TAINTSIGN taint_add_immval2dwreg(int reg)
 {
     return;
 }
 
-TAINTSIGN taint_add_immval2qwreg(void* ptdata, int reg)
+TAINTSIGN taint_add_immval2qwreg(int reg)
 {
     return;
 }
 
-TAINTSIGN taint_palignr_mem2dwreg(void* ptdata, int reg, u_long mem_loc, int imm)
+TAINTSIGN taint_palignr_mem2dwreg(int reg, u_long mem_loc, int imm)
 {
     uint16_t tmp;
     uint16_t dst_taint;
     uint16_t src_taint;
 
-    dst_taint = get_reg_taint(ptdata, reg) & DW_MASK;
-    src_taint = get_mem_taint(ptdata, mem_loc) & DW_MASK;
+    dst_taint = get_reg_taint(reg) & DW_MASK;
+    src_taint = get_mem_taint(mem_loc) & DW_MASK;
 
     // concat
     tmp = dst_taint << 8;
     tmp |= src_taint;
 
-    set_reg_taint(ptdata, reg, (tmp >> imm) & 0xffff);
+    set_reg_taint(reg, (tmp >> imm) & 0xffff);
 }
 
-TAINTSIGN taint_palignr_mem2qwreg(void* ptdata, int reg, u_long mem_loc, int imm)
+TAINTSIGN taint_palignr_mem2qwreg(int reg, u_long mem_loc, int imm)
 {
     uint32_t tmp;
     uint16_t dst_taint;
     uint16_t src_taint;
 
-    dst_taint = get_reg_taint(ptdata, reg) & QW_MASK;
-    src_taint = get_mem_taint(ptdata, mem_loc) & QW_MASK;
+    dst_taint = get_reg_taint(reg) & QW_MASK;
+    src_taint = get_mem_taint(mem_loc) & QW_MASK;
 
     // concat
     tmp = dst_taint << 16;
     tmp |= src_taint;
 
-    set_reg_taint(ptdata, reg, (tmp >> imm) & 0xffff);
+    set_reg_taint(reg, (tmp >> imm) & 0xffff);
 }
 
-TAINTSIGN taint_palignr_dwreg2dwreg(void* ptdata, int dst_reg, int src_reg, int imm)
+TAINTSIGN taint_palignr_dwreg2dwreg(int dst_reg, int src_reg, int imm)
 {
     uint16_t tmp;
     uint16_t dst_taint;
     uint16_t src_taint;
 
-    dst_taint = get_reg_taint(ptdata, dst_reg) & DW_MASK;
-    src_taint = get_reg_taint(ptdata, src_reg) & DW_MASK;
+    dst_taint = get_reg_taint(dst_reg) & DW_MASK;
+    src_taint = get_reg_taint(src_reg) & DW_MASK;
 
     // concat
     tmp = dst_taint << 8;
     tmp |= src_taint;
 
-    set_reg_taint(ptdata, dst_reg, (tmp >> imm) & 0xffff);
+    set_reg_taint(dst_reg, (tmp >> imm) & 0xffff);
 }
 
-TAINTSIGN taint_palignr_qwreg2qwreg(void* ptdata, int dst_reg, int src_reg, int imm)
+TAINTSIGN taint_palignr_qwreg2qwreg(int dst_reg, int src_reg, int imm)
 {
     uint32_t tmp;
     uint16_t dst_taint;
     uint16_t src_taint;
 
-    dst_taint = get_reg_taint(ptdata, dst_reg) & QW_MASK;
-    src_taint = get_reg_taint(ptdata, src_reg) & QW_MASK;
+    dst_taint = get_reg_taint(dst_reg) & QW_MASK;
+    src_taint = get_reg_taint(src_reg) & QW_MASK;
 
     // concat
     tmp = dst_taint << 16;
     tmp |= src_taint;
 
-    set_reg_taint(ptdata, dst_reg, (tmp >> imm) & 0xffff);
+    set_reg_taint(dst_reg, (tmp >> imm) & 0xffff);
 }

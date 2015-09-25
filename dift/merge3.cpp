@@ -37,8 +37,8 @@ struct token {
 #define NO_DUPS
 #define STATS
 
-//#define DEBUG_TARGET(x) (x==0xc71836 || x==0x1836)
-//#define DEBUG_ADDR(x) (x==0x809d37c)
+//#define DEBUG_TARGET(x) (x==0x24eb || x==0)
+//#define DEBUG_ADDR(x) (x==0xb59f5000)
 #ifdef DEBUG_TARGET
 FILE* debugfile;
 #endif

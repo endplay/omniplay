@@ -37,8 +37,6 @@ void set_new_token (struct token* tok, int type, u_long token_num, u_long size, 
 #ifdef CONFAID
 struct token* create_new_named_token (unsigned int token_num, char* token_name)
 {
-    struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-
     struct token* tok; 
     tok = (struct token *) malloc(sizeof(struct token));
     if (tok == NULL) {

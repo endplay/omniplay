@@ -125,9 +125,9 @@ int resume_proc_after_ckpt (int fd_spec, char* logdir, char* filename)
     return ioctl (fd_spec, SPECI_CKPT_PROC_RESUME, &data);    
 }
 
-int set_pin_addr (int fd_spec, u_long app_syscall_addr)
+int set_pin_addr (int fd_spec, u_long app_syscall_addr, void* pthread_data, void** pcurthread)
 {
-    return ioctl (fd_spec, SPECI_SET_PIN_ADDR, &app_syscall_addr);
+    return ioctl (fd_spec, SPECI_SET_PIN_ADDR, &app_syscall_addr, (u_long) pthread_data, (u_long *) pcurthread);
 }
 
 int check_clock_before_syscall (int fd_spec, int syscall)
@@ -213,6 +213,11 @@ pid_t get_current_record_pid(int fd_spec, pid_t nonrecord_pid)
 long get_attach_status(int fd_spec, pid_t pid)
 {
     return ioctl (fd_spec, SPECI_GET_ATTACH_STATUS, &pid);
+}
+
+long try_to_exit(int fd_spec, pid_t pid)
+{
+    return ioctl (fd_spec, SPECI_TRY_TO_EXIT, &pid);
 }
 
 
