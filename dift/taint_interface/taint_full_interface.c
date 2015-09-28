@@ -12,6 +12,13 @@
 
 #define USE_MERGE_HASH
 #define TAINT_STATS
+//#define TRACE_TAINT
+
+#ifdef TRACE_TAINT
+#define TPRINT printf
+#else
+#define TPRINT(x,...)
+#endif
 
 extern struct thread_data* current_thread;
 extern int splice_output;
@@ -167,12 +174,8 @@ add_merge_number(taint_t p1, taint_t p2)
     } 
     merge_buffer[merge_buffer_count].p1 = p1;
     merge_buffer[merge_buffer_count].p2 = p2;
-#ifdef DEBUGTRACE
-    if (is_in_trace_set (p1) || is_in_trace_set (p2)) {
-	printf ("merge: %lx, %lx -> %lx\n", p1, p2, merge_total_count);
-	add_to_trace_set (merge_total_count);
-    }
-#endif
+    TPRINT ("merge: %lx, %lx -> %lx\n", p1, p2, merge_total_count);
+
     merge_buffer_count++;
     return merge_total_count++;
 }
@@ -523,6 +526,7 @@ void clear_reg (int reg, int size)
 
     for (i = 0; i < size; i++) {
         reg_table[reg * REG_SIZE + i] = 0;
+	TPRINT ("clear reg %x\n", reg * REG_SIZE + i);
     }
 }
 
@@ -547,6 +551,7 @@ void taint_mem(u_long mem_loc, taint_t t)
     second_t = first_t[mid_index];
 
     second_t[low_index] = t;
+    TPRINT ("set mem %lx to %lx\n", mem_loc, t);
 }
 
 taint_t* get_mem_taints(u_long mem_loc, uint32_t size)
@@ -934,6 +939,14 @@ static inline void clear_reg_value(int reg, int offset, int size)
     taint_t* shadow_reg_table = current_thread->shadow_reg_table;
     memset(&shadow_reg_table[reg * REG_SIZE + offset], 0,
             size * sizeof(taint_t));
+#ifdef TRACE_TAINT
+    {
+	int i;
+	for (i = reg * REG_SIZE + offset; i < reg * REG_SIZE + offset + size; i++) {
+	    TPRINT ("clear reg %x\n", i);
+	}
+    }
+#endif
 #ifdef TAINT_FULL_DEBUG
     check_reg_taints(reg);
 #endif
@@ -944,6 +957,14 @@ static inline void set_reg_value(int reg, int offset, int size, taint_t* values)
     taint_t* shadow_reg_table = current_thread->shadow_reg_table;
     memcpy(&shadow_reg_table[reg * REG_SIZE + offset], values,
             size * sizeof(taint_t));
+#ifdef TRACE_TAINT
+    {
+	int i;
+	for (i = reg * REG_SIZE + offset; i < reg * REG_SIZE + offset + size; i++) {
+	    TPRINT ("set reg %x to %lx\n", i, shadow_reg_table[i]);
+	}
+    }
+#endif
 #ifdef TAINT_FULL_DEBUG
     check_reg_taints(reg);
 #endif
@@ -1312,7 +1333,6 @@ static inline void taint_add_mem2reg (u_long mem_loc, int reg, uint32_t size)
         count = get_cmem_taints(mem_offset, size - offset, &mem_taints);
         if (mem_taints) {
             for (i = 0; i < count; i++) {
-                // shadow_reg_table[reg * REG_SIZE + offset + i] =
                 taint_t t =  merge_taints(shadow_reg_table[reg * REG_SIZE + offset + i],
                                                                     mem_taints[i]);
                 set_reg_value(reg, offset + i, 1, &t);
@@ -2080,6 +2100,14 @@ static inline void taint_reg2reg (int dst_reg, int src_reg, uint32_t size)
     taint_t* shadow_reg_table = current_thread->shadow_reg_table;
     memcpy(&shadow_reg_table[dst_reg * REG_SIZE],
             &shadow_reg_table[src_reg * REG_SIZE], size * sizeof(taint_t));
+#ifdef TRACE_TAINT
+    {
+	u_int i;
+	for (i = 0; i < size; i++) {
+	    TPRINT ("set reg %x to %lx\n", dst_reg*REG_SIZE+i, shadow_reg_table[dst_reg*REG_SIZE+i]);
+	}
+    }
+#endif
 #ifdef TAINT_FULL_DEBUG
     check_reg_taints(dst_reg);
     check_reg_taints(src_reg);

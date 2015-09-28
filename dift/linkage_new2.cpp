@@ -124,7 +124,7 @@ const char* splice_semname = NULL;
 const char* splice_input = NULL;
 taint_t* pregs = NULL; // Only works for single-threaded program
 u_long num_merge_entries = 0x40000000/(sizeof(taint_t)*2);
-u_long inst_cnt;
+u_long inst_cnt = 0;
 
 struct slab_alloc open_info_alloc;
 struct slab_alloc thread_data_alloc;
@@ -234,7 +234,7 @@ static void dift_done ()
     gettimeofday(&tv, NULL);
     fprintf(stderr, "time end %lu sec %lu usec\n", tv.tv_sec, tv.tv_usec);
 #endif
-    printf("DIFT done, inst_cnt = %lu\n", inst_cnt);
+    printf("DIFT done\n");
 }
 
 ADDRINT find_static_address(ADDRINT ip)
@@ -1181,7 +1181,7 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
 	// Done with this replay - do exit stuff now because we may not get clean unwind
 	printf("Pin terminating at Pid %d, syscall %d\n", PIN_GetPid(), current_thread->syscall_cnt);
 	dift_done ();
-	//try_to_exit(dev_fd, PIN_GetPid());
+	try_to_exit(dev_fd, PIN_GetPid());
         PIN_ExitApplication(0);
     }
 }
@@ -13291,29 +13291,15 @@ void instrument_pmovmskb(INS ins)
 #endif
 }
 
-#ifdef TRACE_TAINT_OPS
-static taint_t prev_val = 0;
+#ifdef TRACE_TAINT
 void trace_inst(ADDRINT ptr)
 {
-    taint_t val;
-    taint_t* ptaint = get_mem_taints(0xb59f5000, 1);
-    if (ptaint) {
-	val = *ptaint;
-    } else {
-	val = 0;
+    PIN_LockClient();
+    printf ("[INST] Pid %d (tid: %d) (record %d) cnt %ld - %#x\n", PIN_GetPid(), PIN_GetTid(), get_record_pid(), inst_cnt, ptr);
+    if (IMG_Valid(IMG_FindByAddress(ptr))) {
+	printf("%s -- img %s static %#x\n", RTN_FindNameByAddress(ptr).c_str(), IMG_Name(IMG_FindByAddress(ptr)).c_str(), find_static_address(ptr));
     }
-    if (val != prev_val) {
-	printf ("mem taint of 0xb59f5000 is %llx\n", val);
-	prev_val = val;
-    }
-    if (segment_length == 2) {
-	PIN_LockClient();
-        printf ("[INST] Pid %d (tid: %d) (record %d) cnt %ld - %#x\n", PIN_GetPid(), PIN_GetTid(), get_record_pid(), inst_cnt, ptr);
-	if (IMG_Valid(IMG_FindByAddress(ptr))) {
-		printf("%s -- img %s static %#x\n", RTN_FindNameByAddress(ptr).c_str(), IMG_Name(IMG_FindByAddress(ptr)).c_str(), find_static_address(ptr));
-	}
-	PIN_UnlockClient();
-    }
+    PIN_UnlockClient();
     inst_cnt++;
 }
 #endif
@@ -13327,7 +13313,7 @@ void instruction_instrumentation(INS ins, void *v)
     opcode = INS_Opcode(ins);
     category = INS_Category(ins);
 
-#ifdef TRACE_TAINT_OPS
+#ifdef TRACE_TAINT
     INS_InsertCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_inst),
                     IARG_INST_PTR,
@@ -13961,7 +13947,6 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 	assert (0);
     }
     assert(ptdata);
-    if (current_thread == NULL) current_thread = ptdata;
     memset(ptdata, 0, sizeof(struct thread_data));
     if (splice_output) {
 	// FIXME - use unique values for multithreaded programs
@@ -13976,6 +13961,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
     ptdata->record_pid = get_record_pid();
     get_record_group_id(dev_fd, &(ptdata->rg_id));
 
+    current_thread = ptdata;
     set_pin_addr (dev_fd, (u_long) &(ptdata->app_syscall), ptdata, (void **) &current_thread);
 
     if (child) {

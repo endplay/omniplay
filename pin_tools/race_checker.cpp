@@ -344,7 +344,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 
     PIN_SetThreadData (tls_key, ptdata, threadid);
 
-    set_pin_addr (fd, (u_long) ptdata);
+    set_pin_addr (fd, (u_long) ptdata, NULL, NULL);
 }
 
 int main(int argc, char** argv) 

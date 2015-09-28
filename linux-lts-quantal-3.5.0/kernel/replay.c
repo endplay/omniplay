@@ -6359,7 +6359,8 @@ recplay_exit_middle(void)
 		}
 		MPRINT ("Replay thread %d recpid %d in middle of exit\n", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid);	
 		rg_lock (current->replay_thrd->rp_group->rg_rec_group);
-		if (current->replay_thrd->rp_status != REPLAY_STATUS_RUNNING || current->replay_thrd->rp_group->rg_rec_group->rg_mismatch_flag) {
+		if (current->replay_thrd->rp_status != REPLAY_STATUS_RUNNING || current->replay_thrd->rp_group->rg_rec_group->rg_mismatch_flag ||
+		    current->replay_thrd->rp_group->rg_try_to_exit) {
 			if (!current->replay_thrd->rp_replay_exit && !current->replay_thrd->rp_group->rg_rec_group->rg_mismatch_flag &&
 			    !current->replay_thrd->rp_group->rg_try_to_exit) { 
 				// Usually get here by terminating when we see the exit flag and all records have been consumed

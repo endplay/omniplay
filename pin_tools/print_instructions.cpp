@@ -14,6 +14,8 @@
 //#define PLUS_TWO
 //#define TIMING_ON
 
+struct thread_data* current_thread; // Always points to thread-local data (changed by kernel on context switch)
+
 long print_limit = 10;
 KNOB<string> KnobPrintLimit(KNOB_MODE_WRITEONCE, "pintool", "p", "10000000", "syscall print limit");
 long print_stop = 10;
@@ -77,14 +79,14 @@ inline void increment_syscall_cnt (struct thread_data* ptdata, int syscall_num)
 				syscall_num == 44 || syscall_num == 53 || syscall_num == 56 || syscall_num == 98 ||
 				syscall_num == 119 || syscall_num == 123 || syscall_num == 186 ||
 				syscall_num == 243 || syscall_num == 244)) {
-		if (ptdata->ignore_flag) {
-			if (!(*(int *)(ptdata->ignore_flag))) {
+		if (current_thread->ignore_flag) {
+			if (!(*(int *)(current_thread->ignore_flag))) {
 				global_syscall_cnt++;
-				ptdata->syscall_cnt++;
+				current_thread->syscall_cnt++;
 			}
 		} else {
 			global_syscall_cnt++;
-			ptdata->syscall_cnt++;
+			current_thread->syscall_cnt++;
 		}
 	}
 }
@@ -97,16 +99,18 @@ void inst_syscall_end(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD std, V
 #else
     struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
 #endif
-    if (tdata) {
-	if (tdata->app_syscall != 999) tdata->app_syscall = 0;
+    if (tdata != current_thread) printf ("tdata %p current_thread %p\n", tdata, current_thread);
+
+    if (current_thread) {
+	if (current_thread->app_syscall != 999) current_thread->app_syscall = 0;
     } else {
-	fprintf (stderr, "inst_syscall_end: NULL tdata\n");
+	fprintf (stderr, "inst_syscall_end: NULL current_thread\n");
     }	
 
-    increment_syscall_cnt(tdata, tdata->sysnum);
+    increment_syscall_cnt(current_thread, current_thread->sysnum);
     // reset the syscall number after returning from system call
-    tdata->sysnum = 0;
-    increment_syscall_cnt(tdata, tdata->sysnum);
+    current_thread->sysnum = 0;
+    increment_syscall_cnt(current_thread, current_thread->sysnum);
 }
 
 // called before every application system call
@@ -125,16 +129,17 @@ void set_address_one(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscallarg0
 #else
     struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
 #endif
-    if (tdata) {
+    if (tdata != current_thread) printf ("sao: tdata %p current_thread %p\n", tdata, current_thread);
+    if (current_thread) {
 	int sysnum = (int) syscall_num;
 	
-	fprintf (stderr, "%ld Pid %d, tid %d, (record pid %d), %d: syscall num is %d\n", global_syscall_cnt, PIN_GetPid(), PIN_GetTid(), tdata->record_pid, tdata->syscall_cnt, (int) syscall_num);
+	printf ("%ld Pid %d, tid %d, (record pid %d), %d: syscall num is %d\n", global_syscall_cnt, PIN_GetPid(), PIN_GetTid(), current_thread->record_pid, current_thread->syscall_cnt, (int) syscall_num);
 
     if (sysnum == SYS_open) {
-        fprintf(stderr, "try to open %s\n", (char *) syscallarg0);
+        printf("try to open %s\n", (char *) syscallarg0);
     }
     if (sysnum == 31) {
-	    tdata->ignore_flag = (u_long) syscallarg1;
+	    current_thread->ignore_flag = (u_long) syscallarg1;
     }
 
 #ifdef PLUS_TWO
@@ -147,10 +152,10 @@ void set_address_one(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscallarg0
 	//if (sysnum == 91 || sysnum == 120 || sysnum == 125 || sysnum == 175 || sysnum == 190 || sysnum == 192) {
 	    check_clock_before_syscall (fd, (int) syscall_num);
 	}
-	tdata->app_syscall = syscall_num;
-	tdata->sysnum = syscall_num;
+	current_thread->app_syscall = syscall_num;
+	current_thread->sysnum = syscall_num;
     } else {
-	fprintf (stderr, "set_address_one: NULL tdata\n");
+	fprintf (stderr, "set_address_one: NULL current_thread\n");
     }
 }
 
@@ -165,18 +170,19 @@ void syscall_after (ADDRINT ip)
 #else
     struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
 #endif
-    if (tdata) {
-	if (tdata->app_syscall == 999) {
+    if (tdata != current_thread) printf ("sa: tdata %p current_thread %p\n", tdata, current_thread);
+    if (current_thread) {
+	if (current_thread->app_syscall == 999) {
 	    //fprintf (stderr, "Pid %d Waiting for clock after syscall,ip=%lx\n", PIN_GetPid(), (u_long) ip);
 	    if (addr_save) g_hash_table_add(sysexit_addr_table, GINT_TO_POINTER(ip));
 	    if (check_clock_after_syscall (fd) == 0) {
 	    } else {
 		fprintf (stderr, "Check clock failed\n");
 	    }
-	    tdata->app_syscall = 0;  
+	    current_thread->app_syscall = 0;  
 	}
     } else {
-	fprintf (stderr, "syscall_after: NULL tdata\n");
+	fprintf (stderr, "syscall_after: NULL current_thread\n");
     }
 }
 
@@ -188,13 +194,14 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
     struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
 #endif
     int record_pid;
+    if (tdata != current_thread) printf ("afic: tdata %p current_thread %p\n", tdata, current_thread);
     fprintf(stderr, "AfterForkInChild\n");
     record_pid = get_record_pid();
     fprintf(stderr, "get record id %d\n", record_pid);
-    tdata->record_pid = record_pid;
+    current_thread->record_pid = record_pid;
 
     // reset syscall index for thread
-    tdata->syscall_cnt = 0;
+    current_thread->syscall_cnt = 0;
 }
 
 void instrument_inst_print (ADDRINT ip)
@@ -323,10 +330,9 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 {
     struct thread_data* ptdata;
 
-    fprintf (stderr, "Start of threadid %d\n", (int) threadid);
-
     ptdata = (struct thread_data *) malloc (sizeof(struct thread_data));
     assert (ptdata);
+    printf ("Start of threadid %d ptdata %p\n", (int) threadid, ptdata);
     
     ptdata->app_syscall = 0;
     ptdata->record_pid = get_record_pid();
@@ -339,7 +345,8 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
     PIN_SetThreadData (tls_key, ptdata, threadid);
 #endif
 
-    set_pin_addr (fd, (u_long) &(ptdata->app_syscall));
+    current_thread = ptdata;
+    set_pin_addr (fd, (u_long) &(ptdata->app_syscall), ptdata, (void **) &current_thread);
 }
 
 void thread_fini (THREADID threadid, const CONTEXT* ctxt, INT32 code, VOID* v)
