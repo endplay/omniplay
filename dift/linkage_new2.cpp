@@ -46,7 +46,6 @@
 // #define CTRL_FLOW                    // direct control flow
 // #define ALT_PATH_EXPLORATION         // indirect control flow
 // #define CONFAID
-// #define HAVE_REPLAY
 
 //#define LOGGING_ON
 #define LOG_F log_f
@@ -76,13 +75,13 @@
 #endif
 #define SPECIAL_REG(X) (X == LEVEL_BASE::REG_EBP || X == LEVEL_BASE::REG_ESP)
 
-
 #ifdef HAVE_REPLAY
 int dev_fd; // File descriptor for the replay device
 int get_record_pid(void);
 #endif
 
 void init_logs(void);
+
 //#define USE_CODEFLUSH_TRACK
 // Debug Macros
 // #define TRACE_TAINT_OPS
@@ -95,6 +94,7 @@ REG tls_reg;
 #else
 TLS_KEY tls_key;
 #endif
+//#define EXEC_INPUTS
 
 //ARQUINN: added constant for copyfile
 #define COPY_BUFFER_SIZE 1024
@@ -110,6 +110,9 @@ struct save_state {
 };
 
 /* Global state */
+int dev_fd; // File descriptor for the replay device
+int get_record_pid(void);
+struct thread_data* current_thread; // Always points to thread-local data (changed by kernel on context switch)
 int first_thread = 1;
 int child = 0;
 char** main_prev_argv = 0;
@@ -139,8 +142,9 @@ int splice_output = 0;
 int all_output = 0;
 const char* splice_semname = NULL;
 const char* splice_input = NULL;
-u_long* pregs = NULL; // Only works for single-threaded program
-u_long num_merge_entries = 134217728;
+taint_t* pregs = NULL; // Only works for single-threaded program
+u_long num_merge_entries = 0x40000000/(sizeof(taint_t)*2);
+u_long inst_cnt = 0;
 
 struct slab_alloc open_info_alloc;
 struct slab_alloc thread_data_alloc;
@@ -249,6 +253,52 @@ static void copy_file(FILE* src, FILE* dest) {
 	fprintf(stderr, "There was an error reading file (FILE*) rc %d, errno %d\n",read_chars,errno);
     }
 
+static int terminated = 0;
+extern int dump_mem_taints (int fd);
+extern int dump_reg_taints (int fd, taint_t* pregs);
+extern int dump_mem_taints_start (int fd);
+extern int dump_reg_taints_start (int fd, taint_t* pregs);
+
+static void dift_done ()
+{
+    int taint_fd;
+    char taint_structures_file[256];
+    struct timeval tv;
+
+    if (terminated) return;  // Only do this once
+    terminated = 1;
+
+    if (splice_input && splice_input[0]) {
+	// Also need to consider addresses passed from previous segment as output
+	splice_after_segment (splice_input, splice_semname, outfd);
+    }
+
+    snprintf(taint_structures_file, 256, "%s/taint_structures", group_directory);
+    
+    taint_fd = open(taint_structures_file, O_WRONLY | O_CREAT | O_TRUNC | O_LARGEFILE, 0644);
+    assert(taint_fd > 0);
+    
+    if (all_output) {
+	gettimeofday(&tv, NULL);
+	printf("dump start dir %s %lu sec %lu usec\n", group_directory, tv.tv_sec, tv.tv_usec);
+
+	if (splice_output) {
+	    dump_reg_taints(taint_fd, pregs);
+	    dump_mem_taints(taint_fd);
+	} else {
+	    dump_reg_taints_start(taint_fd, pregs);
+	    dump_mem_taints_start(taint_fd);
+	}
+    }
+    close(taint_fd);
+
+    finish_and_print_taint_stats(stdout);
+#if 0
+    gettimeofday(&tv, NULL);
+    fprintf(stderr, "time end %lu sec %lu usec\n", tv.tv_sec, tv.tv_usec);
+#endif
+    printf("DIFT done\n");
+
 }
 
 ADDRINT find_static_address(ADDRINT ip)
@@ -273,36 +323,31 @@ void print_static_address(FILE* fp, ADDRINT ip)
     PIN_UnlockClient();
 }
 
-static inline void increment_syscall_cnt (struct thread_data* ptdata, int syscall_num)
+static inline void increment_syscall_cnt (int syscall_num)
 {
-#ifdef HAVE_REPLAY
     // ignore pthread syscalls, or deterministic system calls that we don't log (e.g. 123, 186, 243, 244)
     if (!(syscall_num == 17 || syscall_num == 31 || syscall_num == 32 || 
             syscall_num == 35 || syscall_num == 44 || syscall_num == 53 || 
             syscall_num == 56 || syscall_num == 98 || syscall_num == 119 ||
             syscall_num == 123 || syscall_num == 186 ||
             syscall_num == 243 || syscall_num == 244)) {
-        if (ptdata->ignore_flag) {
-            if (!(*(int *)(ptdata->ignore_flag))) {
+        if (current_thread->ignore_flag) {
+            if (!(*(int *)(current_thread->ignore_flag))) {
                 global_syscall_cnt++;
-                ptdata->syscall_cnt++;
+                current_thread->syscall_cnt++;
             }
         } else {
             global_syscall_cnt++;
-            ptdata->syscall_cnt++;
+            current_thread->syscall_cnt++;
         }
 #ifdef DEBUGTRACE
 	printf ("syscall cnt %lu num %d\n", global_syscall_cnt, syscall_num);
 #endif
     }
-#else
-    global_syscall_cnt++;
-    ptdata->syscall_cnt++;
-#endif
 }
 
 static void create_connect_info_name(char* connect_info_name, int domain,
-                                                    struct connect_info* ci)
+				     struct connect_info* ci)
 {
     assert(ci);
     if (domain == AF_UNIX) {
@@ -326,8 +371,7 @@ static void create_connect_info_name(char* connect_info_name, int domain,
     }
 }
 
-static inline void sys_open_start(struct thread_data* ptdata, 
-                                            char* filename, int flags)
+static inline void sys_open_start(char* filename, int flags)
 {
     SYSCALL_DEBUG (stderr, "open_start: filename %s\n", filename);
     struct open_info* oi = (struct open_info *) get_slice(&open_info_alloc);
@@ -335,7 +379,7 @@ static inline void sys_open_start(struct thread_data* ptdata,
     oi->flags = flags;
     oi->fileno = open_file_cnt;
     open_file_cnt++;
-    ptdata->save_syscall_info = (void *) oi;
+    current_thread->save_syscall_info = (void *) oi;
 }
 
 char* get_file_ext(char* filename){
@@ -364,11 +408,11 @@ char* get_file_ext(char* filename){
     return dot+1;
 }
 
-static inline void sys_open_stop(struct thread_data* ptdata, int rc)
+static inline void sys_open_stop(int rc)
 {
     if (rc > 0) {
-        struct open_info* oi = (struct open_info *) ptdata->save_syscall_info;
-        monitor_add_fd(open_fds, rc, 0, ptdata->save_syscall_info);
+        struct open_info* oi = (struct open_info *) current_thread->save_syscall_info;
+        monitor_add_fd(open_fds, rc, 0, current_thread->save_syscall_info);
 
 	SYSCALL_DEBUG(stderr, "open: added fd %d\n", rc);
 
@@ -383,18 +427,18 @@ static inline void sys_open_stop(struct thread_data* ptdata, int rc)
 #endif
     }
     SYSCALL_DEBUG (stderr, "open_stop: rc %d\n", rc);
-    ptdata->save_syscall_info = NULL;
+    current_thread->save_syscall_info = NULL;
 }
 
-static inline void sys_close_start(struct thread_data* ptdata, int fd)
+static inline void sys_close_start(int fd)
 {
     SYSCALL_DEBUG (stderr, "close_start:fd = %d\n", fd);
-    ptdata->save_syscall_info = (void *) fd;
+    current_thread->save_syscall_info = (void *) fd;
 }
 
-static inline void sys_close_stop(struct thread_data* ptdata, int rc)
+static inline void sys_close_stop(int rc)
 {
-    int fd = (int) ptdata->save_syscall_info;
+    int fd = (int) current_thread->save_syscall_info;
     // remove the fd from the list of open files
     if (!rc) {
         if (monitor_has_fd(open_fds, fd)) {
@@ -414,23 +458,22 @@ static inline void sys_close_stop(struct thread_data* ptdata, int rc)
         remove_taint_fd(fd);
 #endif
     }
-    ptdata->save_syscall_info = 0;
+    current_thread->save_syscall_info = 0;
 }
 
-static inline void sys_read_start(struct thread_data* ptdata,
-                                    int fd, char* buf, int size)
+static inline void sys_read_start(int fd, char* buf, int size)
 {
     SYSCALL_DEBUG(stderr, "sys_read_start: fd = %d\n", fd);
-    struct read_info* ri = (struct read_info*) &ptdata->read_info_cache;
+    struct read_info* ri = (struct read_info*) &current_thread->read_info_cache;
     ri->fd = fd;
     ri->buf = buf;
-    ptdata->save_syscall_info = (void *) ri;
+    current_thread->save_syscall_info = (void *) ri;
 }
 
-static inline void sys_read_stop(struct thread_data* ptdata, int rc)
+static inline void sys_read_stop(int rc)
 {
     int read_fileno = -1;
-    struct read_info* ri = (struct read_info*) &ptdata->read_info_cache;
+    struct read_info* ri = (struct read_info*) &current_thread->read_info_cache;
 
     // If global_syscall_cnt == 0, then read handled in previous epoch
     if (rc > 0 && global_syscall_cnt > 0) {
@@ -449,9 +492,9 @@ static inline void sys_read_stop(struct thread_data* ptdata, int rc)
 
         SYSCALL_DEBUG (stderr, "read_stop from file: %s\n", channel_name);
 
-        tci.rg_id = ptdata->rg_id;
-        tci.record_pid = ptdata->record_pid;
-        tci.syscall_cnt = ptdata->syscall_cnt;
+        tci.rg_id = current_thread->rg_id;
+        tci.record_pid = current_thread->record_pid;
+        tci.syscall_cnt = current_thread->syscall_cnt;
         tci.offset = 0;
         tci.fileno = read_fileno;
         tci.data = NULL;
@@ -465,29 +508,28 @@ static inline void sys_read_stop(struct thread_data* ptdata, int rc)
         //fprintf(stderr, "read from fd %d\n", ri->fd);
         if (is_fd_tainted(ri->fd)) {
             fprintf(stderr, "taint fd %d to mem %lu\n", ri->fd, (u_long) ri->buf);
-            taint_add_fd2mem(ptdata, (u_long) ri->buf, rc, ri->fd);
+            taint_add_fd2mem((u_long) ri->buf, rc, ri->fd);
         }
 #endif
     }
 
-    memset(&ptdata->read_info_cache, 0, sizeof(struct read_info*));
-    ptdata->save_syscall_info = 0;
+    memset(&current_thread->read_info_cache, 0, sizeof(struct read_info*));
+    current_thread->save_syscall_info = 0;
 }
 
-static inline void sys_pread_start(struct thread_data* ptdata, 
-                                        int fd, char* buf, int size)
+static inline void sys_pread_start(int fd, char* buf, int size)
 {
     SYSCALL_DEBUG(stderr, "pread fd = %d\n", fd);
-    struct read_info* ri = (struct read_info*) &ptdata->read_info_cache;
+    struct read_info* ri = (struct read_info*) &current_thread->read_info_cache;
     ri->fd = fd;
     ri->buf = buf;
-    ptdata->save_syscall_info = (void *) ri;
+    current_thread->save_syscall_info = (void *) ri;
 }
 
-static inline void sys_pread_stop(struct thread_data* ptdata, int rc)
+static inline void sys_pread_stop(int rc)
 {
     int read_fileno = -1;
-    struct read_info* ri = (struct read_info*) &ptdata->read_info_cache;
+    struct read_info* ri = (struct read_info*) &current_thread->read_info_cache;
 
     // If global_syscall_cnt == 0, then handled in previous epoch
     if (rc > 0 && global_syscall_cnt > 0) {
@@ -506,9 +548,9 @@ static inline void sys_pread_stop(struct thread_data* ptdata, int rc)
 
         SYSCALL_DEBUG (stderr, "pread_stop from file: %s\n", channel_name);
 
-        tci.rg_id = ptdata->rg_id;
-        tci.record_pid = ptdata->record_pid;
-        tci.syscall_cnt = ptdata->syscall_cnt;
+        tci.rg_id = current_thread->rg_id;
+        tci.record_pid = current_thread->record_pid;
+        tci.syscall_cnt = current_thread->syscall_cnt;
         tci.offset = 0;
         tci.fileno = read_fileno;
         tci.data = NULL;
@@ -518,26 +560,22 @@ static inline void sys_pread_stop(struct thread_data* ptdata, int rc)
         create_taints_from_buffer(ri->buf, rc, &tci, tokens_fd, channel_name);
     }
 
-    memset(&ptdata->read_info_cache, 0, sizeof(struct read_info*));
-    ptdata->save_syscall_info = 0;
+    memset(&current_thread->read_info_cache, 0, sizeof(struct read_info*));
+    current_thread->save_syscall_info = 0;
 }
 
 #ifdef LINKAGE_FDTRACK
-static void sys_select_start(struct thread_data* ptdata,
-                                int nfds, fd_set* readfds,
-                                fd_set* writefds,
-                                fd_set* exceptfds,
-                                struct timeval* timeout)
+static void sys_select_start(int nfds, fd_set* readfds, fd_set* writefds, fd_set* exceptfds, struct timeval* timeout)
 {
     fprintf(stderr, "sys_select started\n");
-    ptdata->select_info_cache.nfds = nfds;
-    ptdata->select_info_cache.readfds = readfds;
-    ptdata->select_info_cache.writefds = writefds;
-    ptdata->select_info_cache.exceptfds = exceptfds;
-    ptdata->select_info_cache.timeout = timeout;
+    current_thread->select_info_cache.nfds = nfds;
+    current_thread->select_info_cache.readfds = readfds;
+    current_thread->select_info_cache.writefds = writefds;
+    current_thread->select_info_cache.exceptfds = exceptfds;
+    current_thread->select_info_cache.timeout = timeout;
 }
 
-static void sys_select_stop(struct thread_data* ptdata, int rc)
+static void sys_select_stop(int rc)
 {
     fprintf(stderr, "sys_select returns %d\n", rc);
 
@@ -545,35 +583,34 @@ static void sys_select_stop(struct thread_data* ptdata, int rc)
     if (rc != -1 && global_syscall_cnt > 0) {
         // create a taint
         struct taint_creation_info tci;
-        tci.rg_id = ptdata->rg_id;
-        tci.record_pid = ptdata->record_pid;
-        tci.syscall_cnt = ptdata->syscall_cnt;
+        tci.rg_id = current_thread->rg_id;
+        tci.record_pid = current_thread->record_pid;
+        tci.syscall_cnt = current_thread->syscall_cnt;
         tci.offset = 0;
         tci.fileno = FILENO_SELECT;
         tci.data = 0;
         tci.type = TOK_SELECT;
 
-        create_fd_taints(ptdata->select_info_cache.nfds,
-                ptdata->select_info_cache.readfds,
+        create_fd_taints(current_thread->select_info_cache.nfds,
+                current_thread->select_info_cache.readfds,
                 &tci, tokens_fd);
     }
 }
 #endif
 
-static void sys_mmap_start(struct thread_data* ptdata,
-                                u_long addr, int len, int prot, int fd)
+static void sys_mmap_start(u_long addr, int len, int prot, int fd)
 {
-    struct mmap_info* mmi = &(ptdata->mmap_info_cache);
+    struct mmap_info* mmi = &(current_thread->mmap_info_cache);
     mmi->addr = addr;
     mmi->length = len;
     mmi->prot = prot;
     mmi->fd = fd;
-    ptdata->save_syscall_info = (void *) mmi;
+    current_thread->save_syscall_info = (void *) mmi;
 }
 
-static void sys_mmap_stop(struct thread_data* ptdata, int rc)
+static void sys_mmap_stop(int rc)
 {
-    struct mmap_info* mmi = (struct mmap_info*) ptdata->save_syscall_info;
+    struct mmap_info* mmi = (struct mmap_info*) current_thread->save_syscall_info;
 #ifdef MMAP_INPUTS
     // If global_syscall_cnt == 0, then handled in previous epoch
     if (rc != -1 && (mmi->fd != -1) && global_syscall_cnt > 0) {
@@ -591,9 +628,9 @@ static void sys_mmap_stop(struct thread_data* ptdata, int rc)
         }
         if (!(mmi->prot & PROT_EXEC)) {
             struct taint_creation_info tci;
-            tci.rg_id = ptdata->rg_id;
-            tci.record_pid = ptdata->record_pid;
-            tci.syscall_cnt = ptdata->syscall_cnt;
+            tci.rg_id = current_thread->rg_id;
+            tci.record_pid = current_thread->record_pid;
+            tci.syscall_cnt = current_thread->syscall_cnt;
             tci.offset = 0;
             tci.fileno = read_fileno;
             tci.data = NULL;
@@ -605,7 +642,7 @@ static void sys_mmap_stop(struct thread_data* ptdata, int rc)
             fprintf(stderr, "mmap is PROT_EXEC\n");
         }
     }
-    ptdata->save_syscall_info = 0;
+    current_thread->save_syscall_info = 0;
     SYSCALL_DEBUG (stderr, "sys_mmap_stop done\n");
 #else
     // Need to at least clear these taints 
@@ -613,19 +650,18 @@ static void sys_mmap_stop(struct thread_data* ptdata, int rc)
 #endif
 }
 
-static inline void sys_write_start(struct thread_data* ptdata,
-                                        int fd, char* buf, int size)
+static inline void sys_write_start(int fd, char* buf, int size)
 {
     SYSCALL_DEBUG(stderr, "sys_write_start: fd = %d\n", fd);
-    struct write_info* wi = (struct write_info *) &ptdata->write_info_cache;
+    struct write_info* wi = (struct write_info *) &current_thread->write_info_cache;
     wi->fd = fd;
     wi->buf = buf;
-    ptdata->save_syscall_info = (void *) wi;
+    current_thread->save_syscall_info = (void *) wi;
 }
 
-static inline void sys_write_stop(struct thread_data* ptdata, int rc)
+static inline void sys_write_stop(int rc)
 {
-    struct write_info* wi = (struct write_info *) &ptdata->write_info_cache;
+    struct write_info* wi = (struct write_info *) &current_thread->write_info_cache;
     int channel_fileno = -1;
     // If syscall cnt = 0, then write handled in previous epoch
     if (rc > 0 && global_syscall_cnt > 0) {
@@ -647,37 +683,36 @@ static inline void sys_write_stop(struct thread_data* ptdata, int rc)
             channel_fileno = -1;
         }
         tci.type = 0;
-        tci.rg_id = ptdata->rg_id;
-        tci.record_pid = ptdata->record_pid;
-        tci.syscall_cnt = ptdata->syscall_cnt;
+        tci.rg_id = current_thread->rg_id;
+        tci.record_pid = current_thread->record_pid;
+        tci.syscall_cnt = current_thread->syscall_cnt;
         tci.offset = 0;
         tci.fileno = channel_fileno;
 
         LOG_PRINT ("Output buffer result syscall %ld, %#lx\n", tci.syscall_cnt, (u_long) wi->buf);
         output_buffer_result (wi->buf, rc, &tci, outfd);
     }
-    memset(&ptdata->write_info_cache, 0, sizeof(struct write_info));
+    memset(&current_thread->write_info_cache, 0, sizeof(struct write_info));
 }
 
-static inline void sys_writev_start(struct thread_data* ptdata,
-                                        int fd, struct iovec* iov, int count)
+static inline void sys_writev_start(int fd, struct iovec* iov, int count)
 {
     SYSCALL_DEBUG(stderr, "sys_writev_start: fd = %d\n", fd);
     struct writev_info* wvi;
-    wvi = (struct writev_info *) &ptdata->writev_info_cache;
+    wvi = (struct writev_info *) &current_thread->writev_info_cache;
     wvi->fd = fd;
     wvi->count = count;
     wvi->vi = iov;
 
-    ptdata->save_syscall_info = (void *) wvi;
+    current_thread->save_syscall_info = (void *) wvi;
 }
 
-static inline void sys_writev_stop(struct thread_data* ptdata, int rc)
+static inline void sys_writev_stop(int rc)
 {
     // If syscall cnt = 0, then write handled in previous epoch
     if (rc > 0 && global_syscall_cnt > 0) {
         struct taint_creation_info tci;
-        struct writev_info* wvi = (struct writev_info *) &ptdata->writev_info_cache;
+        struct writev_info* wvi = (struct writev_info *) &current_thread->writev_info_cache;
         int channel_fileno = -1;
         if (monitor_has_fd(open_fds, wvi->fd)) {
             struct open_info* oi;
@@ -694,9 +729,9 @@ static inline void sys_writev_stop(struct thread_data* ptdata, int rc)
         }
 
         tci.type = 0;
-        tci.rg_id = ptdata->rg_id;
-        tci.record_pid = ptdata->record_pid;
-        tci.syscall_cnt = ptdata->syscall_cnt;
+        tci.rg_id = current_thread->rg_id;
+        tci.record_pid = current_thread->record_pid;
+        tci.syscall_cnt = current_thread->syscall_cnt;
         tci.offset = 0;
         tci.fileno = channel_fileno;
 
@@ -716,11 +751,10 @@ static inline void sys_writev_stop(struct thread_data* ptdata, int rc)
             }
         }
     }
-    memset(&ptdata->writev_info_cache, 0, sizeof(struct writev_info));
+    memset(&current_thread->writev_info_cache, 0, sizeof(struct writev_info));
 }
 
-static void sys_socket_start (struct thread_data* ptdata, int domain,
-                                                    int type, int protocol)
+static void sys_socket_start (int domain, int type, int protocol)
 {
     struct socket_info* si = (struct socket_info*) malloc(sizeof(struct socket_info));
     if (si == NULL) {
@@ -733,21 +767,20 @@ static void sys_socket_start (struct thread_data* ptdata, int domain,
     si->protocol = protocol;
     si->fileno = -1; // will be set in connect/accept/bind
 
-    ptdata->save_syscall_info = si;
+    current_thread->save_syscall_info = si;
 }
 
-static void sys_socket_stop(struct thread_data* ptdata, int rc)
+static void sys_socket_stop(int rc)
 {
     if (rc > 0) {
-        struct socket_info* si = (struct socket_info *) ptdata->save_syscall_info;
+        struct socket_info* si = (struct socket_info *) current_thread->save_syscall_info;
         monitor_add_fd(open_socks, rc, 0, si);
 	SYSCALL_DEBUG(stderr, "socket added fd %d to open_socks\n", rc);
-        ptdata->save_syscall_info = NULL; // Giving si to the monitor
+        current_thread->save_syscall_info = NULL; // Giving si to the monitor
     }
 }
 
-static void sys_connect_start(struct thread_data* ptdata, int sockfd,
-        struct sockaddr* addr, socklen_t addrlen)
+static void sys_connect_start(int sockfd, struct sockaddr* addr, socklen_t addrlen)
 {
     if (monitor_has_fd(open_socks, sockfd)) {
         struct socket_info* si = (struct socket_info*) monitor_get_fd_data(open_socks, sockfd);
@@ -794,21 +827,21 @@ static void sys_connect_start(struct thread_data* ptdata, int sockfd,
             free(ci);
             return;
         }
-        ptdata->save_syscall_info = (void *) ci;
+        current_thread->save_syscall_info = (void *) ci;
     }
 }
 
-static void sys_connect_stop(struct thread_data* ptdata, int rc)
+static void sys_connect_stop(int rc)
 {
     // successful connect
-    if (!rc && ptdata->save_syscall_info) {
-        struct connect_info* ci = (struct connect_info *) ptdata->save_syscall_info;
+    if (!rc && current_thread->save_syscall_info) {
+        struct connect_info* ci = (struct connect_info *) current_thread->save_syscall_info;
         struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, ci->fd);
         char connect_info_name[256];
         if (!si) {
             fprintf(stderr, "could not find socket for connect %d\n", ci->fd);
             free(ci);
-            ptdata->save_syscall_info = NULL;
+            current_thread->save_syscall_info = NULL;
             return;
         }
         //assert(si);
@@ -843,21 +876,23 @@ static void sys_connect_stop(struct thread_data* ptdata, int rc)
         create_connect_info_name(connect_info_name, si->domain, ci);
         write_filename_mapping(filenames_f, si->fileno, connect_info_name);
 
-        ptdata->save_syscall_info = NULL; // Socket_info owns this now
+        current_thread->save_syscall_info = NULL; // Socket_info owns this now
     }
 }
 
-static void sys_recv_start(struct thread_data* ptdata, int fd, char* buf, int size) {
+static void sys_recv_start(int fd, char* buf, int size) 
+{
     // recv and read are similar so they can share the same info struct
-    struct read_info* ri = (struct read_info*) &ptdata->read_info_cache;
+    struct read_info* ri = (struct read_info*) &current_thread->read_info_cache;
     ri->fd = fd;
     ri->buf = buf;
-    ptdata->save_syscall_info = (void *) ri;
+    current_thread->save_syscall_info = (void *) ri;
     LOG_PRINT ("recv on fd %d\n", fd);
 }
 
-static void sys_recv_stop(struct thread_data* ptdata, int rc) {
-    struct read_info* ri = (struct read_info *) ptdata->save_syscall_info;
+static void sys_recv_stop(int rc) 
+{
+    struct read_info* ri = (struct read_info *) current_thread->save_syscall_info;
     LOG_PRINT ("Pid %d syscall recv returns %d\n", PIN_GetPid(), rc);
     SYSCALL_DEBUG (stderr, "Pid %d syscall recv returns %d\n", PIN_GetPid(), rc);
 
@@ -879,9 +914,9 @@ static void sys_recv_stop(struct thread_data* ptdata, int rc) {
         }
         SYSCALL_DEBUG (stderr, "recv_stop\n");
 
-        tci.rg_id = ptdata->rg_id;
-        tci.record_pid = ptdata->record_pid;
-        tci.syscall_cnt = ptdata->syscall_cnt;
+        tci.rg_id = current_thread->rg_id;
+        tci.record_pid = current_thread->record_pid;
+        tci.syscall_cnt = current_thread->syscall_cnt;
         tci.offset = 0;
         tci.fileno = read_fileno;
         tci.data = NULL;
@@ -893,16 +928,17 @@ static void sys_recv_stop(struct thread_data* ptdata, int rc) {
 #ifdef LINKAGE_FDTRACK
         if (is_fd_tainted(ri->fd)) {
             fprintf(stderr, "taint fd %d to mem %lu\n", ri->fd, (u_long) ri->buf);
-            taint_fd2mem(ptdata, (u_long) ri->buf, rc, ri->fd);
+            taint_fd2mem((u_long) ri->buf, rc, ri->fd);
         }
 #endif
 
     }
     SYSCALL_DEBUG (stderr, "recv_done\n");
-    ptdata->save_syscall_info = 0;
+    current_thread->save_syscall_info = 0;
 }
 
-static void sys_recvmsg_start(struct thread_data* ptdata, int fd, struct msghdr* msg, int flags) {
+static void sys_recvmsg_start(int fd, struct msghdr* msg, int flags) 
+{
     struct recvmsg_info* rmi;
     rmi = (struct recvmsg_info *) malloc(sizeof(struct recvmsg_info));
     if (rmi == NULL) {
@@ -913,12 +949,12 @@ static void sys_recvmsg_start(struct thread_data* ptdata, int fd, struct msghdr*
     rmi->msg = msg;
     rmi->flags = flags;
 
-    ptdata->save_syscall_info = (void *) rmi;
-    SYSCALL_DEBUG (stderr, "recvmsg_start done %d,%d\n", ptdata->record_pid, ptdata->syscall_cnt);
+    current_thread->save_syscall_info = (void *) rmi;
 }
 
-static void sys_recvmsg_stop(struct thread_data* ptdata, int rc) {
-    struct recvmsg_info* rmi = (struct recvmsg_info *) ptdata->save_syscall_info;
+static void sys_recvmsg_stop(int rc) 
+{
+    struct recvmsg_info* rmi = (struct recvmsg_info *) current_thread->save_syscall_info;
 
     // If syscall cnt = 0, then write handled in previous epoch
     if (rc > 0 && global_syscall_cnt > 0) {
@@ -936,9 +972,9 @@ static void sys_recvmsg_stop(struct thread_data* ptdata, int rc) {
         }
 
         SYSCALL_DEBUG (stderr, "rcvmsg_stop from file: %s\n", channel_name);
-        tci.rg_id = ptdata->rg_id;
-        tci.record_pid = ptdata->record_pid;
-        tci.syscall_cnt = ptdata->syscall_cnt;
+        tci.rg_id = current_thread->rg_id;
+        tci.record_pid = current_thread->record_pid;
+        tci.syscall_cnt = current_thread->syscall_cnt;
         tci.offset = 0;
         tci.fileno = read_fileno;
         tci.data = NULL;
@@ -951,16 +987,15 @@ static void sys_recvmsg_stop(struct thread_data* ptdata, int rc) {
             create_taints_from_buffer(vi->iov_base, vi->iov_len, &tci, tokens_fd,
                                         channel_name);
             tci.offset += vi->iov_len;
-//            fprintf (stderr, "syscall cnt: %d,%d recvmsg (%u) at %#lx, size %d\n",
-//		     ptdata->record_pid, ptdata->syscall_cnt, i, (unsigned long) vi->iov_base, vi->iov_len);
+            fprintf (stderr, "syscall cnt: %d recvmsg (%u) at %#lx, size %d\n",
+                    current_thread->syscall_cnt, i, (unsigned long) vi->iov_base, vi->iov_len);
         }
     }
     SYSCALL_DEBUG (stderr, "recvmsg_stop done %d,%d\n", ptdata->record_pid, ptdata->syscall_cnt);
     free(rmi);
 }
 
-static void sys_sendmsg_start(struct thread_data* ptdata, int fd,
-                                struct msghdr* msg, int flags)
+static void sys_sendmsg_start(int fd, struct msghdr* msg, int flags)
 {
     struct sendmsg_info* smi;
     smi = (struct sendmsg_info *) malloc(sizeof(struct sendmsg_info));
@@ -972,15 +1007,13 @@ static void sys_sendmsg_start(struct thread_data* ptdata, int fd,
     smi->msg = msg;
     smi->flags = flags;
 
-    ptdata->save_syscall_info = (void *) smi;
-
-    SYSCALL_DEBUG (stderr, "sys_sendmsg_start done %d,%d\n", ptdata->record_pid, ptdata->syscall_cnt);
+    current_thread->save_syscall_info = (void *) smi;
 }
 
-static void sys_sendmsg_stop(struct thread_data* ptdata, int rc)
+static void sys_sendmsg_stop(int rc)
 {
     u_int i;
-    struct sendmsg_info* smi = (struct sendmsg_info *) ptdata->save_syscall_info;
+    struct sendmsg_info* smi = (struct sendmsg_info *) current_thread->save_syscall_info;
     int channel_fileno = -1;
 
     // If syscall cnt = 0, then write handled in previous epoch
@@ -997,9 +1030,9 @@ static void sys_sendmsg_stop(struct thread_data* ptdata, int rc)
         }
 
         tci.type = 0;
-        tci.rg_id = ptdata->rg_id;
-        tci.record_pid = ptdata->record_pid;
-        tci.syscall_cnt = ptdata->syscall_cnt;
+        tci.rg_id = current_thread->rg_id;
+        tci.record_pid = current_thread->record_pid;
+        tci.syscall_cnt = current_thread->syscall_cnt;
         tci.offset = 0;
         tci.fileno = channel_fileno;
 
@@ -1007,18 +1040,17 @@ static void sys_sendmsg_stop(struct thread_data* ptdata, int rc)
             struct iovec* vi = (smi->msg->msg_iov + i);
             output_buffer_result(vi->iov_base, vi->iov_len, &tci, outfd);
             tci.offset += vi->iov_len;
-//            fprintf (stderr, "syscall cnt: %d,%d sendmsg (%u) at %#lx, size %d\n",
-//		     ptdata->record_pid,ptdata->syscall_cnt, i, (unsigned long) vi->iov_base, vi->iov_len);
+
+            fprintf (stderr, "syscall cnt: %d sendmsg (%u) at %#lx, size %d\n",
+                    current_thread->syscall_cnt, i, (unsigned long) vi->iov_base, vi->iov_len);
         }
     }
     SYSCALL_DEBUG (stderr, "sys_sendmsg_stop done %d,%d\n", ptdata->record_pid, ptdata->syscall_cnt);
     free(smi);
 }
 
-void syscall_start(struct thread_data* ptdata, int sysnum,
-                    ADDRINT syscallarg0, ADDRINT syscallarg1,
-                    ADDRINT syscallarg2, ADDRINT syscallarg3,
-                    ADDRINT syscallarg4, ADDRINT syscallarg5)
+void syscall_start(int sysnum, ADDRINT syscallarg0, ADDRINT syscallarg1,
+		   ADDRINT syscallarg2, ADDRINT syscallarg3, ADDRINT syscallarg4, ADDRINT syscallarg5)
 {
 	fprintf(stderr, "syscall_start sysnum: %d, sys_sendfile64 %d\n",sysnum, SYS_sendfile64);
     switch (sysnum) {
@@ -1026,35 +1058,35 @@ void syscall_start(struct thread_data* ptdata, int sysnum,
 	    fprintf(stderr, "found a sendfile\n");
 	    break;
         case SYS_open:
-            sys_open_start(ptdata, (char *) syscallarg0, (int) syscallarg1);
+            sys_open_start((char *) syscallarg0, (int) syscallarg1);
             break;
         case SYS_close:
-            sys_close_start(ptdata, (int) syscallarg0); 
+            sys_close_start((int) syscallarg0); 
             break;
         case SYS_read:
-            sys_read_start(ptdata, (int) syscallarg0,
+            sys_read_start((int) syscallarg0,
                                     (char *) syscallarg1,
                                     (int) syscallarg2);
             break;
         case SYS_write:
-            sys_write_start(ptdata, (int) syscallarg0,
+            sys_write_start((int) syscallarg0,
                                     (char *) syscallarg1,
                                     (int) syscallarg2);
             break;
         case SYS_writev:
-            sys_writev_start(ptdata, (int) syscallarg0,
+            sys_writev_start((int) syscallarg0,
                                         (struct iovec *) syscallarg1,
                                         (int) syscallarg2);
             break;
         case SYS_pread64:
-            sys_pread_start(ptdata, (int) syscallarg0,
+            sys_pread_start((int) syscallarg0,
                                     (char *) syscallarg1,
                                     (int) syscallarg2);
             break;
 #ifdef LINKAGE_FDTRACK
         case SYS_select:
         case 142:
-            sys_select_start(ptdata, (int) syscallarg0,
+            sys_select_start((int) syscallarg0,
                                     (fd_set *) syscallarg1,
                                     (fd_set *) syscallarg2,
                                     (fd_set *) syscallarg3,
@@ -1065,31 +1097,32 @@ void syscall_start(struct thread_data* ptdata, int sysnum,
         {
             int call = (int) syscallarg0;
             unsigned long *args = (unsigned long *)syscallarg1;
-            ptdata->socketcall = call;
+            current_thread->socketcall = call;
             switch (call) {
                 case SYS_SOCKET:
                     SYSCALL_DEBUG(stderr, "socket_start\n");
-                    sys_socket_start(ptdata, (int)args[0], (int)args[1], (int)args[2]);
+                    sys_socket_start((int)args[0], (int)args[1], (int)args[2]);
                     break;
                 case SYS_CONNECT:
                     SYSCALL_DEBUG(stderr, "connect_start\n");
-                    sys_connect_start(ptdata, (int)args[0],
+                    sys_connect_start((int)args[0],
                                         (struct sockaddr *)args[1],
                                         (socklen_t)args[2]);
                     break;
                 case SYS_RECV:
                 case SYS_RECVFROM:
                     SYSCALL_DEBUG(stderr, "recv_start\n");
-                    sys_recv_start(ptdata, (int)args[0], (char *)args[1], (int)args[2]);
+                    sys_recv_start((int)args[0], (char *)args[1], (int)args[2]);
                     break;
                 case SYS_RECVMSG:
-		    SYSCALL_DEBUG(stderr, "recvmsg_start %d,%d\n", ptdata->record_pid, ptdata->syscall_cnt);
-                    sys_recvmsg_start(ptdata, (int)args[0], (struct msghdr *)args[1],
+
+                    SYSCALL_DEBUG(stderr, "recvmsg_start\n");                    
+		    sys_recvmsg_start(ptdata, (int)args[0], (struct msghdr *)args[1],
                                             (int)args[2]);
                     break;
                 case SYS_SENDMSG:
-		    SYSCALL_DEBUG(stderr, "sendmsg_start %d,%d\n", ptdata->record_pid, ptdata->syscall_cnt);
-                    sys_sendmsg_start(ptdata, (int)args[0], 
+                    SYSCALL_DEBUG(stderr, "sendmsg_start\n");
+                    sys_sendmsg_start((int)args[0], 
                             (struct msghdr *)args[1], (int)args[2]);
                     break;
                 default:
@@ -1099,13 +1132,13 @@ void syscall_start(struct thread_data* ptdata, int sysnum,
         }
         case SYS_mmap:
         case SYS_mmap2:
-            sys_mmap_start(ptdata, (u_long)syscallarg0, (int)syscallarg1,
+            sys_mmap_start((u_long)syscallarg0, (int)syscallarg1,
                             (int)syscallarg2, (int)syscallarg4);
             break;
     }
 }
 
-void syscall_end(struct thread_data* ptdata, int sysnum, ADDRINT ret_value)
+void syscall_end(int sysnum, ADDRINT ret_value)
 {
     int rc = (int) ret_value;
     switch(sysnum) {
@@ -1113,177 +1146,117 @@ void syscall_end(struct thread_data* ptdata, int sysnum, ADDRINT ret_value)
             SYSCALL_DEBUG(stderr, "%d clone done\n", PIN_GetPid());
             break;
         case SYS_open:
-            sys_open_stop(ptdata, rc);
+            sys_open_stop(rc);
             break;
         case SYS_close:
-            sys_close_stop(ptdata, rc);
+            sys_close_stop(rc);
             break;
         case SYS_read:
-            sys_read_stop(ptdata, rc);
+            sys_read_stop(rc);
             break;
         case SYS_write:
-            sys_write_stop(ptdata, rc);
+            sys_write_stop(rc);
             break;
         case SYS_writev:
-            sys_writev_stop(ptdata, rc);
+            sys_writev_stop(rc);
             break;
         case SYS_pread64:
-            sys_pread_stop(ptdata, rc);
+            sys_pread_stop(rc);
             break;
 #ifdef LINKAGE_FDTRACK
         case SYS_select:
         case 142:
-            sys_select_stop(ptdata, rc);
+            sys_select_stop(rc);
             break;
 #endif
         case SYS_mmap:
         case SYS_mmap2:
-            sys_mmap_stop(ptdata, rc);
+            sys_mmap_stop(rc);
             break;
         case SYS_socketcall:
         {
-            switch (ptdata->socketcall) {
+            switch (current_thread->socketcall) {
                 case SYS_SOCKET:
-                    sys_socket_stop(ptdata, rc);
+                    sys_socket_stop(rc);
                     break;
                 case SYS_CONNECT:
-                    sys_connect_stop(ptdata, rc);
+                    sys_connect_stop(rc);
                     break;
                 case SYS_RECV:
                 case SYS_RECVFROM:
-                    sys_recv_stop(ptdata, rc);
+                    sys_recv_stop(rc);
                     break;
                 case SYS_RECVMSG:
                     sys_recvmsg_stop(ptdata, rc);
 		    break;
                 case SYS_SENDMSG:
-                    sys_sendmsg_stop(ptdata, rc);
+                    sys_sendmsg_stop(rc);
                     break;
                 default:
                     break;
             }
-            ptdata->socketcall = 0;
+            current_thread->socketcall = 0;
             break;
         }
     }
 }
 
-#ifdef HAVE_REPLAY
 // called before every application system call
 void instrument_syscall(ADDRINT syscall_num, 
-#ifdef USE_TLS_SCRATCH
-			ADDRINT tls_ptr,
-#endif
 			ADDRINT syscallarg0, ADDRINT syscallarg1, ADDRINT syscallarg2,
 			ADDRINT syscallarg3, ADDRINT syscallarg4, ADDRINT syscallarg5)
 {   
-#ifdef USE_TLS_SCRATCH
-    struct thread_data* ptdata = (struct thread_data *) tls_ptr;
-#else
-    struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
-    if (ptdata) {
-        int sysnum = (int) syscall_num;
-        ptdata->sysnum = sysnum;
+    int sysnum = (int) syscall_num;
+    current_thread->sysnum = sysnum;
 
 #ifdef TRACE_TAINT_OPS
-        trace_syscall_op(ptdata,
-                trace_taint_outfd,
-                0, // TODO Fill in ip later
-                PIN_ThreadId(),
-                TAINTOP_SYSCALL,
-                sysnum, global_syscall_cnt);
+    trace_syscall_op(current_thread,
+		     trace_taint_outfd,
+		     0, // TODO Fill in ip later
+		     PIN_ThreadId(),
+		     TAINTOP_SYSCALL,
+		     sysnum, global_syscall_cnt);
 #endif
-        if (sysnum == 31) {
-            ptdata->ignore_flag = (u_long) syscallarg1;
-        }
-        if (sysnum == 45 || sysnum == 91 || sysnum == 120 || sysnum == 125 || 
-                sysnum == 174 || sysnum == 175 || sysnum == 190 || sysnum == 192) {
-            check_clock_before_syscall (dev_fd, (int) syscall_num);
-        }
-        //print_taint_stats(stderr);
-
-        syscall_start(ptdata, sysnum, syscallarg0, syscallarg1, syscallarg2, 
-                                        syscallarg3, syscallarg4, syscallarg5);
-
-	fprintf (stderr, "instrument_syscall addr %p val %d\n", &ptdata->app_syscall, syscall_num);
-        ptdata->app_syscall = syscall_num;
-    } else {
-        fprintf (stderr, "set_address_one: NULL tdata\n");
+    if (sysnum == 31) {
+	current_thread->ignore_flag = (u_long) syscallarg1;
     }
+    if (sysnum == 45 || sysnum == 91 || sysnum == 120 || sysnum == 125 || 
+	sysnum == 174 || sysnum == 175 || sysnum == 190 || sysnum == 192) {
+	check_clock_before_syscall (dev_fd, (int) syscall_num);
+    }
+    syscall_start(sysnum, syscallarg0, syscallarg1, syscallarg2, 
+		  syscallarg3, syscallarg4, syscallarg5);
+    
+    current_thread->app_syscall = syscall_num;
 }
 
-void syscall_after (ADDRINT ip
-#ifdef USE_TLS_SCRATCH
-		    , ADDRINT tls_ptr
-#endif
-		    )
+void syscall_after (ADDRINT ip)
 {
-#ifdef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) tls_ptr;
-#else
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
-    if (tdata) {
-        if (tdata->app_syscall == 999) {
-            if (check_clock_after_syscall (dev_fd) == 0) {
-            } else {
-                fprintf (stderr, "Check clock failed\n");
-            }
-            tdata->app_syscall = 0;  
-        }
-    } else {
-        fprintf (stderr, "syscall_after: NULL tdata\n");
+    if (current_thread->app_syscall == 999) {
+	if (check_clock_after_syscall (dev_fd) != 0) {
+	    fprintf (stderr, "Check clock failed\n");
+	}
+	current_thread->app_syscall = 0;  
     }
 }
 
 void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD std, VOID* v)
 {
-#ifdef USE_TLS_SCRATCH
-    struct thread_data* ptdata = (struct thread_data *) PIN_GetContextReg(ctxt, tls_reg);
-#else
-    struct thread_data* ptdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
-#ifdef HAVE_REPLAY
-    if (ptdata) {
-        if (ptdata->app_syscall != 999) ptdata->app_syscall = 0;
-    } else {
-        fprintf (stderr, "inst_syscall_end: NULL ptdata\n");
-    }
-#endif
+    if (current_thread->app_syscall != 999) current_thread->app_syscall = 0;
 
     ADDRINT ret_value = PIN_GetSyscallReturn(ctxt, std);
-    syscall_end(ptdata, ptdata->sysnum, ret_value);
+    syscall_end(current_thread->sysnum, ret_value);
 
     // reset the syscall number after returning from system call
-    increment_syscall_cnt (ptdata, ptdata->sysnum);
-    ptdata->sysnum = 0;
-    
+    increment_syscall_cnt (current_thread->sysnum);
+    current_thread->sysnum = 0;
 
-
-    if (global_syscall_cnt == (unsigned long) segment_length) {
-	//fprintf(stderr, "Pin terminating at Pid %d, syscall %d\n", PIN_GetPid(), ptdata->syscall_cnt);
+    if (segment_length && global_syscall_cnt == (unsigned long) segment_length + 1) {
+	// Done with this replay - do exit stuff now because we may not get clean unwind
+	printf("Pin terminating at Pid %d, syscall %d\n", PIN_GetPid(), current_thread->syscall_cnt);
+	dift_done ();
+	try_to_exit(dev_fd, PIN_GetPid());
         PIN_ExitApplication(0);
-    }
-}
-
-void instrument_inst(ADDRINT tls_ptr, ADDRINT ip)
-{
-    struct thread_data* ptdata = (struct thread_data *) tls_ptr;
-    if (ptdata->syscall_cnt >= 687 && ptdata->syscall_cnt < 689) {
-        fprintf(stderr, "%d: %#x\n", ptdata->record_pid, ip);
-        PIN_LockClient();
-        fprintf(stderr, "[INST] Pid %d (tid: %d) (record %d) - %#x\n",
-                PIN_GetPid(), PIN_GetTid(), get_record_pid(), ip);
-        if (IMG_Valid(IMG_FindByAddress(ip))) {
-            fprintf(stderr, "%s -- img %s static %#x\n",
-                    RTN_FindNameByAddress(ip).c_str(),
-                    IMG_Name(IMG_FindByAddress(ip)).c_str(),
-                    find_static_address(ip));
-            PIN_UnlockClient();
-        } else {
-            PIN_UnlockClient();
-        }
     }
 }
 
@@ -1292,9 +1265,6 @@ void track_inst(INS ins, void* data)
     if(INS_IsSyscall(ins)) {
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(instrument_syscall),
                 IARG_SYSCALL_NUMBER, 
-#ifdef USE_TLS_SCRATCH
-                IARG_REG_VALUE, tls_reg,
-#endif
                 IARG_SYSARG_VALUE, 0, 
                 IARG_SYSARG_VALUE, 1,
                 IARG_SYSARG_VALUE, 2,
@@ -1303,13 +1273,6 @@ void track_inst(INS ins, void* data)
                 IARG_SYSARG_VALUE, 5,
                 IARG_END);
     }
-#if 0
-    // fprintf(stderr, "%#x %s\n", INS_Address(ins), INS_Disassemble(ins).c_str());
-    INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(instrument_inst),
-            IARG_REG_VALUE, tls_reg,
-            IARG_INST_PTR,
-            IARG_END);
-#endif
 }
 
 #ifdef HEARTBLEED
@@ -1348,72 +1311,62 @@ void bad_memcpy(ADDRINT dst, ADDRINT src, ADDRINT len) {
 #endif
 
 /* Interpose on top this X function and check the taints for certain coordinates */
-void trace_x_xputimage_start(ADDRINT ptdata, ADDRINT dest_x, ADDRINT dest_y,
-        ADDRINT w_ref, ADDRINT h_ref)
+void trace_x_xputimage_start(ADDRINT dest_x, ADDRINT dest_y, ADDRINT w_ref, ADDRINT h_ref)
 {
-    struct thread_data* tdata = (struct thread_data *) ptdata;
-
     PRINTX (stderr, "[TRACEX] xputimage (%d, %d)\n", (int) dest_x, (int) dest_y);
     // output x, y coords with taint
-    output_xcoords(xoutput_fd, tdata->syscall_cnt,
+    output_xcoords(xoutput_fd, current_thread->syscall_cnt,
             (int) dest_x, (int) dest_y, w_ref);
-    output_xcoords(xoutput_fd, tdata->syscall_cnt,
+    output_xcoords(xoutput_fd, current_thread->syscall_cnt,
             (int) dest_x, (int) dest_y, h_ref);
 }
 
-void trace_x_cairo_show_glyphs_start(ADDRINT ptdata, ADDRINT cairo_context,
-        ADDRINT array_glyphs, ADDRINT num_glyphs)
+void trace_x_cairo_show_glyphs_start(ADDRINT cairo_context, ADDRINT array_glyphs, ADDRINT num_glyphs)
 {
-    struct thread_data* tdata = (struct thread_data *) ptdata;
     int numglyphs = (int) num_glyphs;
     PRINTX (stderr, "[TRACEX] cairo_show_glyphs, num glyphs %d\n", (int) num_glyphs);
     // size of a glyph is 20
     for (int i = 0; i < numglyphs; i++) {
         for (unsigned j = 0; j < sizeof(cairo_glyph_t); j++) {
             u_long mem_loc = array_glyphs + (i * sizeof(cairo_glyph_t)) + j;
-            output_xcoords(xoutput_fd, tdata->syscall_cnt, -1, -1, mem_loc);
+            output_xcoords(xoutput_fd, current_thread->syscall_cnt, -1, -1, mem_loc);
         }
     }
 }
 
-void trace_x_cairo_scaled_font_show_glyphs(ADDRINT ptdata,
-                                ADDRINT array_glyphs, ADDRINT num_glyphs)
+void trace_x_cairo_scaled_font_show_glyphs(ADDRINT array_glyphs, ADDRINT num_glyphs)
 {
-    struct thread_data* tdata = (struct thread_data *) ptdata;
     int numglyphs = (int) num_glyphs;
     PRINTX (stderr, "[TRACEX] cairo_scaled_font_show_glyphs, num glyphs %d\n", (int) num_glyphs);
     // size of a glyph is 20
     for (int i = 0; i < numglyphs; i++) {
         for (int j = 0; j < 20; j++) {
             u_long mem_loc = array_glyphs + (i * 20) + j;
-            output_xcoords(xoutput_fd, tdata->syscall_cnt, -1, -1, mem_loc);
+            output_xcoords(xoutput_fd, current_thread->syscall_cnt, -1, -1, mem_loc);
         }
     }
 }
 
-void trace_x_xrendercompositetext(ADDRINT ptdata, ADDRINT dst_x, ADDRINT dst_y, 
-                                                        ADDRINT ptr, ADDRINT len)
+void trace_x_xrendercompositetext(ADDRINT dst_x, ADDRINT dst_y, ADDRINT ptr, ADDRINT len)
 {
-    struct thread_data* tdata = (struct thread_data *) ptdata;
     PRINTX (stderr, "[TRACEX] xrendercompositetext (%d,%d)\n", (int) dst_x, (int) dst_y);
     for (int i = 0; i < (int)len; i++) {
         for (int j = 0; j < 16; j++) { 
             // _XGlyphElt8 is a minimum of 17 bytes, not sure about padding etc, 
             // but we'll say 16 for now, since we're just fishing for taints
             u_long mem_loc = ptr + (i * 16) + j;
-            output_xcoords(xoutput_fd, tdata->syscall_cnt,
+            output_xcoords(xoutput_fd, current_thread->syscall_cnt,
                             (int) dst_x, (int) dst_y, mem_loc);
         }
     }
 }
 
-void string_inspect(ADDRINT ptdata, ADDRINT ptr)
+void string_inspect(ADDRINT ptr)
 {
-    struct thread_data* tdata = (struct thread_data *) ptdata;
     fprintf(stderr,  "[TRACEX] string_inspect at %#x\n", ptr);
     for (int i = 0; i < (int)24; i++) {
             u_long mem_loc = ptr + i;
-            output_xcoords(xoutput_fd, tdata->syscall_cnt, 0, 0, mem_loc);
+            output_xcoords(xoutput_fd, current_thread->syscall_cnt, 0, 0, mem_loc);
     }
 }
 
@@ -1422,16 +1375,7 @@ void track_trace(TRACE trace, void* data)
     // System calls automatically end a Pin trace.
     // So we can instrument every trace (instead of every instruction) to check to see if
     // the beginning of the trace is the first instruction after a system call.
-#ifdef USE_TLS_SCRATCH
-    TRACE_InsertCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_after,
-                            IARG_INST_PTR,
-                            IARG_REG_VALUE, tls_reg,
-                            IARG_END);
-#else
-    TRACE_InsertCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_after,
-                            IARG_INST_PTR,
-                            IARG_END);
-#endif
+    TRACE_InsertCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_after, IARG_INST_PTR, IARG_END);
 }
 
 void track_function(RTN rtn, void* v)
@@ -1441,17 +1385,9 @@ void track_function(RTN rtn, void* v)
     if (trace_x) {
         /* Note this does not work, if you don't have debug symbols
          * compiled into your library/binary */
-#ifndef USE_TLS_SCRATCH
-        struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
         if (!strcmp(name, "XPutImage")) {
             RTN_InsertCall(rtn, IPOINT_BEFORE,
                     (AFUNPTR)trace_x_xputimage_start,
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_FUNCARG_ENTRYPOINT_VALUE, 6,
                     IARG_FUNCARG_ENTRYPOINT_VALUE, 7,
                     IARG_FUNCARG_ENTRYPOINT_REFERENCE, 8,
@@ -1461,11 +1397,6 @@ void track_function(RTN rtn, void* v)
                 !strcmp(name, "cairo_show_glyphs")) {
             RTN_InsertCall(rtn, IPOINT_BEFORE,
                     (AFUNPTR)trace_x_cairo_show_glyphs_start,
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
                     IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
                     IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
@@ -1475,11 +1406,6 @@ void track_function(RTN rtn, void* v)
                 (!strcmp(name, "cairo_glyph_extents"))){
             RTN_InsertCall(rtn, IPOINT_BEFORE,
                     (AFUNPTR)trace_x_cairo_show_glyphs_start,
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
                     IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
                     IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
@@ -1489,11 +1415,6 @@ void track_function(RTN rtn, void* v)
                 strstr(name, "_cairo_scaled_font_glyph_device_extents")) {
             RTN_InsertCall(rtn, IPOINT_BEFORE, 
                     (AFUNPTR)trace_x_cairo_show_glyphs_start,
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
                     IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
                     IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
@@ -1502,11 +1423,6 @@ void track_function(RTN rtn, void* v)
         else if (strstr(name, "_cairo_scaled_font_show_glyphs")) {
             RTN_InsertCall(rtn, IPOINT_BEFORE,
                     (AFUNPTR)trace_x_cairo_scaled_font_show_glyphs,
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_FUNCARG_ENTRYPOINT_VALUE, 10,
                     IARG_FUNCARG_ENTRYPOINT_VALUE, 11,
                     IARG_END);
@@ -1514,11 +1430,6 @@ void track_function(RTN rtn, void* v)
         else if (!strcmp(name, "XRenderCompositeText8")) {
             RTN_InsertCall(rtn, IPOINT_BEFORE,
                     (AFUNPTR)trace_x_xrendercompositetext,
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_FUNCARG_ENTRYPOINT_VALUE, 7,   // dst x coord
                     IARG_FUNCARG_ENTRYPOINT_VALUE, 8,   // dst y coord
                     IARG_FUNCARG_ENTRYPOINT_VALUE, 9,
@@ -1527,11 +1438,6 @@ void track_function(RTN rtn, void* v)
         }
         else if (strstr(name, "Html5") && strstr(name, "AppendText")) {
             RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)string_inspect,
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
                     IARG_END);
         }
@@ -1566,7 +1472,6 @@ int get_record_pid()
     }
     return record_log_id;
 }
-#endif
 
 void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend);
 void instrument_taint_reg2mem(INS ins, REG srcreg, int extend);
@@ -1609,11 +1514,6 @@ static ADDRINT returnArg (BOOL arg)
  * */
 void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 {
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
-
-
     int dst_treg;
     int src_treg;
     UINT32 dst_regsize;
@@ -1635,11 +1535,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -1653,12 +1548,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, dst_treg,
                             IARG_UINT32, src_treg,
                             IARG_END);
@@ -1666,11 +1555,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -1684,11 +1568,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, dst_treg,
                             IARG_UINT32, src_treg,
                             IARG_END);
@@ -1696,11 +1575,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -1714,11 +1588,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, dst_treg,
                             IARG_UINT32, src_treg,
                             IARG_END);
@@ -1726,11 +1595,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -1744,11 +1608,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, dst_treg,
                             IARG_UINT32, src_treg,
                             IARG_END);
@@ -1758,11 +1617,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -1776,12 +1630,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
                         IARG_END);
@@ -1790,11 +1638,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -1808,22 +1651,12 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -1837,11 +1670,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -1855,11 +1683,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
                         IARG_END);
@@ -1868,11 +1691,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -1885,11 +1703,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
                         AFUNPTR(taint_qwreg2qwreg),
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
 #endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
@@ -1909,11 +1722,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -1927,11 +1735,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
-#endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
                                                 IARG_END);
@@ -1940,11 +1743,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -1958,11 +1756,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
-#endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
                                                 IARG_END);
@@ -1971,11 +1764,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -1989,11 +1777,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
-#endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
                                                 IARG_END);
@@ -2002,11 +1785,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -2019,11 +1797,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
                                                 AFUNPTR(taintx_lbreg2qwreg),
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
 #endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
@@ -2039,11 +1812,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -2057,11 +1825,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
-#endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
                                                 IARG_END);
@@ -2070,11 +1833,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -2088,11 +1846,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
-#endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
                                                 IARG_END);
@@ -2101,11 +1854,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -2119,11 +1867,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
-#endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
                                                 IARG_END);
@@ -2132,11 +1875,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -2149,11 +1887,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
                                                 AFUNPTR(taintx_ubreg2qwreg),
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
 #endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
@@ -2173,11 +1906,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -2191,11 +1919,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
                                     IARG_END);
@@ -2204,11 +1927,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -2222,11 +1940,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
                                     IARG_END);
@@ -2235,11 +1948,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -2252,11 +1960,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
                                     AFUNPTR(taintx_hwreg2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
@@ -2273,11 +1976,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -2291,11 +1989,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
                                     IARG_END);
@@ -2304,11 +1997,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -2322,22 +2010,12 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
                                     IARG_END);
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -2358,11 +2036,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -2375,11 +2048,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
                                     AFUNPTR(taintx_dwreg2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
@@ -2406,11 +2074,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -2424,11 +2087,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
-#endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
                                                 IARG_END);
@@ -2437,11 +2095,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -2455,11 +2108,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
-#endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
                                                 IARG_END);
@@ -2468,11 +2116,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -2486,11 +2129,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
-#endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
                                                 IARG_END);
@@ -2499,11 +2137,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -2516,11 +2149,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
                                                 AFUNPTR(taint_lbreg2qwreg),
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
 #endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
@@ -2536,11 +2164,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -2554,11 +2177,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
-#endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
                                                 IARG_END);
@@ -2567,11 +2185,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -2585,11 +2198,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
-#endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
                                                 IARG_END);
@@ -2598,11 +2206,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -2616,11 +2219,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
-#endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
                                                 IARG_END);
@@ -2629,11 +2227,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -2646,11 +2239,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
                                                 AFUNPTR(taint_ubreg2qwreg),
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
 #endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
@@ -2670,11 +2258,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -2688,11 +2271,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
                                     IARG_END);
@@ -2701,11 +2279,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -2719,11 +2292,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
                                     IARG_END);
@@ -2732,11 +2300,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -2749,11 +2312,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
                                     AFUNPTR(taint_hwreg2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
@@ -2770,11 +2328,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -2788,11 +2341,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
                                     IARG_END);
@@ -2801,11 +2349,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -2818,11 +2361,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
                                     AFUNPTR(taint_wreg2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
@@ -2839,11 +2377,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -2856,11 +2389,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
                                     AFUNPTR(taint_dwreg2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
@@ -2887,11 +2415,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -2905,11 +2428,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
                         IARG_END);
@@ -2919,11 +2437,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -2937,11 +2450,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
                         IARG_END);
@@ -2951,11 +2459,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -2969,11 +2472,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
                         IARG_END);
@@ -2983,11 +2481,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -3001,11 +2494,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
                         IARG_END);
@@ -3015,11 +2503,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -3032,11 +2515,6 @@ void instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
                         AFUNPTR(taint_qwreg2qwreg),
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
 #endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
@@ -3057,9 +2535,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
     UINT32 regsize = REG_Size(reg);
     UINT32 memsize = INS_MemoryWriteSize(ins);
 
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
     if (regsize == memsize) {
         switch(regsize) {
             case 1:
@@ -3067,11 +2542,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -3085,22 +2555,12 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_MEMORYWRITE_EA,
                             IARG_UINT32, treg,
                             IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -3113,11 +2573,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -3131,11 +2586,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_MEMORYWRITE_EA,
                             IARG_UINT32, treg,
                             IARG_END);
@@ -3148,11 +2598,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -3166,22 +2611,12 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYWRITE_EA,
                         IARG_UINT32, treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -3195,11 +2630,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -3213,22 +2643,12 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYWRITE_EA,
                         IARG_UINT32, treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -3242,11 +2662,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -3260,22 +2675,12 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYWRITE_EA,
                         IARG_UINT32, treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -3294,11 +2699,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -3313,22 +2713,12 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYWRITE_EA,
                         IARG_UINT32, treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -3354,11 +2744,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -3372,11 +2757,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYWRITE_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -3385,11 +2765,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -3403,11 +2778,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -3416,11 +2786,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -3434,11 +2799,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYWRITE_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -3447,11 +2807,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -3464,11 +2819,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
                                     AFUNPTR(taintx_lbreg2qwmem),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_MEMORYWRITE_EA,
                                     IARG_UINT32, treg,
@@ -3485,11 +2835,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -3503,11 +2848,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYWRITE_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -3516,11 +2856,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -3534,11 +2869,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYWRITE_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -3547,11 +2877,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -3565,11 +2890,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYWRITE_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -3578,11 +2898,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -3595,11 +2910,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
                                     AFUNPTR(taintx_ubreg2qwmem),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_MEMORYWRITE_EA,
                                     IARG_UINT32, treg,
@@ -3621,11 +2931,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -3639,11 +2944,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -3652,11 +2952,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -3670,11 +2965,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -3683,11 +2973,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -3700,11 +2985,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
                                 AFUNPTR(taintx_hwreg2qwmem),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
@@ -3722,11 +3002,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -3740,11 +3015,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -3753,11 +3023,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -3770,11 +3035,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
                                 AFUNPTR(taintx_wreg2qwmem),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
@@ -3792,11 +3052,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -3809,11 +3064,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
                                 AFUNPTR(taintx_dwreg2qwmem),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
@@ -3843,11 +3093,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -3861,11 +3106,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -3874,11 +3114,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -3892,11 +3127,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -3905,11 +3135,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -3923,11 +3148,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -3936,11 +3156,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -3953,11 +3168,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
                                 AFUNPTR(taint_lbreg2qwmem),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
@@ -3974,11 +3184,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -3992,11 +3197,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -4005,11 +3205,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -4023,11 +3218,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -4036,11 +3226,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -4054,11 +3239,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -4067,11 +3247,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -4084,11 +3259,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
                                 AFUNPTR(taint_ubreg2qwmem),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
@@ -4110,11 +3280,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -4128,11 +3293,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -4141,11 +3301,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -4159,11 +3314,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -4172,11 +3322,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -4189,11 +3334,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
                                 AFUNPTR(taint_hwreg2qwmem),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
@@ -4211,11 +3351,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -4229,11 +3364,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -4242,11 +3372,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -4259,11 +3384,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
                                 AFUNPTR(taint_wreg2qwmem),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
@@ -4281,11 +3401,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -4298,11 +3413,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
                                 AFUNPTR(taint_dwreg2qwmem),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
@@ -4332,11 +3442,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -4350,22 +3455,12 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYWRITE_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -4379,11 +3474,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -4397,11 +3487,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYWRITE_EA,
                         IARG_UINT32, treg,
                         IARG_END);
@@ -4410,11 +3495,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -4428,22 +3508,12 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYWRITE_EA,
                         IARG_UINT32, treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -4457,11 +3527,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -4474,11 +3539,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
                                     AFUNPTR(taint_dwreg2mem),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_MEMORYWRITE_EA,
                                     IARG_UINT32, treg,
@@ -4499,10 +3559,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
     UINT32 regsize = REG_Size(dstreg);
     UINT32 memsize = INS_MemoryWriteSize(ins);
 
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
-    
     if (regsize == memsize) {
         switch(regsize) {
             case 1:
@@ -4510,11 +3566,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH                            
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -4528,22 +3579,12 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH                            
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_MEMORYREAD_EA,
                             IARG_UINT32, treg,
                             IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH                            
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -4556,11 +3597,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH                            
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -4574,22 +3610,12 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH                            
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_MEMORYREAD_EA,
                             IARG_UINT32, treg,
                             IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH                            
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -4606,11 +3632,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH                            
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -4624,22 +3645,12 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH                            
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH                            
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -4653,11 +3664,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH                            
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -4671,22 +3677,12 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH                            
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH                            
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -4700,11 +3696,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH                            
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -4718,22 +3709,12 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH                            
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH                            
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -4747,11 +3728,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH                            
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -4765,22 +3741,12 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH                            
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH                            
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -4804,11 +3770,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -4822,11 +3783,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -4835,11 +3791,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -4853,22 +3804,12 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -4882,11 +3823,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -4900,11 +3836,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -4913,11 +3844,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -4930,11 +3856,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
                                     AFUNPTR(taintx_bmem2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
@@ -4951,11 +3872,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -4969,11 +3885,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -4982,11 +3893,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -5000,11 +3906,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -5013,11 +3914,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -5030,11 +3926,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
                                     AFUNPTR(taintx_hwmem2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
@@ -5051,11 +3942,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -5069,11 +3955,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -5082,11 +3963,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -5099,11 +3975,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
                                     AFUNPTR(taintx_wmem2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
@@ -5120,11 +3991,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -5137,11 +4003,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
                                     AFUNPTR(taintx_dwmem2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
@@ -5167,11 +4028,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -5185,11 +4041,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -5198,11 +4049,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -5216,11 +4062,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -5229,11 +4070,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -5247,11 +4083,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -5260,11 +4091,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -5277,11 +4103,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
                                     AFUNPTR(taint_bmem2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
@@ -5298,11 +4119,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -5316,11 +4132,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -5329,11 +4140,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -5347,11 +4153,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -5360,11 +4161,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -5377,11 +4173,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
                                     AFUNPTR(taint_hwmem2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
@@ -5398,11 +4189,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -5416,11 +4202,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -5429,11 +4210,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -5446,11 +4222,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
                                     AFUNPTR(taint_wmem2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
@@ -5467,11 +4238,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -5484,11 +4250,6 @@ void instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
                                     AFUNPTR(taint_dwmem2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH                            
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
@@ -5518,19 +4279,11 @@ void instrument_taint_mem2mem(INS ins, int extend)
 
     assert(dst_memsize == src_memsize);
 
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
     switch (dst_memsize) {
         case 1:
 #ifdef TRACE_TAINT_OPS
             INS_InsertCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, trace_taint_outfd,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
@@ -5544,22 +4297,12 @@ void instrument_taint_mem2mem(INS ins, int extend)
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_MEMORYREAD_EA,
                     IARG_MEMORYWRITE_EA,
                     IARG_END);
 #ifdef TRACE_TAINT_OPS
             INS_InsertCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, trace_taint_outfd,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
@@ -5573,11 +4316,6 @@ void instrument_taint_mem2mem(INS ins, int extend)
 #ifdef TRACE_TAINT_OPS
             INS_InsertCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, trace_taint_outfd,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
@@ -5591,22 +4329,12 @@ void instrument_taint_mem2mem(INS ins, int extend)
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_MEMORYREAD_EA,
                     IARG_MEMORYWRITE_EA,
                     IARG_END);
 #ifdef TRACE_TAINT_OPS
             INS_InsertCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, trace_taint_outfd,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
@@ -5620,11 +4348,6 @@ void instrument_taint_mem2mem(INS ins, int extend)
 #ifdef TRACE_TAINT_OPS
             INS_InsertCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, trace_taint_outfd,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
@@ -5638,22 +4361,12 @@ void instrument_taint_mem2mem(INS ins, int extend)
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_MEMORYREAD_EA,
                     IARG_MEMORYWRITE_EA,
                     IARG_END);
 #ifdef TRACE_TAINT_OPS
             INS_InsertCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, trace_taint_outfd,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
@@ -5667,11 +4380,6 @@ void instrument_taint_mem2mem(INS ins, int extend)
 #ifdef TRACE_TAINT_OPS
             INS_InsertCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, trace_taint_outfd,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
@@ -5685,22 +4393,12 @@ void instrument_taint_mem2mem(INS ins, int extend)
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_MEMORYREAD_EA,
                     IARG_MEMORYWRITE_EA,
                     IARG_END);
 #ifdef TRACE_TAINT_OPS
             INS_InsertCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, trace_taint_outfd,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
@@ -5714,11 +4412,6 @@ void instrument_taint_mem2mem(INS ins, int extend)
 #ifdef TRACE_TAINT_OPS
             INS_InsertCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, trace_taint_outfd,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
@@ -5732,22 +4425,12 @@ void instrument_taint_mem2mem(INS ins, int extend)
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_MEMORYREAD_EA,
                     IARG_MEMORYWRITE_EA,
                     IARG_END);
 #ifdef TRACE_TAINT_OPS
             INS_InsertCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, trace_taint_outfd,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
@@ -5780,10 +4463,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
     dst_regsize = REG_Size(dstreg);
     src_regsize = REG_Size(srcreg);
 
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
-
     if (dst_regsize == src_regsize) {
         switch(dst_regsize) {
             case 1:
@@ -5791,11 +4470,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -5809,22 +4483,12 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, dst_treg,
                             IARG_UINT32, src_treg,
                             IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -5837,11 +4501,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -5855,22 +4514,12 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, dst_treg,
                             IARG_UINT32, src_treg,
                             IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -5883,11 +4532,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -5901,22 +4545,12 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, dst_treg,
                             IARG_UINT32, src_treg,
                             IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -5929,11 +4563,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -5947,22 +4576,12 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, dst_treg,
                             IARG_UINT32, src_treg,
                             IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -5977,11 +4596,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -5995,22 +4609,12 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -6024,11 +4628,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -6042,22 +4641,12 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -6071,11 +4660,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -6089,22 +4673,12 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -6118,11 +4692,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -6136,22 +4705,12 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -6174,11 +4733,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -6192,11 +4746,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
                                     IARG_END);
@@ -6204,11 +4753,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -6223,11 +4767,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
                                     IARG_END);
@@ -6238,11 +4777,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
                                     IARG_END);
@@ -6252,11 +4786,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
                                     AFUNPTR(taint_add_lbreg2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
@@ -6274,11 +4803,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
                                     IARG_END);
@@ -6288,11 +4812,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
                                     AFUNPTR(taint_add_ubreg2wreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
@@ -6304,11 +4823,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
                                     IARG_END);
@@ -6318,11 +4832,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
                                     AFUNPTR(taint_add_ubreg2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
@@ -6344,11 +4853,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, dst_treg,
                                 IARG_UINT32, src_treg,
                                 IARG_END);
@@ -6359,11 +4863,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, dst_treg,
                                 IARG_UINT32, src_treg,
                                 IARG_END);
@@ -6373,11 +4872,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
                                 AFUNPTR(taint_add_hwreg2qwreg),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_UINT32, dst_treg,
                                 IARG_UINT32, src_treg,
@@ -6396,11 +4890,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, dst_treg,
                                 IARG_UINT32, src_treg,
                                 IARG_END);
@@ -6410,11 +4899,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
                                 AFUNPTR(taint_add_wreg2qwreg),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_UINT32, dst_treg,
                                 IARG_UINT32, src_treg,
@@ -6434,11 +4918,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
                                 AFUNPTR(taint_add_dwreg2qwreg),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_UINT32, dst_treg,
                                 IARG_UINT32, src_treg,
@@ -6463,11 +4942,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
                         IARG_END);
@@ -6477,11 +4951,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
                         AFUNPTR(taint_add_hwreg2hwreg),
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
 #endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
@@ -6493,11 +4962,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
                         IARG_END);
@@ -6507,11 +4971,6 @@ void instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
                         AFUNPTR(taint_add_dwreg2dwreg),
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
 #endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
@@ -6536,9 +4995,6 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
     UINT32 memsize;
     IARG_TYPE mem_ea;
 
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
     if (INS_IsMemoryRead(ins)) {
         mem_ea = IARG_MEMORYREAD_EA;
         memsize = INS_MemoryReadSize(ins);
@@ -6556,11 +5012,6 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -6574,22 +5025,12 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             mem_ea,
                             IARG_UINT32, treg,
                             IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -6602,11 +5043,6 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -6620,22 +5056,12 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             mem_ea,
                             IARG_UINT32, treg,
                             IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -6653,11 +5079,6 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -6671,22 +5092,12 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         mem_ea,
                         IARG_UINT32, treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -6700,11 +5111,6 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -6718,22 +5124,12 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         mem_ea,
                         IARG_UINT32, treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -6747,11 +5143,6 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -6765,22 +5156,12 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         mem_ea,
                         IARG_UINT32, treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -6794,11 +5175,6 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -6812,22 +5188,12 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         mem_ea,
                         IARG_UINT32, treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -6850,11 +5216,6 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -6868,22 +5229,12 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     mem_ea,
                                     IARG_UINT32, treg,
                                     IARG_END);
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -6897,11 +5248,6 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -6915,11 +5261,6 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     mem_ea,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -6927,11 +5268,6 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -6944,11 +5280,6 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -6962,22 +5293,12 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     mem_ea,
                                     IARG_UINT32, treg,
                                     IARG_END);
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -6993,22 +5314,12 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     mem_ea,
                                     IARG_UINT32, treg,
                                     IARG_END);
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -7028,11 +5339,6 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -7046,22 +5352,12 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     mem_ea,
                                     IARG_UINT32, treg,
                                     IARG_END);
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -7075,11 +5371,6 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -7093,22 +5384,12 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     mem_ea,
                                     IARG_UINT32, treg,
                                     IARG_END);
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -7122,11 +5403,6 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -7140,22 +5416,12 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     mem_ea,
                                     IARG_UINT32, treg,
                                     IARG_END);
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -7169,11 +5435,6 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -7187,22 +5448,12 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     mem_ea,
                                     IARG_UINT32, treg,
                                     IARG_END);
 #ifdef TRACE_TAINT_OPS
                             INS_InsertCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -7227,11 +5478,6 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -7245,22 +5491,12 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 mem_ea,
                                 IARG_UINT32, treg,
                                 IARG_END);
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -7274,11 +5510,6 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -7292,22 +5523,12 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 mem_ea,
                                 IARG_UINT32, treg,
                                 IARG_END);
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -7321,11 +5542,6 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -7339,22 +5555,12 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 mem_ea,
                                 IARG_UINT32, treg,
                                 IARG_END);
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -7376,11 +5582,6 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -7394,22 +5595,12 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 mem_ea,
                                 IARG_UINT32, treg,
                                 IARG_END);
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -7423,11 +5614,6 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -7441,22 +5627,12 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 mem_ea,
                                 IARG_UINT32, treg,
                                 IARG_END);
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -7478,11 +5654,6 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -7496,22 +5667,12 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 mem_ea,
                                 IARG_UINT32, treg,
                                 IARG_END);
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -7544,11 +5705,6 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         mem_ea,
                         IARG_UINT32, treg,
                         IARG_END);
@@ -7558,11 +5714,6 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
                         AFUNPTR(taint_add_hwreg2mem),
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
 #endif
                         mem_ea,
                         IARG_UINT32, treg,
@@ -7574,11 +5725,6 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         mem_ea,
                         IARG_UINT32, treg,
                         IARG_END);
@@ -7588,11 +5734,6 @@ void instrument_taint_add_reg2mem(INS ins, REG srcreg)
                         AFUNPTR(taint_add_dwreg2mem),
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
 #endif
                         mem_ea,
                         IARG_UINT32, treg,
@@ -7613,9 +5754,6 @@ void instrument_taint_add_mem2reg(INS ins, REG dstreg)
     UINT32 regsize = REG_Size(dstreg);
     UINT32 memsize = INS_MemoryWriteSize(ins);
 
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
     if (regsize == memsize) {
         switch(regsize) {
             case 1:
@@ -7623,11 +5761,6 @@ void instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -7641,11 +5774,6 @@ void instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_MEMORYREAD_EA,
                             IARG_UINT32, treg,
                             IARG_END);
@@ -7653,11 +5781,6 @@ void instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -7671,11 +5794,6 @@ void instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_MEMORYREAD_EA,
                             IARG_UINT32, treg,
                             IARG_END);
@@ -7687,11 +5805,6 @@ void instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -7705,11 +5818,6 @@ void instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, treg,
                         IARG_END);
@@ -7718,11 +5826,6 @@ void instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -7736,11 +5839,6 @@ void instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, treg,
                         IARG_END);
@@ -7749,11 +5847,6 @@ void instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -7767,11 +5860,6 @@ void instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, treg,
                         IARG_END);
@@ -7780,11 +5868,6 @@ void instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -7797,11 +5880,6 @@ void instrument_taint_add_mem2reg(INS ins, REG dstreg)
                         AFUNPTR(taint_add_qwmem2qwreg),
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
 #endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, treg,
@@ -7822,11 +5900,6 @@ void instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -7835,11 +5908,6 @@ void instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -7853,22 +5921,12 @@ void instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -7884,11 +5942,6 @@ void instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -7898,11 +5951,6 @@ void instrument_taint_add_mem2reg(INS ins, REG dstreg)
                                 AFUNPTR(taint_add_bmem2qwreg),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, treg,
@@ -7921,11 +5969,6 @@ void instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -7936,11 +5979,6 @@ void instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -7950,11 +5988,6 @@ void instrument_taint_add_mem2reg(INS ins, REG dstreg)
                                 AFUNPTR(taint_add_hwmem2qwreg),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, treg,
@@ -7973,11 +6006,6 @@ void instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -7987,11 +6015,6 @@ void instrument_taint_add_mem2reg(INS ins, REG dstreg)
                                 AFUNPTR(taint_add_wmem2qwreg),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, treg,
@@ -8009,11 +6032,6 @@ void instrument_taint_add_mem2reg(INS ins, REG dstreg)
                                 AFUNPTR(taint_add_dwmem2qwreg),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, treg,
@@ -8043,21 +6061,12 @@ void instrument_taint_add_mem2mem(INS ins)
 
     assert(dst_memsize == src_memsize);
 
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
-
     switch (dst_memsize) {
         case 1:
             INS_InsertCall(ins, IPOINT_BEFORE,
                     AFUNPTR(taint_add_mem2mem_b),
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
 #endif
                     IARG_MEMORYREAD_EA,
                     IARG_MEMORYWRITE_EA,
@@ -8069,11 +6078,6 @@ void instrument_taint_add_mem2mem(INS ins)
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_MEMORYREAD_EA,
                     IARG_MEMORYWRITE_EA,
                     IARG_END);
@@ -8083,11 +6087,6 @@ void instrument_taint_add_mem2mem(INS ins)
                     AFUNPTR(taint_add_mem2mem_w),
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
 #endif
                     IARG_MEMORYREAD_EA,
                     IARG_MEMORYWRITE_EA,
@@ -8099,11 +6098,6 @@ void instrument_taint_add_mem2mem(INS ins)
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_MEMORYREAD_EA,
                     IARG_MEMORYWRITE_EA,
                     IARG_END);
@@ -8113,11 +6107,6 @@ void instrument_taint_add_mem2mem(INS ins)
                     AFUNPTR(taint_add_mem2mem_qw),
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
 #endif
                     IARG_MEMORYREAD_EA,
                     IARG_MEMORYWRITE_EA,
@@ -8145,10 +6134,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
     dst_regsize = REG_Size(dstreg);
     src_regsize = REG_Size(srcreg);
 
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
-
     if (dst_regsize == src_regsize) {
         switch(dst_regsize) {
             case 1:
@@ -8156,11 +6141,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -8174,11 +6154,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, dst_treg,
                             IARG_UINT32, src_treg,
                             IARG_END);
@@ -8186,11 +6161,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -8204,11 +6174,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, dst_treg,
                             IARG_UINT32, src_treg,
                             IARG_END);
@@ -8216,11 +6181,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -8234,11 +6194,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, dst_treg,
                             IARG_UINT32, src_treg,
                             IARG_END);
@@ -8246,11 +6201,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -8264,11 +6214,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, dst_treg,
                             IARG_UINT32, src_treg,
                             IARG_END);
@@ -8278,11 +6223,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -8296,11 +6236,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
                         IARG_END);
@@ -8309,11 +6244,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -8327,22 +6257,12 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -8356,11 +6276,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -8374,11 +6289,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
                         IARG_END);
@@ -8387,11 +6297,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -8404,11 +6309,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
                         AFUNPTR(taint_qwreg2qwreg),
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
 #endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
@@ -8428,11 +6328,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -8446,11 +6341,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
-#endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
                                                 IARG_END);
@@ -8459,11 +6349,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -8477,11 +6362,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
-#endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
                                                 IARG_END);
@@ -8490,11 +6370,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -8508,11 +6383,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
-#endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
                                                 IARG_END);
@@ -8521,11 +6391,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -8538,11 +6403,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
                                                 AFUNPTR(taintx_lbreg2qwreg),
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
 #endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
@@ -8558,11 +6418,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -8576,11 +6431,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
-#endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
                                                 IARG_END);
@@ -8589,11 +6439,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -8607,11 +6452,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
-#endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
                                                 IARG_END);
@@ -8620,11 +6460,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -8638,11 +6473,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
-#endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
                                                 IARG_END);
@@ -8651,11 +6481,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -8668,11 +6493,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
                                                 AFUNPTR(taintx_ubreg2qwreg),
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
 #endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
@@ -8692,11 +6512,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -8710,11 +6525,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
                                     IARG_END);
@@ -8723,11 +6533,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -8741,11 +6546,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
                                     IARG_END);
@@ -8754,11 +6554,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -8771,11 +6566,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
                                     AFUNPTR(taintx_hwreg2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
@@ -8792,11 +6582,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -8810,11 +6595,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
                                     IARG_END);
@@ -8823,11 +6603,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -8841,22 +6616,12 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
                                     IARG_END);
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -8877,11 +6642,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -8894,11 +6654,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
                                     AFUNPTR(taintx_dwreg2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
@@ -8925,11 +6680,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -8943,11 +6693,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
-#endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
                                                 IARG_END);
@@ -8956,11 +6701,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -8974,11 +6714,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
-#endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
                                                 IARG_END);
@@ -8987,11 +6722,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -9005,11 +6735,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
-#endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
                                                 IARG_END);
@@ -9018,11 +6743,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -9035,11 +6755,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
                                                 AFUNPTR(taint_lbreg2qwreg),
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
 #endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
@@ -9055,11 +6770,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -9073,11 +6783,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
-#endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
                                                 IARG_END);
@@ -9086,11 +6791,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -9104,11 +6804,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
-#endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
                                                 IARG_END);
@@ -9117,11 +6812,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -9135,11 +6825,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
-#endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
                                                 IARG_END);
@@ -9148,11 +6833,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_UINT32, trace_taint_outfd,
                                         IARG_THREAD_ID,
                                         IARG_INST_PTR,
@@ -9165,11 +6845,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
                                                 AFUNPTR(taint_ubreg2qwreg),
 #ifdef FAST_INLINE
                                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                                IARG_REG_VALUE, tls_reg,
-#else
-                                                IARG_ADDRINT, (void*) tdata,
 #endif
                                                 IARG_UINT32, dst_treg,
                                                 IARG_UINT32, src_treg,
@@ -9189,11 +6864,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -9207,11 +6877,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
                                     IARG_END);
@@ -9220,11 +6885,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -9238,11 +6898,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
                                     IARG_END);
@@ -9251,11 +6906,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -9268,11 +6918,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
                                     AFUNPTR(taint_hwreg2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
@@ -9289,11 +6934,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -9307,11 +6947,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
                                     IARG_END);
@@ -9320,11 +6955,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -9337,11 +6967,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
                                     AFUNPTR(taint_wreg2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
@@ -9358,11 +6983,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -9375,11 +6995,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
                                     AFUNPTR(taint_dwreg2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
@@ -9406,11 +7021,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -9424,11 +7034,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
                         IARG_END);
@@ -9438,11 +7043,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -9456,11 +7056,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
                         IARG_END);
@@ -9470,11 +7065,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -9488,11 +7078,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
                         IARG_END);
@@ -9502,11 +7087,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -9520,11 +7100,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
                         IARG_END);
@@ -9534,11 +7109,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -9551,11 +7121,6 @@ void pred_instrument_taint_reg2reg(INS ins, REG dstreg, REG srcreg, int extend)
                         AFUNPTR(taint_qwreg2qwreg),
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
 #endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
@@ -9576,10 +7141,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
     UINT32 regsize = REG_Size(reg);
     UINT32 memsize = INS_MemoryWriteSize(ins);
 
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
-
     if (regsize == memsize) {
         switch(regsize) {
             case 1:
@@ -9587,11 +7148,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -9605,22 +7161,12 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_MEMORYWRITE_EA,
                             IARG_UINT32, treg,
                             IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -9633,11 +7179,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -9651,11 +7192,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_MEMORYWRITE_EA,
                             IARG_UINT32, treg,
                             IARG_END);
@@ -9668,11 +7204,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -9686,22 +7217,12 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYWRITE_EA,
                         IARG_UINT32, treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -9715,11 +7236,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -9733,22 +7249,12 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYWRITE_EA,
                         IARG_UINT32, treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -9762,11 +7268,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -9780,22 +7281,12 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYWRITE_EA,
                         IARG_UINT32, treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -9814,11 +7305,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -9833,22 +7319,12 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYWRITE_EA,
                         IARG_UINT32, treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -9874,11 +7350,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -9892,11 +7363,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYWRITE_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -9905,11 +7371,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -9923,11 +7384,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -9936,11 +7392,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -9954,11 +7405,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYWRITE_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -9967,11 +7413,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -9984,11 +7425,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
                                     AFUNPTR(taintx_lbreg2qwmem),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_MEMORYWRITE_EA,
                                     IARG_UINT32, treg,
@@ -10005,11 +7441,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -10023,11 +7454,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYWRITE_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -10036,11 +7462,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -10054,11 +7475,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYWRITE_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -10067,11 +7483,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -10085,11 +7496,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYWRITE_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -10098,11 +7504,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -10115,11 +7516,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
                                     AFUNPTR(taintx_ubreg2qwmem),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_MEMORYWRITE_EA,
                                     IARG_UINT32, treg,
@@ -10141,11 +7537,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -10159,11 +7550,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -10172,11 +7558,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -10190,11 +7571,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -10203,11 +7579,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -10220,11 +7591,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
                                 AFUNPTR(taintx_hwreg2qwmem),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
@@ -10242,11 +7608,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -10260,11 +7621,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -10273,11 +7629,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -10290,11 +7641,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
                                 AFUNPTR(taintx_wreg2qwmem),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
@@ -10312,11 +7658,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -10329,11 +7670,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
                                 AFUNPTR(taintx_dwreg2qwmem),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
@@ -10363,11 +7699,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -10381,11 +7712,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -10394,11 +7720,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -10412,11 +7733,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -10425,11 +7741,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -10443,11 +7754,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -10456,11 +7762,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -10473,11 +7774,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
                                 AFUNPTR(taint_lbreg2qwmem),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
@@ -10494,11 +7790,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -10512,11 +7803,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -10525,11 +7811,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -10543,11 +7824,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -10556,11 +7832,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -10574,11 +7845,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -10587,11 +7853,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -10604,11 +7865,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
                                 AFUNPTR(taint_ubreg2qwmem),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
@@ -10630,11 +7886,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -10648,11 +7899,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -10661,11 +7907,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -10679,11 +7920,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -10692,11 +7928,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -10709,11 +7940,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
                                 AFUNPTR(taint_hwreg2qwmem),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
@@ -10731,11 +7957,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -10749,11 +7970,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -10762,11 +7978,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -10779,11 +7990,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
                                 AFUNPTR(taint_wreg2qwmem),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
@@ -10801,11 +8007,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -10818,11 +8019,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
                                 AFUNPTR(taint_dwreg2qwmem),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYWRITE_EA,
                                 IARG_UINT32, treg,
@@ -10852,11 +8048,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -10870,22 +8061,12 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYWRITE_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -10899,11 +8080,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -10917,11 +8093,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYWRITE_EA,
                         IARG_UINT32, treg,
                         IARG_END);
@@ -10930,11 +8101,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -10948,22 +8114,12 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYWRITE_EA,
                         IARG_UINT32, treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -10977,11 +8133,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -10994,11 +8145,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
                                     AFUNPTR(taint_dwreg2mem),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_MEMORYWRITE_EA,
                                     IARG_UINT32, treg,
@@ -11019,10 +8165,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
     UINT32 regsize = REG_Size(dstreg);
     UINT32 memsize = INS_MemoryWriteSize(ins);
 
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
-
     if (regsize == memsize) {
         switch(regsize) {
             case 1:
@@ -11030,11 +8172,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -11048,22 +8185,12 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_MEMORYREAD_EA,
                             IARG_UINT32, treg,
                             IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -11076,11 +8203,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -11094,22 +8216,12 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_MEMORYREAD_EA,
                             IARG_UINT32, treg,
                             IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -11126,11 +8238,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -11144,22 +8251,12 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -11173,11 +8270,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -11191,22 +8283,12 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -11220,11 +8302,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -11238,22 +8315,12 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -11267,11 +8334,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -11285,22 +8347,12 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -11324,11 +8376,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -11342,11 +8389,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -11355,11 +8397,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -11373,22 +8410,12 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -11402,11 +8429,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -11420,11 +8442,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -11433,11 +8450,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -11450,11 +8462,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
                                     AFUNPTR(taintx_bmem2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
@@ -11471,11 +8478,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -11489,11 +8491,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -11502,11 +8499,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -11520,11 +8512,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -11533,11 +8520,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -11550,11 +8532,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
                                     AFUNPTR(taintx_hwmem2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
@@ -11571,11 +8548,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -11589,11 +8561,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -11602,11 +8569,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -11619,11 +8581,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
                                     AFUNPTR(taintx_wmem2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
@@ -11640,11 +8597,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -11657,11 +8609,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
                                     AFUNPTR(taintx_dwmem2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
@@ -11687,11 +8634,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -11705,11 +8647,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -11718,11 +8655,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -11736,11 +8668,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -11749,11 +8676,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -11767,11 +8689,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -11780,11 +8697,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -11797,11 +8709,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
                                     AFUNPTR(taint_bmem2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
@@ -11818,11 +8725,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -11836,11 +8738,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -11849,11 +8746,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -11867,11 +8759,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -11880,11 +8767,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -11897,11 +8779,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
                                     AFUNPTR(taint_hwmem2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
@@ -11918,11 +8795,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -11936,11 +8808,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -11949,11 +8816,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -11966,11 +8828,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
                                     AFUNPTR(taint_wmem2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
@@ -11987,11 +8844,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -12004,11 +8856,6 @@ void pred_instrument_taint_mem2reg(INS ins, REG dstreg, int extend)
                                     AFUNPTR(taint_dwmem2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, treg,
@@ -12038,20 +8885,11 @@ void pred_instrument_taint_mem2mem(INS ins, int extend)
 
     assert(dst_memsize == src_memsize);
 
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
-
     switch (dst_memsize) {
         case 1:
 #ifdef TRACE_TAINT_OPS
             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, trace_taint_outfd,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
@@ -12065,22 +8903,12 @@ void pred_instrument_taint_mem2mem(INS ins, int extend)
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_MEMORYREAD_EA,
                     IARG_MEMORYWRITE_EA,
                     IARG_END);
 #ifdef TRACE_TAINT_OPS
             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, trace_taint_outfd,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
@@ -12094,11 +8922,6 @@ void pred_instrument_taint_mem2mem(INS ins, int extend)
 #ifdef TRACE_TAINT_OPS
             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, trace_taint_outfd,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
@@ -12112,22 +8935,12 @@ void pred_instrument_taint_mem2mem(INS ins, int extend)
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_MEMORYREAD_EA,
                     IARG_MEMORYWRITE_EA,
                     IARG_END);
 #ifdef TRACE_TAINT_OPS
             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, trace_taint_outfd,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
@@ -12141,11 +8954,6 @@ void pred_instrument_taint_mem2mem(INS ins, int extend)
 #ifdef TRACE_TAINT_OPS
             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, trace_taint_outfd,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
@@ -12159,22 +8967,12 @@ void pred_instrument_taint_mem2mem(INS ins, int extend)
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_MEMORYREAD_EA,
                     IARG_MEMORYWRITE_EA,
                     IARG_END);
 #ifdef TRACE_TAINT_OPS
             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, trace_taint_outfd,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
@@ -12188,11 +8986,6 @@ void pred_instrument_taint_mem2mem(INS ins, int extend)
 #ifdef TRACE_TAINT_OPS
             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, trace_taint_outfd,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
@@ -12206,22 +8999,12 @@ void pred_instrument_taint_mem2mem(INS ins, int extend)
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_MEMORYREAD_EA,
                     IARG_MEMORYWRITE_EA,
                     IARG_END);
 #ifdef TRACE_TAINT_OPS
             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, trace_taint_outfd,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
@@ -12235,11 +9018,6 @@ void pred_instrument_taint_mem2mem(INS ins, int extend)
 #ifdef TRACE_TAINT_OPS
             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, trace_taint_outfd,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
@@ -12253,22 +9031,12 @@ void pred_instrument_taint_mem2mem(INS ins, int extend)
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_MEMORYREAD_EA,
                     IARG_MEMORYWRITE_EA,
                     IARG_END);
 #ifdef TRACE_TAINT_OPS
             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, trace_taint_outfd,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
@@ -12301,10 +9069,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
     dst_regsize = REG_Size(dstreg);
     src_regsize = REG_Size(srcreg);
 
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
-
     if (dst_regsize == src_regsize) {
         switch(dst_regsize) {
             case 1:
@@ -12312,11 +9076,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -12330,22 +9089,12 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, dst_treg,
                             IARG_UINT32, src_treg,
                             IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -12358,11 +9107,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -12376,22 +9120,12 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, dst_treg,
                             IARG_UINT32, src_treg,
                             IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -12404,11 +9138,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -12422,22 +9151,12 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, dst_treg,
                             IARG_UINT32, src_treg,
                             IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -12450,11 +9169,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -12468,22 +9182,12 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, dst_treg,
                             IARG_UINT32, src_treg,
                             IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -12498,11 +9202,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -12516,22 +9215,12 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -12545,11 +9234,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -12563,22 +9247,12 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -12592,11 +9266,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -12610,22 +9279,12 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -12639,11 +9298,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -12657,22 +9311,12 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -12695,11 +9339,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -12713,11 +9352,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
                                     IARG_END);
@@ -12725,11 +9359,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -12744,11 +9373,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
                                     IARG_END);
@@ -12759,11 +9383,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
                                     IARG_END);
@@ -12773,11 +9392,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
                                     AFUNPTR(taint_add_lbreg2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
@@ -12795,11 +9409,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
                                     IARG_END);
@@ -12809,11 +9418,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
                                     AFUNPTR(taint_add_ubreg2wreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
@@ -12825,11 +9429,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
                                     IARG_END);
@@ -12839,11 +9438,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
                                     AFUNPTR(taint_add_ubreg2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_UINT32, dst_treg,
                                     IARG_UINT32, src_treg,
@@ -12865,11 +9459,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, dst_treg,
                                 IARG_UINT32, src_treg,
                                 IARG_END);
@@ -12880,11 +9469,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, dst_treg,
                                 IARG_UINT32, src_treg,
                                 IARG_END);
@@ -12894,11 +9478,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
                                 AFUNPTR(taint_add_hwreg2qwreg),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_UINT32, dst_treg,
                                 IARG_UINT32, src_treg,
@@ -12917,11 +9496,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, dst_treg,
                                 IARG_UINT32, src_treg,
                                 IARG_END);
@@ -12931,11 +9505,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
                                 AFUNPTR(taint_add_wreg2qwreg),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_UINT32, dst_treg,
                                 IARG_UINT32, src_treg,
@@ -12955,11 +9524,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
                                 AFUNPTR(taint_add_dwreg2qwreg),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_UINT32, dst_treg,
                                 IARG_UINT32, src_treg,
@@ -12984,11 +9548,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
                         IARG_END);
@@ -12998,11 +9557,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
                         AFUNPTR(taint_add_hwreg2hwreg),
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
 #endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
@@ -13014,11 +9568,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
                         IARG_END);
@@ -13028,11 +9577,6 @@ void pred_instrument_taint_add_reg2reg(INS ins, REG dstreg, REG srcreg)
                         AFUNPTR(taint_add_dwreg2dwreg),
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
 #endif
                         IARG_UINT32, dst_treg,
                         IARG_UINT32, src_treg,
@@ -13067,10 +9611,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
         assert(0);
     }
 
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
-
     if (regsize == memsize) {
         switch(regsize) {
             case 1:
@@ -13078,11 +9618,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -13096,22 +9631,12 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             mem_ea,
                             IARG_UINT32, treg,
                             IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -13124,11 +9649,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -13142,22 +9662,12 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             mem_ea,
                             IARG_UINT32, treg,
                             IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -13175,11 +9685,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -13193,22 +9698,12 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         mem_ea,
                         IARG_UINT32, treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -13222,11 +9717,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -13240,22 +9730,12 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         mem_ea,
                         IARG_UINT32, treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -13269,11 +9749,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -13287,22 +9762,12 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         mem_ea,
                         IARG_UINT32, treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -13316,11 +9781,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -13334,22 +9794,12 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         mem_ea,
                         IARG_UINT32, treg,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -13372,11 +9822,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -13390,22 +9835,12 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     mem_ea,
                                     IARG_UINT32, treg,
                                     IARG_END);
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -13419,11 +9854,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -13437,11 +9867,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     mem_ea,
                                     IARG_UINT32, treg,
                                     IARG_END);
@@ -13449,11 +9874,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -13466,11 +9886,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -13484,22 +9899,12 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     mem_ea,
                                     IARG_UINT32, treg,
                                     IARG_END);
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -13515,22 +9920,12 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     mem_ea,
                                     IARG_UINT32, treg,
                                     IARG_END);
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -13550,11 +9945,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -13568,22 +9958,12 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     mem_ea,
                                     IARG_UINT32, treg,
                                     IARG_END);
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -13597,11 +9977,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -13615,22 +9990,12 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     mem_ea,
                                     IARG_UINT32, treg,
                                     IARG_END);
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -13644,11 +10009,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -13662,22 +10022,12 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     mem_ea,
                                     IARG_UINT32, treg,
                                     IARG_END);
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -13691,11 +10041,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -13709,22 +10054,12 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     mem_ea,
                                     IARG_UINT32, treg,
                                     IARG_END);
 #ifdef TRACE_TAINT_OPS
                             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, trace_taint_outfd,
                                     IARG_THREAD_ID,
                                     IARG_INST_PTR,
@@ -13749,11 +10084,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -13767,22 +10097,12 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 mem_ea,
                                 IARG_UINT32, treg,
                                 IARG_END);
 #ifdef TRACE_TAINT_OPS
                         INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -13796,11 +10116,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -13814,22 +10129,12 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 mem_ea,
                                 IARG_UINT32, treg,
                                 IARG_END);
 #ifdef TRACE_TAINT_OPS
                         INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -13843,11 +10148,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -13861,22 +10161,12 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 mem_ea,
                                 IARG_UINT32, treg,
                                 IARG_END);
 #ifdef TRACE_TAINT_OPS
                         INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -13898,11 +10188,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -13913,11 +10198,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #endif
                         INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(taint_add_wreg2dwmem),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 mem_ea,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -13926,11 +10206,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
                             AFUNPTR(trace_taint_op_exit),
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
 #endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
@@ -13945,11 +10220,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -13963,22 +10233,12 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 mem_ea,
                                 IARG_UINT32, treg,
                                 IARG_END);
 #ifdef TRACE_TAINT_OPS
                         INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -14000,11 +10260,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -14018,22 +10273,12 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 mem_ea,
                                 IARG_UINT32, treg,
                                 IARG_END);
 #ifdef TRACE_TAINT_OPS
                         INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -14066,11 +10311,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         mem_ea,
                         IARG_UINT32, treg,
                         IARG_END);
@@ -14080,11 +10320,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
                         AFUNPTR(taint_add_hwreg2mem),
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
 #endif
                         mem_ea,
                         IARG_UINT32, treg,
@@ -14096,11 +10331,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         mem_ea,
                         IARG_UINT32, treg,
                         IARG_END);
@@ -14110,11 +10340,6 @@ void pred_instrument_taint_add_reg2mem(INS ins, REG srcreg)
                         AFUNPTR(taint_add_dwreg2mem),
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
 #endif
                         mem_ea,
                         IARG_UINT32, treg,
@@ -14135,10 +10360,6 @@ void pred_instrument_taint_add_mem2reg(INS ins, REG dstreg)
     UINT32 regsize = REG_Size(dstreg);
     UINT32 memsize = INS_MemoryWriteSize(ins);
 
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
-
     if (regsize == memsize) {
         switch(regsize) {
             case 1:
@@ -14146,11 +10367,6 @@ void pred_instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -14164,11 +10380,6 @@ void pred_instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_MEMORYREAD_EA,
                             IARG_UINT32, treg,
                             IARG_END);
@@ -14176,11 +10387,6 @@ void pred_instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -14194,11 +10400,6 @@ void pred_instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_MEMORYREAD_EA,
                             IARG_UINT32, treg,
                             IARG_END);
@@ -14210,11 +10411,6 @@ void pred_instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -14228,11 +10424,6 @@ void pred_instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, treg,
                         IARG_END);
@@ -14241,11 +10432,6 @@ void pred_instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -14259,11 +10445,6 @@ void pred_instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, treg,
                         IARG_END);
@@ -14272,11 +10453,6 @@ void pred_instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -14290,11 +10466,6 @@ void pred_instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, treg,
                         IARG_END);
@@ -14303,11 +10474,6 @@ void pred_instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -14320,11 +10486,6 @@ void pred_instrument_taint_add_mem2reg(INS ins, REG dstreg)
                         AFUNPTR(taint_add_qwmem2qwreg),
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
 #endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, treg,
@@ -14345,11 +10506,6 @@ void pred_instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -14358,11 +10514,6 @@ void pred_instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -14376,22 +10527,12 @@ void pred_instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
 #ifdef TRACE_TAINT_OPS
                         INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -14407,11 +10548,6 @@ void pred_instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -14421,11 +10557,6 @@ void pred_instrument_taint_add_mem2reg(INS ins, REG dstreg)
                                 AFUNPTR(taint_add_bmem2qwreg),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, treg,
@@ -14444,11 +10575,6 @@ void pred_instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -14459,11 +10585,6 @@ void pred_instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -14473,11 +10594,6 @@ void pred_instrument_taint_add_mem2reg(INS ins, REG dstreg)
                                 AFUNPTR(taint_add_hwmem2qwreg),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, treg,
@@ -14496,11 +10612,6 @@ void pred_instrument_taint_add_mem2reg(INS ins, REG dstreg)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -14510,11 +10621,6 @@ void pred_instrument_taint_add_mem2reg(INS ins, REG dstreg)
                                 AFUNPTR(taint_add_wmem2qwreg),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, treg,
@@ -14532,11 +10638,6 @@ void pred_instrument_taint_add_mem2reg(INS ins, REG dstreg)
                                 AFUNPTR(taint_add_dwmem2qwreg),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, treg,
@@ -14566,21 +10667,12 @@ void pred_instrument_taint_add_mem2mem(INS ins)
 
     assert(dst_memsize == src_memsize);
 
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
-
     switch (dst_memsize) {
         case 1:
             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                     AFUNPTR(taint_add_mem2mem_b),
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
 #endif
                     IARG_MEMORYREAD_EA,
                     IARG_MEMORYWRITE_EA,
@@ -14592,11 +10684,6 @@ void pred_instrument_taint_add_mem2mem(INS ins)
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_MEMORYREAD_EA,
                     IARG_MEMORYWRITE_EA,
                     IARG_END);
@@ -14606,11 +10693,6 @@ void pred_instrument_taint_add_mem2mem(INS ins)
                     AFUNPTR(taint_add_mem2mem_w),
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
 #endif
                     IARG_MEMORYREAD_EA,
                     IARG_MEMORYWRITE_EA,
@@ -14622,11 +10704,6 @@ void pred_instrument_taint_add_mem2mem(INS ins)
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_MEMORYREAD_EA,
                     IARG_MEMORYWRITE_EA,
                     IARG_END);
@@ -14636,11 +10713,6 @@ void pred_instrument_taint_add_mem2mem(INS ins)
                     AFUNPTR(taint_add_mem2mem_qw),
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
 #endif
                     IARG_MEMORYREAD_EA,
                     IARG_MEMORYWRITE_EA,
@@ -14655,20 +10727,12 @@ void pred_instrument_taint_add_mem2mem(INS ins)
 void instrument_taint_immval2mem(INS ins)
 {
     UINT32 addrsize = INS_MemoryWriteSize(ins);
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
     switch(addrsize) {
                 case 1:
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(taint_immvalb2mem),
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
 #endif
                             IARG_MEMORYWRITE_EA, IARG_END);
                     break;
@@ -14678,11 +10742,6 @@ void instrument_taint_immval2mem(INS ins)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_MEMORYWRITE_EA, IARG_END);
                     break;
                case 4:
@@ -14690,11 +10749,6 @@ void instrument_taint_immval2mem(INS ins)
                             AFUNPTR(taint_immvalw2mem),
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
 #endif
                             IARG_MEMORYWRITE_EA, IARG_END);
                     break;
@@ -14704,11 +10758,6 @@ void instrument_taint_immval2mem(INS ins)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_MEMORYWRITE_EA, IARG_END);
                     break;
                case 16:
@@ -14716,11 +10765,6 @@ void instrument_taint_immval2mem(INS ins)
                             AFUNPTR(taint_immvalqw2mem),
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
 #endif
                             IARG_MEMORYWRITE_EA, IARG_END);
                     break;
@@ -14734,20 +10778,12 @@ void instrument_taint_immval2mem(INS ins)
 void pred_instrument_taint_immval2mem(INS ins)
 {
     UINT32 addrsize = INS_MemoryWriteSize(ins);
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
     switch(addrsize) {
         case 1:
             INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                     AFUNPTR(taint_immvalb2mem),
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
 #endif
                     IARG_MEMORYWRITE_EA, IARG_END);
             break;
@@ -14757,11 +10793,6 @@ void pred_instrument_taint_immval2mem(INS ins)
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_MEMORYWRITE_EA, IARG_END);
             break;
         case 4:
@@ -14769,11 +10800,6 @@ void pred_instrument_taint_immval2mem(INS ins)
                     AFUNPTR(taint_immvalw2mem),
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
 #endif
                     IARG_MEMORYWRITE_EA, IARG_END);
             break;
@@ -14783,11 +10809,6 @@ void pred_instrument_taint_immval2mem(INS ins)
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_MEMORYWRITE_EA, IARG_END);
             break;
         case 16:
@@ -14795,11 +10816,6 @@ void pred_instrument_taint_immval2mem(INS ins)
                     AFUNPTR(taint_immvalqw2mem),
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
 #endif
                     IARG_MEMORYWRITE_EA, IARG_END);
             break;
@@ -14819,18 +10835,10 @@ void instrument_clear_dst(INS ins)
                 IARG_UINT32, addrsize,
                 IARG_END);
     } else if (INS_OperandIsReg(ins, 0)) {
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
         REG reg = INS_OperandReg(ins, 0);
         int treg = translate_reg((int)reg);
         INS_InsertCall(ins, IPOINT_BEFORE,
                 AFUNPTR(clear_reg),
-#ifdef USE_TLS_SCRATCH
-                IARG_REG_VALUE, tls_reg,
-#else
-                IARG_ADDRINT, (void*) tdata,
-#endif
                 IARG_UINT32, treg,
                 IARG_UINT32, REG_Size(reg),
                 IARG_END);
@@ -14839,17 +10847,9 @@ void instrument_clear_dst(INS ins)
 
 void instrument_clear_reg(INS ins, REG reg)
 {
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
     int treg = translate_reg((int)reg);
     INS_InsertCall(ins, IPOINT_BEFORE,
             AFUNPTR(clear_reg),
-#ifdef USE_TLS_SCRATCH
-            IARG_REG_VALUE, tls_reg,
-#else
-            IARG_ADDRINT, (void*) tdata,
-#endif
             IARG_UINT32, treg,
             IARG_UINT32, REG_Size(reg),
             IARG_END);
@@ -14865,95 +10865,82 @@ static inline ADDRINT computeEA(ADDRINT firstEA, UINT eflags,
     return firstEA;
 }
 
-void taint_whole_mem2mem(ADDRINT ptdata,
-                            ADDRINT src_mem_loc, ADDRINT dst_mem_loc,
-                            ADDRINT eflags, ADDRINT counts,
-                            UINT32 op_size)
+void taint_whole_mem2mem(ADDRINT src_mem_loc, ADDRINT dst_mem_loc,
+                         ADDRINT eflags, ADDRINT counts, UINT32 op_size)
 {
     int size = (int)(counts * op_size);
     if (!size) return;
     ADDRINT ea_src_mem_loc = computeEA(src_mem_loc, eflags, counts, op_size);
     ADDRINT ea_dst_mem_loc = computeEA(dst_mem_loc, eflags, counts, op_size);
 #ifdef TRACE_TAINT_OPS
-    trace_taint_op((void *) ptdata,
-                    trace_taint_outfd, 
-                    PIN_ThreadId(),
-                    0, // TODO fill ip in later
-                    TAINT_MEM2MEM,
-                    ea_dst_mem_loc,
-                    ea_src_mem_loc); 
+    trace_taint_op(trace_taint_outfd, 
+		   PIN_ThreadId(),
+		   0, // TODO fill ip in later
+		   TAINT_MEM2MEM,
+		   ea_dst_mem_loc,
+		   ea_src_mem_loc); 
 #endif
-    taint_mem2mem((void *) ptdata, ea_src_mem_loc, ea_dst_mem_loc, size);
+    taint_mem2mem(ea_src_mem_loc, ea_dst_mem_loc, size);
 }
 
-void taint_whole_lbreg2mem(ADDRINT ptdata,
-                            ADDRINT dst_mem_loc,
-                            REG reg,
-                            ADDRINT eflags,
-                            ADDRINT counts,
-                            UINT32 op_size)
+void taint_whole_lbreg2mem(ADDRINT dst_mem_loc,
+			   REG reg,
+			   ADDRINT eflags,
+			   ADDRINT counts,
+			   UINT32 op_size)
 {
     // int size = (int)(counts * op_size);
     ADDRINT effective_addr = computeEA(dst_mem_loc, eflags, counts, op_size);
 #ifdef TRACE_TAINT_OPS
-    trace_taint_op((void *) ptdata,
-                    trace_taint_outfd,
-                    PIN_ThreadId(),
-                    0, // TODO fill ip in later
-                    TAINT_REP_LBREG2MEM,
-                    effective_addr,
-                    (u_long) reg); 
+    trace_taint_op(trace_taint_outfd,
+		   PIN_ThreadId(),
+		   0, // TODO fill ip in later
+		   TAINT_REP_LBREG2MEM,
+		   effective_addr,
+		   (u_long) reg); 
 #endif
-    taint_rep_lbreg2mem((void *) ptdata, effective_addr, reg, counts);
+    taint_rep_lbreg2mem(effective_addr, reg, counts);
 }
 
-void taint_whole_hwreg2mem(ADDRINT ptdata,
-                            ADDRINT dst_mem_loc,
-                            REG reg,
-                            ADDRINT eflags,
-                            ADDRINT counts,
-                            UINT32 op_size)
+void taint_whole_hwreg2mem(ADDRINT dst_mem_loc,
+			   REG reg,
+			   ADDRINT eflags,
+			   ADDRINT counts,
+			   UINT32 op_size)
 {
     // int size = (int)(counts * op_size);
     ADDRINT effective_addr = computeEA(dst_mem_loc, eflags, counts, op_size);
 #ifdef TRACE_TAINT_OPS
-    trace_taint_op((void *) ptdata,
-                    trace_taint_outfd,
-                    PIN_ThreadId(),
-                    0, // TODO fill ip in later
-                    TAINT_REP_HWREG2MEM,
-                    effective_addr,
-                    (u_long) reg); 
+    trace_taint_op(trace_taint_outfd,
+		   PIN_ThreadId(),
+		   0, // TODO fill ip in later
+		   TAINT_REP_HWREG2MEM,
+		   effective_addr,
+		   (u_long) reg); 
 #endif
-    taint_rep_hwreg2mem((void *) ptdata, effective_addr, reg, counts);
+    taint_rep_hwreg2mem(effective_addr, reg, counts);
 }
 
-void taint_whole_wreg2mem(ADDRINT ptdata,
-                            ADDRINT dst_mem_loc,
-                            REG reg,
-                            ADDRINT eflags,
-                            ADDRINT counts,
-                            UINT32 op_size)
+void taint_whole_wreg2mem(ADDRINT dst_mem_loc,
+			  REG reg,
+			  ADDRINT eflags,
+			  ADDRINT counts,
+			  UINT32 op_size)
 {
-    // int size = (int)(counts * op_size);
     ADDRINT effective_addr = computeEA(dst_mem_loc, eflags, counts, op_size);
 #ifdef TRACE_TAINT_OPS
-    trace_taint_op((void *) ptdata,
-                    trace_taint_outfd,
-                    PIN_ThreadId(),
-                    0, // TODO fill ip in later
-                    TAINT_REP_WREG2MEM,
-                    effective_addr,
-                    (u_long) reg); 
+    trace_taint_op(trace_taint_outfd,
+		   PIN_ThreadId(),
+		   0, // TODO fill ip in later
+		   TAINT_REP_WREG2MEM,
+		   effective_addr,
+		   (u_long) reg); 
 #endif
-    taint_rep_wreg2mem((void *) ptdata, effective_addr, reg, counts);
+    taint_rep_wreg2mem(effective_addr, reg, counts);
 }
 
 void instrument_move_string(INS ins)
 {
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
     UINT32 opw = INS_OperandWidth(ins, 0);
     UINT32 size = opw / 8;
     if (INS_RepPrefix(ins)) {
@@ -14962,11 +10949,6 @@ void instrument_move_string(INS ins)
                 IARG_FIRST_REP_ITERATION,
                 IARG_END);
         INS_InsertThenCall (ins, IPOINT_BEFORE, (AFUNPTR)taint_whole_mem2mem,
-#ifdef USE_TLS_SCRATCH
-                IARG_REG_VALUE, tls_reg,
-#else
-                IARG_ADDRINT, (void*) tdata,
-#endif
                 IARG_MEMORYREAD_EA,
                 IARG_MEMORYWRITE_EA,
                 IARG_REG_VALUE, REG_EFLAGS,
@@ -14977,11 +10959,6 @@ void instrument_move_string(INS ins)
         assert(size == INS_MemoryOperandSize(ins, 0));
         if (size > 0) {
             INS_InsertCall (ins, IPOINT_BEFORE, (AFUNPTR)taint_whole_mem2mem,
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_MEMORYREAD_EA,
                     IARG_MEMORYWRITE_EA,
                     IARG_REG_VALUE, REG_EFLAGS,
@@ -14994,9 +10971,6 @@ void instrument_move_string(INS ins)
 
 void instrument_store_string(INS ins)
 {
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
     UINT32 opw = INS_OperandWidth(ins, 0);
     UINT32 size = opw / 8;
 
@@ -15012,11 +10986,6 @@ void instrument_store_string(INS ins)
             case 1:
                 INS_InsertThenCall (ins, IPOINT_BEFORE,
                         (AFUNPTR)taint_whole_lbreg2mem,
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYWRITE_EA,
                         IARG_UINT32, LEVEL_BASE::REG_EAX,
                         IARG_REG_VALUE, REG_EFLAGS,
@@ -15027,11 +10996,6 @@ void instrument_store_string(INS ins)
             case 2:
                 INS_InsertThenCall (ins, IPOINT_BEFORE,
                         (AFUNPTR)taint_whole_hwreg2mem,
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYWRITE_EA,
                         IARG_UINT32, LEVEL_BASE::REG_EAX,
                         IARG_REG_VALUE, REG_EFLAGS,
@@ -15042,11 +11006,6 @@ void instrument_store_string(INS ins)
             case 4:
                 INS_InsertThenCall (ins, IPOINT_BEFORE,
                         (AFUNPTR)taint_whole_wreg2mem,
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYWRITE_EA,
                         IARG_UINT32, LEVEL_BASE::REG_EAX,
                         IARG_REG_VALUE, REG_EFLAGS,
@@ -15068,11 +11027,6 @@ void instrument_store_string(INS ins)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYWRITE_EA,
                         IARG_UINT32, LEVEL_BASE::REG_EAX,
                         IARG_END);
@@ -15083,11 +11037,6 @@ void instrument_store_string(INS ins)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYWRITE_EA,
                         IARG_UINT32, LEVEL_BASE::REG_EAX,
                         IARG_END);
@@ -15097,11 +11046,6 @@ void instrument_store_string(INS ins)
                         (AFUNPTR)taint_wreg2mem,
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
 #endif
                         IARG_MEMORYWRITE_EA,
                         IARG_UINT32, LEVEL_BASE::REG_EAX,
@@ -15118,9 +11062,6 @@ void instrument_store_string(INS ins)
 
 void instrument_load_string(INS ins)
 {
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
     UINT32 opw = INS_OperandWidth(ins, 0);
     UINT32 size = opw / 8;
 
@@ -15142,11 +11083,6 @@ void instrument_load_string(INS ins)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -15160,11 +11096,6 @@ void instrument_load_string(INS ins)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, LEVEL_BASE::REG_EAX,
                         IARG_END);
@@ -15173,11 +11104,6 @@ void instrument_load_string(INS ins)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -15191,11 +11117,6 @@ void instrument_load_string(INS ins)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, LEVEL_BASE::REG_EAX,
                         IARG_END);
@@ -15204,11 +11125,6 @@ void instrument_load_string(INS ins)
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -15222,22 +11138,12 @@ void instrument_load_string(INS ins)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, LEVEL_BASE::REG_EAX,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, trace_taint_outfd,
                         IARG_THREAD_ID,
                         IARG_INST_PTR,
@@ -15263,11 +11169,6 @@ void instrument_load_string(INS ins)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, LEVEL_BASE::REG_EAX,
                         IARG_END);
@@ -15278,11 +11179,6 @@ void instrument_load_string(INS ins)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, LEVEL_BASE::REG_EAX,
                         IARG_END);
@@ -15292,11 +11188,6 @@ void instrument_load_string(INS ins)
                         (AFUNPTR)taint_mem2wreg,
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
 #endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, LEVEL_BASE::REG_EAX,
@@ -15312,9 +11203,6 @@ void instrument_load_string(INS ins)
 
 void instrument_xchg (INS ins)
 {
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
     int op1mem, op2mem, op1reg, op2reg;
     op1mem = INS_OperandIsMemory(ins, 0);
     op2mem = INS_OperandIsMemory(ins, 1);
@@ -15343,11 +11231,6 @@ void instrument_xchg (INS ins)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, treg1,
                         IARG_UINT32, treg2,
                         IARG_END);
@@ -15356,11 +11239,6 @@ void instrument_xchg (INS ins)
                         AFUNPTR(taint_xchg_lbreg2ubreg),
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
 #endif
                         IARG_UINT32, treg1,
                         IARG_UINT32, treg2,
@@ -15371,11 +11249,6 @@ void instrument_xchg (INS ins)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, treg1,
                         IARG_UINT32, treg2,
                         IARG_END);
@@ -15384,11 +11257,6 @@ void instrument_xchg (INS ins)
                         AFUNPTR(taint_xchg_ubreg2ubreg),
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
 #endif
                         IARG_UINT32, treg1,
                         IARG_UINT32, treg2,
@@ -15403,11 +11271,6 @@ void instrument_xchg (INS ins)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, treg1,
                         IARG_UINT32, treg2,
                         IARG_END);
@@ -15417,11 +11280,6 @@ void instrument_xchg (INS ins)
                         AFUNPTR(taint_xchg_wreg2wreg),
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
 #endif
                         IARG_UINT32, treg1,
                         IARG_UINT32, treg2,
@@ -15456,11 +11314,6 @@ void instrument_xchg (INS ins)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -15470,11 +11323,6 @@ void instrument_xchg (INS ins)
                                 AFUNPTR(taint_xchg_bmem2ubreg),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, treg,
@@ -15487,11 +11335,6 @@ void instrument_xchg (INS ins)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, treg,
                         IARG_END);
@@ -15502,11 +11345,6 @@ void instrument_xchg (INS ins)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, treg,
                         IARG_END);
@@ -15516,11 +11354,6 @@ void instrument_xchg (INS ins)
                         AFUNPTR(taint_xchg_dwmem2dwreg),
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
 #endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, treg,
@@ -15552,11 +11385,6 @@ void instrument_xchg (INS ins)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, treg,
                                 IARG_END);
@@ -15566,11 +11394,6 @@ void instrument_xchg (INS ins)
                                 AFUNPTR(taint_xchg_bmem2ubreg),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, treg,
@@ -15583,11 +11406,6 @@ void instrument_xchg (INS ins)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, treg,
                         IARG_END);
@@ -15598,11 +11416,6 @@ void instrument_xchg (INS ins)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, treg,
                         IARG_END);
@@ -15612,11 +11425,6 @@ void instrument_xchg (INS ins)
                         AFUNPTR(taint_xchg_dwmem2dwreg),
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
 #endif
                         IARG_MEMORYREAD_EA,
                         IARG_UINT32, treg,
@@ -15634,9 +11442,6 @@ void instrument_xchg (INS ins)
 
 void instrument_bswap (INS ins)
 {
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
     int treg;
     assert(INS_OperandIsReg(ins, 0));
     assert(REG_Size(INS_OperandReg(ins, 0)) == 4);
@@ -15644,11 +11449,6 @@ void instrument_bswap (INS ins)
     treg = translate_reg(INS_OperandReg(ins, 0));
     INS_InsertCall(ins, IPOINT_BEFORE,
             AFUNPTR(reverse_reg_taint),
-#ifdef USE_TLS_SCRATCH
-            IARG_REG_VALUE, tls_reg,
-#else
-            IARG_ADDRINT, (void*) tdata,
-#endif
             IARG_UINT32, treg,
             IARG_UINT32, 4,
             IARG_END);
@@ -15660,9 +11460,6 @@ void instrument_cmpxchg (INS ins)
 
 void instrument_mov (INS ins) 
 {
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
     int ismemread = 0, ismemwrite = 0;
     int immval = 0;
     REG reg = REG_INVALID();
@@ -15716,7 +11513,7 @@ void instrument_mov (INS ins)
         instrument_taint_mem2reg(ins, reg, 0);
 #else
  #ifndef LINKAGE_DATA_OFFSET
-        instrument_taint_mem2reg(ins, reg, 0);
+       instrument_taint_mem2reg(ins, reg, 0);
  #else
         REG dst_reg = INS_OperandReg(ins, 0);
         REG index_reg = INS_OperandMemoryIndexReg(ins, 1);
@@ -15791,11 +11588,6 @@ void instrument_mov (INS ins)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, treg, IARG_END);
                     break;
                case 2:
@@ -15803,11 +11595,6 @@ void instrument_mov (INS ins)
                             AFUNPTR(taint_immval2hwreg),
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
 #endif
                             IARG_UINT32, treg, IARG_END);
                     break;
@@ -15817,11 +11604,6 @@ void instrument_mov (INS ins)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, treg, IARG_END);
                     break;
                case 8:
@@ -15830,11 +11612,6 @@ void instrument_mov (INS ins)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, treg, IARG_END);
                     break;
                case 16:
@@ -15842,11 +11619,6 @@ void instrument_mov (INS ins)
                             AFUNPTR(taint_immval2qwreg),
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
 #endif
                             IARG_UINT32, treg, IARG_END);
                     break;
@@ -15979,9 +11751,6 @@ void instrument_movx (INS ins)
 
 void instrument_cmov(INS ins)
 {
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
     int ismemread = 0, ismemwrite = 0;
     int immval = 0;
     USIZE addrsize = 0;
@@ -16103,11 +11872,6 @@ void instrument_cmov(INS ins)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, treg, IARG_END);
                     break;
                case 2:
@@ -16115,11 +11879,6 @@ void instrument_cmov(INS ins)
                             AFUNPTR(taint_immval2hwreg),
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
 #endif
                             IARG_UINT32, treg, IARG_END);
                     break;
@@ -16129,11 +11888,6 @@ void instrument_cmov(INS ins)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, treg, IARG_END);
                     break;
                case 8:
@@ -16142,11 +11896,6 @@ void instrument_cmov(INS ins)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, treg, IARG_END);
                     break;
                case 16:
@@ -16154,11 +11903,6 @@ void instrument_cmov(INS ins)
                             AFUNPTR(taint_immval2qwreg),
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
 #endif
                             IARG_UINT32, treg, IARG_END);
                     break;
@@ -16181,11 +11925,6 @@ void instrument_cmov(INS ins)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, dst_treg,
                                 IARG_UINT32, src_treg,
                                 IARG_END);
@@ -16194,11 +11933,6 @@ void instrument_cmov(INS ins)
                                 AFUNPTR(taint_lbreg2ubreg),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_UINT32, dst_treg,
                                 IARG_UINT32, src_treg,
@@ -16209,11 +11943,6 @@ void instrument_cmov(INS ins)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, dst_treg,
                                 IARG_UINT32, src_treg,
                                 IARG_END);
@@ -16222,11 +11951,6 @@ void instrument_cmov(INS ins)
                                 AFUNPTR(taint_ubreg2ubreg),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_UINT32, dst_treg,
                                 IARG_UINT32, src_treg,
@@ -16241,11 +11965,6 @@ void instrument_cmov(INS ins)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, dst_treg,
                             IARG_UINT32, src_treg,
                             IARG_END);
@@ -16255,11 +11974,6 @@ void instrument_cmov(INS ins)
                             AFUNPTR(taint_wreg2wreg),
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
 #endif
                             IARG_UINT32, dst_treg,
                             IARG_UINT32, src_treg,
@@ -16271,11 +11985,6 @@ void instrument_cmov(INS ins)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, dst_treg,
                             IARG_UINT32, src_treg,
                             IARG_END);
@@ -16285,11 +11994,6 @@ void instrument_cmov(INS ins)
                             AFUNPTR(taint_qwreg2qwreg),
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
 #endif
                             IARG_UINT32, dst_treg,
                             IARG_UINT32, src_treg,
@@ -16343,9 +12047,6 @@ void instrument_shift(INS ins)
 
 void instrument_lea(INS ins)
 {
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
     REG dstreg = INS_OperandReg(ins, 0);
     REG base_reg = INS_OperandMemoryBaseReg(ins, 1);
     REG index_reg = INS_OperandMemoryIndexReg(ins, 1);
@@ -16362,11 +12063,6 @@ void instrument_lea(INS ins)
                         AFUNPTR(taint_wreg2wreg),
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
 #endif
                         IARG_UINT32, dstreg,
                         IARG_UINT32, index_reg,
@@ -16387,11 +12083,6 @@ void instrument_lea(INS ins)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_UINT32, dstreg,
                         IARG_END);
                 break;
@@ -16406,9 +12097,6 @@ void instrument_lea(INS ins)
 
 void instrument_push(INS ins)
 {
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
     USIZE addrsize = INS_MemoryWriteSize(ins);
     int src_reg = INS_OperandIsReg(ins, 0);
     int src_imm = INS_OperandIsImmediate(ins, 0);
@@ -16421,11 +12109,6 @@ void instrument_push(INS ins)
 #ifdef FAST_INLINE
                                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_MEMORYWRITE_EA,
                                         IARG_END);
                 break;
@@ -16435,11 +12118,6 @@ void instrument_push(INS ins)
 #ifdef FAST_INLINE
                                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
-#endif
                                         IARG_MEMORYWRITE_EA,
                                         IARG_END);
                 break;
@@ -16448,11 +12126,6 @@ void instrument_push(INS ins)
                                         AFUNPTR(taint_immvalw2mem),
 #ifdef FAST_INLINE
                                         IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                        IARG_REG_VALUE, tls_reg,
-#else
-                                        IARG_ADDRINT, (void*) tdata,
 #endif
                                         IARG_MEMORYWRITE_EA,
                                         IARG_END);
@@ -16473,11 +12146,6 @@ void instrument_push(INS ins)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYWRITE_EA,
                         IARG_UINT32, treg,
                         IARG_END);
@@ -16488,11 +12156,6 @@ void instrument_push(INS ins)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYWRITE_EA,
                         IARG_UINT32, treg,
                         IARG_END);
@@ -16502,11 +12165,6 @@ void instrument_push(INS ins)
                         AFUNPTR(taint_wreg2mem),
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
 #endif
                         IARG_MEMORYWRITE_EA,
                         IARG_UINT32, treg,
@@ -16526,11 +12184,6 @@ void instrument_push(INS ins)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_MEMORYWRITE_EA,
                         IARG_END);
@@ -16541,11 +12194,6 @@ void instrument_push(INS ins)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_MEMORYWRITE_EA,
                         IARG_END);
@@ -16555,11 +12203,6 @@ void instrument_push(INS ins)
                         AFUNPTR(taint_mem2mem_w),
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
 #endif
                         IARG_MEMORYREAD_EA,
                         IARG_MEMORYWRITE_EA,
@@ -16575,9 +12218,6 @@ void instrument_push(INS ins)
 
 void instrument_pop(INS ins)
 {
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
     USIZE addrsize = INS_MemoryReadSize(ins);
     if (INS_OperandIsMemory(ins, 0)) {
         switch(addrsize) {
@@ -16585,11 +12225,6 @@ void instrument_pop(INS ins)
 #ifdef TRACE_TAINT_OPS
             INS_InsertCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, trace_taint_outfd,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
@@ -16603,11 +12238,6 @@ void instrument_pop(INS ins)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_MEMORYWRITE_EA,
                         IARG_END);
@@ -16615,11 +12245,6 @@ void instrument_pop(INS ins)
 #ifdef TRACE_TAINT_OPS
             INS_InsertCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, trace_taint_outfd,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
@@ -16632,11 +12257,6 @@ void instrument_pop(INS ins)
 #ifdef TRACE_TAINT_OPS
             INS_InsertCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, trace_taint_outfd,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
@@ -16650,22 +12270,12 @@ void instrument_pop(INS ins)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_MEMORYWRITE_EA,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
             INS_InsertCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, trace_taint_outfd,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
@@ -16679,11 +12289,6 @@ void instrument_pop(INS ins)
 #ifdef TRACE_TAINT_OPS
             INS_InsertCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, trace_taint_outfd,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
@@ -16697,22 +12302,12 @@ void instrument_pop(INS ins)
 #ifdef FAST_INLINE
                         IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                        IARG_REG_VALUE, tls_reg,
-#else
-                        IARG_ADDRINT, (void*) tdata,
-#endif
                         IARG_MEMORYREAD_EA,
                         IARG_MEMORYWRITE_EA,
                         IARG_END);
 #ifdef TRACE_TAINT_OPS
             INS_InsertCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, trace_taint_outfd,
                     IARG_THREAD_ID,
                     IARG_INST_PTR,
@@ -16736,11 +12331,6 @@ void instrument_pop(INS ins)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -16754,22 +12344,12 @@ void instrument_pop(INS ins)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_MEMORYREAD_EA,
                             IARG_UINT32, treg,
                             IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -16783,11 +12363,6 @@ void instrument_pop(INS ins)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -16801,22 +12376,12 @@ void instrument_pop(INS ins)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_MEMORYREAD_EA,
                             IARG_UINT32, treg,
                             IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -16830,11 +12395,6 @@ void instrument_pop(INS ins)
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -16848,22 +12408,12 @@ void instrument_pop(INS ins)
 #ifdef FAST_INLINE
                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_MEMORYREAD_EA,
                             IARG_UINT32, treg,
                             IARG_END);
 #ifdef TRACE_TAINT_OPS
                     INS_InsertCall(ins, IPOINT_BEFORE,
                             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                            IARG_REG_VALUE, tls_reg,
-#else
-                            IARG_ADDRINT, (void*) tdata,
-#endif
                             IARG_UINT32, trace_taint_outfd,
                             IARG_THREAD_ID,
                             IARG_INST_PTR,
@@ -16883,9 +12433,6 @@ void instrument_pop(INS ins)
 
 void instrument_addorsub(INS ins)
 {
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
     int op1mem;
     int op2mem;
     int op1reg;
@@ -16957,11 +12504,6 @@ void instrument_addorsub(INS ins)
 #ifdef FAST_INLINE
                                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                            IARG_REG_VALUE, tls_reg,
-#else
-                                            IARG_ADDRINT, (void*) tdata,
-#endif
                                             IARG_UINT32, dst_treg,
                                             IARG_END);
                     break;
@@ -16970,11 +12512,6 @@ void instrument_addorsub(INS ins)
                                             AFUNPTR(taint_immval2hwreg),
 #ifdef FAST_INLINE
                                             IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                            IARG_REG_VALUE, tls_reg,
-#else
-                                            IARG_ADDRINT, (void*) tdata,
 #endif
                                             IARG_UINT32, dst_treg,
                                             IARG_END);
@@ -16985,11 +12522,6 @@ void instrument_addorsub(INS ins)
 #ifdef FAST_INLINE
                                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                            IARG_REG_VALUE, tls_reg,
-#else
-                                            IARG_ADDRINT, (void*) tdata,
-#endif
                                             IARG_UINT32, dst_treg,
                                             IARG_END);
                     break;
@@ -16999,11 +12531,6 @@ void instrument_addorsub(INS ins)
 #ifdef FAST_INLINE
                                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                            IARG_REG_VALUE, tls_reg,
-#else
-                                            IARG_ADDRINT, (void*) tdata,
-#endif
                                             IARG_UINT32, dst_treg,
                                             IARG_END);
                     break;
@@ -17012,11 +12539,6 @@ void instrument_addorsub(INS ins)
                                             AFUNPTR(taint_immval2qwreg),
 #ifdef FAST_INLINE
                                             IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                            IARG_REG_VALUE, tls_reg,
-#else
-                                            IARG_ADDRINT, (void*) tdata,
 #endif
                                             IARG_UINT32, dst_treg,
                                             IARG_END);
@@ -17043,11 +12565,6 @@ void instrument_addorsub(INS ins)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYWRITE_EA,
                                     IARG_END);
                 break;
@@ -17056,11 +12573,6 @@ void instrument_addorsub(INS ins)
                                     AFUNPTR(taint_immvalhw2mem),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_MEMORYWRITE_EA,
                                     IARG_END);
@@ -17071,11 +12583,6 @@ void instrument_addorsub(INS ins)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYWRITE_EA,
                                     IARG_END);
                 break;
@@ -17085,11 +12592,6 @@ void instrument_addorsub(INS ins)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYWRITE_EA,
                                     IARG_END);
                 break;
@@ -17098,11 +12600,6 @@ void instrument_addorsub(INS ins)
                                     AFUNPTR(taint_immvalqw2mem),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_MEMORYWRITE_EA,
                                     IARG_END);
@@ -17125,11 +12622,6 @@ void instrument_addorsub(INS ins)
 #ifdef FAST_INLINE
                                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                            IARG_REG_VALUE, tls_reg,
-#else
-                                            IARG_ADDRINT, (void*) tdata,
-#endif
                                             IARG_UINT32, treg,
                                             IARG_END);
                     break;
@@ -17139,11 +12631,6 @@ void instrument_addorsub(INS ins)
 #ifdef FAST_INLINE
                                             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                            IARG_REG_VALUE, tls_reg,
-#else
-                                            IARG_ADDRINT, (void*) tdata,
-#endif
                                             IARG_UINT32, treg,
                                             IARG_END);
                     break;
@@ -17152,11 +12639,6 @@ void instrument_addorsub(INS ins)
                                             AFUNPTR(taint_immval2hwreg),
 #ifdef FAST_INLINE
                                             IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                            IARG_REG_VALUE, tls_reg,
-#else
-                                            IARG_ADDRINT, (void*) tdata,
 #endif
                                             IARG_UINT32, treg,
                                             IARG_END);
@@ -17182,9 +12664,6 @@ void instrument_addorsub(INS ins)
  * */
 void instrument_div(INS ins)
 {
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
     INSTRUMENT_PRINT (log_f, "div instruction: %s\n", INS_Disassemble(ins).c_str());
     if (INS_IsMemoryRead(ins)) {
         UINT32 addrsize;
@@ -17203,11 +12682,6 @@ void instrument_div(INS ins)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, lsb_treg,
                                     IARG_UINT32, dst1_treg,
@@ -17224,11 +12698,6 @@ void instrument_div(INS ins)
                                     AFUNPTR(taint_add2_wmemwreg_2hwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, lsb_treg,
@@ -17247,11 +12716,6 @@ void instrument_div(INS ins)
                                 AFUNPTR(taint_add3_dwmem2wreg_2wreg),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, msb_treg,
@@ -17288,11 +12752,6 @@ void instrument_div(INS ins)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, lsb_treg,
                                     IARG_UINT32, src_treg,
                                     IARG_UINT32, dst1_treg,
@@ -17310,11 +12769,6 @@ void instrument_div(INS ins)
                                 AFUNPTR(taint_add3_2hwreg_2hwreg),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_UINT32, msb_treg,
                                 IARG_UINT32, lsb_treg,
@@ -17335,11 +12789,6 @@ void instrument_div(INS ins)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, msb_treg,
                                 IARG_UINT32, lsb_treg,
                                 IARG_UINT32, src_treg,
@@ -17358,9 +12807,6 @@ void instrument_div(INS ins)
 
 void instrument_mul(INS ins)
 {
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
     INSTRUMENT_PRINT (log_f, "mul instruction: %s\n", INS_Disassemble(ins).c_str());
     if (INS_IsMemoryRead(ins)) {
         int lsb_dst_treg, msb_dst_treg;
@@ -17377,11 +12823,6 @@ void instrument_mul(INS ins)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, src_treg,
                                 IARG_UINT32, lsb_dst_treg,
@@ -17395,11 +12836,6 @@ void instrument_mul(INS ins)
                                 AFUNPTR(taint_add2_hwmemhwreg_2hwreg),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, src_treg,
@@ -17415,11 +12851,6 @@ void instrument_mul(INS ins)
                                 AFUNPTR(taint_add2_wmemwreg_2wreg),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, src_treg,
@@ -17451,11 +12882,6 @@ void instrument_mul(INS ins)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, src_treg,
                                 IARG_UINT32, src2_treg,
                                 IARG_UINT32, lsb_dst_treg,
@@ -17470,11 +12896,6 @@ void instrument_mul(INS ins)
                                 AFUNPTR(taint_add2_hwreghwreg_2hwreg),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_UINT32, src_treg,
                                 IARG_UINT32, src2_treg,
@@ -17491,11 +12912,6 @@ void instrument_mul(INS ins)
                                 AFUNPTR(taint_add2_wregwreg_2wreg),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_UINT32, src_treg,
                                 IARG_UINT32, src2_treg,
@@ -17518,9 +12934,6 @@ void instrument_mul(INS ins)
 
 void instrument_imul(INS ins)
 {
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
     int count;
     INSTRUMENT_PRINT (log_f, "imul instruction: %s\n", INS_Disassemble(ins).c_str());
     count = INS_OperandCount(ins);
@@ -17546,11 +12959,6 @@ void instrument_imul(INS ins)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, dst_treg,
                                     IARG_END);
@@ -17560,11 +12968,6 @@ void instrument_imul(INS ins)
                                    AFUNPTR(taint_add_wmem2wreg),
 #ifdef FAST_INLINE
                                    IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                   IARG_REG_VALUE, tls_reg,
-#else
-                                   IARG_ADDRINT, (void*) tdata,
 #endif
                                    IARG_MEMORYREAD_EA,
                                    IARG_UINT32, dst_treg,
@@ -17576,11 +12979,6 @@ void instrument_imul(INS ins)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, dst_treg,
                                     IARG_END);
@@ -17590,11 +12988,6 @@ void instrument_imul(INS ins)
                                     AFUNPTR(taint_add_qwmem2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_MEMORYREAD_EA,
                                     IARG_UINT32, dst_treg,
@@ -17621,11 +13014,6 @@ void instrument_imul(INS ins)
 #ifdef FAST_INLINE
                                    IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                   IARG_REG_VALUE, tls_reg,
-#else
-                                   IARG_ADDRINT, (void*) tdata,
-#endif
                                    IARG_UINT32, src_treg,
                                    IARG_UINT32, dst_treg,
                                    IARG_END);
@@ -17636,11 +13024,6 @@ void instrument_imul(INS ins)
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
-#endif
                                     IARG_UINT32, src_treg,
                                     IARG_UINT32, dst_treg,
                                     IARG_END);
@@ -17650,11 +13033,6 @@ void instrument_imul(INS ins)
                                     AFUNPTR(taint_add_qwreg2qwreg),
 #ifdef FAST_INLINE
                                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                    IARG_REG_VALUE, tls_reg,
-#else
-                                    IARG_ADDRINT, (void*) tdata,
 #endif
                                     IARG_UINT32, src_treg,
                                     IARG_UINT32, dst_treg,
@@ -17689,11 +13067,6 @@ void instrument_imul(INS ins)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, dst_treg,
                                 IARG_END);
@@ -17704,11 +13077,6 @@ void instrument_imul(INS ins)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, dst_treg,
                                 IARG_END);
@@ -17718,11 +13086,6 @@ void instrument_imul(INS ins)
                                 AFUNPTR(taint_mem2qwreg),
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
 #endif
                                 IARG_MEMORYREAD_EA,
                                 IARG_UINT32, dst_treg,
@@ -17749,11 +13112,6 @@ void instrument_imul(INS ins)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, src_treg,
                                 IARG_UINT32, dst_treg,
                                 IARG_END);
@@ -17762,11 +13120,6 @@ void instrument_imul(INS ins)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -17780,22 +13133,12 @@ void instrument_imul(INS ins)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, src_treg,
                                 IARG_UINT32, dst_treg,
                                 IARG_END);
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -17809,11 +13152,6 @@ void instrument_imul(INS ins)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -17827,22 +13165,12 @@ void instrument_imul(INS ins)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, src_treg,
                                 IARG_UINT32, dst_treg,
                                 IARG_END);
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -17856,11 +13184,6 @@ void instrument_imul(INS ins)
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -17874,22 +13197,12 @@ void instrument_imul(INS ins)
 #ifdef FAST_INLINE
                                 IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, src_treg,
                                 IARG_UINT32, dst_treg,
                                 IARG_END);
 #ifdef TRACE_TAINT_OPS
                         INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-                                IARG_REG_VALUE, tls_reg,
-#else
-                                IARG_ADDRINT, (void*) tdata,
-#endif
                                 IARG_UINT32, trace_taint_outfd,
                                 IARG_THREAD_ID,
                                 IARG_INST_PTR,
@@ -17918,9 +13231,6 @@ void instrument_imul(INS ins)
 
 void instrument_palignr(INS ins)
 {
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
     UINT32 imm;
     REG reg;
     int treg;
@@ -17944,11 +13254,6 @@ void instrument_palignr(INS ins)
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, treg,
                     IARG_MEMORYREAD_EA,
                     IARG_UINT32, imm,
@@ -17958,11 +13263,6 @@ void instrument_palignr(INS ins)
                     AFUNPTR(taint_palignr_mem2qwreg),
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
 #endif
                     IARG_UINT32, treg,
                     IARG_MEMORYREAD_EA,
@@ -17984,11 +13284,6 @@ void instrument_palignr(INS ins)
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, treg,
                     IARG_UINT32, treg2,
                     IARG_UINT32, imm,
@@ -17998,11 +13293,6 @@ void instrument_palignr(INS ins)
                     AFUNPTR(taint_palignr_qwreg2qwreg),
 #ifdef FAST_INLINE
                     IARG_FAST_ANALYSIS_CALL,
-#endif
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
 #endif
                     IARG_UINT32, treg,
                     IARG_UINT32, treg2,
@@ -18016,9 +13306,6 @@ void instrument_palignr(INS ins)
 
 void instrument_psrldq(INS ins)
 {
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
     assert(INS_OperandIsReg(ins, 0));
     assert(INS_OperandIsImmediate(ins, 1));
     int treg = translate_reg(INS_OperandReg(ins, 0));
@@ -18026,11 +13313,6 @@ void instrument_psrldq(INS ins)
 
     INS_InsertCall(ins, IPOINT_BEFORE,
                     AFUNPTR(shift_reg_taint_right),
-#ifdef USE_TLS_SCRATCH
-                    IARG_REG_VALUE, tls_reg,
-#else
-                    IARG_ADDRINT, (void*) tdata,
-#endif
                     IARG_UINT32, treg,
                     IARG_UINT32, shift,
                     IARG_END);
@@ -18038,9 +13320,6 @@ void instrument_psrldq(INS ins)
 
 void instrument_pmovmskb(INS ins)
 {
-#ifndef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
     int src_treg;
     int dst_treg;
 
@@ -18055,11 +13334,6 @@ void instrument_pmovmskb(INS ins)
 #ifdef TRACE_TAINT_OPS
     INS_InsertCall(ins, IPOINT_BEFORE,
             AFUNPTR(trace_taint_op_enter),
-#ifdef USE_TLS_SCRATCH
-            IARG_REG_VALUE, tls_reg,
-#else
-            IARG_ADDRINT, (void*) tdata,
-#endif
             IARG_UINT32, trace_taint_outfd,
             IARG_THREAD_ID,
             IARG_INST_PTR,
@@ -18074,11 +13348,6 @@ void instrument_pmovmskb(INS ins)
 #ifdef FAST_INLINE
             IARG_FAST_ANALYSIS_CALL,
 #endif
-#ifdef USE_TLS_SCRATCH
-            IARG_REG_VALUE, tls_reg,
-#else
-            IARG_ADDRINT, (void*) tdata,
-#endif
             IARG_UINT32, dst_treg,
             IARG_UINT32, src_treg,
             IARG_END);
@@ -18086,11 +13355,6 @@ void instrument_pmovmskb(INS ins)
 #ifdef TRACE_TAINT_OPS
     INS_InsertCall(ins, IPOINT_BEFORE,
             AFUNPTR(trace_taint_op_exit),
-#ifdef USE_TLS_SCRATCH
-            IARG_REG_VALUE, tls_reg,
-#else
-            IARG_ADDRINT, (void*) tdata,
-#endif
             IARG_UINT32, trace_taint_outfd,
             IARG_THREAD_ID,
             IARG_INST_PTR,
@@ -18101,10 +13365,16 @@ void instrument_pmovmskb(INS ins)
 #endif
 }
 
-#ifdef TRACE_TAINT_OPS
+#ifdef TRACE_TAINT
 void trace_inst(ADDRINT ptr)
 {
-    inst_count++;
+    PIN_LockClient();
+    printf ("[INST] Pid %d (tid: %d) (record %d) cnt %ld - %#x\n", PIN_GetPid(), PIN_GetTid(), get_record_pid(), inst_cnt, ptr);
+    if (IMG_Valid(IMG_FindByAddress(ptr))) {
+	printf("%s -- img %s static %#x\n", RTN_FindNameByAddress(ptr).c_str(), IMG_Name(IMG_FindByAddress(ptr)).c_str(), find_static_address(ptr));
+    }
+    PIN_UnlockClient();
+    inst_cnt++;
 }
 #endif
 
@@ -18117,7 +13387,7 @@ void instruction_instrumentation(INS ins, void *v)
     opcode = INS_Opcode(ins);
     category = INS_Category(ins);
 
-#ifdef TRACE_TAINT_OPS
+#ifdef TRACE_TAINT
     INS_InsertCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_inst),
                     IARG_INST_PTR,
@@ -18155,7 +13425,6 @@ void instruction_instrumentation(INS ins, void *v)
             instrumented = 1;
             break;
     }
-
 
 #ifdef USE_CODEFLUSH_TRICK
     if (option_cnt != 0) {
@@ -18734,13 +14003,8 @@ BOOL follow_child(CHILD_PROCESS child, void* data)
 
 void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
 {
-#ifdef HAVE_REPLAY
-#ifdef USE_TLS_SCRATCH
-    struct thread_data* tdata = (struct thread_data *) PIN_GetContextReg(ctxt, tls_reg);
-#else
-    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-#endif
     fprintf(stderr, "AfterForkInChild\n");
+<<<<<<< HEAD
 
     /* grab the old file descriptors for things that we're going to have to copy
      * - close the old log, open a new log
@@ -18820,10 +14084,9 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
     fclose(filenames_f_old);
 
 
-    tdata->record_pid = record_pid;
+    current_thread->record_pid = get_record_pid();
     // reset syscall index for thread
-    tdata->syscall_cnt = 0;
-#endif
+    current_thread->syscall_cnt = 0;
 }
 
 
@@ -18837,7 +14100,6 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 	fprintf (stderr, "Unable to malloc pdata\n");
 	assert (0);
     }
-    //ptdata = (struct thread_data *) get_slice(&thread_data_alloc);
     assert(ptdata);
     memset(ptdata, 0, sizeof(struct thread_data));
     if (splice_output) {
@@ -18849,13 +14111,12 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
     pregs = ptdata->shadow_reg_table;
 
     ptdata->threadid = threadid;
-#ifdef HAVE_REPLAY
     ptdata->app_syscall = 0;
     ptdata->record_pid = get_record_pid();
     get_record_group_id(dev_fd, &(ptdata->rg_id));
 
-    set_pin_addr (dev_fd, (u_long) &(ptdata->app_syscall));
-#endif
+    current_thread = ptdata;
+    set_pin_addr (dev_fd, (u_long) &(ptdata->app_syscall), ptdata, (void **) &current_thread);
 
     if (child) {
         restore_state_from_disk(ptdata);
@@ -18875,7 +14136,6 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
         if (!filenames_f) {
             // setup initial maps
             char filename_mapping[256];
-            // snprintf(filename_mapping, 256, "%s/filenames_%llu", group_directory, ptdata->rg_id);
             snprintf(filename_mapping, 256, "%s/filenames", group_directory);
             filenames_f = fopen(filename_mapping, "w");
             if (!filenames_f) {
@@ -18887,7 +14147,6 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 
         if (tokens_fd == -1) {
             char name[256];
-            // snprintf(name, 256, "%s/tokens_%llu", group_directory, ptdata->rg_id);
             snprintf(name, 256, "%s/tokens", group_directory);
 	    //ARQUINN: changed so that we can read this file if forking
             tokens_fd = open(name, O_RDWR | O_CREAT | O_TRUNC, 0644);
@@ -18899,7 +14158,6 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
         }
         if (outfd == -1) {
             char output_file_name[256];
-            // snprintf(output_file_name, 256, "%s/dataflow_%llu.result", group_directory, ptdata->rg_id);
             snprintf(output_file_name, 256, "%s/dataflow.result", group_directory);
             outfd = open(output_file_name, O_CREAT | O_TRUNC | O_LARGEFILE | O_RDWR, 0644);
             if (outfd < 0) {
@@ -18972,16 +14230,6 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
         }
     }
 #endif
-    // set the TLS in the virutal register
-#ifdef USE_TLS_SCRATCH
-    PIN_SetContextReg(ctxt, tls_reg, (ADDRINT) ptdata);
-    fprintf(stderr, "Thread %d set tls_reg to have ptr %#lx\n", threadid, (u_long) ptdata);
-#else
-    PIN_SetThreadData (tls_key, ptdata, threadid);
-#endif
-#ifdef HAVE_REPLAY
-    set_pin_addr (dev_fd, (u_long) &(ptdata->app_syscall));
-#endif
 }
 
 void init_logs(void)
@@ -19009,46 +14257,9 @@ void init_logs(void)
 #endif
 }
 
-extern int dump_mem_taints (int fd);
-extern int dump_reg_taints (int fd, u_long* pregs);
-extern int dump_mem_taints_start (int fd);
-extern int dump_reg_taints_start (int fd, u_long* pregs);
-
 void fini(INT32 code, void* v)
 {
-    int taint_fd;
-    char taint_structures_file[256];
-    struct timeval tv;
-
-    if (splice_input && splice_input[0]) {
-	// Also need to consider addresses passed from previous segment as output
-	splice_after_segment (splice_input, splice_semname, outfd);
-    }
-
-    snprintf(taint_structures_file, 256, "%s/taint_structures", group_directory);
-    
-    taint_fd = open(taint_structures_file, O_WRONLY | O_CREAT | O_TRUNC | O_LARGEFILE, 0644);
-    assert(taint_fd > 0);
-    
-    if (all_output) {
-	gettimeofday(&tv, NULL);
-	printf("dump start dir %s %lu sec %lu usec\n", group_directory, tv.tv_sec, tv.tv_usec);
-
-	if (splice_output) {
-	    dump_reg_taints(taint_fd, pregs);
-	    dump_mem_taints(taint_fd);
-	} else {
-	    dump_reg_taints_start(taint_fd, pregs);
-	    dump_mem_taints_start(taint_fd);
-	}
-    }
-    close(taint_fd);
-
-    print_taint_stats(stderr);
-#if 0
-    gettimeofday(&tv, NULL);
-    fprintf(stderr, "time end %lu sec %lu usec\n", tv.tv_sec, tv.tv_usec);
-#endif
+    dift_done ();
 }
 
 #if 0
@@ -19080,12 +14291,10 @@ int main(int argc, char** argv)
         exit(-1);
     }
 
-#ifdef HAVE_REPLAY
     // Intialize the replay device
     rc = devspec_init (&dev_fd);
     if (rc < 0) return rc;
     global_syscall_cnt = 0;
-#endif
 
     /* Create a directory for logs etc for this replay group*/
     snprintf(group_directory, 256, "/tmp/%d", PIN_GetPid());
@@ -19171,23 +14380,12 @@ int main(int argc, char** argv)
 	}
     }
 
-    // Claim a Pin virtual register to store the pointer to a thread's TLS
-#ifdef USE_TLS_SCRATCH
-    tls_reg = PIN_ClaimToolRegister();
-    fprintf(stderr, "Claim reg %d for tls\n", tls_reg);
-#else
-    tls_key = PIN_CreateThreadDataKey(0);
-#endif
-
     PIN_AddThreadStartFunction(thread_start, 0);
     PIN_AddFiniFunction(fini, 0);
 
     main_prev_argv = argv;
-    //PIN_AddFollowChildProcessFunction(follow_child, argv);
 
-#ifdef HAVE_REPLAY
     INS_AddInstrumentFunction(track_inst, 0);
-#endif
     INS_AddInstrumentFunction(instruction_instrumentation, 0);
 
     // Register a notification handler that is called when the application

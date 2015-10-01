@@ -19,8 +19,8 @@ u_long map_merges = 0;
 #endif
 
 struct taint_entry {
-    u_long p1;
-    u_long p2;
+    taint_t p1;
+    taint_t p2;
 };
 struct taint_entry* merge_log;
 #define OUTBUFSIZE 1000000
@@ -48,9 +48,9 @@ static inline void print_value (u_long value)
 #define STACK_SIZE 1000000
 u_long stack[STACK_SIZE];
 
-static void map_iter (u_long value)
+static void map_iter (taint_t value)
 {
-    std::unordered_set<u_long> seen_indices;
+    std::unordered_set<taint_t> seen_indices;
     struct taint_entry* pentry;
     u_long stack_depth = 0;
 
@@ -179,7 +179,8 @@ static long map_before_segment (char* dirname)
 {
     long rc;
     char* output_log, *plog;
-    u_long ndatasize, odatasize, mergesize, mapsize, buf_size, value, i, zero = 0;
+    taint_t value;
+    u_long ndatasize, odatasize, mergesize, mapsize, buf_size, i, zero = 0;
     char mergefile[256], outfile[256], map_name[256];
     int node_num_fd, mapfd;
 
@@ -207,7 +208,7 @@ static long map_before_segment (char* dirname)
 	for (i = 0; i < buf_size; i++) {
 	    plog += sizeof(u_long);
 	    value = *((u_long *) plog);
-	    plog += sizeof(u_long);
+	    plog += sizeof(taint_t);
 	    if (value) {
 		if (value < 0xe0000001) {
 		    print_value (value);

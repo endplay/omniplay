@@ -37,8 +37,8 @@ struct token {
 #define NO_DUPS
 #define STATS
 
-//#define DEBUG_TARGET(x) (x==0xa779 || x==0xa734 || x==0xa733 || x==0x73c9 || x == 0xcc1f)
-//#define DEBUG_ADDR(x) (x==0x995ac54)
+//#define DEBUG_TARGET(x) (x==0x24eb || x==0)
+//#define DEBUG_ADDR(x) (x==0xb59f5000)
 #ifdef DEBUG_TARGET
 FILE* debugfile;
 #endif
@@ -188,6 +188,12 @@ void* parscan (void* arg)
 	otoken = *m2buf + otokens;
 	m2buf++;
 	while (*m2buf) {
+#ifdef DEBUG_TARGET
+	    if (DEBUG_TARGET(otoken)) {
+		fprintf (debugfile, "\toutput %lx (otokens %lx/%lx) maps to %lx\n", 
+			 otoken, otokens, otoken-otokens, *m2buf);
+	    }
+#endif
 #ifdef STATS
 	    lookups++;
 #endif
@@ -203,6 +209,12 @@ void* parscan (void* arg)
 		    resolved_values = 0;
 		    unresolved_values = 0;
 		    for (u_long* mbuf = maps_iter->second; *mbuf; mbuf++) {
+#ifdef DEBUG_TARGET
+			if (DEBUG_TARGET(otoken)) {
+			    fprintf (debugfile, "\toutput %lx (otokens %lx/%lx) maps to %lx via %lx\n", 
+				     otoken, otokens, otoken-otokens, *mbuf, *m2buf);
+			}
+#endif
 			if (*mbuf < 0xc0000000 && !start_flag) {
 			    if (!unresolved_values) {
 				PPRINT_VALUE(uresbuf, otoken);
@@ -331,6 +343,11 @@ int main(int argc, char** argv)
     while ((u_long) mbuf < (u_long) morig + mdatasize) {
 	addr = *mbuf;
 	mbuf++;
+#ifdef DEBUG_ADDR
+	if (DEBUG_ADDR(addr)) {
+	  fprintf (debugfile, "Address %lx in map, maps to %lx, offset %lx\n", addr, *mbuf, (u_long) mbuf - (u_long) morig);
+	}
+#endif
 	if (*mbuf) {
 	    maps[addr] = mbuf;
 	    do {
@@ -563,14 +580,23 @@ int main(int argc, char** argv)
 	if (rc < 0) return rc;
 
 	morig = m2buf;
+	printf ("read output token %lx\n", *m2buf);
 	print_value (otokens + *m2buf); // Add otokens together
+	printf ("write output token %lx\n", otokens + *m2buf);
 	m2buf++;
+	printf ("read input token %lx\n", *m2buf);
 	tokens2 = *m2buf - 0xc0000000;
+	printf ("write input token %lx\n", tokens+tokens2);
 	print_value (tokens + tokens2);
 	m2buf++;
 	while ((u_long) m2buf < (u_long) morig + ma2datasize) {
 	    addr = *m2buf;
 	    m2buf++;
+#ifdef DEBUG_ADDR
+	    if (DEBUG_ADDR(addr)) {
+		fprintf (debugfile, "Doing address %lx first entry %lx\n", addr, *m2buf);
+	    }
+#endif
 #ifdef STATS
 	    addr_entries++;
 #endif

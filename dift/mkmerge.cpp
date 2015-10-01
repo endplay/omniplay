@@ -10,12 +10,13 @@
 
 #include <unordered_set>
 
+#include "taint_interface/taint.h"
 #include "linkage_common.h"
 #include "taint_interface/taint_creation.h"
 #include "xray_token.h"
 #include "maputil.h"
 
-//#define DEBUG 0x141fc
+//#define DEBUG 0x1836
 #ifdef DEBUG
 FILE* debugfile;
 #endif
@@ -27,8 +28,8 @@ u_long values = 0, directs = 0, indirects = 0, map_merges = 0;
 #endif
 
 struct taint_entry {
-    u_long p1;
-    u_long p2;
+    taint_t p1;
+    taint_t p2;
 };
 struct taint_entry* merge_log;
 #define OUTBUFSIZE 1000000
@@ -99,11 +100,11 @@ static inline void print_rvalue (u_long value)
 }
 
 #define STACK_SIZE 1000000
-u_long stack[STACK_SIZE];
+taint_t stack[STACK_SIZE];
 
-static void map_iter (u_long value)
+static void map_iter (taint_t value)
 {
-    std::unordered_set<u_long> seen_indices;
+    std::unordered_set<taint_t> seen_indices;
     struct taint_entry* pentry;
     u_long stack_depth = 0;
 
@@ -111,7 +112,7 @@ static void map_iter (u_long value)
 #ifdef STATS
     map_merges++;
 #endif
-    //printf ("%lx -> %lx,%lx (%lu)\n", value, pentry->p1, pentry->p2, stack_depth);
+    //fprintf (debugfile, "%llx -> %llx,%llx (%lu)\n", value, pentry->p1, pentry->p2, stack_depth);
     stack[stack_depth++] = pentry->p1;
     stack[stack_depth++] = pentry->p2;
 
@@ -129,7 +130,7 @@ static void map_iter (u_long value)
 		    print_uvalue (value);
 #ifdef DEBUG
 		    if (output_token == DEBUG) {
-			fprintf (debugfile, "output %lx to unresolved value %lx (merge)\n", output_token, value);
+			fprintf (debugfile, "output %lx to unresolved value %llx (merge)\n", output_token, value);
 		    }
 #endif
 		} else {
@@ -141,14 +142,14 @@ static void map_iter (u_long value)
 			print_rvalue (value);
 #ifdef DEBUG
 			if (output_token == DEBUG) {
-			  fprintf (debugfile, "output %lx to resolved start input %lx (merge)\n", output_token, value);
+			  fprintf (debugfile, "output %lx to resolved start input %llx (merge)\n", output_token, value);
 			}
 #endif
 		    } else {
 			print_rvalue (value-0xc0000000);
 #ifdef DEBUG
 			if (output_token == DEBUG) {
-			    fprintf (debugfile, "output %lx to resolved input %lx (merge)\n", output_token, value-0xc0000000);
+			    fprintf (debugfile, "output %lx to resolved input %llx (merge)\n", output_token, value-0xc0000000);
 			}
 #endif
 		    }
@@ -166,7 +167,7 @@ static void map_iter (u_long value)
     } while (stack_depth);
 }
 
-static void map_iter2 (u_long value)
+static void map_iter2 (taint_t value)
 {
     std::unordered_set<u_long> seen_indices;
     struct taint_entry* pentry;
@@ -297,8 +298,9 @@ static long map_before_segment (char* dirname)
     struct token token;
     long rc;
     char* output_log, *plog;
-    u_long *ts_log;
-    u_long tokens, ndatasize, odatasize, mergesize, mapsize, buf_size, value, i, zero = 0;
+    taint_t *ts_log;
+    u_long tokens, ndatasize, odatasize, mergesize, mapsize, buf_size, i, zero = 0;
+    taint_t value;
     char mergefile[256], outfile[256], tsfile[256], outrfile[256], outufile[256], map_name[256], tokfile[256];
     int node_num_fd, mapfd, tfd;
     struct stat st;
@@ -344,8 +346,8 @@ static long map_before_segment (char* dirname)
 	plog += sizeof(u_long);
 	for (i = 0; i < buf_size; i++) {
 	    plog += sizeof(u_long);
-	    value = *((u_long *) plog);
-	    plog += sizeof(u_long);
+	    value = *((taint_t *) plog);
+	    plog += sizeof(taint_t);
 	    if (value) {
 		if (value < 0xe0000001) {
 #ifdef STATS
@@ -357,7 +359,7 @@ static long map_before_segment (char* dirname)
 			print_uvalue (zero);
 #ifdef DEBUG
 			if (output_token == DEBUG) {
-			    fprintf (debugfile, "output %lx to unresolved addr %lx\n", output_token, value);
+			    fprintf (debugfile, "output %lx to unresolved addr %llx\n", output_token, value);
 			}
 #endif
 			    
@@ -367,14 +369,14 @@ static long map_before_segment (char* dirname)
 			    print_rvalue (value);
 #ifdef DEBUG
 			    if (output_token == DEBUG) {
-				fprintf (debugfile, "output %lx to resolved start input %lx\n", output_token, value);
+				fprintf (debugfile, "output %lx to resolved start input %llx\n", output_token, value);
 			    }
 #endif
 			} else {
 			    print_rvalue (value-0xc0000000);
 #ifdef DEBUG
 			    if (output_token == DEBUG) {
-				fprintf (debugfile, "output %lx to resolved input %lx\n", output_token, value-0xc0000000);
+				fprintf (debugfile, "output %lx to resolved input %llx\n", output_token, value-0xc0000000);
 			    }
 #endif
 			}
@@ -451,7 +453,7 @@ static long map_before_segment (char* dirname)
 
     print_value (output_token); // First entry is number of output tokens
     print_value (tokens);        // Second entry is number of input tokens
-    for (i = 0; i < odatasize/(sizeof(u_long)*2); i++) {
+    for (i = 0; i < odatasize/(sizeof(taint_t)*2); i++) {
 	print_value (ts_log[2*i]); // addr
 	value = ts_log[2*i+1];
 	if (value) {

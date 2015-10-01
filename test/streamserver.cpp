@@ -292,11 +292,7 @@ void* do_stream (void* arg)
 			args[argcnt++] = "-t";
 			args[argcnt++] = "../dift/obj-ia32/linkage_data.so";
 			if (i < epochs-1 || !ehdr.finish_flag) {
-			    if (i == 0 && ehdr.start_flag) {
-				sprintf (syscalls, "%ld", edata[i].stop_syscall);
-			    } else {
-				sprintf (syscalls, "%ld", edata[i].stop_syscall-edata[i].start_syscall+1);
-			    }
+			    sprintf (syscalls, "%ld", edata[i].stop_syscall);
 			    args[argcnt++] = "-l";
 			    args[argcnt++] = syscalls;
 			    args[argcnt++] = "-ao"; // Last epoch does not need to trace to final addresses

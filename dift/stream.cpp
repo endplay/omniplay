@@ -10,6 +10,7 @@
 #include <pthread.h>
 #include <netdb.h>
 
+#include "taint_interface/taint.h"
 #include "linkage_common.h"
 #include "taint_interface/taint_creation.h"
 #include "xray_token.h"
@@ -37,8 +38,8 @@ struct recvdata {
 };
 
 struct taint_entry {
-    u_long p1;
-    u_long p2;
+    taint_t p1;
+    taint_t p2;
 };
 
 #define STREAM_PORT 19765
@@ -46,7 +47,7 @@ struct taint_entry {
 #define OUTBUFSIZE 1000000
 
 // Globals - mostly here for performance
-unordered_map<u_long,unordered_set<u_long>*> resolved;
+unordered_map<taint_t,unordered_set<u_long>*> resolved;
 int                 outrfd;
 u_long              outrindex;
 u_long              outrbuf[OUTBUFSIZE];
@@ -135,15 +136,15 @@ static void flush_outrbuf()
     }
 
 #define STACK_SIZE 1000000
-u_long stack[STACK_SIZE];
+taint_t stack[STACK_SIZE];
 
-static void map_iter (u_long value, u_long output_token, int& unresolved_vals, int& resolved_vals)
+static void map_iter (taint_t value, u_long output_token, int& unresolved_vals, int& resolved_vals)
 {
     unordered_set<u_long>* pset;
 
     auto iter = resolved.find(value);
     if (iter == resolved.end()) {
-	unordered_set<u_long> seen_indices;
+	unordered_set<taint_t> seen_indices;
 	struct taint_entry* pentry;
 	u_long stack_depth = 0;
 	
@@ -311,8 +312,8 @@ long stream_epoch (const char* dirname)
 {
     long rc;
     char* output_log, *plog;
-    u_long *ts_log;
-    u_long ndatasize, odatasize, mergesize, mapsize, buf_size, value, otoken, i;
+    taint_t *ts_log, value;
+    u_long ndatasize, odatasize, mergesize, mapsize, buf_size, otoken, i;
     char mergefile[256], outfile[256], tsfile[256], outrfile[256], addrfile[256], tokfile[256];
     int node_num_fd, mapfd;
     u_long output_token = 0;
@@ -358,7 +359,7 @@ long stream_epoch (const char* dirname)
 	for (i = 0; i < buf_size; i++) {
 	    plog += sizeof(u_long);
 	    value = *((u_long *) plog);
-	    plog += sizeof(u_long);
+	    plog += sizeof(taint_t);
 	    if (value) {
 		if (value < 0xe0000001) {
 #ifdef STATS
@@ -420,13 +421,13 @@ long stream_epoch (const char* dirname)
 
     if (!finish_flag) {
 	// Next, build index of output addresses
-	unordered_map<u_long,u_long> address_map;
+	unordered_map<taint_t,taint_t> address_map;
 	
 	sprintf (tsfile, "%s/taint_structures", dirname);
 	rc = map_file (tsfile, &mapfd, &odatasize, &mapsize, (char **) &ts_log);
 	if (rc < 0) return rc;
 	
-	for (i = 0; i < odatasize/(sizeof(u_long)*2); i++) {
+	for (i = 0; i < odatasize/(sizeof(taint_t)*2); i++) {
 	    address_map[ts_log[2*i]] = ts_log[2*i+1];
 	}
 

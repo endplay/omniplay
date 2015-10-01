@@ -8,11 +8,20 @@
 #include <assert.h>
 #include <dirent.h>
 
+#include <map>
+
+using namespace std;
+
 struct replay_timing {
     pid_t     pid;
     u_long    index;
     short     syscall;
     u_int     ut;
+};
+
+struct extra_data {
+    double   dtiming;
+    u_long   aindex;
 };
 
 struct ckpt_data {
@@ -97,7 +106,9 @@ long read_ckpts (char* dirname)
 
 void print_timing (struct replay_timing* timings, int start, int end)
 { 
-    printf ("%5d %6lu %6lu", timings[start].pid, timings[start].index, timings[end].index);
+    //printf ("--- %5d %6lu (%6u) %6lu (%6u) ---\n", timings[start].pid, timings[start].index, start, timings[end].index, end);
+    printf ("%5d %6lu %6d ", timings[start].pid, timings[start].index, end-start);
+
     if (filter_syscall > 0) {
 	if (filter_syscall > timings[start].index && filter_syscall <= timings[end].index) {
 	    printf (" %6lu", filter_syscall-timings[start].index+1);
@@ -130,30 +141,25 @@ static int can_attach (short syscall)
     return (syscall != 192 && syscall != 91);
 }
 
-static int cnt_interval (struct replay_timing* timings, int start, int end)
+static int cnt_interval (struct extra_data* edata, int start, int end)
 {
-    int i, cnt = 1;
-
-    for (i = start+1; i < end; i++) {
-	if (can_attach(timings[i].syscall)) cnt++;
-    }
-    return cnt;
+    return edata[end].aindex - edata[start].aindex;
 }
 
-int gen_timings (struct replay_timing* timings, double* dtimings, int start, int end, int partitions)
+int gen_timings (struct replay_timing* timings, struct extra_data* edata, int start, int end, int partitions)
 {
     double biggest_gap = 0.0, goal;
     int gap_start, gap_end, last, i, new_part;
 
     assert (start < end);
-    assert (partitions <= cnt_interval(timings, start, end));
+    assert (partitions <= cnt_interval(edata, start, end));
 
     if (partitions == 1) {
 	print_timing (timings, start, end);
 	return 0;
     }
 
-    double total_time = dtimings[end] - dtimings[start];
+    double total_time = edata[end].dtiming - edata[start].dtiming;
 
     // find the largest gap
     if (details) {
@@ -162,7 +168,7 @@ int gen_timings (struct replay_timing* timings, double* dtimings, int start, int
     last = start;
     for (i = start+1; i < end; i++) {
 	if (can_attach(timings[i].syscall)) {
-	    double gap = dtimings[i] - dtimings[last];
+	    double gap = edata[i].dtiming - edata[last].dtiming;
 	    if (gap > biggest_gap) {
 		gap_start = last;
 		gap_end = i;
@@ -172,34 +178,34 @@ int gen_timings (struct replay_timing* timings, double* dtimings, int start, int
 	}
     }
     if (details) {
-	printf ("Biggest gap from %d to %d is %.3f\n", gap_start, gap_end, dtimings[gap_end] - dtimings[gap_start]);
+	printf ("Biggest gap from %d to %d is %.3f\n", gap_start, gap_end, edata[gap_end].dtiming - edata[gap_start].dtiming);
     }
     if (partitions > 2 && biggest_gap >= total_time/partitions) {
 	// Pivot on this gap
-	total_time -= (dtimings[gap_end] - dtimings[gap_start]);
+	total_time -= (edata[gap_end].dtiming - edata[gap_start].dtiming);
 	partitions--;
 	if (gap_start == start) {
 	    print_timing (timings, gap_start, gap_end);
-	    return gen_timings (timings, dtimings, gap_end, end, partitions);
+	    return gen_timings (timings, edata, gap_end, end, partitions);
 	}
 
-	new_part = 0.5 + (partitions * (dtimings[gap_start] - dtimings[start])) / total_time;
+	new_part = 0.5 + (partitions * (edata[gap_start].dtiming - edata[start].dtiming)) / total_time;
 	if (details) {
 	    printf ("gap - new part %d\n", new_part);
 	}
-	if (partitions - new_part > cnt_interval(timings, gap_end, end)) new_part = partitions-cnt_interval(timings, gap_end, end);
+	if (partitions - new_part > cnt_interval(edata, gap_end, end)) new_part = partitions-cnt_interval(edata, gap_end, end);
 	if (details) {
 	    printf ("gap - new part %d\n", new_part);
 	}
-	if (new_part > cnt_interval(timings, start, gap_start)) new_part = cnt_interval(timings, start, gap_start);
+	if (new_part > cnt_interval(edata, start, gap_start)) new_part = cnt_interval(edata, start, gap_start);
 	if (new_part < 1) new_part = 1;
 	if (new_part > partitions-1) new_part = partitions-1;
 	if (details) {
 	    printf ("gap - new part %d\n", new_part);
 	}
-	gen_timings (timings, dtimings, start, gap_start, new_part);
+	gen_timings (timings, edata, start, gap_start, new_part);
 	print_timing (timings, gap_start, gap_end);
-	return gen_timings (timings, dtimings, gap_end, end, partitions - new_part);
+	return gen_timings (timings, edata, gap_end, end, partitions - new_part);
     } else {
 	// Allocate first interval
 	goal = total_time/partitions;
@@ -208,9 +214,9 @@ int gen_timings (struct replay_timing* timings, double* dtimings, int start, int
 	}
 	for (i = start+1; i < end; i++) {
 	    if (can_attach(timings[i].syscall)) {
-		if (dtimings[i]-dtimings[start] > goal || cnt_interval(timings, i, end) == partitions-1) {
+		if (edata[i].dtiming-edata[start].dtiming > goal || cnt_interval(edata, i, end) == partitions-1) {
 		    print_timing (timings, start, i);
-		    return gen_timings(timings, dtimings, i, end, partitions-1);
+		    return gen_timings(timings, edata, i, end, partitions-1);
 		}
 	    }
 	}
@@ -222,7 +228,7 @@ int main (int argc, char* argv[])
 {
     char filename[256];
     struct replay_timing* timings;
-    double* dtimings;
+    struct extra_data* edata;
     struct stat st;
     int fd, rc, num, i, j, k, parts;
 
@@ -281,9 +287,9 @@ int main (int argc, char* argv[])
 	return -1;
     }
 
-    dtimings = (double *) malloc (st.st_size);
-    if (dtimings == NULL) {
-	fprintf (stderr, "Unable to allocate timings buffer of size %lu\n", st.st_size);
+    edata = (struct extra_data *) malloc (st.st_size);
+    if (edata == NULL) {
+	fprintf (stderr, "Unable to allocate extra data array of size %lu\n", st.st_size);
 	return -1;
     }
 
@@ -293,29 +299,54 @@ int main (int argc, char* argv[])
 	return -1;
     }
     
+    // First, need to sum times for all threads to get totals for this group
     num = st.st_size/sizeof(struct replay_timing);
+    int total_time = 0;
+    map<u_int,u_int> last_time;
+    for (i = 0; i < num; i++) {
+	u_int pid = timings[i].pid;
+	auto iter = last_time.find(pid);
+	if (iter == last_time.end()) {
+	    total_time += timings[i].ut;
+	} else {
+	    total_time += timings[i].ut - iter->second;
+	}
+	last_time[pid] = timings[i].ut;
+	timings[i].ut = total_time;
+    }
+
+    // Next interpolate values where increment is small
     for (i = 0; i < num; i++) {
 	for (j = i+1; j < num; j++) {
 	    if (timings[i].ut != timings[j].ut) break;
 	}
 	for (k = i; k < j; k++) {
-	    dtimings[k] = (double) timings[k].ut + (double) (k-i) / (double) (j-i);
+	    edata[k].dtiming = (double) timings[k].ut + (double) (k-i) / (double) (j-i);
 	}
 	i = j-1;
     }
 
+    // Calculate index in terms of system calls we can attach to 
+    u_long aindex = 1;
+    for (i = 0; i < num; i++) {
+	if (can_attach(timings[i].syscall)) {
+	    edata[i].aindex = aindex++;
+	} else {
+	    edata[i].aindex = 0;
+	}
+    }
 
     if (details) {
-      for (i = 0; i < num; i++) {
-	  printf ("%d: pid %d syscall %lu type %d ut %u %.3f\n", i, timings[i].pid, timings[i].index, timings[i].syscall, timings[i].ut, dtimings[i]);
-      }
-      printf ("----------------------------------------\n");
+	for (i = 0; i < num; i++) {
+	    printf ("%d: pid %d syscall %lu type %d ut %u %.3f\n", i, timings[i].pid, timings[i].index, timings[i].syscall, timings[i].ut, edata[i].dtiming);
+	}
+	printf ("----------------------------------------\n");
     }
 
     printf ("%s\n", argv[1]);
     if (group_by > 0) printf ("group by %d\n", group_by);
     
-    gen_timings (timings, dtimings, 0, num-1, parts);
+    gen_timings (timings, edata, 0, num-1, parts);
 
     return 0;
 }

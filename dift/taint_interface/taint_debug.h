@@ -1533,26 +1533,22 @@ struct taint_op {
     u_long src;
 };
 
-void trace_syscall_op(void* ptdata,
-                        int outfd, int threadid,
-                        u_long ip, taint_op_t taint_op,
-                        u_long syscall_num,
-                        u_long syscall_cnt);
+void trace_syscall_op(int outfd, int threadid,
+		      u_long ip, taint_op_t taint_op,
+		      u_long syscall_num,
+		      u_long syscall_cnt);
 
-void trace_taint_op(void* ptdata,
-                        int outfd, int threadid,
-                        u_long ip, taint_op_t taint_op,
-                        u_long dst, u_long src);
+void trace_taint_op(int outfd, int threadid,
+		    u_long ip, taint_op_t taint_op,
+		    u_long dst, u_long src);
 
-void trace_taint_op_enter(void* ptdata,
-                        int outfd, int threadid,
-                        u_long ip, taint_op_t taint_op,
-                        u_long dst, u_long src);
+void trace_taint_op_enter(int outfd, int threadid,
+			  u_long ip, taint_op_t taint_op,
+			  u_long dst, u_long src);
 
-void trace_taint_op_exit(void* ptdata,
-                        int outfd, int threadid,
-                        u_long ip, taint_op_t taint_op,
-                        u_long dst, u_long src);
+void trace_taint_op_exit(int outfd, int threadid,
+			 u_long ip, taint_op_t taint_op,
+			 u_long dst, u_long src);
 
 #ifdef __cplusplus
 }

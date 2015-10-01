@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "taint_interface/taint.h"
 #include "taint_interface/taint_creation.h"
 #include "xray_token.h"
 #include "maputil.h"
@@ -17,6 +18,7 @@ int main (int argc, char* argv[])
     u_long* mptr;
     u_long buf_size, i;
     long rc;
+    u_long ocnt = 0;
 
     while (1) 
     {
@@ -81,38 +83,24 @@ int main (int argc, char* argv[])
 	for (i = 0; i < buf_size; i++) {
 	    do {
 		if (*mptr) {
-		    int found = 0, j;
 		    u_long tokval = *mptr;
 		    
-                    //printf ("output syscall %lu offset %lu <- ", syscall, i);
+		    printf ("output syscall %lu offset %lu (%lx) <- (%lx)", syscall, i, ocnt, *mptr);
 		    struct token* ptok = (struct token *) tbuf;
 		    while (tokval > ptok->size) {
 			tokval -= ptok->size;
 			ptok++;
 		    } 
-//		    printf ("input syscall %d offset %lu\n", ptok->syscall_cnt, tokval);
+		    printf ("input syscall %d offset %lu\n", ptok->syscall_cnt, tokval);
 		    
-		    //search through the input_syscalls to see if this is a new syscall mapping:
-		    for(j = 0; j < input_syscalls_index; j++) {
-			if(input_syscalls[j] == ptok->syscall_cnt) 
-			{
-				found = 1;
-			}
-		    }
-		    if (!found) {
-			input_syscalls[input_syscalls_index] = ptok->syscall_cnt;
-			input_syscalls_index += 1;
-
-			printf ("output syscall %d,%lu offset %lu <- ", record_pid, syscall, i);
-			printf ("input syscall %d,%d offset %lu\n", ptok->record_pid, ptok->syscall_cnt, tokval);
-		    }
 		    mptr++;
 		} else {
 		    mptr++;
 		    break;
 		}
 	    } while (1);
-	    obuf += sizeof(u_long) * 2;
+	    obuf += sizeof(u_long) + sizeof(taint_t);
+	    ocnt++;
 	}
     }
 
