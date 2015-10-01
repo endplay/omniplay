@@ -41,7 +41,7 @@
 #include <asm/cacheflush.h>
 #include "audit.h"	/* audit_signal_info() */
 
-//#define REP_SIG_DEBUG
+#define REP_SIG_DEBUG
 
 /*
  * SLAB caches for signal bits.

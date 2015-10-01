@@ -1,3 +1,4 @@
+
 #include "pin.H"
 #include <stdio.h>
 #include <stdlib.h>
@@ -70,7 +71,7 @@
  #define LOG_PRINT(x,...);
  #define INSTRUMENT_PRINT(x,...);
  #define SYSCALL_DEBUG(x,...);
- //#define SYSCALL_DEBUG fprintf
+// #define SYSCALL_DEBUG fprintf
  #define PRINTX(x,...);
 #endif
 #define SPECIAL_REG(X) (X == LEVEL_BASE::REG_EBP || X == LEVEL_BASE::REG_ESP)
@@ -913,6 +914,7 @@ static void sys_recvmsg_start(struct thread_data* ptdata, int fd, struct msghdr*
     rmi->flags = flags;
 
     ptdata->save_syscall_info = (void *) rmi;
+    SYSCALL_DEBUG (stderr, "recvmsg_start done %d,%d\n", ptdata->record_pid, ptdata->syscall_cnt);
 }
 
 static void sys_recvmsg_stop(struct thread_data* ptdata, int rc) {
@@ -949,11 +951,11 @@ static void sys_recvmsg_stop(struct thread_data* ptdata, int rc) {
             create_taints_from_buffer(vi->iov_base, vi->iov_len, &tci, tokens_fd,
                                         channel_name);
             tci.offset += vi->iov_len;
-            fprintf (stderr, "syscall cnt: %d recvmsg (%u) at %#lx, size %d\n",
-                    ptdata->syscall_cnt, i, (unsigned long) vi->iov_base, vi->iov_len);
+//            fprintf (stderr, "syscall cnt: %d,%d recvmsg (%u) at %#lx, size %d\n",
+//		     ptdata->record_pid, ptdata->syscall_cnt, i, (unsigned long) vi->iov_base, vi->iov_len);
         }
     }
-    SYSCALL_DEBUG (stderr, "recvmsg_stop done\n");
+    SYSCALL_DEBUG (stderr, "recvmsg_stop done %d,%d\n", ptdata->record_pid, ptdata->syscall_cnt);
     free(rmi);
 }
 
@@ -971,6 +973,8 @@ static void sys_sendmsg_start(struct thread_data* ptdata, int fd,
     smi->flags = flags;
 
     ptdata->save_syscall_info = (void *) smi;
+
+    SYSCALL_DEBUG (stderr, "sys_sendmsg_start done %d,%d\n", ptdata->record_pid, ptdata->syscall_cnt);
 }
 
 static void sys_sendmsg_stop(struct thread_data* ptdata, int rc)
@@ -1003,11 +1007,11 @@ static void sys_sendmsg_stop(struct thread_data* ptdata, int rc)
             struct iovec* vi = (smi->msg->msg_iov + i);
             output_buffer_result(vi->iov_base, vi->iov_len, &tci, outfd);
             tci.offset += vi->iov_len;
-            fprintf (stderr, "syscall cnt: %d sendmsg (%u) at %#lx, size %d\n",
-                    ptdata->syscall_cnt, i, (unsigned long) vi->iov_base, vi->iov_len);
+//            fprintf (stderr, "syscall cnt: %d,%d sendmsg (%u) at %#lx, size %d\n",
+//		     ptdata->record_pid,ptdata->syscall_cnt, i, (unsigned long) vi->iov_base, vi->iov_len);
         }
     }
-    SYSCALL_DEBUG (stderr, "sys_sendmsg_stop done\n");
+    SYSCALL_DEBUG (stderr, "sys_sendmsg_stop done %d,%d\n", ptdata->record_pid, ptdata->syscall_cnt);
     free(smi);
 }
 
@@ -1016,7 +1020,11 @@ void syscall_start(struct thread_data* ptdata, int sysnum,
                     ADDRINT syscallarg2, ADDRINT syscallarg3,
                     ADDRINT syscallarg4, ADDRINT syscallarg5)
 {
+	fprintf(stderr, "syscall_start sysnum: %d, sys_sendfile64 %d\n",sysnum, SYS_sendfile64);
     switch (sysnum) {
+    case SYS_sendfile: 
+	    fprintf(stderr, "found a sendfile\n");
+	    break;
         case SYS_open:
             sys_open_start(ptdata, (char *) syscallarg0, (int) syscallarg1);
             break;
@@ -1075,12 +1083,12 @@ void syscall_start(struct thread_data* ptdata, int sysnum,
                     sys_recv_start(ptdata, (int)args[0], (char *)args[1], (int)args[2]);
                     break;
                 case SYS_RECVMSG:
-                    SYSCALL_DEBUG(stderr, "recvmsg_start\n");
+		    SYSCALL_DEBUG(stderr, "recvmsg_start %d,%d\n", ptdata->record_pid, ptdata->syscall_cnt);
                     sys_recvmsg_start(ptdata, (int)args[0], (struct msghdr *)args[1],
                                             (int)args[2]);
                     break;
                 case SYS_SENDMSG:
-                    SYSCALL_DEBUG(stderr, "sendmsg_start\n");
+		    SYSCALL_DEBUG(stderr, "sendmsg_start %d,%d\n", ptdata->record_pid, ptdata->syscall_cnt);
                     sys_sendmsg_start(ptdata, (int)args[0], 
                             (struct msghdr *)args[1], (int)args[2]);
                     break;
@@ -1147,6 +1155,7 @@ void syscall_end(struct thread_data* ptdata, int sysnum, ADDRINT ret_value)
                     break;
                 case SYS_RECVMSG:
                     sys_recvmsg_stop(ptdata, rc);
+		    break;
                 case SYS_SENDMSG:
                     sys_sendmsg_stop(ptdata, rc);
                     break;
@@ -1193,6 +1202,7 @@ void instrument_syscall(ADDRINT syscall_num,
             check_clock_before_syscall (dev_fd, (int) syscall_num);
         }
         //print_taint_stats(stderr);
+
         syscall_start(ptdata, sysnum, syscallarg0, syscallarg1, syscallarg2, 
                                         syscallarg3, syscallarg4, syscallarg5);
 
@@ -1248,6 +1258,8 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
     // reset the syscall number after returning from system call
     increment_syscall_cnt (ptdata, ptdata->sysnum);
     ptdata->sysnum = 0;
+    
+
 
     if (global_syscall_cnt == (unsigned long) segment_length) {
 	//fprintf(stderr, "Pin terminating at Pid %d, syscall %d\n", PIN_GetPid(), ptdata->syscall_cnt);

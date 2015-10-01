@@ -1101,7 +1101,7 @@ static inline int
 test_app_syscall(int number)
 {
 	struct replay_thread* prt = current->replay_thrd;
-	if (prt->app_syscall_addr == 1) return 0; // PIN not yet attached
+	if (prt->app_syscall_addr== 1) return 0; // PIN not yet attached
 	return (prt->app_syscall_addr == 0) || (*(int*)(prt->app_syscall_addr) == number);
 }
 
@@ -1899,13 +1899,8 @@ destroy_replay_group (struct replay_group *prepg)
 	 *          to the put_replay_group). So, I don't need to grab the lock for the
 	 *          finished variable below, its already being grabbed. 
       	 */
-	printk("about to change finished %d\n",prepg->rg_rec_group->finished);
 	prepg->rg_rec_group->finished = 1;
-
-	printk("changed finished %d\n",prepg->rg_rec_group->finished);
 	wake_up(&(prepg->rg_rec_group->finished_queue));
-
-	printk("destroying a replay. finished %d\n",prepg->rg_rec_group->finished);
 
 	// Put record group so it can be destroyed
 	put_record_group (prepg->rg_rec_group);
@@ -3315,8 +3310,6 @@ get_linker (void)
 	}
 }
 
-
-//CODE THAT GETS CALLED FROM RESUME
 long
 replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 		    int follow_splits, int save_mmap, loff_t attach_index, int attach_pid, int ckpt_at, int record_timing)
@@ -4125,7 +4118,6 @@ record_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 	}
 
 	MPRINT ("Pid %d: recording and delivering signal\n", current->pid);
-
 	psignal = ARGSKMALLOC(sizeof(struct repsignal), GFP_KERNEL); 
 	if (psignal == NULL) {
 		printk ("Cannot allocate replay signal\n");
@@ -4178,7 +4170,8 @@ replay_signal_delivery (int* signr, siginfo_t* info)
 
 	*signr = psignal->signr;
 	memcpy (info, &psignal->info, sizeof (siginfo_t));
-	
+
+
 	if (!is_pin_attached()) {
 		MPRINT ("Pid %d No Pin attached, so setting blocked signal mask to recorded mask, and copying k_sigaction\n", current->pid);
 		memcpy (&current->sighand->action[psignal->signr-1],
@@ -5404,20 +5397,18 @@ wait_for_replay_group(pid_t pid)
 			struct record_group* rec_group = rp_group->rg_rec_group;
 
 			get_record_group (rec_group);
-			printk("locking the rec_group. finished %d\n", rec_group->finished);
 			rg_lock(rec_group);
 
+			//I'm not convinced that we need this while loop here... 
 			while(!rec_group->finished) { 
-
 				rg_unlock(rec_group);
-				printk("going to sleep\n");
+				MPRINT("Pid %d going to sleep, waiting on replay group containing pid %d to finish\n",current->pid,pid);
 				wait_event_interruptible(rec_group->finished_queue,rec_group->finished);
-				printk("woken up! finished: %d\n", rec_group->finished );
+				MPRINT("Pid %d woken up after waiting on replay group\n", current->pid );
 				rg_lock(rec_group);
 			};
 
 			rg_unlock(rec_group);
-			printk("finished in wait_for_replay_group \n");
 			put_record_group (rec_group);
 			return pid;
 		}
@@ -11315,9 +11306,17 @@ replay_rt_sigaction (int sig, const struct sigaction __user *act, struct sigacti
 	char* retparams = NULL;
 	struct replay_thread* prt = current->replay_thrd;
 	
-	if (is_pin_attached()) {
+	if(prt->rp_group == NULL) 
+	{
+		MPRINT("null rp_group?\n");
+	}
+	    
+	if (is_pin_attached())
+	{
+		MPRINT("inside of the pin_attached\n");
 		rc = prt->rp_saved_rc;
 		retparams = prt->rp_saved_retparams;
+
 		// this is an application syscall (with Pin)
 		(*(int*)(prt->app_syscall_addr)) = 999;
 		// actually perform rt_sigaction
@@ -11326,7 +11325,20 @@ replay_rt_sigaction (int sig, const struct sigaction __user *act, struct sigacti
 			printk("ERROR: sigaction mismatch, got %ld, expected %ld", retval, rc);
 			syscall_mismatch();
 		}
-	} else {
+	} 
+	else if( prt->rp_group->rg_attach_device)
+	{
+		MPRINT("inside of the 'going' to attach pin branch\n");
+		//what is this rp_saved_rc? Gonna have to find out...? 
+		rc = get_next_syscall (174, &retparams);
+
+		retval = sys_rt_sigaction (sig, act, oact, sigsetsize);
+		if (rc != retval) {
+			printk("ERROR: sigaction mismatch, got %ld, expected %ld", retval, rc);
+			syscall_mismatch();
+		}
+	}
+	else {
 		rc = get_next_syscall (174, &retparams);
 	}
 
