@@ -130,30 +130,29 @@ void set_address_one(ADDRINT syscall_num, ADDRINT ebx_value, ADDRINT syscallarg0
     struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
 #endif
     if (tdata != current_thread) printf ("sao: tdata %p current_thread %p\n", tdata, current_thread);
-    if (current_thread) {
+    if (tdata) {
 	int sysnum = (int) syscall_num;
 	
-	printf ("%ld Pid %d, tid %d, (record pid %d), %d: syscall num is %d\n", global_syscall_cnt, PIN_GetPid(), PIN_GetTid(), current_thread->record_pid, current_thread->syscall_cnt, (int) syscall_num);
+	printf ("%ld Pid %d, tid %d, (record pid %d), %d: syscall num is %d\n", global_syscall_cnt, PIN_GetPid(), PIN_GetTid(), tdata->record_pid, tdata->syscall_cnt, (int) syscall_num);
 
-    if (sysnum == SYS_open) {
-        printf("try to open %s\n", (char *) syscallarg0);
-    }
-    if (sysnum == 31) {
-	    current_thread->ignore_flag = (u_long) syscallarg1;
-    }
+	if (sysnum == SYS_open) {
+	    printf("try to open %s\n", (char *) syscallarg0);
+	}
+	if (sysnum == 31) {
+	    tdata->ignore_flag = (u_long) syscallarg1;
+	}
 
 #ifdef PLUS_TWO
 	    g_hash_table_add(sysexit_addr_table, GINT_TO_POINTER(ip+2));
-	    fprintf (stderr, "Add address %x\n", ip+2);
+	    printf ("Add address %x\n", ip+2);
 	    g_hash_table_add(sysexit_addr_table, GINT_TO_POINTER(ip+11));
-	    fprintf (stderr, "Add address %x\n", ip+11);
+	    printf ("Add address %x\n", ip+11);
 #endif	    
 	if (sysnum == 45 || sysnum == 91 || sysnum == 120 || sysnum == 125 || sysnum == 174 || sysnum == 175 || sysnum == 190 || sysnum == 192) {
-	//if (sysnum == 91 || sysnum == 120 || sysnum == 125 || sysnum == 175 || sysnum == 190 || sysnum == 192) {
 	    check_clock_before_syscall (fd, (int) syscall_num);
 	}
-	current_thread->app_syscall = syscall_num;
-	current_thread->sysnum = syscall_num;
+	tdata->app_syscall = syscall_num;
+	tdata->sysnum = syscall_num;
     } else {
 	fprintf (stderr, "set_address_one: NULL current_thread\n");
     }
@@ -173,7 +172,6 @@ void syscall_after (ADDRINT ip)
     if (tdata != current_thread) printf ("sa: tdata %p current_thread %p\n", tdata, current_thread);
     if (current_thread) {
 	if (current_thread->app_syscall == 999) {
-	    //fprintf (stderr, "Pid %d Waiting for clock after syscall,ip=%lx\n", PIN_GetPid(), (u_long) ip);
 	    if (addr_save) g_hash_table_add(sysexit_addr_table, GINT_TO_POINTER(ip));
 	    if (check_clock_after_syscall (fd) == 0) {
 	    } else {
@@ -195,9 +193,9 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
 #endif
     int record_pid;
     if (tdata != current_thread) printf ("afic: tdata %p current_thread %p\n", tdata, current_thread);
-    fprintf(stderr, "AfterForkInChild\n");
+    printf ("AfterForkInChild\n");
     record_pid = get_record_pid();
-    fprintf(stderr, "get record id %d\n", record_pid);
+    printf ("get record id %d\n", record_pid);
     current_thread->record_pid = record_pid;
 
     // reset syscall index for thread
@@ -208,9 +206,9 @@ void instrument_inst_print (ADDRINT ip)
 {
     if (global_syscall_cnt > print_limit && global_syscall_cnt < print_stop) {
 	PIN_LockClient();
-        fprintf(stderr, "[INST] Pid %d (tid: %d) (record %d) - %#x\n", PIN_GetPid(), PIN_GetTid(), get_record_pid(), ip);
+        printf("[INST] Pid %d (tid: %d) (record %d) - %#x\n", PIN_GetPid(), PIN_GetTid(), get_record_pid(), ip);
 	if (IMG_Valid(IMG_FindByAddress(ip))) {
-		fprintf(stderr, "%s -- img %s static %#x\n", RTN_FindNameByAddress(ip).c_str(), IMG_Name(IMG_FindByAddress(ip)).c_str(), find_static_address(ip));
+		printf("%s -- img %s static %#x\n", RTN_FindNameByAddress(ip).c_str(), IMG_Name(IMG_FindByAddress(ip)).c_str(), find_static_address(ip));
 	}
 	PIN_UnlockClient();
     }
@@ -248,22 +246,6 @@ void track_inst(INS ins, void* data)
 
 void track_trace(TRACE trace, void* data)
 {
-	// System calls automatically end a Pin trace.
-	// So we can instrument every trace (instead of every instruction) to check to see if
-	// the beginning of the trace is the first instruction after a system call.
-    /*
-	struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
-	if (tdata) {
-		if (tdata->app_syscall == 999) {
-			TRACE_InsertCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_after, IARG_INST_PTR, IARG_END);
-		}
-	} else {
-		fprintf (stderr, "syscall_after: NULL tdata\n");
-	}
-    */
-
-    //TRACE_InsertIfCall(trace, IPOINT_BEFORE, (AFUNPTR) check_syscall_after, IARG_REG_VALUE, tls_reg, IARG_END);
-    //TRACE_InsertThenCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_after, IARG_INST_PTR, IARG_END);
 #ifdef PLUS_TWO
     ADDRINT addr = TRACE_Address (trace);
     if (!g_hash_table_contains (sysexit_addr_table, GINT_TO_POINTER(addr))) return;
@@ -279,8 +261,6 @@ void track_trace(TRACE trace, void* data)
 #else
     TRACE_InsertCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_after, IARG_INST_PTR, IARG_END);
 #endif
-    //	}
-
 }
 
 BOOL follow_child(CHILD_PROCESS child, void* data)
@@ -289,7 +269,7 @@ BOOL follow_child(CHILD_PROCESS child, void* data)
     char** prev_argv = (char**)data;
     int index = 0;
 
-    fprintf(stderr, "following child...\n");
+    printf ("following child...\n");
 
     /* the format of pin command would be:
      * pin_binary -follow_execv -t pin_tool new_addr*/
@@ -305,9 +285,9 @@ BOOL follow_child(CHILD_PROCESS child, void* data)
 
     CHILD_PROCESS_SetPinCommandLine(child, new_argc, argv);
 
-    fprintf(stderr, "returning from follow child\n");
-    fprintf(stderr, "pin my pid is %d\n", PIN_GetPid());
-    fprintf(stderr, "%d is application thread\n", PIN_IsApplicationThread());
+    printf("returning from follow child\n");
+    printf("pin my pid is %d\n", PIN_GetPid());
+    printf("%d is application thread\n", PIN_IsApplicationThread());
 
     return TRUE;
 }
@@ -345,29 +325,31 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
     PIN_SetThreadData (tls_key, ptdata, threadid);
 #endif
 
-    current_thread = ptdata;
-    set_pin_addr (fd, (u_long) &(ptdata->app_syscall), ptdata, (void **) &current_thread);
+    // On attach, don't do this when we are a waiting thread
+    if (set_pin_addr (fd, (u_long) &(ptdata->app_syscall), ptdata, (void **) &current_thread) == 0) {
+	current_thread = ptdata;
+    }
 }
 
 void thread_fini (THREADID threadid, const CONTEXT* ctxt, INT32 code, VOID* v)
 {
     struct thread_data* ptdata;
     ptdata = (struct thread_data *) malloc (sizeof(struct thread_data));
-    fprintf(stderr, "Pid %d (recpid %d, tid %d) thread fini\n", PIN_GetPid(), ptdata->record_pid, PIN_GetTid());
+    printf("Pid %d (recpid %d, tid %d) thread fini\n", PIN_GetPid(), ptdata->record_pid, PIN_GetTid());
 }
 
 #ifdef DEBUG_FUNCTIONS
 void before_function_call(ADDRINT name, ADDRINT rtn_addr)
 {
     if (global_syscall_cnt >= function_print_limit && global_syscall_cnt < function_print_stop) {
-        fprintf(stderr, "Before call to %s (%#x)\n", (char *) name, rtn_addr);
+        printf("Before call to %s (%#x)\n", (char *) name, rtn_addr);
     }
 }
 
 void after_function_call(ADDRINT name, ADDRINT rtn_addr)
 {
     if (global_syscall_cnt >= function_print_limit && global_syscall_cnt < function_print_stop) {
-        fprintf(stderr, "After call to %s (%#x)\n", (char *) name, rtn_addr);
+        printf("After call to %s (%#x)\n", (char *) name, rtn_addr);
     }
 }
 
@@ -395,8 +377,8 @@ VOID ImageLoad (IMG img, VOID *v)
 	uint32_t id = IMG_Id (img);
 
 	ADDRINT load_offset = IMG_LoadOffset(img);
-	fprintf(stderr, "[IMG] Loading image id %d, name %s with load offset %#x\n",
-			id, IMG_Name(img).c_str(), load_offset);
+	printf ("[IMG] Loading image id %d, name %s with load offset %#x\n",
+		id, IMG_Name(img).c_str(), load_offset);
 }
 
 void print_addr (gpointer key, gpointer value, gpointer data)
@@ -406,12 +388,12 @@ void print_addr (gpointer key, gpointer value, gpointer data)
 }
 
 void fini(INT32 code, void* v) {
-    fprintf(stderr, "process is done\n");
+    printf ("process is done\n");
 #ifdef TIMING_ON
     {
         struct timeval tv;
         gettimeofday(&tv, NULL);
-        fprintf(stderr, "Pid %d start %ld secs %ld usecs\n", PIN_GetPid(), tv.tv_sec, tv.tv_usec);
+        printf("Pid %d start %ld secs %ld usecs\n", PIN_GetPid(), tv.tv_sec, tv.tv_usec);
     }
 #endif
 
@@ -460,16 +442,12 @@ int main(int argc, char** argv)
     print_stop = atoi(KnobPrintStop.Value().c_str());
     function_print_limit = atoi(KnobFunctionPrintLimit.Value().c_str());
     function_print_stop = atoi(KnobFunctionPrintStop.Value().c_str());
-    fprintf(stderr, "limit: %ld, stop %ld\n", function_print_limit,
-	    function_print_stop);
 #endif
     
     addr_load = (char *) KnobLoadSyscallAddrs.Value().c_str();
     addr_save = (char *) KnobSaveSyscallAddrs.Value().c_str();
     if (!strcmp(addr_load,"")) addr_load = NULL;
     if (!strcmp(addr_save,"")) addr_save = NULL;
-    if (addr_load) fprintf (stderr, "loading addresses\n");
-    if (addr_save) fprintf (stderr, "saving addresses\n");
 
     sysexit_addr_table = g_hash_table_new(g_direct_hash, g_direct_equal);
     if (addr_load) {
@@ -513,7 +491,7 @@ int main(int argc, char** argv)
     {
         struct timeval tv;
         gettimeofday(&tv, NULL);
-        fprintf(stderr, "Pid %d start %ld secs %ld usecs\n", PIN_GetPid(), tv.tv_sec, tv.tv_usec);
+        printf ("Pid %d start %ld secs %ld usecs\n", PIN_GetPid(), tv.tv_sec, tv.tv_usec);
     }
 #endif
 

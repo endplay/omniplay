@@ -51,7 +51,7 @@ partt: libutil.a
 partt: LDFLAGS += -pthread
 
 streamtt: libutil.a streamtt.cpp 
-	c++ -std=c++0x streamtt.cpp libutil.a -pthread -lrt -o streamtt
+	c++ -std=c++0x streamtt.cpp libutil.a -pthread -lrt -o streamtt -Wall -Werror
 
 streamserver: libutil.a streamserver.cpp streamserver.h streamnw.cpp streamnw.h
 	c++ -Wall -Werror -std=c++0x streamserver.cpp streamnw.cpp libutil.a -pthread -lrt -o streamserver -g

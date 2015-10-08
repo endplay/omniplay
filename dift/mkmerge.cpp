@@ -448,11 +448,17 @@ static long map_before_segment (char* dirname)
 	return -1;
     }
 
-    rc = map_file (tsfile, &mapfd, &odatasize, &mapsize, (char **) &ts_log);
-    if (rc < 0) return rc;
-
     print_value (output_token); // First entry is number of output tokens
     print_value (tokens);        // Second entry is number of input tokens
+
+    rc = map_file (tsfile, &mapfd, &odatasize, &mapsize, (char **) &ts_log);
+    if (rc < 0) {
+	/* Sometimes there is no file for last epoch - this is OK */
+	flush_outbuf ();
+	close (outfd);
+	return rc;
+    }
+
     for (i = 0; i < odatasize/(sizeof(taint_t)*2); i++) {
 	print_value (ts_log[2*i]); // addr
 	value = ts_log[2*i+1];

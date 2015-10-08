@@ -26,7 +26,7 @@ using namespace std;
 
 
 //#define DEBUG(x) ((x)==0x9808 || (x)==0x9808-0x21e || (x)==0x9808-0x24a6)
-//#define STATS
+#define STATS
 
 struct senddata {
     char*  host;
@@ -56,16 +56,16 @@ struct taintq*      inputq;
 u_long              can_read;
 struct taintq*      outputq;
 u_long              can_write;
-int                 start_flag;
-int                 finish_flag;
+int                 start_flag = 0;
+int                 finish_flag = 0;
 
 #ifdef DEBUG
 FILE* debugfile;
 #endif
 #ifdef STATS
 FILE* statsfile;
-u_long merges = 0, directs = 0, indirects = 0, values = 0, idle = 0, output_merges;
-u_long atokens = 0, passthrus = 0, aresolved = 0, aindirects = 0, avalues = 0, unmodified = 0;
+unsigned long long merges = 0, directs = 0, indirects = 0, values = 0, idle = 0, output_merges;
+unsigned long long atokens = 0, passthrus = 0, aresolved = 0, aindirects = 0, avalues = 0, unmodified = 0, written = 0;
 struct timeval start_tv, output_done_tv, index_created_tv, address_done_tv, end_tv;
 
 static long ms_diff (struct timeval tv1, struct timeval tv2)
@@ -79,6 +79,93 @@ static long ms_diff (struct timeval tv1, struct timeval tv2)
 #else
 #define IDLE usleep (100);
 #endif
+
+#ifdef USE_FILE
+
+#define OUTBUFSIZE 1000000
+u_long uoutbuf[OUTBUFSIZE];
+u_long uoutindex = 0;
+int uoutfd;
+
+u_long uinbuf[OUTBUFSIZE];
+u_long uinindex = 0, uincnt = 0;
+int uinfd;
+
+static long init_uoutbuf (const char* dirname) 
+{
+    char uoutfile[256], uinfile[256];
+
+    sprintf (uoutfile, "%s/stream-outs", dirname);
+    sprintf (uinfile, "%s/stream-ins", dirname);
+
+    uoutfd = open (uoutfile, O_CREAT | O_TRUNC | O_WRONLY | O_LARGEFILE, 0644);
+    if (uoutfd < 0) {
+	fprintf (stderr, "Cannot create %s, errno=%d\n", uoutfile, errno);
+	return -1;
+    }
+
+    if (!finish_flag) {
+	uinfd = open (uinfile, O_RDONLY | O_LARGEFILE);
+	if (uinfd < 0) {
+	    fprintf (stderr, "Cannot open %s, errno=%d\n", uinfile, errno);
+	    return -1;
+	}
+    }
+
+    return 0;
+}
+
+static void flush_uoutbuf()
+{
+    long rc = write (uoutfd, &uoutbuf, uoutindex*sizeof(u_long));
+#ifdef STATS
+    written += uoutindex;
+#endif
+    if (rc != (long) (uoutindex*sizeof(u_long))) {
+	fprintf (stderr, "flush_uoutbuf: write of segment failed, rc=%ld, errno=%d\n", rc, errno);
+	exit (rc);
+    }
+    uoutindex = 0;
+}
+
+static int read_uinbuf() 
+{
+    long rc = read (uinfd, &uinbuf, sizeof(uinbuf));
+    if (rc > 0) {
+	assert (rc%4 == 0);
+	uincnt = rc/sizeof(u_long);
+	uinindex = 0;
+	return uincnt;
+    } else {
+	return rc;
+    }
+}
+
+#define INIT_UOUT init_uoutbuf
+
+#define PRINT_UVALUE(val)						\
+    {									\
+	uoutbuf[uoutindex++] = val;					\
+	if (uoutindex == OUTBUFSIZE) flush_uoutbuf();			\
+    }
+
+#define PRINT_USENTINEL() PRINT_UVALUE(0);
+
+// This will return a bogus value when the done flag is set and all entries are read
+#define GET_UVALUE(val)							\
+    {									\
+    if (uinindex == uincnt) {						\
+	long rc = read_uinbuf();					\
+        if (rc <= 0) return 0xffffffff;					\
+    }									\
+    val = uinbuf[uinindex++];						\
+}
+
+#define TERM_UOUT() { PRINT_UVALUE(0xffffffff); flush_uoutbuf(); }
+
+#else
+
+#define INIT_UOUT(dirname)
 
 #define PRINT_UVALUE(val)						\
     {									\
@@ -118,6 +205,10 @@ static long ms_diff (struct timeval tv1, struct timeval tv2)
 	if (inputq->read_index == TAINTENTRIES) inputq->read_index = 0; \
 	can_read--;							\
     }
+
+#define TERM_UOUT() PRINT_UVALUE(0xffffffff);
+
+#endif
 
 static void flush_outrbuf()
 {
@@ -351,6 +442,8 @@ long stream_epoch (const char* dirname)
     }
     outrindex = 0;
 
+    INIT_UOUT(dirname);
+
     plog = output_log;
     while (plog < output_log + odatasize) {
 	plog += sizeof(struct taint_creation_info) + sizeof(u_long);
@@ -413,6 +506,7 @@ long stream_epoch (const char* dirname)
 
     unmap_file (output_log, mapfd, mapsize);
 
+    fprintf (stderr, "%s: done with phase 1\n", dirname);
 #ifdef STATS
     gettimeofday(&output_done_tv, NULL);
     output_merges = merges;
@@ -531,7 +625,7 @@ long stream_epoch (const char* dirname)
 	gettimeofday(&address_done_tv, NULL);
 #endif
     }
-    if (!start_flag) PRINT_UVALUE(0xffffffff);
+    if (!start_flag) TERM_UOUT();
 
     flush_outrbuf ();
     close (outrfd);
@@ -606,16 +700,18 @@ long stream_epoch (const char* dirname)
     } else {
 	fprintf (statsfile, "Finish time:             %6ld ms\n", ms_diff (end_tv, output_done_tv));
     }
-    fprintf (statsfile, "Idle                     %6ld ms\n", idle/10);
+    fprintf (statsfile, "Idle                     %6llu ms\n", idle/10);
     fprintf (statsfile, "\n");
-    fprintf (statsfile, "Output directs %lu indirects %lu values %lu, merges %lu\n", directs, indirects, values, output_merges);
+    fprintf (statsfile, "Output directs %llu indirects %llu values %llu, merges %llu\n", directs, indirects, values, output_merges);
     if (!finish_flag) {
-	fprintf (statsfile, "Address tokens %lu passthrus %lu resolved %lu, indirects %lu values %lu unmodified %lu, merges %lu\n", 
+	fprintf (statsfile, "Address tokens %llu passthrus %llu resolved %llu, indirects %llu values %llu unmodified %llu, merges %llu\n", 
 		 atokens, passthrus, aresolved, aindirects, avalues, unmodified, merges);
     }
     if (!start_flag) {
-	u_long written = outputq->write_index;
-	fprintf (statsfile, "Wrote %ld entries (%ld bytes)\n", written, written*sizeof(u_long)); 
+#ifndef USE_FILE
+	written = outputq->write_index;
+#endif
+	fprintf (statsfile, "Wrote %llu entries (%llu bytes)\n", written, written*sizeof(u_long)); 
     }
     fprintf (statsfile, "Unique indirects %d\n", resolved.size());
 #endif
@@ -779,6 +875,7 @@ void format ()
 
 int main (int argc, char* argv[]) 
 {
+#ifndef USE_FILE
     char* input_queue = NULL;
     char* output_queue = NULL;
     char* output_host = NULL;
@@ -787,10 +884,12 @@ int main (int argc, char* argv[])
     struct senddata sd;
     struct recvdata rd;
     long rc;
+#endif
 
     if (argc < 2) format();
 
     for (int i = 2; i < argc; i++) {
+#ifndef USE_FILE
 	if (!strcmp (argv[i], "-iq")) {
 	    i++;
 	    if (i < argc) {
@@ -814,11 +913,18 @@ int main (int argc, char* argv[])
 	    }
 	} else if (!strcmp (argv[i], "-ih")) {
 	    input_host = true;
+#else
+	if (!strcmp (argv[i], "-s")) {
+	    start_flag = 1;
+	} else if (!strcmp (argv[i], "-f")) {
+	    finish_flag = 1;
+#endif
 	} else {
 	    format();
 	}
     }
 
+#ifndef USE_FILE
     if (input_queue) {
 	int iqfd = shm_open (input_queue, O_RDWR, 0);
 	if (iqfd < 0) {
@@ -873,11 +979,14 @@ int main (int argc, char* argv[])
 	    return rc;
 	}
     }
+#endif
 
     stream_epoch (argv[1]);
-    
+
+#ifndef USE_FILE    
     if (output_host) pthread_join(oh_tid, NULL);
     if (input_host) pthread_join(ih_tid, NULL);
+#endif
 
     return 0;
 }
