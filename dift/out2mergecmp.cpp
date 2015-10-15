@@ -79,7 +79,7 @@ int main (int argc, char* argv[])
 	while (*mptr) {
 #ifdef TARGET
 	    if (otoken == TARGET) {
-		printf ("Output %lx -> input %lx syscall %lu offset %lu out of %lu\n", otoken, *mptr, tci->syscall_cnt, buf_cnt, buf_size);
+	      printf ("Output %lx -> input %lx syscall %lu offset %lu out of %lu\n", otoken, *mptr, (u_long) tci->syscall_cnt, buf_cnt, buf_size);
 	    }
 #endif
 #ifdef ITARGET

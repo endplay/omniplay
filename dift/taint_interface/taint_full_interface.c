@@ -12,7 +12,7 @@
 #include <sys/types.h>
 #include <sys/mman.h>
 
-//#define USE_SHMEM
+#define USE_SHMEM
 #define USE_MERGE_HASH
 #define TAINT_STATS
 //#define TRACE_TAINT

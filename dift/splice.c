@@ -82,7 +82,7 @@ long splice_after_segment (const char* splice_input_filename, const char* semnam
     tci.syscall_cnt = 0; // We'll use this to indicate address space taints for now - structure is somewhat broken
     tci.offset = 0;
     tci.fileno = 0;
-    tci.data = NULL;
+    tci.data = 0;
 
     rc = write(outfd, &tci, sizeof(tci));
     if (rc != sizeof(tci)) {

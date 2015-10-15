@@ -125,7 +125,7 @@ int main (int argc, char* argv[])
 	if (file_offset2 == -1) file_offset2 = tci1.syscall_cnt - tci2.syscall_cnt;
 
 	if (tci1.syscall_cnt+file_offset1 != tci2.syscall_cnt+file_offset2) {
-	    printf ("Taint info does not agree: syscall %lu vs. %lu\n", tci1.syscall_cnt+file_offset1, tci2.syscall_cnt+file_offset2);
+	  printf ("Taint info does not agree: syscall %lu vs. %lu\n", (u_long) tci1.syscall_cnt+file_offset1, (u_long) tci2.syscall_cnt+file_offset2);
 	}
 	
 	rc = read (fd1, &bufaddr1, sizeof(u_long));
@@ -156,7 +156,7 @@ int main (int argc, char* argv[])
 	    printf ("Bufsizes do not agree %lu %lu\n", bufsize1, bufsize2);
 	}
 	if (print_details) {
-	    printf ("Taint from syscall %lu addr %lx size %lx (tokens %lx to %lx)\n", tci1.syscall_cnt+file_offset1, 
+	  printf ("Taint from syscall %lu addr %lx size %lx (tokens %lx to %lx)\n", (u_long) tci1.syscall_cnt+file_offset1, 
 		    bufaddr1, bufsize1, output_tokens+1, output_tokens+bufsize1);
 	    output_tokens += bufsize1;
 	}

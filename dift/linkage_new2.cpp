@@ -455,7 +455,7 @@ static inline void sys_read_stop(int rc)
         tci.syscall_cnt = current_thread->syscall_cnt;
         tci.offset = 0;
         tci.fileno = read_fileno;
-        tci.data = NULL;
+        tci.data = 0;
 
         LOG_PRINT ("Create taints from buffer sized %d at location %#lx\n",
                         rc, (unsigned long) ri->buf);
@@ -511,7 +511,7 @@ static inline void sys_pread_stop(int rc)
         tci.syscall_cnt = current_thread->syscall_cnt;
         tci.offset = 0;
         tci.fileno = read_fileno;
-        tci.data = NULL;
+        tci.data = 0;
 
         LOG_PRINT ("Create taints from buffer sized %d at location %#lx\n",
                         rc, (unsigned long) ri->buf);
@@ -588,7 +588,7 @@ static void sys_mmap_stop(int rc)
             tci.syscall_cnt = current_thread->syscall_cnt;
             tci.offset = 0;
             tci.fileno = read_fileno;
-            tci.data = NULL;
+            tci.data = 0;
 
             fprintf(stderr, "mmap: call create taints from buffer %#lx, %d\n", (u_long) rc, mmi->length);
             create_taints_from_buffer ((void *) rc, mmi->length, &tci, tokens_fd,
@@ -874,7 +874,7 @@ static void sys_recv_stop(int rc)
         tci.syscall_cnt = current_thread->syscall_cnt;
         tci.offset = 0;
         tci.fileno = read_fileno;
-        tci.data = NULL;
+        tci.data = 0;
 
         LOG_PRINT ("Create taints from buffer sized %d at location %#lx\n",
                         rc, (unsigned long) ri->buf);
@@ -932,7 +932,7 @@ static void sys_recvmsg_stop(int rc)
         tci.syscall_cnt = current_thread->syscall_cnt;
         tci.offset = 0;
         tci.fileno = read_fileno;
-        tci.data = NULL;
+        tci.data = 0;
 
         for (i = 0; i < rmi->msg->msg_iovlen; i++) {
             struct iovec* vi = (rmi->msg->msg_iov + i);
@@ -14060,7 +14060,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
         tci.syscall_cnt = ptdata->syscall_cnt;
         tci.offset = 0;
         tci.fileno = FILENO_ARGS;
-        tci.data = NULL;
+        tci.data = 0;
         while (1) {
             char* arg;
             arg = *args;

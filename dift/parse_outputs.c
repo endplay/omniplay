@@ -150,7 +150,7 @@ void read_output(char* dataflow_filename, char* merge_filename) {
         }
         df_bytes_read += rc;
         fprintf(stderr, "Output rg: %llu, pid %d, syscall %lu, offset %d\n",
-                tci.rg_id, tci.record_pid, tci.syscall_cnt, tci.offset);
+                tci.rg_id, tci.record_pid, (u_long) tci.syscall_cnt, tci.offset);
 
         // read the address
         rc = read(df_fd, &addr, sizeof(u_long));
