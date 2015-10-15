@@ -432,6 +432,7 @@ static long map_before_segment (char* dirname)
 	}
 	
 	tokens = token.token_num+token.size-1;
+	printf ("tokens %lx size %d\n", tokens, sizeof(token));
     } else {
 	if (start_flag) {
 	    tokens = 0;

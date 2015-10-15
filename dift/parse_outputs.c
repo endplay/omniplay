@@ -3,7 +3,7 @@
 #include "taint_interface/taint_creation.h"
 
 void print_token(struct token* token) {
-    fprintf(stdout, "%d %lu %lu %d %d %d %lld %d\n",
+    fprintf(stdout, "%d %u %u %d %d %d %lld %d\n",
         token->type,
         token->token_num,
         token->size,

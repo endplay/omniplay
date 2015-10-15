@@ -276,13 +276,13 @@ int main (int argc, char* argv[])
 	    tok1.syscall_cnt+file_offset1 != tok2.syscall_cnt+file_offset2 ||
 	    tok1.byte_offset != tok2.byte_offset) {
 	    printf ("Tokens do not agree\n");
-	    printf ("Token 1 number %lu size %lu syscall %d byte %d\n", tok1.token_num-tok_offset1, tok1.size, tok1.syscall_cnt+file_offset1, tok1.byte_offset);
-	    printf ("Token 2 number %lu size %lu syscall %d byte %d\n", tok2.token_num-tok_offset2, tok2.size, tok2.syscall_cnt+file_offset2, tok2.byte_offset);
+	    printf ("Token 1 number %lu size %u syscall %d byte %d\n", tok1.token_num-tok_offset1, tok1.size, tok1.syscall_cnt+file_offset1, tok1.byte_offset);
+	    printf ("Token 2 number %lu size %u syscall %d byte %d\n", tok2.token_num-tok_offset2, tok2.size, tok2.syscall_cnt+file_offset2, tok2.byte_offset);
 	    printf ("Token 1 raw syscall %d offset %d\n", tok1.syscall_cnt, file_offset1);
 	    printf ("Token 2 raw syscall %d offset %d\n", tok2.syscall_cnt, file_offset2);
 	} else {
 	    if (print_details) {
-		printf ("Token from syscall %d number %lx size %lx byte offset %d tokens from %lx to %lx\n", tok1.syscall_cnt+file_offset1, 
+		printf ("Token from syscall %d number %lx size %x byte offset %d tokens from %lx to %lx\n", tok1.syscall_cnt+file_offset1, 
 			tok1.token_num-tok_offset1, tok1.size, tok1.byte_offset, input_tokens+1, input_tokens+tok1.size);
 		input_tokens += tok1.size;
 	    }

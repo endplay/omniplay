@@ -10,6 +10,7 @@
 #include <sched.h>
 #include <errno.h>
 #include <stdint.h>
+#include <netdb.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -32,6 +33,11 @@
 #include "taint_interface/taint_debug.h"
 #include "trace_x.h"
 #include "splice.h"
+#include "taint_nw.h"
+
+#ifdef USE_NW
+int s = -1;
+#endif
 
 // List of available Linkage macros
 // // DO NOT TURN THESE ON HERE. Turn these on in makefile.rules.
@@ -176,7 +182,15 @@ KNOB<string> KnobSpliceSemaphore(KNOB_MODE_WRITEONCE,
     "input splice semaphore");
 KNOB<int> KnobMergeEntries(KNOB_MODE_WRITEONCE,
     "pintool", "me", "",
-    "merge entries"); //FIXME: take into consideration offset of being attached later. Remember, this is to specify where to kill application.
+    "merge entries"); 
+KNOB<string> KnobNWHostname(KNOB_MODE_WRITEONCE,
+    "pintool", "host", "",
+    "hostname for nw output");
+KNOB<int> KnobNWPort(KNOB_MODE_WRITEONCE,
+    "pintool", "port", "",
+    "port for nw output");
+
+//FIXME: take into consideration offset of being attached later. Remember, this is to specify where to kill application.
 
 // Specific output functions
 // #define HEARTBLEED
@@ -198,8 +212,6 @@ extern int dump_reg_taints_start (int fd, taint_t* pregs);
 
 static void dift_done ()
 {
-    int taint_fd;
-    char taint_structures_file[256];
     struct timeval tv;
 
     if (terminated) return;  // Only do this once
@@ -210,24 +222,38 @@ static void dift_done ()
 	splice_after_segment (splice_input, splice_semname, outfd);
     }
 
+#ifndef USE_NW
+    char taint_structures_file[256];
     snprintf(taint_structures_file, 256, "%s/taint_structures", group_directory);
-    
-    taint_fd = open(taint_structures_file, O_WRONLY | O_CREAT | O_TRUNC | O_LARGEFILE, 0644);
+    int taint_fd = open(taint_structures_file, O_WRONLY | O_CREAT | O_TRUNC | O_LARGEFILE, 0644);
     assert(taint_fd > 0);
+#endif
     
     if (all_output) {
 	gettimeofday(&tv, NULL);
 	printf("dump start dir %s %lu sec %lu usec\n", group_directory, tv.tv_sec, tv.tv_usec);
 
 	if (splice_output) {
+#ifdef USE_NW
+	    dump_reg_taints(s, pregs);
+	    dump_mem_taints(s);
+#else 
 	    dump_reg_taints(taint_fd, pregs);
 	    dump_mem_taints(taint_fd);
+#endif
 	} else {
+#ifdef USE_NW
+	    dump_reg_taints_start(s, pregs);
+	    dump_mem_taints_start(s);
+#else
 	    dump_reg_taints_start(taint_fd, pregs);
 	    dump_mem_taints_start(taint_fd);
+#endif
 	}
     }
+#ifndef USE_NW
     close(taint_fd);
+#endif
 
     finish_and_print_taint_stats(stdout);
 #if 0
@@ -13992,6 +14018,9 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
         }
 
         if (tokens_fd == -1) {
+#ifdef USE_NW
+	    tokens_fd = s;
+#else
             char name[256];
             snprintf(name, 256, "%s/tokens", group_directory);
             tokens_fd = open(name, O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -13999,8 +14028,12 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
                 fprintf(stderr, "Could not open tokens file %s\n", name);
                 exit(-1);
             }
+#endif
         }
         if (outfd == -1) {
+#ifdef USE_NW
+	    outfd = s;
+#else
             char output_file_name[256];
             snprintf(output_file_name, 256, "%s/dataflow.result", group_directory);
             outfd = open(output_file_name, O_CREAT | O_TRUNC | O_LARGEFILE | O_RDWR, 0644);
@@ -14008,6 +14041,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
                 fprintf(stderr, "could not open output file %s, errno %d\n", output_file_name, errno);
                 exit(-1);
             }
+#endif
         }
 
         if (trace_x && xoutput_fd == -1) {
@@ -14163,6 +14197,35 @@ int main(int argc, char** argv)
     if (KnobMergeEntries.Value() > 0) {
 	num_merge_entries = KnobMergeEntries.Value();
     }
+
+#ifdef USE_NW
+    // Open a connection to the 64-bit consumer porocess
+    const char* hostname = KnobNWHostname.Value().c_str();
+    int port = KnobNWPort.Value();
+    
+    struct hostent* hp = gethostbyname (hostname);
+    if (hp == NULL) {
+	fprintf (stderr, "Invalid host %s, errno=%d\n", hostname, h_errno);
+	return -1;
+    }
+
+    s = socket (AF_INET, SOCK_STREAM, 0);
+    if (s < 0) {
+	fprintf (stderr, "Cannot create socket, errno=%d\n", errno);
+	return -1;
+    }
+
+    struct sockaddr_in addr;
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    memcpy (&addr.sin_addr, hp->h_addr, hp->h_length);
+
+    rc = connect (s, (struct sockaddr *) &addr, sizeof(addr));
+    if (rc < 0) {
+	fprintf (stderr, "Cannot connect to socket (host %s, port %d), errno=%d\n", hostname, port, errno);
+	return -1;
+    }
+#endif
 
     init_logs();
     init_taint_structures(group_directory);

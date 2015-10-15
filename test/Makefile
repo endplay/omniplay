@@ -10,7 +10,7 @@ KERN_CONFIG := replay_headers/include/linux/replay_configs.h
 DEPS_DIR := .deps
 
 TARGETS=parseklog parseulog parsemlog launcher resume parseckpt \
-	getstats filemap replay_pause reset_ndx currentpid seqtt partt fulltt mkpartition streamtt streamctl streamserver
+	getstats filemap replay_pause reset_ndx currentpid seqtt partt fulltt fullsend mkpartition streamtt streamctl streamserver
 
 # For automatic .h dependency tracking... may not work perfectly for launcher as
 #    the include path changes for it
@@ -60,6 +60,8 @@ streamctl: streamctl.cpp streamserver.h parseklib.o streamnw.cpp streamnw.h
 	c++ -Wall -Werror -std=c++0x streamctl.cpp streamnw.cpp parseklib.o -o streamctl -g
 
 fulltt: libutil.a
+
+fullsend: libutil.a
 
 mkpartition: libutil.a mkpartition.cpp 
 	c++ -std=c++0x mkpartition.cpp libutil.a -pthread -lrt -o mkpartition
