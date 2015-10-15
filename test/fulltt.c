@@ -165,7 +165,7 @@ int main (int argc, char* argv[])
 	    for (i = gstart; i < gend; i++) {
 		if (epoch[i].status == STATUS_STARTING) {
 		    rc = get_attach_status (fd, epoch[i].cpid);
-		    if (rc == 1) {
+		    if (rc > 0) {
 			pid_t mpid = fork();
 			if (mpid == 0) {
 			    char cpids[80], syscalls[80], output_filter[80];
@@ -174,7 +174,7 @@ int main (int argc, char* argv[])
 			    
 			    args[argcnt++] = "pin";
 			    args[argcnt++] = "-pid";
-			    sprintf (cpids, "%d", epoch[i].cpid);
+			    sprintf (cpids, "%d", rc);
 			    args[argcnt++] = cpids;
 			    args[argcnt++] = "-t";
 			    args[argcnt++] = "../dift/obj-ia32/linkage_data.so";

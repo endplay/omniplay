@@ -61,7 +61,7 @@ TOOL_ROOTS :=
 SA_TOOL_ROOTS :=
 
 # This defines all the applications that will be run during the tests.
-APP_ROOTS := postprocess_linkage parse_outputs splice_merge merge_merge merge3 taint_debugger taint_forward_debugger mksplice mkmultisplice mkmerge stream mkmap mergecmp out2mergecmp splicecmp outcmp mergedump mapdump showall has_dups stream
+APP_ROOTS := postprocess_linkage parse_outputs splice_merge merge_merge merge3 taint_debugger taint_forward_debugger mksplice mkmultisplice mkmerge stream streamf mkmap mergecmp out2mergecmp splicecmp outcmp mergedump mapdump showall has_dups 
 
 # This defines any additional object files that need to be compiled.
 OBJECT_ROOTS := xray_token \
@@ -124,6 +124,9 @@ $(OBJDIR)mkmerge: mkmerge.cpp maputil.c maputil.h
 
 $(OBJDIR)stream: stream.cpp maputil.c maputil.h ../test/streamserver.h
 	$(CXX) -std=c++0x -Wall -Werror -O8 -o $(OBJDIR)stream $(GLIB_INCLUDES) stream.cpp maputil.c -lrt
+
+$(OBJDIR)streamf: stream.cpp maputil.c maputil.h ../test/streamserver.h
+	$(CXX) -std=c++0x -Wall -Werror -DUSE_FILE -O8 -o $(OBJDIR)streamf $(GLIB_INCLUDES) stream.cpp maputil.c -lrt
 
 $(OBJDIR)mkmap: mkmap.cpp maputil.c maputil.h
 	$(CXX) -std=c++0x -Wall -Werror -O2 -o $(OBJDIR)mkmap $(GLIB_INCLUDES) mkmap.cpp maputil.c -lrt

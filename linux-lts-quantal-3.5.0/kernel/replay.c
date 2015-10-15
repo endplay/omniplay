@@ -2777,19 +2777,22 @@ static void delete_sysv_mappings (struct replay_thread* prt) {
 /* A pintool uses this for specifying the start of the thread specific data structure.  The function returns the pid on success */
 int set_pin_address (u_long pin_address, u_long thread_data, u_long __user* curthread_ptr)
 {
-	if (current->replay_thrd) {
-		MPRINT ("set_pin_address: pin address for pid %d is %lx\n", current->pid, pin_address);
-		current->replay_thrd->app_syscall_addr = pin_address;
-		current->replay_thrd->rp_pin_thread_data = thread_data;
-		current->replay_thrd->rp_pin_curthread_ptr = curthread_ptr;
-		if (current->replay_thrd->rp_status == REPLAY_STATUS_WAIT_CLOCK) {
-		    current->replay_thrd->rp_pin_attaching = PIN_ATTACHING_FF; // Still need to wait for the clock
-		} else {
-		    current->replay_thrd->rp_pin_attaching = PIN_ATTACHING_NONE;
+	struct replay_thread* prept = current->replay_thrd;
+
+	if (prept) {
+		printk ("set_pin_address: pin address for pid %d is %lx\n", current->pid, pin_address);
+		prept->app_syscall_addr = pin_address;
+		prept->rp_pin_thread_data = thread_data;
+		prept->rp_pin_curthread_ptr = curthread_ptr;
+		if (prept->rp_pin_attaching) {
+			if (prept->rp_status == REPLAY_STATUS_WAIT_CLOCK) {
+				prept->rp_pin_attaching = PIN_ATTACHING_FF; // Still need to wait for the clock
+				return 1; // This thread will block
+			} else {
+				prept->rp_pin_attaching = PIN_ATTACHING_NONE;
+			}
 		}
-		if (current->replay_thrd->rp_record_thread) {
-			return current->replay_thrd->rp_record_thread->rp_record_pid;
-		}
+		return 0;
 	}
 
 	printk ("set_pin_address called for something that is not a replay process\n");
@@ -3426,7 +3429,7 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 			printk("replay_ckpt_wakeup: could not read memory log for Pin support\n");
 			return rc;
 		}
-		preallocate_memory(precg); // Actually do the prealloaction for this process
+		preallocate_memory(precg); // Actually do the preallocation for this process
 		if (attach_index <= 0) {
 			printk("Pid %d sleeping in order to let you attach pin\n", current->pid);
 			/* Attach Pin before process begins */
@@ -4831,7 +4834,7 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 	MPRINT ("Replay Pid %d, index %ld sys %d\n", current->pid, prt->rp_out_ptr, psr->sysnum);
 
 	if (prt->rp_pin_attaching == PIN_ATTACHING_FF) {
-		// Since we are redoing this systme call, we need to go roll back to the beginnning
+		// Since we are redoing this system call, we need to go roll back to the beginnning
 		u_long clock_adj = argsconsumed(prt->rp_record_thread)-prt->rp_ckpt_save_args_head;
 		if (psr->flags & SR_HAS_START_CLOCK_SKIP) clock_adj += sizeof(u_long);
 		printk ("Rolling back %ld bytes of log data\n", clock_adj);
@@ -4906,6 +4909,15 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 	// Do this twice - once for syscall entry and once for exit
 	while (*(prt->rp_preplay_clock) < start_clock) {
 		MPRINT ("Replay pid %d is waiting for clock value %ld on syscall entry but current clock value is %ld\n", current->pid, start_clock, *(prt->rp_preplay_clock));
+		if (prt->rp_pin_attaching == PIN_ATTACHING_FF && prt->rp_status == REPLAY_STATUS_WAIT_CLOCK) {
+			printk ("attaching pid %d has reached syscall entrance\n", current->pid);
+			if (start_clock > prg->rg_pin_attach_clock) {
+				printk ("Pid %d restarting start_clock %lx attach_clock %lx\n", current->pid, start_clock, prg->rg_pin_attach_clock);
+				is_restart = 1;		
+			} else {
+				printk ("Pid %d not restarting start_clock %lx attach_clock %lx\n", current->pid, start_clock, prg->rg_pin_attach_clock);
+			}
+		}
 		if (prt->rp_status == REPLAY_STATUS_RESTART_CKPT) {
 			// We can continue
 			MPRINT ("Pid %d signals restart\n", current->pid);
@@ -4940,6 +4952,10 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 				}
 			} while (tmp != prt);
 		}
+		if (prt->rp_pin_attaching == PIN_ATTACHING_FF && is_restart) {
+			printk ("Pid %d no longer attaching on enter\n", current->pid);
+			prt->rp_pin_attaching = PIN_ATTACHING_NONE; // Must have been waiting here
+		}
 
 		while (!(prt->rp_status == REPLAY_STATUS_RUNNING || (prt->rp_replay_exit && prect->rp_in_ptr == prt->rp_out_ptr+1))) {	
 			MPRINT ("Replay pid %d waiting for clock value %ld on syscall entry but current clock value is %ld\n", current->pid, start_clock, *(prt->rp_preplay_clock));
@@ -4957,6 +4973,24 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 					printk ("Trying to exit (signal fatal? %d) - so just proceed\n", fatal_signal_pending(current));
 					rg_unlock (prg->rg_rec_group);
 					sys_exit_group (0);
+				}
+				if (prt->rp_pin_attaching == PIN_ATTACHING) {
+					printk ("Pid %d: pin is attaching at syscall %d entrance so interrupt exit and restart\n", current->pid, psr->sysnum);
+					printk ("Expected clock reset from %ld to %ld\n", prt->rp_expected_clock, prt->rp_ckpt_save_expected_clock);
+					prt->rp_expected_clock = prt->rp_ckpt_save_expected_clock;
+
+					rg_unlock (prg->rg_rec_group);
+					// We expect to redo this syscall after we restart
+					if (prt->rp_out_ptr == 0) {
+						printk ("ERRROR: cannot backup outptr on PIN attach\n");
+					} else {
+						prt->rp_out_ptr--;
+					}
+					if (psr->sysnum == 168) {
+						return -ERESTART_RESTARTBLOCK;
+					} else {
+						return -EINTR;
+					}
 				}
 				/*
 				 * We need to make sure we exit threads in the right order if Pin is attached.
@@ -5068,7 +5102,9 @@ get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, stru
 				}
 			} while (tmp != prt);
 		}
-		if (prt->rp_pin_attaching == PIN_ATTACHING_FF) prt->rp_pin_attaching = PIN_ATTACHING_NONE; // Must have been waiting here
+		if (prt->rp_pin_attaching == PIN_ATTACHING_FF) {
+			prt->rp_pin_attaching = PIN_ATTACHING_NONE; // Must have been waiting here
+		}
 
 		while (!(prt->rp_status == REPLAY_STATUS_RUNNING || (prt->rp_replay_exit && prect->rp_in_ptr == prt->rp_out_ptr+1))) {   
 			MPRINT ("Replay pid %d waiting for clock value %ld on syscall exit but current clock value is %ld\n", current->pid, stop_clock, *(prt->rp_preplay_clock));
@@ -5093,13 +5129,13 @@ get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, stru
 					prt->rp_expected_clock = prt->rp_ckpt_save_expected_clock;
 
 					rg_unlock (prg->rg_rec_group);
+					// We expect to redo this syscall after we restart
+					if (prt->rp_out_ptr == 0) {
+						printk ("ERRROR: cannot backup outptr on PIN attach\n");
+					} else {
+						prt->rp_out_ptr--;
+					}
 					if (psr->sysnum == 168) {
-						// We expect to redo this syscall after we restart
-						if (prt->rp_out_ptr == 0) {
-							printk ("ERRROR: cannot backup outptr on PIN attach\n");
-						} else {
-							prt->rp_out_ptr--;
-						}
 						return -ERESTART_RESTARTBLOCK;
 					} else {
 						return -EINTR;
@@ -5134,7 +5170,7 @@ get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, stru
 	}
 
 	if (unlikely((psr->flags & SR_HAS_SIGNAL) != 0)) {
-		MPRINT ("Pid %d set deliver signal flag before clock %ld increment\n", current->pid, *(prt->rp_preplay_clock));
+		printk ("Pid %d set deliver signal flag before clock %ld increment\n", current->pid, *(prt->rp_preplay_clock));
 		prt->rp_signals = 1;
 		signal_wake_up (current, 0);
 	}
@@ -5167,7 +5203,8 @@ void write_timings (struct replay_group* prepg)
 	int fd, rc; 
 	struct file* file = NULL;
 	mm_segment_t old_fs;
-	int copyed;
+	int copied = 0;
+	int to_write, written;
 
 	sprintf (filename, "%s/timings", prepg->rg_rec_group->rg_logdir);
 	old_fs = get_fs();
@@ -5185,9 +5222,18 @@ void write_timings (struct replay_group* prepg)
 	}
 	file = fget(fd);
 
-	copyed = vfs_write(file, (char *) prepg->rg_timebuf, prepg->rg_timecnt*sizeof(struct replay_timing), &prepg->rg_timepos);
-	if (copyed != prepg->rg_timecnt*sizeof(struct replay_timing)) {
-		printk("Unable to write timings data, rc=%d, expected %ld\n", copyed, prepg->rg_timecnt*sizeof(struct replay_timing));
+	to_write = prepg->rg_timecnt*sizeof(struct replay_timing);
+	do {
+		written = vfs_write (file, (char *) prepg->rg_timebuf+copied, to_write-copied, &prepg->rg_timepos);
+		if (written <= 0) {
+			printk ("write_timing: vfs_write returns %d\n", written);
+			break;
+		}
+		copied += written;
+	} while (copied < to_write);
+		
+	if (copied != to_write) {
+		printk("Unable to write timings data, wrote only %d bytes out of %d\n", copied, to_write);
 	}
 
 	fput(file);
@@ -5235,18 +5281,18 @@ test_pin_attach (struct replay_thread* prept, short syscall)
 
 		set_current_state(TASK_INTERRUPTIBLE);
 		schedule();
-		printk("Pid %d woken up - replay clock %lx\n", current->pid, *(current->replay_thrd->rp_preplay_clock));
+		printk("Pid %d woken up - replay clock %ld\n", current->pid, *(current->replay_thrd->rp_preplay_clock));
 		prepg->rg_pin_attach_clock = *(current->replay_thrd->rp_preplay_clock);
 
 		if (prepg->rg_attach_device == ATTACH_PIN) {
-		    // If >1 thread, Pin may send other threads signal too
-		    for (tmp = prept->rp_next_thread; tmp != prept; tmp = tmp->rp_next_thread) {
-			printk ("Pid %d status %d\n", tmp->rp_record_thread->rp_record_pid, tmp->rp_status);
-			tmp->rp_pin_attaching = PIN_ATTACHING; // Let Pin interrupt and attach
-			tmp->app_syscall_addr = 1; 
-		    }
-		    
-		    return -EINTR; // Pin will restart syscall
+			// If >1 thread, Pin may send other threads signal too
+			for (tmp = prept->rp_next_thread; tmp != prept; tmp = tmp->rp_next_thread) {
+				printk ("Pid %d status %d\n", tmp->rp_record_thread->rp_record_pid, tmp->rp_status);
+				tmp->rp_pin_attaching = PIN_ATTACHING; // Let Pin interrupt and attach
+				tmp->app_syscall_addr = 1; 
+			}
+			
+			return -EINTR; // Pin will restart syscall
 		}
 	}
 	return 0;
@@ -5267,6 +5313,10 @@ get_next_syscall (int syscall, char** ppretparams)
 	long exit_retval;
 
 	retval = get_next_syscall_enter (prt, prg, syscall, ppretparams, &psr);
+	if (retval < 0 && prt->rp_pin_attaching == PIN_ATTACHING) {
+		printk ("Pid %d attaching so do not wait for syscall exit\n", current->pid);
+		return retval;
+	}
 
 	// Needed to exit the threads in the correct order with Pin attached.
 	// Essentially, return to Pin after Pin interrupts the syscall with a SIGTRAP.
@@ -5433,12 +5483,19 @@ long
 get_attach_status(pid_t pid)
 {
 	struct task_struct* tsk;
+	struct replay_thread* tmp;
 	
 	tsk = find_task_by_vpid(pid);
 	if (tsk) {
 		if (tsk->replay_thrd) {
-			return (tsk->replay_thrd->rp_group->rg_attach_device == ATTACH_PIN
-				&& tsk->replay_thrd->app_syscall_addr != 0);
+			if (tsk->replay_thrd->rp_group->rg_attach_device == ATTACH_PIN) {
+				tmp = tsk->replay_thrd;
+				do {
+					if (tmp->app_syscall_addr) return tmp->rp_replay_pid;
+					tmp = tmp->rp_next_thread;
+				} while (tmp != tsk->replay_thrd);
+			}
+			return 0;
 		} else {
 			return -EINVAL; // Not a replay task
 		}
@@ -5648,7 +5705,9 @@ sys_pthread_block (u_long clock)
 				}
 			} while (tmp != prt);
 		}
-		if (prt->rp_pin_attaching == PIN_ATTACHING_FF) prt->rp_pin_attaching = PIN_ATTACHING_NONE; // This is the only place we could have been waiting
+		if (prt->rp_pin_attaching == PIN_ATTACHING_FF) {
+			prt->rp_pin_attaching = PIN_ATTACHING_NONE; // This is the only place we could have been waiting
+		}
 
 		while (!(prt->rp_status == REPLAY_STATUS_RUNNING || (prt->rp_replay_exit && prt->rp_record_thread->rp_in_ptr == prt->rp_out_ptr))) {
 			MPRINT ("Replay pid %d waiting for user clock value %ld\n", current->pid, clock);
@@ -10471,7 +10530,7 @@ replay_mprotect (unsigned long start, size_t len, unsigned long prot)
 {
 	u_long retval, rc;
 
-    DPRINT("replay_mprotect(%lu, %d, %lu)\n", start, len, prot);
+	DPRINT("replay_mprotect(%lu, %d, %lu)\n", start, len, prot);
 
 	if (is_pin_attached()) {
 		rc = current->replay_thrd->rp_saved_rc;
@@ -10481,10 +10540,10 @@ replay_mprotect (unsigned long start, size_t len, unsigned long prot)
 	}
 
 	retval = sys_mprotect (start, len, prot);
-	DPRINT ("Pid %d replays mprotect %lx for %lx-%lx returning %ld\n", current->pid, prot, start, start+len, retval);
+	MPRINT ("Pid %d replays mprotect %lx for %lx-%lx returning %ld\n", current->pid, prot, start, start+len, retval);
 
 	if (rc != retval) {
-		printk ("Replay: mprotect returns diff. value %lu than %lu\n", retval, rc);
+		printk ("Replay: mprotect returns diff. value %ld than %ld\n", retval, rc);
 		return syscall_mismatch();
 	}
 	return rc;

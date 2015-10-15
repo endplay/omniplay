@@ -96,6 +96,7 @@ struct save_state {
 };
 
 /* Global state */
+TLS_KEY tls_key; // Key for accessing TLS. 
 int dev_fd; // File descriptor for the replay device
 int get_record_pid(void);
 struct thread_data* current_thread; // Always points to thread-local data (changed by kernel on context switch)
@@ -302,9 +303,7 @@ static inline void increment_syscall_cnt (int syscall_num)
             global_syscall_cnt++;
             current_thread->syscall_cnt++;
         }
-#ifdef DEBUGTRACE
-	printf ("syscall cnt %lu num %d\n", global_syscall_cnt, syscall_num);
-#endif
+	//printf ("syscall cnt %lu num %d\n", global_syscall_cnt, syscall_num);
     }
 }
 
@@ -526,7 +525,6 @@ static inline void sys_pread_stop(int rc)
 #ifdef LINKAGE_FDTRACK
 static void sys_select_start(int nfds, fd_set* readfds, fd_set* writefds, fd_set* exceptfds, struct timeval* timeout)
 {
-    fprintf(stderr, "sys_select started\n");
     current_thread->select_info_cache.nfds = nfds;
     current_thread->select_info_cache.readfds = readfds;
     current_thread->select_info_cache.writefds = writefds;
@@ -536,8 +534,6 @@ static void sys_select_start(int nfds, fd_set* readfds, fd_set* writefds, fd_set
 
 static void sys_select_stop(int rc)
 {
-    fprintf(stderr, "sys_select returns %d\n", rc);
-
     // If global_syscall_cnt == 0, then handled in previous epoch
     if (rc != -1 && global_syscall_cnt > 0) {
         // create a taint
@@ -946,8 +942,6 @@ static void sys_recvmsg_stop(int rc)
             create_taints_from_buffer(vi->iov_base, vi->iov_len, &tci, tokens_fd,
                                         channel_name);
             tci.offset += vi->iov_len;
-            fprintf (stderr, "syscall cnt: %d recvmsg (%u) at %#lx, size %d\n",
-                    current_thread->syscall_cnt, i, (unsigned long) vi->iov_base, vi->iov_len);
         }
     }
     SYSCALL_DEBUG (stderr, "recvmsg_stop done\n");
@@ -999,8 +993,6 @@ static void sys_sendmsg_stop(int rc)
             struct iovec* vi = (smi->msg->msg_iov + i);
             output_buffer_result(vi->iov_base, vi->iov_len, &tci, outfd);
             tci.offset += vi->iov_len;
-            fprintf (stderr, "syscall cnt: %d sendmsg (%u) at %#lx, size %d\n",
-                    current_thread->syscall_cnt, i, (unsigned long) vi->iov_base, vi->iov_len);
         }
     }
     SYSCALL_DEBUG (stderr, "sys_sendmsg_stop done\n");
@@ -1159,10 +1151,13 @@ void instrument_syscall(ADDRINT syscall_num,
 			ADDRINT syscallarg3, ADDRINT syscallarg4, ADDRINT syscallarg5)
 {   
     int sysnum = (int) syscall_num;
-    current_thread->sysnum = sysnum;
+
+    // Because of Pin restart issues, this function alone has to use PIN thread-specific data
+    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+    tdata->sysnum = sysnum;
 
 #ifdef TRACE_TAINT_OPS
-    trace_syscall_op(current_thread,
+    trace_syscall_op(tdata,
 		     trace_taint_outfd,
 		     0, // TODO Fill in ip later
 		     PIN_ThreadId(),
@@ -1170,7 +1165,7 @@ void instrument_syscall(ADDRINT syscall_num,
 		     sysnum, global_syscall_cnt);
 #endif
     if (sysnum == 31) {
-	current_thread->ignore_flag = (u_long) syscallarg1;
+	tdata->ignore_flag = (u_long) syscallarg1;
     }
     if (sysnum == 45 || sysnum == 91 || sysnum == 120 || sysnum == 125 || 
 	sysnum == 174 || sysnum == 175 || sysnum == 190 || sysnum == 192) {
@@ -1179,7 +1174,7 @@ void instrument_syscall(ADDRINT syscall_num,
     syscall_start(sysnum, syscallarg0, syscallarg1, syscallarg2, 
 		  syscallarg3, syscallarg4, syscallarg5);
     
-    current_thread->app_syscall = syscall_num;
+    tdata->app_syscall = syscall_num;
 }
 
 void syscall_after (ADDRINT ip)
@@ -13320,13 +13315,15 @@ void instrument_pmovmskb(INS ins)
 #ifdef TRACE_TAINT
 void trace_inst(ADDRINT ptr)
 {
-    PIN_LockClient();
-    printf ("[INST] Pid %d (tid: %d) (record %d) cnt %ld - %#x\n", PIN_GetPid(), PIN_GetTid(), get_record_pid(), inst_cnt, ptr);
-    if (IMG_Valid(IMG_FindByAddress(ptr))) {
-	printf("%s -- img %s static %#x\n", RTN_FindNameByAddress(ptr).c_str(), IMG_Name(IMG_FindByAddress(ptr)).c_str(), find_static_address(ptr));
+    if (global_syscall_cnt >= 14522) {
+	PIN_LockClient();
+	printf ("[INST] Pid %d (tid: %d) (record %d) cnt %ld - %#x\n", PIN_GetPid(), PIN_GetTid(), get_record_pid(), inst_cnt, ptr);
+	if (IMG_Valid(IMG_FindByAddress(ptr))) {
+	    printf("%s -- img %s static %#x\n", RTN_FindNameByAddress(ptr).c_str(), IMG_Name(IMG_FindByAddress(ptr)).c_str(), find_static_address(ptr));
+	}
+	PIN_UnlockClient();
+	inst_cnt++;
     }
-    PIN_UnlockClient();
-    inst_cnt++;
 }
 #endif
 
@@ -13987,8 +13984,10 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
     ptdata->record_pid = get_record_pid();
     get_record_group_id(dev_fd, &(ptdata->rg_id));
 
-    current_thread = ptdata;
-    set_pin_addr (dev_fd, (u_long) &(ptdata->app_syscall), ptdata, (void **) &current_thread);
+    if (set_pin_addr (dev_fd, (u_long) &(ptdata->app_syscall), ptdata, (void **) &current_thread) == 0) {
+	current_thread = ptdata;
+    }
+    PIN_SetThreadData (tls_key, ptdata, threadid);
 
     if (child) {
         restore_state_from_disk(ptdata);
@@ -14168,6 +14167,8 @@ int main(int argc, char** argv)
         fprintf(stderr, "ERROR: could not initialize Pin?\n");
         exit(-1);
     }
+
+    tls_key = PIN_CreateThreadDataKey(0);
 
     // Intialize the replay device
     rc = devspec_init (&dev_fd);

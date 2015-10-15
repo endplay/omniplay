@@ -10,23 +10,26 @@
 #include <pthread.h>
 #include <netdb.h>
 
-#include "taint_interface/taint.h"
-#include "linkage_common.h"
-#include "taint_interface/taint_creation.h"
-#include "xray_token.h"
-#include "maputil.h"
-
 #include <unordered_set>
 #include <unordered_map>
 #include <atomic>
-
 using namespace std;
 
-#include "../test/streamserver.h"
-
+#include "../taint_interface/taint.h"
+#include "../linkage_common.h"
+#include "../taint_interface/taint_creation.h"
+#include "../token.h"
+#include "../taint_nw.h"
+#include "streamserver.h"
 
 //#define DEBUG(x) ((x)==0x9808 || (x)==0x9808-0x21e || (x)==0x9808-0x24a6)
 #define STATS
+
+const u_long MERGE_SIZE  = 0x200000000; // 8GB max
+const u_long OUTPUT_SIZE =  0x40000000; // 1GB max
+const u_long TOKEN_SIZE =   0x10000000; // 256MB max
+const u_long TS_SIZE =      0x40000000; // 1GB max
+const u_long OUTBUFSIZE =   0x10000000; // 1GB size
 
 struct senddata {
     char*  host;
@@ -44,29 +47,26 @@ struct taint_entry {
 
 #define STREAM_PORT 19765
 
-#define OUTBUFSIZE 1000000
-
 // Globals - mostly here for performance
-unordered_map<taint_t,unordered_set<u_long>*> resolved;
+unordered_map<taint_t,unordered_set<uint32_t>*> resolved;
 int                 outrfd;
-u_long              outrindex;
-u_long              outrbuf[OUTBUFSIZE];
+uint32_t            outrindex = 0;
+uint32_t            outrbuf[OUTBUFSIZE];
 struct taint_entry* merge_log;
 struct taintq*      inputq;
-u_long              can_read;
+uint32_t            can_read, can_write;
 struct taintq*      outputq;
-u_long              can_write;
-int                 start_flag = 0;
-int                 finish_flag = 0;
+bool                start_flag = false;
+bool                finish_flag = false;
 
 #ifdef DEBUG
 FILE* debugfile;
 #endif
 #ifdef STATS
 FILE* statsfile;
-unsigned long long merges = 0, directs = 0, indirects = 0, values = 0, idle = 0, output_merges;
-unsigned long long atokens = 0, passthrus = 0, aresolved = 0, aindirects = 0, avalues = 0, unmodified = 0, written = 0;
-struct timeval start_tv, output_done_tv, index_created_tv, address_done_tv, end_tv;
+u_long merges = 0, directs = 0, indirects = 0, values = 0, idle = 0, output_merges;
+u_long atokens = 0, passthrus = 0, aresolved = 0, aindirects = 0, avalues = 0, unmodified = 0, written = 0;
+struct timeval start_tv, recv_done_tv, output_done_tv, index_created_tv, address_done_tv, end_tv;
 
 static long ms_diff (struct timeval tv1, struct timeval tv2)
 {
@@ -83,12 +83,12 @@ static long ms_diff (struct timeval tv1, struct timeval tv2)
 #ifdef USE_FILE
 
 #define OUTBUFSIZE 1000000
-u_long uoutbuf[OUTBUFSIZE];
-u_long uoutindex = 0;
+uint32_t uoutbuf[OUTBUFSIZE];
+uint32_t uoutindex = 0;
 int uoutfd;
 
-u_long uinbuf[OUTBUFSIZE];
-u_long uinindex = 0, uincnt = 0;
+uint32_t uinbuf[OUTBUFSIZE];
+uint32_t uinindex = 0, uincnt = 0;
 int uinfd;
 
 static long init_uoutbuf (const char* dirname) 
@@ -117,11 +117,11 @@ static long init_uoutbuf (const char* dirname)
 
 static void flush_uoutbuf()
 {
-    long rc = write (uoutfd, &uoutbuf, uoutindex*sizeof(u_long));
+    long rc = write (uoutfd, &uoutbuf, uoutindex*sizeof(uint32_t));
 #ifdef STATS
     written += uoutindex;
 #endif
-    if (rc != (long) (uoutindex*sizeof(u_long))) {
+    if (rc != (long) (uoutindex*sizeof(uint32_t))) {
 	fprintf (stderr, "flush_uoutbuf: write of segment failed, rc=%ld, errno=%d\n", rc, errno);
 	exit (rc);
     }
@@ -133,7 +133,7 @@ static int read_uinbuf()
     long rc = read (uinfd, &uinbuf, sizeof(uinbuf));
     if (rc > 0) {
 	assert (rc%4 == 0);
-	uincnt = rc/sizeof(u_long);
+	uincnt = rc/sizeof(uint32_t);
 	uinindex = 0;
 	return uincnt;
     } else {
@@ -212,10 +212,16 @@ static int read_uinbuf()
 
 static void flush_outrbuf()
 {
-    long rc = write (outrfd, outrbuf, outrindex*sizeof(u_long));
-    if (rc != (long) (outrindex*sizeof(u_long))) {
-	fprintf (stderr, "write of segment failed, rc=%ld, errno=%d\n", rc, errno);
-	exit (rc);
+    long bytes_written = 0;
+    long size = outrindex*sizeof(uint32_t);
+    
+    while (bytes_written < size) {
+	long rc = write (outrfd, ((char *) outrbuf)+bytes_written, size-bytes_written);	
+	if (rc <= 0) {
+	    fprintf (stderr, "Canot write to resolved file, rc=%ld\n", rc);
+	    exit (rc);
+	}
+	bytes_written += rc;
     }
     outrindex = 0;
 }
@@ -229,25 +235,40 @@ static void flush_outrbuf()
 #define STACK_SIZE 1000000
 taint_t stack[STACK_SIZE];
 
-static void map_iter (taint_t value, u_long output_token, int& unresolved_vals, int& resolved_vals)
+static long recv_taint_data (int s, char* buffer, u_long bufsize, uint32_t inputsize, u_long& ndx)
 {
-    unordered_set<u_long>* pset;
+    uint32_t bytes_received = 0;
+    while (bytes_received < inputsize) {
+	long rc = read (s, buffer+ndx, inputsize-bytes_received);
+	if (rc <= 0) {
+	    fprintf (stderr, "recv_taint_data: received %ld, errno=%d\n", rc, errno);
+	    break;
+	}
+	ndx += rc;
+	bytes_received += rc;
+    }
+    return bytes_received;
+}
+
+static void map_iter (taint_t value, uint32_t output_token, bool& unresolved_vals, bool& resolved_vals)
+{
+    unordered_set<uint32_t>* pset;
 
     auto iter = resolved.find(value);
     if (iter == resolved.end()) {
 	unordered_set<taint_t> seen_indices;
 	struct taint_entry* pentry;
-	u_long stack_depth = 0;
+	uint32_t stack_depth = 0;
 	
 #ifdef STATS
 	merges++;
 #endif
 
-	pset = new unordered_set<u_long>;
+	pset = new unordered_set<uint32_t>;
 	resolved[value] = pset;
 	
 	pentry = &merge_log[value-0xe0000001];
-	//printf ("%lx -> %lx,%lx (%lu)\n", value, pentry->p1, pentry->p2, stack_depth);
+	//printf ("%lx -> %lx,%lx (%u)\n", value, pentry->p1, pentry->p2, stack_depth);
 	stack[stack_depth++] = pentry->p1;
 	stack[stack_depth++] = pentry->p2;
 	
@@ -263,7 +284,7 @@ static void map_iter (taint_t value, u_long output_token, int& unresolved_vals, 
 #ifdef STATS
 		    merges++;
 #endif
-		    //printf ("%lx -> %lx,%lx (%lu)\n", value, pentry->p1, pentry->p2, stack_depth);
+		    //printf ("%lx -> %lx,%lx (%u)\n", value, pentry->p1, pentry->p2, stack_depth);
 		    stack[stack_depth++] = pentry->p1;
 		    stack[stack_depth++] = pentry->p2;
 		}
@@ -277,7 +298,7 @@ static void map_iter (taint_t value, u_long output_token, int& unresolved_vals, 
 	if (*iter2 < 0xc0000000 && !start_flag) {
 	    if (!unresolved_vals) {
 		PRINT_UVALUE(output_token);
-		unresolved_vals = 1;
+		unresolved_vals = true;
 	    }
 	    PRINT_UVALUE (*iter2);
 #ifdef DEBUG
@@ -288,7 +309,7 @@ static void map_iter (taint_t value, u_long output_token, int& unresolved_vals, 
 	} else {
 	    if (!resolved_vals) {
 		PRINT_RVALUE (output_token);
-		resolved_vals = 1;
+		resolved_vals = true;
 	    }
 	    if (start_flag) {
 		PRINT_RVALUE (*iter2);
@@ -309,112 +330,76 @@ static void map_iter (taint_t value, u_long output_token, int& unresolved_vals, 
     }
 }
 
-int map_shmem (char* filename, int* pfd, u_long* pdatasize, u_long* pmapsize, char** pbuf)
-{
-    char shmemname[256];
-    struct stat st, ost;
-    u_long size, osize=0;
-    int fd, ofd, rc;
-    char* buf, *fbuf;
-
-    ofd = open (filename, O_RDONLY, 0);
-    if (ofd >= 0) {
-	// This means that an overflow file was created - try to fit it in our address space
-	rc = fstat(ofd, &ost);
-	if (rc < 0) {
-	    fprintf (stderr, "Unable to stat %s, rc=%d, errno=%d\n", filename, rc, errno);
-	    return rc;
-	}
-	if (ost.st_size%4096) {
-	    osize = ost.st_size + 4096-ost.st_size%4096;
-	} else {
-	    osize = ost.st_size;
-	}
-    }
-
-    snprintf(shmemname, 256, "/node_nums_shm%s", filename);
-    for (u_long i = 1; i < strlen(shmemname); i++) {
-	if (shmemname[i] == '/') shmemname[i] = '.';
-    }
-    shmemname[strlen(shmemname)-10] = '\0';
-    fd = shm_open (shmemname, O_RDONLY, 0);
-    if (fd < 0) {
-	fprintf (stderr, "Unable to open %s, rc=%d, errno=%d\n", shmemname, fd, errno);
-	return fd;
-    }
-    rc = fstat(fd, &st);
-    if (rc < 0) {
-	fprintf (stderr, "Unable to stat %s, rc=%d, errno=%d\n", shmemname, rc, errno);
-	return rc;
-    }
-    if (st.st_size%4096) {
-	size = st.st_size + 4096-st.st_size%4096;
-    } else {
-	size = st.st_size;
-    }
-
-    if (ofd >= 0) {
-	char* region;
-
-	// First try to map contiguous redion
-	region = (char *) mmap (NULL, size+osize, PROT_READ, MAP_PRIVATE|MAP_ANON, -1, 0);
-	if (region == MAP_FAILED) {
-	    fprintf (stderr, "Cannot map contiguous region of size %lu, errno=%d\n", size+osize, errno);
-	    return -1;
-	}
-	munmap(region,size+osize);
-
-	// Map shared memory to first portion
-	buf = (char *) mmap (region, size, PROT_READ, MAP_SHARED, fd, 0);
-	if (buf == MAP_FAILED) {
-	    fprintf (stderr, "Cannot map shmem %s, errno=%d\n", shmemname, errno);
-	    return -1;
-	}
-	// And overflow file to second portion
-	fbuf = (char *) mmap (region+size, osize, PROT_READ, MAP_SHARED, ofd, 0);
-	if (fbuf == MAP_FAILED) {
-	    fprintf (stderr, "Cannot map file %s, errno=%d\n", shmemname, errno);
-	    return -1;
-	}
-    } else {
-	// No overflow
-	buf = (char *) mmap (NULL, size, PROT_READ, MAP_SHARED, fd, 0);
-	if (buf == MAP_FAILED) {
-	    fprintf (stderr, "Cannot map file %s, errno=%d\n", shmemname, errno);
-	    return -1;
-	}
-    }
-
-    // This is the last process to use the merge region
-    // This will deallocate it  after we exit
-    rc = shm_unlink (shmemname); 
-    if (rc < 0) perror ("shmem_unlink");
-
-    *pfd = fd;
-    *pdatasize = st.st_size;
-    *pmapsize = size;
-    *pbuf = buf;
-
-    return 0;
-}
-
 // Process one epoch 
-long stream_epoch (const char* dirname)
+long stream_epoch (const char* dirname, int port)
 {
     long rc;
-    char* output_log, *plog;
+    char* output_log, *token_log, *plog;
     taint_t *ts_log, value;
-    u_long ndatasize, odatasize, mergesize, mapsize, buf_size, otoken, i;
-    char mergefile[256], outfile[256], tsfile[256], outrfile[256], addrfile[256], tokfile[256];
-    int node_num_fd, mapfd;
-    u_long output_token = 0;
+    u_long idatasize = 0, odatasize = 0, mdatasize = 0, adatasize = 0;
+    uint32_t buf_size, tokens, otoken, output_token = 0;
+    char outrfile[256], outputfile[256], inputfile[256], addrsfile[256];
+    int outputfd, inputfd, addrsfd;
+
+    // Create mappings for inputs - we have to commit to a max size here
+    token_log = (char *) mmap (NULL, TOKEN_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0);
+    if (token_log == MAP_FAILED) {
+	fprintf (stderr, "Cannot map input data, errno=%d\n", errno);
+	return -1;
+    }
+
+    output_log = (char *) mmap (NULL, OUTPUT_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0);
+    if (output_log == MAP_FAILED) {
+	fprintf (stderr, "Cannot map output data, errno=%d\n", errno);
+	return -1;
+    }
+
+    ts_log = (taint_t *) mmap (NULL, TS_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0);
+    if (ts_log == MAP_FAILED) {
+	fprintf (stderr, "Cannot map addr data, errno=%d\n", errno);
+	return -1;
+    }
+
+    merge_log = (taint_entry *) mmap (NULL, MERGE_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0);
+    if (merge_log == MAP_FAILED) {
+	fprintf (stderr, "Cannot map merge log, errno=%d\n", errno);
+	return -1;
+    }
 
     // First, resolve all outputs for this epoch
-    sprintf (mergefile, "%s/node_nums", dirname);
-    sprintf (outfile, "%s/dataflow.result", dirname);
+    rc = mkdir(dirname, 0755);
+    if (rc < 0) {
+	fprintf (stderr, "Cannot create output dir %s, errno=%d\n", dirname, errno);
+	return rc;
+    }
+
     sprintf (outrfile, "%s/merge-outputs-resolved", dirname);
-    sprintf (addrfile, "%s/merge-addrs", dirname);
-    sprintf (tokfile, "%s/tokens", dirname);
+    outrfd = open (outrfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    if (outrfd < 0) {
+	fprintf (stderr, "Cannot create %s, errno=%d\n", outrfile, errno);
+	return -1;
+    }
+
+    sprintf (outputfile, "%s/dataflow.results", dirname);
+    outputfd = open (outputfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    if (outputfd < 0) {
+	fprintf (stderr, "Cannot create dataflow.results file, errno=%d\n", errno);
+	return -1;
+    }
+
+    sprintf (addrsfile, "%s/merge-addrs", dirname);
+    addrsfd = open (addrsfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    if (addrsfd < 0) {
+	fprintf (stderr, "Cannot create merge-addrs file, errno=%d\n", errno);
+	return -1;
+    }
+
+    sprintf (inputfile, "%s/tokens", dirname);
+    inputfd = open (inputfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    if (inputfd < 0) {
+	fprintf (stderr, "Cannot create tokens file, errno=%d\n", errno);
+	return -1;
+    }
 
 #ifdef DEBUG
     char debugname[256];
@@ -425,33 +410,99 @@ long stream_epoch (const char* dirname)
 	return -1;
     }
 #endif
+
 #ifdef STATS
     gettimeofday(&start_tv, NULL);
 #endif
 
-    rc = map_shmem (mergefile, &node_num_fd, &ndatasize, &mergesize, (char **) &merge_log);
-    if (rc < 0) return rc;
-
-    rc = map_file (outfile, &mapfd, &odatasize, &mapsize, &output_log);
-    if (rc < 0) return rc;
-
-    outrfd = open (outrfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
-    if (outrfd < 0) {
-	fprintf (stderr, "Cannot create %s, errno=%d\n", outrfile, errno);
-	return outrfd;
+    // Initialize a socket to receive input data
+    int c = socket (AF_INET, SOCK_STREAM, 0);
+    if (c < 0) {
+	fprintf (stderr, "Cannot create socket, errno=%d\n", errno);
+	return c;
     }
+
+    int on = 1;
+    rc = setsockopt (c, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+    if (rc < 0) {
+	fprintf (stderr, "Cannot set socket option, errno=%d\n", errno);
+	return rc;
+    }
+
+    struct sockaddr_in addr;
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = INADDR_ANY;
+
+    rc = bind (c, (struct sockaddr *) &addr, sizeof(addr));
+    if (rc < 0) {
+	fprintf (stderr, "Cannot bind socket, errno=%d\n", errno);
+	return rc;
+    }
+
+    rc = listen (c, 5);
+    if (rc < 0) {
+	fprintf (stderr, "Cannot listen on socket, errno=%d\n", errno);
+	return rc;
+    }
+    
+    int s = accept (c, NULL, NULL);
+    if (s < 0) {
+	fprintf (stderr, "Cannot accept connection, errno=%d\n", errno);
+	return s;
+    }
+
+    close (c);
+
+    // Now receive the data into our memory buffers
+    while (1) {
+	
+	// Receive header
+	struct taint_data_header header;
+	rc = read (s, &header, sizeof(header));
+	if (rc == 0) break; // socket closed - no more data
+	if (rc != sizeof(header)) {
+	    printf ("Could not receive taint data header, rc=%ld\n", rc);
+	    return -1;
+	}
+	
+	// Receive data
+	switch (header.type) {
+	case TAINT_DATA_MERGE:
+	    rc = recv_taint_data (s, (char *) merge_log, MERGE_SIZE, header.datasize, mdatasize);
+	    break;
+	case TAINT_DATA_OUTPUT:
+	    rc = recv_taint_data (s, output_log, OUTPUT_SIZE, header.datasize, odatasize);
+	    break;
+	case TAINT_DATA_INPUT:
+	    rc = recv_taint_data (s, token_log, TOKEN_SIZE, header.datasize, idatasize);
+	    printf ("token log is %x\n", *((uint32_t *) token_log));
+	    break;
+	case TAINT_DATA_ADDR:
+	    rc = recv_taint_data (s, (char *) ts_log, TS_SIZE, header.datasize, adatasize);
+	    break;
+	default:
+	    fprintf (stderr, "Received unspecified taint header type %d\n", header.type);
+	}
+	if (rc != header.datasize) return -1;
+    }
+    
+#ifdef STATS
+    gettimeofday(&recv_done_tv, NULL);
+#endif
+
     outrindex = 0;
 
     INIT_UOUT(dirname);
 
     plog = output_log;
-    while (plog < output_log + odatasize) {
-	plog += sizeof(struct taint_creation_info) + sizeof(u_long);
-	buf_size = *((u_long *) plog);
-	plog += sizeof(u_long);
-	for (i = 0; i < buf_size; i++) {
-	    plog += sizeof(u_long);
-	    value = *((u_long *) plog);
+    while ((u_long) plog < (u_long) output_log + odatasize) {
+	plog += sizeof(struct taint_creation_info) + sizeof(uint32_t);
+	buf_size = *((uint32_t *) plog);
+	plog += sizeof(uint32_t);
+	for (uint32_t i = 0; i < buf_size; i++) {
+	    plog += sizeof(uint32_t);
+	    value = *((taint_t *) plog);
 	    plog += sizeof(taint_t);
 	    if (value) {
 		if (value < 0xe0000001) {
@@ -491,7 +542,7 @@ long stream_epoch (const char* dirname)
 #ifdef STATS
 		    indirects++;
 #endif
-		    int unresolved_vals = 0, resolved_vals = 0;
+		    bool unresolved_vals = false, resolved_vals = false;
 		    map_iter (value, output_token, unresolved_vals, resolved_vals);
 		    if (unresolved_vals) PRINT_USENTINEL();
 		    if (resolved_vals) PRINT_RVALUE(0);
@@ -504,9 +555,6 @@ long stream_epoch (const char* dirname)
  	}
     }
 
-    unmap_file (output_log, mapfd, mapsize);
-
-    fprintf (stderr, "%s: done with phase 1\n", dirname);
 #ifdef STATS
     gettimeofday(&output_done_tv, NULL);
     output_merges = merges;
@@ -517,11 +565,7 @@ long stream_epoch (const char* dirname)
 	// Next, build index of output addresses
 	unordered_map<taint_t,taint_t> address_map;
 	
-	sprintf (tsfile, "%s/taint_structures", dirname);
-	rc = map_file (tsfile, &mapfd, &odatasize, &mapsize, (char **) &ts_log);
-	if (rc < 0) return rc;
-	
-	for (i = 0; i < odatasize/(sizeof(taint_t)*2); i++) {
+	for (uint32_t i = 0; i < adatasize/(sizeof(taint_t)*2); i++) {
 	    address_map[ts_log[2*i]] = ts_log[2*i+1];
 	}
 
@@ -536,7 +580,7 @@ long stream_epoch (const char* dirname)
 #ifdef STATS
 	    atokens++;
 #endif
-	    int unresolved_vals = 0, resolved_vals = 0;
+	    bool unresolved_vals = false, resolved_vals = false;
 
 	    GET_UVALUE(value);
 	    while (value) {
@@ -570,7 +614,7 @@ long stream_epoch (const char* dirname)
 			    // Not in this epoch - so pass through to next
 			    if (!unresolved_vals) {
 				PRINT_UVALUE(otoken+output_token);
-				unresolved_vals = 1;
+				unresolved_vals = true;
 			    }
 #ifdef DEBUG
 			    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
@@ -586,7 +630,7 @@ long stream_epoch (const char* dirname)
 #endif
 			if (!resolved_vals) {
 			    PRINT_RVALUE(otoken+output_token);
-			    resolved_vals = 1;
+			    resolved_vals = true;
 			}
 			if (start_flag) {
 #ifdef DEBUG
@@ -629,31 +673,11 @@ long stream_epoch (const char* dirname)
 
     flush_outrbuf ();
     close (outrfd);
-    unmap_file ((char *) merge_log, node_num_fd, mergesize);
 
-    int tfd = open (tokfile, O_RDONLY);
-    if (tfd < 0) {
-	fprintf (stderr, "cannot open token file %s, rc=%d, errno=%d\n", tokfile, tfd, errno);
-	return tfd;
-    }
-    
-    struct stat st;
-    rc = fstat (tfd, &st);
-    if (rc < 0) {
-	fprintf (stderr, "Unable to fstat token file %s, rc=%ld, errno=%d\n", tokfile, rc, errno);
-	return rc;
-    }
-
-    u_long tokens;
-    if (st.st_size > 0) {
-	struct token token;
-	rc = pread (tfd, &token, sizeof(token), st.st_size-sizeof(token));
-	if (rc != sizeof(token)) {
-	    fprintf (stderr, "Unable to read last token from file %s, rc=%ld, errno=%d\n", tokfile, rc, errno);
-	    return rc;
-	}
-	
-	tokens = token.token_num+token.size-1;
+    // Get number of tokens for this epoch
+    if (idatasize > 0) {
+	struct token* ptoken = (struct token *) &token_log[idatasize-sizeof(struct token)];
+	tokens = ptoken->token_num+ptoken->size-1;
     } else {
 	if (start_flag) {
 	    tokens = 0;
@@ -661,24 +685,48 @@ long stream_epoch (const char* dirname)
 	    tokens = 0xc0000000;
 	}
     }
-    close (tfd);
 
-    int afd = open(addrfile, O_CREAT | O_RDWR | O_TRUNC, 0644);
-    if (afd < 0) {
-	fprintf (stderr, "Cannot create address file %s, errno=%d\n", addrfile, errno);
-	return afd;
-    }
-    rc = write (afd, &output_token, sizeof(output_token));
+    rc = write (addrsfd, &output_token, sizeof(output_token));
     if (rc != sizeof(output_token)) {
 	fprintf (stderr, "Unable to write output token, rc=%ld, errno=%d\n", rc, errno);
 	return rc;
     }
-    rc = write (afd, &tokens, sizeof(tokens));
+    rc = write (addrsfd, &tokens, sizeof(tokens));
     if (rc != sizeof(tokens)) {
 	fprintf (stderr, "Unable to write input token , rc=%ld, errno=%d\n", rc, errno);
 	return rc;
     }
-    close(afd);
+    close(addrsfd);
+
+    // Need to persist the input and output token data
+    u_long bytes_written = 0;
+    while (bytes_written < idatasize) {
+	rc = write (inputfd, token_log+bytes_written, idatasize-bytes_written);
+	if (rc <= 0) {
+	    fprintf (stderr, "Write of tokens data returns %ld\n", rc);
+	    return -1;
+	} 
+	bytes_written += idatasize;
+    }
+    close (inputfd);
+
+    char* optr = output_log;
+    while ((u_long) optr < (u_long) output_log + odatasize) {
+	rc = write (outputfd, optr, sizeof(struct taint_creation_info));
+	if (rc != sizeof(struct taint_creation_info)) {
+	    fprintf (stderr, "Write of output token returns %ld\n", rc);
+	    return -1;
+	} 
+	optr += sizeof(struct taint_creation_info) + sizeof(uint32_t);
+	buf_size = *((uint32_t *) optr);
+	rc = write (outputfd, optr, sizeof(uint32_t));
+	if (rc != sizeof(uint32_t)) {
+	    fprintf (stderr, "Write of output size returns %ld\n", rc);
+	    return -1;
+	} 
+	optr += sizeof(uint32_t) + buf_size*(sizeof(uint32_t)+sizeof(taint_t));
+    }
+    close (outputfd);
 
 #ifdef STATS
     gettimeofday(&end_tv, NULL);
@@ -692,7 +740,8 @@ long stream_epoch (const char* dirname)
     }
 
     fprintf (statsfile, "Total time:              %6ld ms\n", ms_diff (end_tv, start_tv));
-    fprintf (statsfile, "Output processing time:  %6ld ms\n", ms_diff (output_done_tv, start_tv));
+    fprintf (statsfile, "Receive time:            %6ld ms\n", ms_diff (recv_done_tv, start_tv));
+    fprintf (statsfile, "Output processing time:  %6ld ms\n", ms_diff (output_done_tv, recv_done_tv));
     if (!finish_flag) {
 	fprintf (statsfile, "Index generation time:   %6ld ms\n", ms_diff (index_created_tv, output_done_tv));
 	fprintf (statsfile, "Address processing time: %6ld ms\n", ms_diff (address_done_tv, index_created_tv));
@@ -700,20 +749,25 @@ long stream_epoch (const char* dirname)
     } else {
 	fprintf (statsfile, "Finish time:             %6ld ms\n", ms_diff (end_tv, output_done_tv));
     }
-    fprintf (statsfile, "Idle                     %6llu ms\n", idle/10);
+    fprintf (statsfile, "Idle                     %6lu ms\n", idle/10);
     fprintf (statsfile, "\n");
-    fprintf (statsfile, "Output directs %llu indirects %llu values %llu, merges %llu\n", directs, indirects, values, output_merges);
+    fprintf (statsfile, "Received %ld bytes of merge data\n", mdatasize);
+    fprintf (statsfile, "Received %ld bytes of output data\n", odatasize);
+    fprintf (statsfile, "Received %ld bytes of input data\n", idatasize);
+    fprintf (statsfile, "Received %ld bytes of addr data\n", adatasize);
+    fprintf (statsfile, "\n");
+    fprintf (statsfile, "Output directs %lu indirects %lu values %lu, merges %lu\n", directs, indirects, values, output_merges);
     if (!finish_flag) {
-	fprintf (statsfile, "Address tokens %llu passthrus %llu resolved %llu, indirects %llu values %llu unmodified %llu, merges %llu\n", 
+	fprintf (statsfile, "Address tokens %lu passthrus %lu resolved %lu, indirects %lu values %lu unmodified %lu, merges %lu\n", 
 		 atokens, passthrus, aresolved, aindirects, avalues, unmodified, merges);
     }
     if (!start_flag) {
 #ifndef USE_FILE
 	written = outputq->write_index;
 #endif
-	fprintf (statsfile, "Wrote %llu entries (%llu bytes)\n", written, written*sizeof(u_long)); 
+	fprintf (statsfile, "Wrote %lu entries (%lu bytes)\n", written, written*sizeof(u_long)); 
     }
-    fprintf (statsfile, "Unique indirects %d\n", resolved.size());
+    fprintf (statsfile, "Unique indirects %ld\n", resolved.size());
 #endif
 
     return 0;
@@ -869,7 +923,7 @@ void* recv_input_queue (void* arg)
 
 void format ()
 {
-    fprintf (stderr, "format: stream <dir> [-iq input_queue] [-oq output_queue] [-oh output_host] [-ih]\n");
+    fprintf (stderr, "format: stream <dir> <taint port> [-iq input_queue] [-oq output_queue] [-oh output_host] [-ih]\n");
     exit (0);
 }
 
@@ -886,9 +940,9 @@ int main (int argc, char* argv[])
     long rc;
 #endif
 
-    if (argc < 2) format();
+    if (argc < 3) format();
 
-    for (int i = 2; i < argc; i++) {
+    for (int i = 3; i < argc; i++) {
 #ifndef USE_FILE
 	if (!strcmp (argv[i], "-iq")) {
 	    i++;
@@ -937,10 +991,10 @@ int main (int argc, char* argv[])
 	    return -1;
 	}
 	can_read = 0;
-	finish_flag = 0;
+	finish_flag = false;
     } else {
 	inputq = NULL;
-	finish_flag = 1;
+	finish_flag = true;
     }
 
     if (output_queue) {
@@ -955,10 +1009,10 @@ int main (int argc, char* argv[])
 	    return -1;
 	}
 	can_write = 0;
-	start_flag = 0;
+	start_flag = false;
     } else {
 	outputq = NULL;
-	start_flag = 1;
+	start_flag = true;
     }
 
     if (output_host) {
@@ -981,7 +1035,7 @@ int main (int argc, char* argv[])
     }
 #endif
 
-    stream_epoch (argv[1]);
+    stream_epoch (argv[1], atoi(argv[2]));
 
 #ifndef USE_FILE    
     if (output_host) pthread_join(oh_tid, NULL);

@@ -10,11 +10,11 @@
 
 #include <unordered_set>
 
-#include "taint_interface/taint.h"
-#include "linkage_common.h"
-#include "taint_interface/taint_creation.h"
-#include "xray_token.h"
-#include "maputil.h"
+#include "../taint_interface/taint.h"
+#include "../linkage_common.h"
+#include "../taint_interface/taint_creation.h"
+#include "../token.h"
+#include "../maputil.h"
 
 //#define DEBUG 0x1836
 #ifdef DEBUG
@@ -24,7 +24,7 @@ FILE* debugfile;
 //#define STATS
 
 #ifdef STATS
-u_long values = 0, directs = 0, indirects = 0, map_merges = 0;
+unsigned long long values = 0, directs = 0, indirects = 0, map_merges = 0;
 #endif
 
 struct taint_entry {
@@ -32,36 +32,38 @@ struct taint_entry {
     taint_t p2;
 };
 struct taint_entry* merge_log;
+
 #define OUTBUFSIZE 1000000
-u_long outbuf[OUTBUFSIZE];
+uint32_t outbuf[OUTBUFSIZE];
 u_long outindex = 0;
 int outfd;
 
-u_long outubuf[OUTBUFSIZE];
+uint32_t outubuf[OUTBUFSIZE];
 u_long outuindex = 0;
 int outufd;
 
-u_long outrbuf[OUTBUFSIZE];
+uint32_t outrbuf[OUTBUFSIZE];
 u_long outrindex = 0;
 int outrfd;
 
-int resolved_vals;
-int unresolved_vals;
-u_long output_token = 0;
+bool resolved_vals;
+bool unresolved_vals;
 
-int start_flag = 0;
+uint32_t output_token = 0;
+
+bool start_flag = false;
 
 static void flush_outbuf()
 {
-    long rc = write (outfd, outbuf, outindex*sizeof(u_long));
-    if (rc != (long) (outindex*sizeof(u_long))) {
+    long rc = write (outfd, outbuf, outindex*sizeof(uint32_t));
+    if (rc != (long) (outindex*sizeof(uint32_t))) {
 	fprintf (stderr, "write of segment failed, rc=%ld, errno=%d\n", rc, errno);
 	exit (rc);
     }
     outindex = 0;
 }
 
-static inline void print_value (u_long value) 
+static inline void print_value (uint32_t value) 
 {
     if (outindex == OUTBUFSIZE) flush_outbuf();
     outbuf[outindex++] = value;
@@ -69,15 +71,15 @@ static inline void print_value (u_long value)
 
 static void flush_outubuf()
 {
-    long rc = write (outufd, outubuf, outuindex*sizeof(u_long));
-    if (rc != (long) (outuindex*sizeof(u_long))) {
+    long rc = write (outufd, outubuf, outuindex*sizeof(uint32_t));
+    if (rc != (long) (outuindex*sizeof(uint32_t))) {
 	fprintf (stderr, "write of segment failed, rc=%ld, errno=%d\n", rc, errno);
 	exit (rc);
     }
     outuindex = 0;
 }
 
-static inline void print_uvalue (u_long value) 
+static inline void print_uvalue (uint32_t value) 
 {
     if (outuindex == OUTBUFSIZE) flush_outubuf();
     outubuf[outuindex++] = value;
@@ -85,15 +87,15 @@ static inline void print_uvalue (u_long value)
 
 static void flush_outrbuf()
 {
-    long rc = write (outrfd, outrbuf, outrindex*sizeof(u_long));
-    if (rc != (long) (outrindex*sizeof(u_long))) {
+    long rc = write (outrfd, outrbuf, outrindex*sizeof(uint32_t));
+    if (rc != (long) (outrindex*sizeof(uint32_t))) {
 	fprintf (stderr, "write of segment failed, rc=%ld, errno=%d\n", rc, errno);
 	exit (rc);
     }
     outrindex = 0;
 }
 
-static inline void print_rvalue (u_long value) 
+static inline void print_rvalue (uint32_t value) 
 {
     if (outrindex == OUTBUFSIZE) flush_outrbuf();
     outrbuf[outrindex++] = value;
@@ -125,7 +127,7 @@ static void map_iter (taint_t value)
 		if (value < 0xc0000000 && !start_flag) {
 		    if (!unresolved_vals) {
 			print_uvalue (output_token);
-			unresolved_vals = 1;
+			unresolved_vals = true;
 		    }
 		    print_uvalue (value);
 #ifdef DEBUG
@@ -136,7 +138,7 @@ static void map_iter (taint_t value)
 		} else {
 		    if (!resolved_vals) {
 			print_rvalue (output_token);
-			resolved_vals = 1;
+			resolved_vals = true;
 		    }
 		    if (start_flag) {
 			print_rvalue (value);
@@ -201,96 +203,6 @@ static void map_iter2 (taint_t value)
     } while (stack_depth);
 }
 
-int map_shmem (char* filename, int* pfd, u_long* pdatasize, u_long* pmapsize, char** pbuf)
-{
-    char shmemname[256];
-    struct stat st, ost;
-    u_long size, osize=0;
-    int fd, ofd, rc;
-    char* buf, *fbuf;
-
-    ofd = open (filename, O_RDONLY, 0);
-    if (ofd >= 0) {
-	// This means that an overflow file was created - try to fit it in our address space
-	rc = fstat(ofd, &ost);
-	if (rc < 0) {
-	    fprintf (stderr, "Unable to stat %s, rc=%d, errno=%d\n", filename, rc, errno);
-	    return rc;
-	}
-	if (ost.st_size%4096) {
-	    osize = ost.st_size + 4096-ost.st_size%4096;
-	} else {
-	    osize = ost.st_size;
-	}
-    }
-
-    snprintf(shmemname, 256, "/node_nums_shm%s", filename);
-    for (u_long i = 1; i < strlen(shmemname); i++) {
-	if (shmemname[i] == '/') shmemname[i] = '.';
-    }
-    shmemname[strlen(shmemname)-10] = '\0';
-    fd = shm_open (shmemname, O_RDONLY, 0);
-    if (fd < 0) {
-	fprintf (stderr, "Unable to open %s, rc=%d, errno=%d\n", shmemname, fd, errno);
-	return fd;
-    }
-    rc = fstat(fd, &st);
-    if (rc < 0) {
-	fprintf (stderr, "Unable to stat %s, rc=%d, errno=%d\n", shmemname, rc, errno);
-	return rc;
-    }
-    if (st.st_size%4096) {
-	size = st.st_size + 4096-st.st_size%4096;
-    } else {
-	size = st.st_size;
-    }
-
-    if (ofd >= 0) {
-	char* region;
-
-	// First try to map contiguous redion
-	region = (char *) mmap (NULL, size+osize, PROT_READ, MAP_PRIVATE|MAP_ANON, -1, 0);
-	if (region == MAP_FAILED) {
-	    fprintf (stderr, "Cannot map contiguous region of size %lu, errno=%d\n", size+osize, errno);
-	    return -1;
-	}
-	munmap(region,size+osize);
-
-	// Map shared memory to first portion
-	buf = (char *) mmap (region, size, PROT_READ, MAP_SHARED, fd, 0);
-	if (buf == MAP_FAILED) {
-	    fprintf (stderr, "Cannot map shmem %s, errno=%d\n", shmemname, errno);
-	    return -1;
-	}
-	// And overflow file to second portion
-	fbuf = (char *) mmap (region+size, osize, PROT_READ, MAP_SHARED, ofd, 0);
-	if (fbuf == MAP_FAILED) {
-	    fprintf (stderr, "Cannot map file %s, errno=%d\n", shmemname, errno);
-	    return -1;
-	}
-    } else {
-	// No overflow
-	buf = (char *) mmap (NULL, size, PROT_READ, MAP_SHARED, fd, 0);
-	if (buf == MAP_FAILED) {
-	    fprintf (stderr, "Cannot map file %s, errno=%d\n", shmemname, errno);
-	    return -1;
-	}
-    }
-
-    // This is the last process to use the merge region
-    // This will deallocate it  after we exit
-    rc = shm_unlink (shmemname); 
-    if (rc < 0) perror ("shmem_unlink");
-
-    *pfd = fd;
-    *pdatasize = st.st_size;
-    *pmapsize = size;
-    *pbuf = buf;
-
-    return 0;
-}
-
-
 // Generate splice data:
 // list of address for prior segment to track
 static long map_before_segment (char* dirname)
@@ -299,7 +211,8 @@ static long map_before_segment (char* dirname)
     long rc;
     char* output_log, *plog;
     taint_t *ts_log;
-    u_long tokens, ndatasize, odatasize, mergesize, mapsize, buf_size, i, zero = 0;
+    uint32_t buf_size, tokens;
+    u_long ndatasize, odatasize, mergesize, mapsize, i, zero = 0;
     taint_t value;
     char mergefile[256], outfile[256], tsfile[256], outrfile[256], outufile[256], map_name[256], tokfile[256];
     int node_num_fd, mapfd, tfd;
@@ -310,7 +223,7 @@ static long map_before_segment (char* dirname)
     sprintf (tsfile, "%s/taint_structures", dirname);
     sprintf (tokfile, "%s/tokens", dirname);
 
-    rc = map_shmem (mergefile, &node_num_fd, &ndatasize, &mergesize, (char **) &merge_log);
+    rc = map_file (mergefile, &node_num_fd, &ndatasize, &mergesize, (char **) &merge_log);
     if (rc < 0) return rc;
 
     rc = map_file (outfile, &mapfd, &odatasize, &mapsize, &output_log);
@@ -341,11 +254,11 @@ static long map_before_segment (char* dirname)
 
     plog = output_log;
     while (plog < output_log + odatasize) {
-	plog += sizeof(struct taint_creation_info) + sizeof(u_long);
-	buf_size = *((u_long *) plog);
-	plog += sizeof(u_long);
+	plog += sizeof(struct taint_creation_info) + sizeof(uint32_t);
+	buf_size = *((uint32_t *) plog);
+	plog += sizeof(uint32_t);
 	for (i = 0; i < buf_size; i++) {
-	    plog += sizeof(u_long);
+	    plog += sizeof(uint32_t);
 	    value = *((taint_t *) plog);
 	    plog += sizeof(taint_t);
 	    if (value) {
@@ -386,8 +299,8 @@ static long map_before_segment (char* dirname)
 #ifdef STATS
 		    indirects++;
 #endif
-		    unresolved_vals = 0;
-		    resolved_vals = 0;
+		    unresolved_vals = false;
+		    resolved_vals = false;
 		    map_iter (value);
 		    if (unresolved_vals) print_uvalue(zero);
 		    if (resolved_vals) print_rvalue(zero);
@@ -432,7 +345,7 @@ static long map_before_segment (char* dirname)
 	}
 	
 	tokens = token.token_num+token.size-1;
-	printf ("tokens %lx size %d\n", tokens, sizeof(token));
+	printf ("tokens: %x sizeof(token) %lu\n", tokens, sizeof(token));
     } else {
 	if (start_flag) {
 	    tokens = 0;
@@ -498,7 +411,7 @@ int main (int argc, char* argv[])
 	return -1;
     }
 
-    if (argc == 3 && !strcmp(argv[2], "-s")) start_flag = 1;
+    if (argc == 3 && !strcmp(argv[2], "-s")) start_flag = true;
     map_before_segment (argv[1]);
 
     return 0;
