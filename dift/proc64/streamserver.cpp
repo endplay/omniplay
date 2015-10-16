@@ -18,7 +18,7 @@
 #include <atomic>
 using namespace std;
 
-#include "streamserver.h"
+#include "../../test/streamserver.h"
 #include "streamnw.h"
 
 //#define DETAILS
@@ -93,7 +93,7 @@ void* do_stream (void* arg)
 	    args[argcnt++] = "stream";
 	    sprintf (dirname, "/tmp/%ld", i);
 	    args[argcnt++] = dirname;
-	    sprintf (port, "%ld", 10000+i);
+	    sprintf (port, "%ld", AGG_BASE_PORT+i);
 	    args[argcnt++] = port;
 	    if (i < epochs-1 || !ehdr.finish_flag) {
 		args[argcnt++] = "-iq";

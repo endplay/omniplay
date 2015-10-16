@@ -45,11 +45,11 @@ struct epoch_ack {
 };
 
 #define TAINTQSIZE (512*1024*1024)
-#define TAINTENTRIES ((TAINTQSIZE-sizeof(atomic_ulong)*2)/sizeof(u_long))
+#define TAINTENTRIES ((TAINTQSIZE-sizeof(atomic_ulong)*2)/sizeof(uint32_t))
 struct taintq {
     atomic_ulong    read_index;
     atomic_ulong    write_index;
-    u_long          buffer[TAINTENTRIES];
+    uint32_t        buffer[TAINTENTRIES];
 };
 
 #endif
