@@ -2,6 +2,7 @@
 #define __STREAMSERVER_H__
 
 #define STREAMSERVER_PORT 19764
+#define AGG_BASE_PORT     10000
 
 #define SEND_ACK      0x1
 #define SEND_RESULTS  0x2
@@ -15,27 +16,32 @@ struct replay_path {
 };
 
 struct cache_info {
-    u_long          dev;
-    u_long          ino;
+    uint32_t        dev;
+    uint32_t        ino;
     struct timespec mtime;
 };
 // Info from description file
 struct epoch_hdr {
-    char   flags;
-    char   dirname[NAMELEN];
-    u_long epochs;
-    bool   start_flag;
-    bool   finish_flag;
-    char   next_host[NAMELEN];
+    uint32_t epochs;
+    bool     start_flag;
+    bool     finish_flag;
+    char     flags;
+    char     dirname[NAMELEN];
+    char     next_host[NAMELEN];
 };
 
 struct epoch_data {
-    pid_t  start_pid;
-    u_long start_syscall;
-    u_long stop_syscall;
-    u_long filter_syscall;
-    u_long ckpt;
-    char   hostname[NAMELEN];
+    pid_t    start_pid;
+    uint32_t start_syscall;
+    uint32_t stop_syscall;
+    uint32_t filter_syscall;
+    uint32_t ckpt;
+    uint32_t port;
+    char     hostname[NAMELEN];
+};
+
+struct epoch_ack {
+    uint32_t retval;
 };
 
 #define TAINTQSIZE (512*1024*1024)

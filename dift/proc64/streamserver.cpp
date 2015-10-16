@@ -141,7 +141,7 @@ void* do_stream (void* arg)
 
     gettimeofday (&tv_done, NULL);
     if (ehdr.flags&SEND_ACK) {
-	long retval = 0;
+	uint32_t retval = 0;
 	rc = send (s, &retval, sizeof(retval), 0);
 	if (rc != sizeof(retval)) {
 	    fprintf (stderr, "Cannot send ack,rc=%d\n", rc);

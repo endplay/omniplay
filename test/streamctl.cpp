@@ -29,6 +29,35 @@ struct epoch_ctl {
     int    s;
 };
 
+int connect_to_server (const char* hostname, int port)
+{
+    // Connect to streamserver
+    struct hostent* hp = gethostbyname (hostname);
+    if (hp == NULL) {
+	fprintf (stderr, "Invalid host %s, errno=%d\n", hostname, h_errno);
+	return -1;
+    }
+    
+    int s = socket (AF_INET, SOCK_STREAM, 0);
+    if (s < 0) {
+	fprintf (stderr, "Cannot create socket, errno=%d\n", errno);
+	return s;
+    }
+    
+    struct sockaddr_in addr;
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    memcpy (&addr.sin_addr, hp->h_addr, hp->h_length);
+    
+    // Receiver may not be started, so spin until connection is accepted
+    long rc = connect (s, (struct sockaddr *) &addr, sizeof(addr));
+    if (rc < 0) {
+	fprintf (stderr, "Cannot connect to %s, errno=%d\n", hostname, errno);
+	return rc;
+    }
+    return s;
+}
+
 int fetch_results (char* top_dir, struct epoch_ctl ectl)
 {
     char dir[512];
@@ -50,7 +79,7 @@ int fetch_results (char* top_dir, struct epoch_ctl ectl)
 
 void format ()
 {
-    fprintf (stderr, "format: streamctl <epoch description file> [-w] [-s] [-v dest_dir cmp_no]\n");
+    fprintf (stderr, "format: streamctl <epoch description file> <aggregation host> [-w] [-s] [-v dest_dir cmp_no]\n");
     exit (0);
 }
 
@@ -67,12 +96,15 @@ int main (int argc, char* argv[])
     u_long epochno = 0, last_epochno = 0;
     struct vector<struct replay_path> log_files;
     struct vector<struct cache_info> cache_files;
-    
-    if (argc < 2) {
+
+    if (argc < 3) {
 	format();
     }
 
-    for (int i = 2; i < argc; i++) {
+    const char* epoch_filename = argv[1];
+    const char* agg_hostname = argv[2];
+
+    for (int i = 3; i < argc; i++) {
 	if (!strcmp (argv[i], "-w")) {
 	    wait_for_response = 1;
 	} else if (!strcmp (argv[i], "-s")) {
@@ -106,9 +138,9 @@ int main (int argc, char* argv[])
     }
 
     // Read in the epoch file
-    FILE* file = fopen(argv[1], "r");
+    FILE* file = fopen(epoch_filename, "r");
     if (file == NULL) {
-	fprintf (stderr, "Unable to open epoch description file %s, errno=%d\n", argv[1], errno);
+	fprintf (stderr, "Unable to open epoch description file %s, errno=%d\n", epoch_filename, errno);
 	return -1;
     }
     rc = fscanf (file, "%79s\n", dirname);
@@ -120,7 +152,7 @@ int main (int argc, char* argv[])
     while (!feof(file)) {
 	char line[256];
 	if (fgets (line, 255, file)) {
-	    rc = sscanf (line, "%d %lu %lu %lu %lu %s\n", &epoch.start_pid, &epoch.start_syscall, 
+	    rc = sscanf (line, "%d %u %u %u %u %s\n", &epoch.start_pid, &epoch.start_syscall, 
 			 &epoch.stop_syscall, &epoch.filter_syscall, &epoch.ckpt, epoch.hostname);
 	    if (rc != 6) {
 		fprintf (stderr, "Unable to parse line of epoch descrtion file: %s\n", line);
@@ -192,6 +224,25 @@ int main (int argc, char* argv[])
 	closedir(dir);
     }
 
+    // If this is a split processing, set up the 64-bit aggregator first
+    // Assume 1 aggregator for now
+    struct epoch_hdr ehdr;
+    ehdr.flags = 0;
+    if (wait_for_response) ehdr.flags |= SEND_ACK;
+    if (validate) ehdr.flags |= SEND_RESULTS;
+    strcpy (ehdr.dirname, dirname);
+    ehdr.epochs = epochs.size();
+    ehdr.start_flag = true;
+    ehdr.finish_flag = true;
+
+    int sa = connect_to_server (agg_hostname, STREAMSERVER_PORT);
+    if (sa < 0) return sa;
+
+    rc = safe_write (sa, &ehdr, sizeof(ehdr));
+    if (rc != sizeof(ehdr)) {
+	fprintf (stderr, "Cannot send header to streamserver, rc=%d\n", rc);
+	return rc;
+    }
 
     // Now contact the individual servers and send them the epoch data
     // Assumption is that the epochs handled by a server are contiguous
@@ -206,34 +257,12 @@ int main (int argc, char* argv[])
 	    efinish++;
 	}
 	if (ecnt) {
-	    // Connect to streamserver
-	    struct hostent* hp = gethostbyname (estart->hostname);
-	    if (hp == NULL) {
-		fprintf (stderr, "Invalid host %s, errno=%d\n", estart->hostname, h_errno);
-		return -1;
-	    }
-	    
-	    int s = socket (AF_INET, SOCK_STREAM, 0);
-	    if (s < 0) {
-		fprintf (stderr, "Cannot create socket, errno=%d\n", errno);
-		return s;
-	    }
 
-	    struct sockaddr_in addr;
-	    addr.sin_family = AF_INET;
-	    addr.sin_port = htons(STREAMSERVER_PORT);
-	    memcpy (&addr.sin_addr, hp->h_addr, hp->h_length);
-	    
-	    rc = connect (s, (struct sockaddr *) &addr, sizeof(addr));
-	    if (rc < 0) {
-		fprintf (stderr, "Cannot connect to %s, errno=%d\n", estart->hostname, errno);
-		return rc;
-	    }
+	    int sd = connect_to_server (estart->hostname, STREAMSERVER_PORT);
+	    if (sd < 0) return sd;
 
 	    struct epoch_hdr ehdr;
 	    ehdr.flags = 0;
-	    if (wait_for_response) ehdr.flags |= SEND_ACK;
-	    if (validate) ehdr.flags |= SEND_RESULTS;
 	    if (sync_files) ehdr.flags |= SYNC_LOGFILES;
 	    strcpy (ehdr.dirname, dirname);
 	    ehdr.epochs = ecnt;
@@ -245,7 +274,7 @@ int main (int argc, char* argv[])
 	    }
 	    prev_hostname = estart->hostname;
 
-	    rc = safe_write (s, &ehdr, sizeof(ehdr));
+	    rc = safe_write (sd, &ehdr, sizeof(ehdr));
 	    if (rc != sizeof(ehdr)) {
 		fprintf (stderr, "Cannot send header to streamserver, rc=%d\n", rc);
 		return rc;
@@ -253,7 +282,9 @@ int main (int argc, char* argv[])
 
 	    for (; estart != efinish; estart++) {
 		struct epoch_data tmp = *estart;
-		rc = safe_write (s, &tmp, sizeof(struct epoch_data));
+		strcpy (tmp.hostname, agg_hostname);
+		tmp.port = AGG_BASE_PORT+epochno;
+		rc = safe_write (sd, &tmp, sizeof(struct epoch_data));
 		if (rc != sizeof(struct epoch_data)) {
 		    fprintf (stderr, "Cannot send epoch data to streamserver, rc=%d\n", rc);
 		    return rc;
@@ -264,7 +295,7 @@ int main (int argc, char* argv[])
 	    if (sync_files) {
 		// First send count of log files
 		u_long cnt = log_files.size();
-		rc = safe_write (s, &cnt, sizeof(cnt));
+		rc = safe_write (sd, &cnt, sizeof(cnt));
 		if (rc != sizeof(cnt)) {
 		    fprintf (stderr, "Cannot send log file count to streamserver, rc=%d\n", rc);
 		    return rc;
@@ -273,7 +304,7 @@ int main (int argc, char* argv[])
 		// Next send log files
 		for (auto iter = log_files.begin(); iter != log_files.end(); iter++) {
 		    struct replay_path p = *iter;
-		    rc = safe_write (s, &p, sizeof(struct replay_path));
+		    rc = safe_write (sd, &p, sizeof(struct replay_path));
 		    if (rc != sizeof(struct replay_path)) {
 			fprintf (stderr, "Cannot send log file to streamserver, rc=%d\n", rc);
 			return rc;
@@ -282,7 +313,7 @@ int main (int argc, char* argv[])
 
 		// Next send count of cache files
 		cnt = cache_files.size();
-		rc = safe_write (s, &cnt, sizeof(cnt));
+		rc = safe_write (sd, &cnt, sizeof(cnt));
 		if (rc != sizeof(cnt)) {
 		    fprintf (stderr, "Cannot send cache file count to streamserver, rc=%d\n", rc);
 		    return rc;
@@ -291,7 +322,7 @@ int main (int argc, char* argv[])
 		// And finally the cache files
 		for (auto iter = cache_files.begin(); iter != cache_files.end(); iter++) {
 		    struct cache_info c = *iter;
-		    rc = safe_write (s, &c, sizeof(struct cache_info));
+		    rc = safe_write (sd, &c, sizeof(struct cache_info));
 		    if (rc != sizeof(struct cache_info)) {
 			fprintf (stderr, "Cannot send cache file to streamserver, rc=%d\n", rc);
 			return rc;
@@ -300,7 +331,7 @@ int main (int argc, char* argv[])
 
 		// Get back response
 		bool response[log_files.size()+cache_files.size()];
-		rc = safe_read (s, response, sizeof(bool)*(log_files.size()+cache_files.size()));
+		rc = safe_read (sd, response, sizeof(bool)*(log_files.size()+cache_files.size()));
 		if (rc != (long) (sizeof(bool)*(log_files.size()+cache_files.size()))) {
 		    fprintf (stderr, "Cannot read sync results, rc=%d\n", rc);
 		    return rc;
@@ -321,7 +352,7 @@ int main (int argc, char* argv[])
 			    fprintf (stderr, "Bad path name: %s\n", log_files[i].path);
 			    return -1;
 			}
-			rc = send_file (s, log_files[i].path, filename);
+			rc = send_file (sd, log_files[i].path, filename);
 			if (rc < 0) {
 			    fprintf (stderr, "Unable to send log file %s\n", log_files[i].path);
 			    return rc;
@@ -334,7 +365,7 @@ int main (int argc, char* argv[])
 			struct stat64 st;
 
 			// Find the cache file locally
-			sprintf (cname, "/replay_cache/%lx_%lx", cache_files[j].dev, cache_files[j].ino);
+			sprintf (cname, "/replay_cache/%x_%x", cache_files[j].dev, cache_files[j].ino);
 			rc = stat64 (cname, &st);
 			if (rc < 0) {
 			    fprintf (stderr, "cannot stat cache file %s, rc=%d\n", cname, rc);
@@ -343,12 +374,12 @@ int main (int argc, char* argv[])
 
 			if (st.st_mtim.tv_sec != cache_files[j].mtime.tv_sec || st.st_mtim.tv_nsec != cache_files[j].mtime.tv_nsec) {
 			    // if times do not match, open a past version
-			    sprintf (cname, "/replay_cache/%lx_%lx_%lu_%lu", cache_files[j].dev, cache_files[j].ino, 
+			    sprintf (cname, "/replay_cache/%x_%x_%lu_%lu", cache_files[j].dev, cache_files[j].ino, 
 				     cache_files[j].mtime.tv_sec, cache_files[j].mtime.tv_nsec);
 			}
 
 			// Send the file to streamserver
-			rc = send_file (s, cname, "rename_me");
+			rc = send_file (sd, cname, "rename_me");
 		    }
 		}
 	    }
@@ -356,52 +387,40 @@ int main (int argc, char* argv[])
 	    struct epoch_ctl ectl;
 	    ectl.start = last_epochno;
 	    ectl.num = epochno-last_epochno;
-	    ectl.s = s;
+	    ectl.s = sd;
 	    epochctls.push_back(ectl);
 	    last_epochno = epochno;
 
 	    //printf ("%lu epochs to %s\n", ecnt, estart->hostname);
-	    conns.insert(s);
+	    conns.insert(sd);
 	}
     }
 
     if (wait_for_response) {
-	while (conns.size()) {
-	    struct pollfd fds[conns.size()];
-	    int n = 0;
-	    for (auto iter = conns.begin(); iter != conns.end(); iter++) {
-		fds[n].fd = *iter;
-		fds[n].events = POLLIN;
-		n++;
-	    }
-	    rc = poll (fds, n, -1);
-	    if (rc < 0) {
-		fprintf (stderr, "poll failed, rc=%d\n", rc);
-		return rc;
-	    }
-	    for (int i = 0; i < n; i++) {
-		if (fds[i].revents) {
-		    if (fds[i].revents&POLLIN) {
-			long retval;
-			rc = recv (fds[i].fd, &retval, sizeof(retval), 0);
-			if (rc != sizeof(retval)) {
-			    fprintf (stderr, "Cannot recv ack,rc=%d\n", rc);
-			}
-			printf ("done reval is %ld!\n", retval);
-		    } else {
-			printf ("done with poll error %x\n", fds[i].revents);
-		    }
-		    conns.erase(fds[i].fd);
-		}
-	    }
+	struct epoch_ack ack;
+	rc = recv (sa, &ack, sizeof(ack), 0);
+	if (rc != sizeof(ack)) {
+	    fprintf (stderr, "Cannot recv ack,rc=%d\n", rc);
 	}
+	printf ("done reval is %d\n", ack.retval);
     }
 
     if (validate) {
 	// Fetch the files into each directory 
-	for (auto iter = epochctls.begin(); iter != epochctls.end(); iter++) {
-	    fetch_results (dest_dir, *iter);
+	char rdir[512];
+	for (u_long i = 0; i < epochs.size(); i++) {
+	    sprintf (rdir, "%s/%lu", dest_dir, i);
+	    long rc = mkdir (rdir, 0755);
+	    if (rc < 0) {
+		fprintf (stderr, "Cannot make dir %s\n", rdir);
+		return rc;
+	    }
+	    // Fetch 4 files: results, addresses, input and output tokens
+	    for (int j = 0; j < 4; j++) {
+		if (fetch_file(sa, rdir) < 0) return -1;
+	    }
 	}
+
 	// Now actually do the comaprison
 	char cmd[512];
 	sprintf (cmd, "../dift/obj-ia32/out2mergecmp %s -d %s", cmp_dir, dest_dir);
