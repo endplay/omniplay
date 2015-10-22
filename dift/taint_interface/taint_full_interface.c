@@ -12,7 +12,7 @@
 #include <sys/types.h>
 #include <sys/mman.h>
 
-#define USE_SHMEM
+//#define USE_SHMEM
 #define USE_MERGE_HASH
 #define TAINT_STATS
 //#define TRACE_TAINT
@@ -576,6 +576,7 @@ void finish_and_print_taint_stats(FILE* fp)
     if (merge_buf_overflow) flush_merge_buffer ();
 #else
     flush_merge_buffer ();
+    printf ("Completed last merge flush, merge_buffer_cnt is %ld\n", merge_buffer_count);
 #endif
 #ifdef USE_NW
     flush_tokenbuf (s);
