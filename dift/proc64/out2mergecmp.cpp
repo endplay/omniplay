@@ -13,7 +13,7 @@ using namespace std;
 
 #include "../taint_interface/taint_creation.h"
 
-//#define TARGET 0x24eb
+#define TARGET(x) (x==0x468cd3)
 //#define ITARGET 0x201e42
 
 #define ALLOW_DUPS
@@ -78,13 +78,13 @@ int main (int argc, char* argv[])
     while ((u_long) mptr < (u_long) mbuf + mdatasize) {
 	while (*mptr) {
 #ifdef TARGET
-	    if (otoken == TARGET) {
-		printf ("Output %lx -> input %lx syscall %lu offset %u out of %u\n", otoken, *mptr, tci->syscall_cnt, buf_cnt, buf_size);
+	    if (TARGET(otoken)) {
+		printf ("Output %x -> input %x syscall %u offset %u out of %u\n", otoken, *mptr, tci->syscall_cnt, buf_cnt, buf_size);
 	    }
 #endif
 #ifdef ITARGET
-	    if (*mptr == ITARGET) {
-		printf ("Output %lx -> input %lx syscall %lu offset %u out of %u\n", otoken, *mptr, tci->syscall_cnt, buf_cnt, buf_size);
+	    if (ITARGET(*mptr)) {
+		printf ("Output %x -> input %x syscall %u offset %u out of %u\n", otoken, *mptr, tci->syscall_cnt, buf_cnt, buf_size);
 	    }
 #endif
 	    mapping.insert(make_pair(otoken,*mptr));
@@ -117,14 +117,14 @@ int main (int argc, char* argv[])
 	    optr++;
 	    while (*optr) {
 #ifdef TARGET
-		if (otoken+output_tokens == TARGET) {
-		    printf ("Output %lx this epoch %lx past %lx -> input %lx this epoch %lx past %lx, epoch %s offset %lx\n",
+		if (TARGET(otoken+output_tokens)) {
+		    printf ("Output %x this epoch %x past %x -> input %x this epoch %x past %x, epoch %s offset %lx\n",
 			    otoken+output_tokens, otoken, output_tokens, *optr+input_tokens, *optr, input_tokens, argv[i], (u_long) optr - (u_long) obuf);
 		}
 #endif
 #ifdef ITARGET
-		if (*optr+input_tokens == ITARGET) {
-		    printf ("Output %lx this epoch %lx past %lx -> input %lx this epoch %lx past %lx, epoch %s\n",
+		if (ITARGET(*optr+input_tokens)) {
+		    printf ("Output %x this epoch %x past %x -> input %x this epoch %x past %x, epoch %s\n",
 			    otoken+output_tokens, otoken, output_tokens, *optr+input_tokens, *optr, input_tokens, argv[i]);
 		}
 #endif
@@ -157,7 +157,7 @@ int main (int argc, char* argv[])
 	output_tokens += output_token;
 	input_tokens += input_token;
 #ifdef TARGET
-	printf ("epoch %d, output tokens %lx input tokens %lx\n", i-1, output_tokens, input_tokens);
+	printf ("epoch %d, output tokens %x input tokens %x\n", i-1, output_tokens, input_tokens);
 #endif
 	close (afd);
     }
@@ -171,7 +171,10 @@ int main (int argc, char* argv[])
 	    printf ("Entry in mapping %d differs\n", cnt);
 	    printf ("mergeout <%x,%x>, outputs <%x,%x>\n", 
 		    miter->first, miter->second, oiter->first, oiter->second);
-	    return 1;
+	    if (miter->first < oiter->first) {
+	      miter++;
+	      continue;
+	    }
 	}
 	miter++;
 	oiter++;

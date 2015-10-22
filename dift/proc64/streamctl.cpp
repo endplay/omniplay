@@ -18,7 +18,7 @@
 
 using namespace std;
 
-#include "streamserver.h"
+#include "../../test/streamserver.h"
 //#include "parseklib.h"
 #include "streamnw.h"
 
@@ -122,7 +122,7 @@ int main (int argc, char* argv[])
     while (!feof(file)) {
 	char line[256];
 	if (fgets (line, 255, file)) {
-	    rc = sscanf (line, "%d %lu %lu %lu %lu %s\n", &epoch.start_pid, &epoch.start_syscall, 
+	    rc = sscanf (line, "%d %u %u %u %u %s\n", &epoch.start_pid, &epoch.start_syscall, 
 			 &epoch.stop_syscall, &epoch.filter_syscall, &epoch.ckpt, epoch.hostname);
 	    if (rc != 6) {
 		fprintf (stderr, "Unable to parse line of epoch descrtion file: %s\n", line);

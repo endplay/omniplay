@@ -76,6 +76,17 @@ void* do_stream (void* arg)
 	    fprintf (stderr, "Cannot truncate input queue %s,errno=%d\n", ectl[i].inputqname, errno);
 	    return NULL;
 	}
+	struct taintq* q = (struct taintq *) mmap (NULL, TAINTQSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, iqfd, 0);
+	if (q == MAP_FAILED) {
+	    fprintf (stderr, "Cannot map input queue, errno=%d\n", errno);
+	    return NULL;
+	}
+	rc = sem_init(&(q->epoch_sem), 1, 0);
+	if (rc < 0) {
+	    fprintf (stderr, "sem_init returns %d, errno=%d\n", rc, errno);
+	    return NULL;
+	}
+	munmap(q,TAINTQSIZE);
 	close (iqfd);
     }
 
