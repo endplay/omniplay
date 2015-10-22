@@ -121,6 +121,9 @@ void* do_stream (void* arg)
 		args[argcnt++] = "-oh";
 		args[argcnt++] = ehdr.next_host;
 	    }
+	    if (ehdr.agg_type == AGG_TYPE_SEQ) {
+		args[argcnt++] = "-seq";
+	    }
 	    args[argcnt++] = NULL;
 	    
 	    rc = execv ("./stream", (char **) args);

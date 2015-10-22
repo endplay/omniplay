@@ -11,9 +11,10 @@
 #include <set>
 using namespace std;
 
+#include "../taint_interface/taint.h"
 #include "../taint_interface/taint_creation.h"
 
-#define TARGET(x) (x==0x468cd3)
+//#define TARGET(x) (x==0x5864)
 //#define ITARGET 0x201e42
 
 #define ALLOW_DUPS
@@ -93,11 +94,14 @@ int main (int argc, char* argv[])
 	otoken++;
 	mptr++;
 	buf_cnt++;
-	dptr += sizeof(u_long) * 2;
+	dptr += sizeof(taint_t) + sizeof(uint32_t);
 	while (buf_cnt == buf_size) {
+#ifdef TARGET
+	    tci = (struct taint_creation_info *) dptr;
+#endif
 	    dptr += sizeof(struct taint_creation_info) + sizeof(uint32_t);
 	    buf_size = *((uint32_t *) dptr);
-	    dptr += sizeof(u_long);
+	    dptr += sizeof(uint32_t);
 	    buf_cnt = 0;
 	}
     }
@@ -171,10 +175,7 @@ int main (int argc, char* argv[])
 	    printf ("Entry in mapping %d differs\n", cnt);
 	    printf ("mergeout <%x,%x>, outputs <%x,%x>\n", 
 		    miter->first, miter->second, oiter->first, oiter->second);
-	    if (miter->first < oiter->first) {
-	      miter++;
-	      continue;
-	    }
+	    exit (0);
 	}
 	miter++;
 	oiter++;

@@ -22,7 +22,7 @@ using namespace std;
 #include "../taint_nw.h"
 #include "../../test/streamserver.h"
 
-//#define DEBUG(x) ((x)==0x5b9c9da)
+//#define DEBUG(x) ((x)==0x3378 || (x) == 0x3379 || (x) == 0x33be || (x) == 0x5864)
 #define STATS
 
 const u_long MERGE_SIZE  = 0x400000000; // 16GB max
@@ -82,85 +82,6 @@ static long ms_diff (struct timeval tv1, struct timeval tv2)
 #define IDLE usleep (100);
 #endif
 
-#ifdef USE_FILE
-
-#define OUTBUFSIZE 1000000
-uint32_t uoutbuf[OUTBUFSIZE];
-uint32_t uoutindex = 0;
-int uoutfd;
-
-uint32_t uinbuf[OUTBUFSIZE];
-uint32_t uinindex = 0, uincnt = 0;
-int uinfd;
-
-static long init_uoutbuf (const char* dirname) 
-{
-    char uoutfile[256], uinfile[256];
-
-    sprintf (uoutfile, "%s/stream-outs", dirname);
-    sprintf (uinfile, "%s/stream-ins", dirname);
-
-    uoutfd = open (uoutfile, O_CREAT | O_TRUNC | O_WRONLY | O_LARGEFILE, 0644);
-    if (uoutfd < 0) {
-	fprintf (stderr, "Cannot create %s, errno=%d\n", uoutfile, errno);
-	return -1;
-    }
-
-    if (!finish_flag) {
-	uinfd = open (uinfile, O_RDONLY | O_LARGEFILE);
-	if (uinfd < 0) {
-	    fprintf (stderr, "Cannot open %s, errno=%d\n", uinfile, errno);
-	    return -1;
-	}
-    }
-
-    return 0;
-}
-
-static void flush_uoutbuf()
-{
-    long rc = write (uoutfd, &uoutbuf, uoutindex*sizeof(uint32_t));
-#ifdef STATS
-    written += uoutindex;
-#endif
-    if (rc != (long) (uoutindex*sizeof(uint32_t))) {
-	fprintf (stderr, "flush_uoutbuf: write of segment failed, rc=%ld, errno=%d\n", rc, errno);
-	exit (rc);
-    }
-    uoutindex = 0;
-}
-
-static int read_uinbuf() 
-{
-    long rc = read (uinfd, &uinbuf, sizeof(uinbuf));
-    if (rc > 0) {
-	assert (rc%4 == 0);
-	uincnt = rc/sizeof(uint32_t);
-	uinindex = 0;
-	return uincnt;
-    } else {
-	return rc;
-    }
-}
-
-#define PRINT_UVALUE(val)						\
-    {									\
-	uoutbuf[uoutindex++] = val;					\
-	if (uoutindex == OUTBUFSIZE) flush_uoutbuf();			\
-    }
-
-// This will return a bogus value when the done flag is set and all entries are read
-#define GET_UVALUE(val)							\
-    {									\
-    if (uinindex == uincnt) {						\
-	long rc = read_uinbuf();					\
-        if (rc <= 0) return TERM_VAL;					\
-    }									\
-    val = uinbuf[uinindex++];						\
-}
-
-#else
-
 #define PUT_QVALUE(val,q)						\
     {									\
 	while (can_write == 0) {					\
@@ -198,8 +119,6 @@ static int read_uinbuf()
 
 #define DOWN_QSEM(q) sem_wait(&(q)->epoch_sem);
 #define UP_QSEM(q) sem_post(&(q)->epoch_sem);
-
-#endif
 
 static void flush_outrbuf()
 {
@@ -243,6 +162,111 @@ static long recv_taint_data (int s, char* buffer, u_long bufsize, uint32_t input
 	bytes_received += rc;
     }
     return bytes_received;
+}
+
+static long
+read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, taint_entry*& merge_log,
+	     u_long& mdatasize, u_long& odatasize, u_long& idatasize, u_long& adatasize)
+{
+    // Create mappings for inputs - we have to commit to a max size here
+    token_log = (char *) mmap (NULL, TOKEN_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0);
+    if (token_log == MAP_FAILED) {
+	fprintf (stderr, "Cannot map input data, errno=%d\n", errno);
+	return -1;
+    }
+
+    output_log = (char *) mmap (NULL, OUTPUT_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0);
+    if (output_log == MAP_FAILED) {
+	fprintf (stderr, "Cannot map output data, errno=%d\n", errno);
+	return -1;
+    }
+
+    ts_log = (taint_t *) mmap (NULL, TS_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0);
+    if (ts_log == MAP_FAILED) {
+	fprintf (stderr, "Cannot map addr data, errno=%d\n", errno);
+	return -1;
+    }
+
+    merge_log = (taint_entry *) mmap (NULL, MERGE_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0);
+    if (merge_log == MAP_FAILED) {
+	fprintf (stderr, "Cannot map merge log, errno=%d\n", errno);
+	return -1;
+    }
+
+    // Initialize a socket to receive input data
+    int c = socket (AF_INET, SOCK_STREAM, 0);
+    if (c < 0) {
+	fprintf (stderr, "Cannot create socket, errno=%d\n", errno);
+	return c;
+    }
+
+    int on = 1;
+    long rc = setsockopt (c, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+    if (rc < 0) {
+	fprintf (stderr, "Cannot set socket option, errno=%d\n", errno);
+	return rc;
+    }
+
+    struct sockaddr_in addr;
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = INADDR_ANY;
+
+    rc = bind (c, (struct sockaddr *) &addr, sizeof(addr));
+    if (rc < 0) {
+	fprintf (stderr, "Cannot bind socket, errno=%d\n", errno);
+	return rc;
+    }
+
+    rc = listen (c, 5);
+    if (rc < 0) {
+	fprintf (stderr, "Cannot listen on socket, errno=%d\n", errno);
+	return rc;
+    }
+    
+    int s = accept (c, NULL, NULL);
+    if (s < 0) {
+	fprintf (stderr, "Cannot accept connection, errno=%d\n", errno);
+	return s;
+    }
+
+    close (c);
+
+    // Now receive the data into our memory buffers
+    while (1) {
+	
+	// Receive header
+	struct taint_data_header header;
+	rc = read (s, &header, sizeof(header));
+	if (rc == 0) break; // socket closed - no more data
+	if (rc != sizeof(header)) {
+	    printf ("Could not receive taint data header, rc=%ld\n", rc);
+	    return -1;
+	}
+	
+	// Receive data
+	switch (header.type) {
+	case TAINT_DATA_MERGE:
+	    rc = recv_taint_data (s, (char *) merge_log, MERGE_SIZE, header.datasize, mdatasize);
+	    break;
+	case TAINT_DATA_OUTPUT:
+	    rc = recv_taint_data (s, output_log, OUTPUT_SIZE, header.datasize, odatasize);
+	    break;
+	case TAINT_DATA_INPUT:
+	    rc = recv_taint_data (s, token_log, TOKEN_SIZE, header.datasize, idatasize);
+	    break;
+	case TAINT_DATA_ADDR:
+	    rc = recv_taint_data (s, (char *) ts_log, TS_SIZE, header.datasize, adatasize);
+	    break;
+	default:
+	    fprintf (stderr, "Received unspecified taint header type %d\n", header.type);
+	}
+	if (rc != header.datasize) return -1;
+    }
+
+    close (s);
+
+    return 0;
 }
 
 static void map_iter (taint_t value, uint32_t output_token, bool& unresolved_vals, bool& resolved_vals)
@@ -339,34 +363,9 @@ long stream_epoch (const char* dirname, int port)
     char outrfile[256], outputfile[256], inputfile[256], addrsfile[256];
     int outputfd, inputfd, addrsfd;
 
-    // Create mappings for inputs - we have to commit to a max size here
-    token_log = (char *) mmap (NULL, TOKEN_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0);
-    if (token_log == MAP_FAILED) {
-	fprintf (stderr, "Cannot map input data, errno=%d\n", errno);
-	return -1;
-    }
-
-    output_log = (char *) mmap (NULL, OUTPUT_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0);
-    if (output_log == MAP_FAILED) {
-	fprintf (stderr, "Cannot map output data, errno=%d\n", errno);
-	return -1;
-    }
-
-    ts_log = (taint_t *) mmap (NULL, TS_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0);
-    if (ts_log == MAP_FAILED) {
-	fprintf (stderr, "Cannot map addr data, errno=%d\n", errno);
-	return -1;
-    }
-
-    merge_log = (taint_entry *) mmap (NULL, MERGE_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0);
-    if (merge_log == MAP_FAILED) {
-	fprintf (stderr, "Cannot map merge log, errno=%d\n", errno);
-	return -1;
-    }
-
     // First, resolve all outputs for this epoch
     rc = mkdir(dirname, 0755);
-    if (rc < 0) {
+    if (rc < 0 && errno != EEXIST) {
 	fprintf (stderr, "Cannot create output dir %s, errno=%d\n", dirname, errno);
 	return rc;
     }
@@ -413,78 +412,11 @@ long stream_epoch (const char* dirname, int port)
     gettimeofday(&start_tv, NULL);
 #endif
 
-    // Initialize a socket to receive input data
-    int c = socket (AF_INET, SOCK_STREAM, 0);
-    if (c < 0) {
-	fprintf (stderr, "Cannot create socket, errno=%d\n", errno);
-	return c;
-    }
+    // Read inputs from DIFT engine
+    rc = read_inputs (port, token_log, output_log, ts_log, merge_log,
+		      mdatasize, odatasize, idatasize, adatasize);
+    if (rc < 0) return rc;
 
-    int on = 1;
-    rc = setsockopt (c, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
-    if (rc < 0) {
-	fprintf (stderr, "Cannot set socket option, errno=%d\n", errno);
-	return rc;
-    }
-
-    struct sockaddr_in addr;
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    addr.sin_addr.s_addr = INADDR_ANY;
-
-    rc = bind (c, (struct sockaddr *) &addr, sizeof(addr));
-    if (rc < 0) {
-	fprintf (stderr, "Cannot bind socket, errno=%d\n", errno);
-	return rc;
-    }
-
-    rc = listen (c, 5);
-    if (rc < 0) {
-	fprintf (stderr, "Cannot listen on socket, errno=%d\n", errno);
-	return rc;
-    }
-    
-    int s = accept (c, NULL, NULL);
-    if (s < 0) {
-	fprintf (stderr, "Cannot accept connection, errno=%d\n", errno);
-	return s;
-    }
-
-    close (c);
-
-    // Now receive the data into our memory buffers
-    while (1) {
-	
-	// Receive header
-	struct taint_data_header header;
-	rc = read (s, &header, sizeof(header));
-	if (rc == 0) break; // socket closed - no more data
-	if (rc != sizeof(header)) {
-	    printf ("Could not receive taint data header, rc=%ld\n", rc);
-	    return -1;
-	}
-	
-	// Receive data
-	switch (header.type) {
-	case TAINT_DATA_MERGE:
-	    rc = recv_taint_data (s, (char *) merge_log, MERGE_SIZE, header.datasize, mdatasize);
-	    break;
-	case TAINT_DATA_OUTPUT:
-	    rc = recv_taint_data (s, output_log, OUTPUT_SIZE, header.datasize, odatasize);
-	    break;
-	case TAINT_DATA_INPUT:
-	    rc = recv_taint_data (s, token_log, TOKEN_SIZE, header.datasize, idatasize);
-	    printf ("token log is %x\n", *((uint32_t *) token_log));
-	    break;
-	case TAINT_DATA_ADDR:
-	    rc = recv_taint_data (s, (char *) ts_log, TS_SIZE, header.datasize, adatasize);
-	    break;
-	default:
-	    fprintf (stderr, "Received unspecified taint header type %d\n", header.type);
-	}
-	if (rc != header.datasize) return -1;
-    }
-    
 #ifdef STATS
     gettimeofday(&recv_done_tv, NULL);
 #endif
@@ -648,7 +580,7 @@ long stream_epoch (const char* dirname, int port)
 #endif
 #ifdef DEBUG
 			if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-			    fprintf (debugfile, "output %x to merge chain %llx\n", otoken+output_token, iter->second);
+			    fprintf (debugfile, "output %x to merge chain %llx via %llx\n", otoken+output_token, iter->second, value);
 			}
 #endif
 			map_iter (iter->second, otoken+output_token, unresolved_vals, resolved_vals);
@@ -756,119 +688,11 @@ long stream_epoch (const char* dirname, int port)
 		 atokens, passthrus, aresolved, aindirects, avalues, unmodified, merges);
     }
     if (!start_flag) {
-#ifndef USE_FILE
 	written = outputq->write_index;
-#endif
 	fprintf (statsfile, "Wrote %lu entries (%lu bytes)\n", written, written*sizeof(u_long)); 
     }
     fprintf (statsfile, "Unique indirects %ld\n", resolved.size());
 #endif
-
-    return 0;
-}
-
-static long
-read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, taint_entry*& merge_log,
-	     u_long& mdatasize, u_long& odatasize, u_long& idatasize, u_long& adatasize)
-{
-    // Create mappings for inputs - we have to commit to a max size here
-    token_log = (char *) mmap (NULL, TOKEN_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0);
-    if (token_log == MAP_FAILED) {
-	fprintf (stderr, "Cannot map input data, errno=%d\n", errno);
-	return -1;
-    }
-
-    output_log = (char *) mmap (NULL, OUTPUT_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0);
-    if (output_log == MAP_FAILED) {
-	fprintf (stderr, "Cannot map output data, errno=%d\n", errno);
-	return -1;
-    }
-
-    ts_log = (taint_t *) mmap (NULL, TS_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0);
-    if (ts_log == MAP_FAILED) {
-	fprintf (stderr, "Cannot map addr data, errno=%d\n", errno);
-	return -1;
-    }
-
-    merge_log = (taint_entry *) mmap (NULL, MERGE_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0);
-    if (merge_log == MAP_FAILED) {
-	fprintf (stderr, "Cannot map merge log, errno=%d\n", errno);
-	return -1;
-    }
-
-    // Initialize a socket to receive input data
-    int c = socket (AF_INET, SOCK_STREAM, 0);
-    if (c < 0) {
-	fprintf (stderr, "Cannot create socket, errno=%d\n", errno);
-	return c;
-    }
-
-    int on = 1;
-    long rc = setsockopt (c, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
-    if (rc < 0) {
-	fprintf (stderr, "Cannot set socket option, errno=%d\n", errno);
-	return rc;
-    }
-
-    struct sockaddr_in addr;
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    addr.sin_addr.s_addr = INADDR_ANY;
-
-    rc = bind (c, (struct sockaddr *) &addr, sizeof(addr));
-    if (rc < 0) {
-	fprintf (stderr, "Cannot bind socket, errno=%d\n", errno);
-	return rc;
-    }
-
-    rc = listen (c, 5);
-    if (rc < 0) {
-	fprintf (stderr, "Cannot listen on socket, errno=%d\n", errno);
-	return rc;
-    }
-    
-    int s = accept (c, NULL, NULL);
-    if (s < 0) {
-	fprintf (stderr, "Cannot accept connection, errno=%d\n", errno);
-	return s;
-    }
-
-    close (c);
-
-    // Now receive the data into our memory buffers
-    while (1) {
-	
-	// Receive header
-	struct taint_data_header header;
-	rc = read (s, &header, sizeof(header));
-	if (rc == 0) break; // socket closed - no more data
-	if (rc != sizeof(header)) {
-	    printf ("Could not receive taint data header, rc=%ld\n", rc);
-	    return -1;
-	}
-	
-	// Receive data
-	switch (header.type) {
-	case TAINT_DATA_MERGE:
-	    rc = recv_taint_data (s, (char *) merge_log, MERGE_SIZE, header.datasize, mdatasize);
-	    break;
-	case TAINT_DATA_OUTPUT:
-	    rc = recv_taint_data (s, output_log, OUTPUT_SIZE, header.datasize, odatasize);
-	    break;
-	case TAINT_DATA_INPUT:
-	    rc = recv_taint_data (s, token_log, TOKEN_SIZE, header.datasize, idatasize);
-	    printf ("token log is %x\n", *((uint32_t *) token_log));
-	    break;
-	case TAINT_DATA_ADDR:
-	    rc = recv_taint_data (s, (char *) ts_log, TS_SIZE, header.datasize, adatasize);
-	    break;
-	default:
-	    fprintf (stderr, "Received unspecified taint header type %d\n", header.type);
-	}
-	if (rc != header.datasize) return -1;
-    }
-
-    close (s);
 
     return 0;
 }
@@ -937,20 +761,6 @@ long seq_epoch (const char* dirname, int port)
     rc = read_inputs (port, token_log, output_log, ts_log, merge_log,
 		      mdatasize, odatasize, idatasize, adatasize);
     if (rc < 0) return rc;
-
-#if 0
-    {
-      bool unresolved_vals = false;
-      bool resolved_vals = false;
-      fprintf (debugfile, "mdatasize is %lx\n", mdatasize);
-      if (mdatasize > (0x1015a9f86-0xe0000001)*sizeof(taint_entry)) {
-	  fprintf (debugfile, "resolving 0x5b9c9da\n");
-	  map_iter (0x1015a9f86, 0x5b9c9da, unresolved_vals, resolved_vals);
-	  fclose (debugfile);
-	  exit (0);
-      }
-    }
-#endif
 
 #ifdef STATS
     gettimeofday(&recv_done_tv, NULL);
@@ -1030,25 +840,26 @@ long seq_epoch (const char* dirname, int port)
 	// Add live addresses
 	u_long new_live_zeros = 0, new_live_inputs = 0, new_live_merges = 0, new_live_merge_zeros = 0;
 	for (uint32_t i = 0; i < adatasize/(sizeof(taint_t)*2); i++) {
-	    taint_t val = ts_log[2*i];
+	    taint_t addr = ts_log[2*i];
+	    taint_t val = ts_log[2*i+1];
 	    if (val == 0) {
-		new_live_set.erase(val);
+		new_live_set.erase(addr);
 		new_live_zeros++;
 	    } else if (val < 0xc0000000) {
 		if (start_flag || live_set.count(val)) {
-		    new_live_set.insert(val);
+		    new_live_set.insert(addr);
 		    new_live_inputs++;
 		}
 	    } else if (val <= 0xe0000000) {
-		new_live_set.insert(val);
+		new_live_set.insert(addr);
 		new_live_inputs++;
 	    } else {
 		taint_entry* pentry = &merge_log[val-0xe0000001];
 		if (pentry->p1 || pentry->p2) {
-		    new_live_set.insert(val);
+		    new_live_set.insert(addr);
 		    new_live_merges++;
 		} else {
-		    new_live_set.erase(val);
+		    new_live_set.erase(addr);
 		    new_live_merge_zeros++;
 		}
 	    }
@@ -1153,7 +964,6 @@ long seq_epoch (const char* dirname, int port)
 	
 	for (uint32_t i = 0; i < adatasize/(sizeof(taint_t)*2); i++) {
 	    address_map[ts_log[2*i]] = ts_log[2*i+1];
-	    //if (ts_log[2*i] == 0xb786f230) fprintf (debugfile, "address map from %llx to %llx\n", ts_log[2*i], ts_log[2*i+1]);
 	}
 
 #ifdef STATS
@@ -1173,6 +983,11 @@ long seq_epoch (const char* dirname, int port)
 	    bool unresolved_vals = false, resolved_vals = false;
 
 	    GET_QVALUE(value, inputq);
+#ifdef DEBUG
+	    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+		fprintf (debugfile, "otoken %x to value %llx\n", otoken+output_token, value);
+	    }
+#endif
 	    while (value) {
 #ifdef STATS
 		avalues++;
@@ -1244,7 +1059,7 @@ long seq_epoch (const char* dirname, int port)
 #endif
 #ifdef DEBUG
 			if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-			    fprintf (debugfile, "output %x to merge chain %llx\n", otoken+output_token, iter->second);
+			    fprintf (debugfile, "output %x to merge chain %llx via %llx\n", otoken+output_token, iter->second, value);
 			}
 #endif
 			// This should happen a lot, so short-circuit
@@ -1356,9 +1171,7 @@ long seq_epoch (const char* dirname, int port)
 		 atokens, passthrus, aresolved, aindirects, avalues, unmodified, merges);
     }
     if (!start_flag) {
-#ifndef USE_FILE
 	written = outputq->write_index;
-#endif
 	fprintf (statsfile, "Wrote %lu entries (%lu bytes)\n", written, written*sizeof(u_long)); 
     }
     fprintf (statsfile, "Unique indirects %ld\n", resolved.size());
@@ -1523,7 +1336,6 @@ void format ()
 
 int main (int argc, char* argv[]) 
 {
-#ifndef USE_FILE
     char* input_queue = NULL;
     char* output_queue = NULL;
     char* output_host = NULL;
@@ -1532,12 +1344,11 @@ int main (int argc, char* argv[])
     struct senddata sd;
     struct recvdata rd;
     long rc;
-#endif
+    bool do_sequential = false;
 
     if (argc < 3) format();
 
     for (int i = 3; i < argc; i++) {
-#ifndef USE_FILE
 	if (!strcmp (argv[i], "-iq")) {
 	    i++;
 	    if (i < argc) {
@@ -1561,18 +1372,13 @@ int main (int argc, char* argv[])
 	    }
 	} else if (!strcmp (argv[i], "-ih")) {
 	    input_host = true;
-#else
-	if (!strcmp (argv[i], "-s")) {
-	    start_flag = 1;
-	} else if (!strcmp (argv[i], "-f")) {
-	    finish_flag = 1;
-#endif
+	} else if (!strcmp (argv[i], "-seq")) {
+	    do_sequential = true;
 	} else {
 	    format();
 	}
     }
 
-#ifndef USE_FILE
     if (input_queue) {
 	int iqfd = shm_open (input_queue, O_RDWR, 0);
 	if (iqfd < 0) {
@@ -1627,14 +1433,15 @@ int main (int argc, char* argv[])
 	    return rc;
 	}
     }
-#endif
 
-    seq_epoch (argv[1], atoi(argv[2]));
+    if (do_sequential) {
+	seq_epoch (argv[1], atoi(argv[2]));
+    } else {
+	stream_epoch (argv[1], atoi(argv[2]));
+    }
 
-#ifndef USE_FILE    
     if (output_host) pthread_join(oh_tid, NULL);
     if (input_host) pthread_join(ih_tid, NULL);
-#endif
 
     return 0;
 }
