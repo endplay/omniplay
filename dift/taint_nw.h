@@ -1,7 +1,7 @@
 #ifndef __TAINT_NW__
 #define __TAINT_NW__
 
-//#define USE_NW
+#define USE_NW
 
 #ifdef __cplusplus
 extern "C" {

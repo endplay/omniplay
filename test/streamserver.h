@@ -22,11 +22,16 @@ struct cache_info {
     uint32_t        ino;
     struct timespec mtime;
 };
+
+#define AGG_TYPE_STREAM 0
+#define AGG_TYPE_SEQ    1
+
 // Info from description file
 struct epoch_hdr {
     uint32_t epochs;
     bool     start_flag;
     bool     finish_flag;
+    u_char   agg_type;
     char     flags;
     char     dirname[NAMELEN];
     char     next_host[NAMELEN];

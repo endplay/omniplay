@@ -16,7 +16,7 @@ TOOL_CXXFLAGS += -I$(SDEV)
 GLIB_INCLUDES=-I/usr/include/glib-2.0 -I/usr/lib/i386-linux-gnu/glib-2.0/include
 GLIB_LIB= -lglib-2.0
 TOOL_CXXFLAGS += $(GLIB_INCLUDES) -I$(SDEV)
-TAINT_BACK_OBJS=$(TAINTS_OBJ)taint_full_interface$(OBJ_SUFFIX) $(TAINTS_OBJ)taint_byte_creation$(OBJ_SUFFIX) $(TAINTS_OBJ)taint_debug$(OBJ_SUFFIX) $(TAINTS_OBJ)splice$(OBJ_SUFFIX) $(TAINTS_OBJ)maputil$(OBJ_SUFFIX)
+TAINT_BACK_OBJS=$(TAINTS_OBJ)taint_full_interface$(OBJ_SUFFIX) $(TAINTS_OBJ)taint_byte_creation$(OBJ_SUFFIX) $(TAINTS_OBJ)taint_debug$(OBJ_SUFFIX) $(TAINTS_OBJ)maputil$(OBJ_SUFFIX)
 TAINT_FORWARD_OBJS=$(TAINTS_OBJ)taint_forward_interface$(OBJ_SUFFIX) $(TAINTS_OBJ)taint_forward_creation$(OBJ_SUFFIX) $(TAINTS_OBJ)taint_forward_debug$(OBJ_SUFFIX)
 TAINT_OBJS=$(OBJDIR)xray_token$(OBJ_SUFFIX) $(OBJDIR)xray_slab_alloc$(OBJ_SUFFIX)
 APP_CC=gcc
@@ -72,7 +72,6 @@ OBJECT_ROOTS := xray_token \
 		taint_debug \
 		taint_forward_creation \
 		taint_forward_debug \
-		splice \
 		maputil
 
 # This defines any additional dlls (shared objects), other than the pintools, that need to be compiled.
@@ -100,9 +99,6 @@ LIB_ROOTS :=
 ##############################################################
 $(OBJDIR)xray_token$(OBJ_SUFFIX): xray_token.h xray_token.c
 	$(APP_CC) -Wall -Werror -O2 -c -o $(OBJDIR)xray_token$(OBJ_SUFFIX) $(GLIB_INCLUDES) xray_token.c
-
-$(OBJDIR)splice$(OBJ_SUFFIX): splice.h splice.c
-	$(CXX) $(TOOL_CXXFLAGS) -Wall -Werror -O2 -c -o $(OBJDIR)splice$(OBJ_SUFFIX) $(GLIB_INCLUDES) splice.c
 
 $(OBJDIR)maputil$(OBJ_SUFFIX): maputil.h maputil.c
 	$(CXX) $(TOOL_CXXFLAGS) -Wall -Werror -O2 -c -o $(OBJDIR)maputil$(OBJ_SUFFIX) $(GLIB_INCLUDES) maputil.c
