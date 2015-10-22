@@ -46,7 +46,7 @@ int main (int argc, char* argv[])
     do {
 	// Wait until we can attach pin
 	rc = get_attach_status (fd, cpid);
-    } while (rc != 1);
+    } while (rc <= 0);
     
     gettimeofday (&tv_attach, NULL);
 

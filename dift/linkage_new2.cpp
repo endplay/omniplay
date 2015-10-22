@@ -22,6 +22,9 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+#include <map>
+using namespace std;
+
 #include "util.h"
 #include "list.h"
 #include "linkage_common.h"
@@ -129,9 +132,9 @@ int splice_output = 0;
 int all_output = 0;
 const char* splice_semname = NULL;
 const char* splice_input = NULL;
-taint_t* pregs = NULL; // Only works for single-threaded program
 u_long num_merge_entries = 0x40000000/(sizeof(taint_t)*2);
 u_long inst_cnt = 0;
+map<pid_t,struct thread_data*> active_threads;
 
 struct slab_alloc open_info_alloc;
 struct slab_alloc thread_data_alloc;
@@ -175,12 +178,6 @@ KNOB<bool> KnobSpliceOutput(KNOB_MODE_WRITEONCE,
 KNOB<bool> KnobAllOutput(KNOB_MODE_WRITEONCE,
     "pintool", "ao", "",
     "generate output file of changed taints");
-KNOB<string> KnobSpliceInput(KNOB_MODE_WRITEONCE,
-    "pintool", "si", "",
-    "input splice file");
-KNOB<string> KnobSpliceSemaphore(KNOB_MODE_WRITEONCE,
-    "pintool", "sem", "",
-    "input splice semaphore");
 KNOB<int> KnobMergeEntries(KNOB_MODE_WRITEONCE,
     "pintool", "me", "",
     "merge entries"); 
@@ -218,11 +215,6 @@ static void dift_done ()
     if (terminated) return;  // Only do this once
     terminated = 1;
 
-    if (splice_input && splice_input[0]) {
-	// Also need to consider addresses passed from previous segment as output
-	splice_after_segment (splice_input, splice_semname, outfd);
-    }
-
 #ifndef USE_NW
     char taint_structures_file[256];
     snprintf(taint_structures_file, 256, "%s/taint_structures", group_directory);
@@ -235,19 +227,35 @@ static void dift_done ()
 	printf("dump start dir %s %lu sec %lu usec\n", group_directory, tv.tv_sec, tv.tv_usec);
 
 	if (splice_output) {
+	    // Dump out the active registers in order of the record thread id
+	    for (map<pid_t,struct thread_data*>::iterator iter = active_threads.begin(); 
+		 iter != active_threads.end(); iter++) {
+	      //printf ("dumping record pid %d regs\n", iter->second->record_pid);
 #ifdef USE_NW
-	    dump_reg_taints(s, pregs);
+		dump_reg_taints(s, iter->second->shadow_reg_table);
+#else
+		dump_reg_taints(taint_fd, iter->second->shadow_reg_table);
+#endif
+	    }
+#ifdef USE_NW
 	    dump_mem_taints(s);
 #else 
-	    dump_reg_taints(taint_fd, pregs);
 	    dump_mem_taints(taint_fd);
 #endif
 	} else {
+	    // Dump out the active registers in order of the record thread id
+	    for (map<pid_t,struct thread_data*>::iterator iter = active_threads.begin(); 
+		 iter != active_threads.end(); iter++) {
+	      //printf ("dumping record pid %d regs\n", iter->second->record_pid);
 #ifdef USE_NW
-	    dump_reg_taints_start(s, pregs);
-	    dump_mem_taints_start(s);
+		dump_reg_taints_start(s, iter->second->shadow_reg_table);
 #else
-	    dump_reg_taints_start(taint_fd, pregs);
+		dump_reg_taints_start(taint_fd, iter->second->shadow_reg_table);
+#endif
+	    }
+#ifdef USE_NW
+	    dump_mem_taints_start(s);
+#else 
 	    dump_mem_taints_start(taint_fd);
 #endif
 	}
@@ -255,13 +263,11 @@ static void dift_done ()
 #ifndef USE_NW
     close(taint_fd);
 #endif
+    fclose (log_f);
 
     finish_and_print_taint_stats(stdout);
-#if 0
-    gettimeofday(&tv, NULL);
-    fprintf(stderr, "time end %lu sec %lu usec\n", tv.tv_sec, tv.tv_usec);
-#endif
-    printf("DIFT done\n");
+
+    printf("DIFT done at %ld\n", global_syscall_cnt);
 }
 
 ADDRINT find_static_address(ADDRINT ip)
@@ -290,10 +296,10 @@ static inline void increment_syscall_cnt (int syscall_num)
 {
     // ignore pthread syscalls, or deterministic system calls that we don't log (e.g. 123, 186, 243, 244)
     if (!(syscall_num == 17 || syscall_num == 31 || syscall_num == 32 || 
-            syscall_num == 35 || syscall_num == 44 || syscall_num == 53 || 
-            syscall_num == 56 || syscall_num == 98 || syscall_num == 119 ||
-            syscall_num == 123 || syscall_num == 186 ||
-            syscall_num == 243 || syscall_num == 244)) {
+	  syscall_num == 35 || syscall_num == 44 || syscall_num == 53 || 
+	  syscall_num == 56 || syscall_num == 58 || syscall_num == 98 || 
+	  syscall_num == 119 || syscall_num == 123 || syscall_num == 186 ||
+	  syscall_num == 243 || syscall_num == 244)) {
         if (current_thread->ignore_flag) {
             if (!(*(int *)(current_thread->ignore_flag))) {
                 global_syscall_cnt++;
@@ -303,7 +309,10 @@ static inline void increment_syscall_cnt (int syscall_num)
             global_syscall_cnt++;
             current_thread->syscall_cnt++;
         }
-	//printf ("syscall cnt %lu num %d\n", global_syscall_cnt, syscall_num);
+#if 0
+	fprintf (log_f, "pid %d syscall %d global syscall cnt %lu num %d\n", current_thread->record_pid, 
+		 current_thread->syscall_cnt, global_syscall_cnt, syscall_num);
+#endif
     }
 }
 
@@ -1133,6 +1142,7 @@ void syscall_end(int sysnum, ADDRINT ret_value)
                     break;
                 case SYS_RECVMSG:
                     sys_recvmsg_stop(rc);
+		    break;
                 case SYS_SENDMSG:
                     sys_sendmsg_stop(rc);
                     break;
@@ -1171,6 +1181,11 @@ void instrument_syscall(ADDRINT syscall_num,
 	sysnum == 174 || sysnum == 175 || sysnum == 190 || sysnum == 192) {
 	check_clock_before_syscall (dev_fd, (int) syscall_num);
     }
+    if (sysnum == 252) {
+	printf ("calling group exit - cleanup time\n");
+	dift_done();
+    }
+	
     syscall_start(sysnum, syscallarg0, syscallarg1, syscallarg2, 
 		  syscallarg3, syscallarg4, syscallarg5);
     
@@ -13315,14 +13330,21 @@ void instrument_pmovmskb(INS ins)
 #ifdef TRACE_TAINT
 void trace_inst(ADDRINT ptr)
 {
-    if (global_syscall_cnt >= 14522) {
+    static taint_t oldval = 0;
+    taint_t val = 0;
+    taint_t* mem  = get_mem_taints(0xb786f230, 1);
+    if (mem) {
+	val = *mem;
+    }
+    if (val != oldval) {
+	fprintf (log_f, "address 0xb786f230 gets value %llx\n", val);
 	PIN_LockClient();
-	printf ("[INST] Pid %d (tid: %d) (record %d) cnt %ld - %#x\n", PIN_GetPid(), PIN_GetTid(), get_record_pid(), inst_cnt, ptr);
+	fprintf (log_f, "[INST] Pid %d (tid: %d) (record %d) syscall %ld - %#x\n", PIN_GetPid(), PIN_GetTid(), get_record_pid(), global_syscall_cnt, ptr);
 	if (IMG_Valid(IMG_FindByAddress(ptr))) {
-	    printf("%s -- img %s static %#x\n", RTN_FindNameByAddress(ptr).c_str(), IMG_Name(IMG_FindByAddress(ptr)).c_str(), find_static_address(ptr));
+	    fprintf(log_f, "%s -- img %s static %#x\n", RTN_FindNameByAddress(ptr).c_str(), IMG_Name(IMG_FindByAddress(ptr)).c_str(), find_static_address(ptr));
 	}
 	PIN_UnlockClient();
-	inst_cnt++;
+	oldval = val;
     }
 }
 #endif
@@ -13958,11 +13980,10 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
     current_thread->syscall_cnt = 0;
 }
 
-
 void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 {
     struct thread_data* ptdata;
-
+    
     // TODO Use slab allocator
     ptdata = (struct thread_data *) malloc (sizeof(struct thread_data));
     if (ptdata == NULL) {
@@ -13971,23 +13992,27 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
     }
     assert(ptdata);
     memset(ptdata, 0, sizeof(struct thread_data));
-    if (splice_output) {
-	// FIXME - use unique values for multithreaded programs
-	for (int i = 0; i < NUM_REGS * REG_SIZE; i++) {
-	    ptdata->shadow_reg_table[i] = i+1; // Guaranteed to not be a useful part of the address space
-	}
-    }
-    pregs = ptdata->shadow_reg_table;
 
     ptdata->threadid = threadid;
     ptdata->app_syscall = 0;
     ptdata->record_pid = get_record_pid();
     get_record_group_id(dev_fd, &(ptdata->rg_id));
 
-    if (set_pin_addr (dev_fd, (u_long) &(ptdata->app_syscall), ptdata, (void **) &current_thread) == 0) {
+    int thread_ndx;
+    long thread_status = set_pin_addr (dev_fd, (u_long) &(ptdata->app_syscall), ptdata, (void **) &current_thread, &thread_ndx);
+    //printf ("Thread %d gets rc %ld ndx %d from set_pin_addr\n", ptdata->record_pid, thread_status, thread_ndx);
+    if (thread_status < 2) {
 	current_thread = ptdata;
     }
     PIN_SetThreadData (tls_key, ptdata, threadid);
+
+    if (splice_output && thread_status > 0) {
+	int base = (NUM_REGS*REG_SIZE)*thread_ndx;
+	//printf ("Thread %d gets reg_taints starting at %d\n", ptdata->record_pid, base+1);
+	for (int i = 0; i < NUM_REGS * REG_SIZE; i++) {
+	    ptdata->shadow_reg_table[i] = base+i+1; // For small number of threads, not part of AS
+	}
+    }
 
     if (child) {
         restore_state_from_disk(ptdata);
@@ -14107,6 +14132,13 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
         }
     }
 #endif
+    active_threads[ptdata->record_pid] = ptdata;
+}
+
+void thread_fini (THREADID threadid, const CONTEXT* ctxt, INT32 code, VOID* v)
+{
+    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, threadid);
+    active_threads.erase(tdata->record_pid);
 }
 
 void init_logs(void)
@@ -14193,8 +14225,6 @@ int main(int argc, char** argv)
     segment_length = KnobSegmentLength.Value();
     splice_output = KnobSpliceOutput.Value();
     all_output = KnobAllOutput.Value();
-    splice_input = KnobSpliceInput.Value().c_str();
-    splice_semname = KnobSpliceSemaphore.Value().c_str();
     if (KnobMergeEntries.Value() > 0) {
 	num_merge_entries = KnobMergeEntries.Value();
     }
@@ -14289,6 +14319,7 @@ int main(int argc, char** argv)
     }
 
     PIN_AddThreadStartFunction(thread_start, 0);
+    PIN_AddThreadFiniFunction(thread_fini, 0);
     PIN_AddFiniFunction(fini, 0);
 
     main_prev_argv = argv;
