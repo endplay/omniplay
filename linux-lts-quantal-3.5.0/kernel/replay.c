@@ -10472,10 +10472,11 @@ shim_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_regs 
 
 	if (current->record_thrd) return record_clone(clone_flags, stack_start, regs, stack_size, parent_tidptr, child_tidptr);
 	if (current->replay_thrd) {
+		if (current->replay_thrd->rp_group->rg_timebuf) record_timings(current->replay_thrd, 120);
 		if (test_app_syscall(120)) {
-            child_pid = replay_clone(clone_flags, stack_start, regs, stack_size, parent_tidptr, child_tidptr);
-            return child_pid;
-        }
+			child_pid = replay_clone(clone_flags, stack_start, regs, stack_size, parent_tidptr, child_tidptr);
+			return child_pid;
+		}
 		// Pin calls clone instead of vfork and enforces the vfork semantics at the Pin layer.
 		// Allow Pin to do so, by calling replay_clone
 		if (is_pin_attached() && current->replay_thrd->is_pin_vfork) {

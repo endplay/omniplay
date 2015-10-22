@@ -79,7 +79,7 @@ int fetch_results (char* top_dir, struct epoch_ctl ectl)
 
 void format ()
 {
-    fprintf (stderr, "format: streamctl <epoch description file> <aggregation host> [-w] [-s] [-v dest_dir cmp_no]\n");
+    fprintf (stderr, "format: streamctl <epoch description file> <aggregation host> [-w] [-s] [-v dest_dir cmp_no] [-seq]\n");
     exit (0);
 }
 
@@ -96,6 +96,7 @@ int main (int argc, char* argv[])
     u_long epochno = 0, last_epochno = 0;
     struct vector<struct replay_path> log_files;
     struct vector<struct cache_info> cache_files;
+    u_char agg_type = AGG_TYPE_STREAM;
 
     if (argc < 3) {
 	format();
@@ -123,6 +124,8 @@ int main (int argc, char* argv[])
 	    } else {
 		format();
 	    }
+	} else if (!strcmp (argv[i], "-s")) {
+	    agg_type = AGG_TYPE_SEQ;
 	} else {
 	    format();
 	}
@@ -234,6 +237,7 @@ int main (int argc, char* argv[])
     ehdr.epochs = epochs.size();
     ehdr.start_flag = true;
     ehdr.finish_flag = true;
+    ehdr.agg_type = agg_type;
 
     int sa = connect_to_server (agg_hostname, STREAMSERVER_PORT);
     if (sa < 0) return sa;
