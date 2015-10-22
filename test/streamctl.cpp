@@ -124,7 +124,7 @@ int main (int argc, char* argv[])
 	    } else {
 		format();
 	    }
-	} else if (!strcmp (argv[i], "-s")) {
+	} else if (!strcmp (argv[i], "-seq")) {
 	    agg_type = AGG_TYPE_SEQ;
 	} else {
 	    format();
