@@ -64,7 +64,7 @@ fulltt: libutil.a
 fullsend: libutil.a
 
 mkpartition: libutil.a mkpartition.cpp 
-	c++ -std=c++0x mkpartition.cpp libutil.a -pthread -lrt -o mkpartition
+	c++ -Wall -Werror -std=c++0x mkpartition.cpp libutil.a -pthread -lrt -o mkpartition -g
 
 .PHONY: clean
 clean:

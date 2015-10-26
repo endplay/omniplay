@@ -101,5 +101,6 @@ struct set_pin_address_data {
 #define SPECI_CKPT_PROC_RESUME _IOR('u', 17, struct wakeup_ckpt_data)
 #define SPECI_GET_ATTACH_STATUS _IOR('u', 18, pid_t)
 #define SPECI_TRY_TO_EXIT _IOR('u', 19, pid_t)
+#define SPECI_MAP_CLOCK _IO('u',20)
 
 #endif

@@ -2,6 +2,7 @@
 #include <sys/stat.h>  // open
 #include <sys/types.h> // fork, wait
 #include <sys/wait.h>  // wait
+#include <sys/mman.h>
 #include <time.h>
 #include <stdio.h>
 #include <stdlib.h>   // malloc
@@ -10,6 +11,7 @@
 #include <fcntl.h>     // open
 #include <unistd.h>   // write, close
 #include <stdarg.h>
+#include <errno.h>
 #include "util.h"
 #define __user 
 #include "dev/devspec.h" 
@@ -228,4 +230,23 @@ long try_to_exit(int fd_spec, pid_t pid)
     return ioctl (fd_spec, SPECI_TRY_TO_EXIT, &pid);
 }
 
+u_long* map_shared_clock (int fd_spec)
+{
+    u_long* clock;
 
+    int fd = ioctl (fd_spec, SPECI_MAP_CLOCK);
+    if (fd < 0) {
+	fprintf (stderr, "map_shared_clock: iotcl returned %d, errno=%d\n", fd, errno);
+	return NULL;
+    }
+
+    clock = mmap (0, 4096, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+    if (clock == MAP_FAILED) {
+	fprintf (stderr, "Cannot setup shared page for clock\n");
+	return NULL;
+    }
+
+    close (fd);
+
+    return clock;
+}

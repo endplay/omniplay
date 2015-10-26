@@ -291,6 +291,9 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 			return -EFAULT;
 		}
 		return try_to_exit (pid);
+	case SPECI_MAP_CLOCK: {
+		return pthread_shm_path ();
+	}
 	default:
 		return -EINVAL;
 	}

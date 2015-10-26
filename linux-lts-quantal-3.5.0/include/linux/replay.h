@@ -144,4 +144,7 @@ void replay_unlink_gdb(struct task_struct* tsk);
 /* Set to force a replay to exit on fatal signal */
 long try_to_exit (u_long pid);
 
+/* Let's the PIN tool read the clock value too */
+long pthread_shm_path (void);
+
 #endif

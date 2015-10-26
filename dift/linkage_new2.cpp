@@ -127,7 +127,7 @@ int filter_x = 0;
 int filter_inputs = 0;
 int print_all_opened_files = 0;
 const char* filter_read_filename = NULL;
-int segment_length = 0;
+u_long segment_length = 0;
 int splice_output = 0;
 int all_output = 0;
 const char* splice_semname = NULL;
@@ -135,6 +135,7 @@ const char* splice_input = NULL;
 u_long num_merge_entries = 0x40000000/(sizeof(taint_t)*2);
 u_long inst_cnt = 0;
 map<pid_t,struct thread_data*> active_threads;
+u_long* ppthread_log_clock = NULL;
 
 struct slab_alloc open_info_alloc;
 struct slab_alloc thread_data_alloc;
@@ -169,7 +170,7 @@ KNOB<bool> KnobTraceX(KNOB_MODE_WRITEONCE,
 KNOB<bool> KnobRecordOpenedFiles(KNOB_MODE_WRITEONCE,
     "pintool", "o", "",
     "print all opened files");
-KNOB<int> KnobSegmentLength(KNOB_MODE_WRITEONCE,
+KNOB<unsigned int> KnobSegmentLength(KNOB_MODE_WRITEONCE,
     "pintool", "l", "",
     "segment length"); //FIXME: take into consideration offset of being attached later. Remember, this is to specify where to kill application.
 KNOB<bool> KnobSpliceOutput(KNOB_MODE_WRITEONCE,
@@ -310,8 +311,8 @@ static inline void increment_syscall_cnt (int syscall_num)
             current_thread->syscall_cnt++;
         }
 #if 0
-	fprintf (log_f, "pid %d syscall %d global syscall cnt %lu num %d\n", current_thread->record_pid, 
-		 current_thread->syscall_cnt, global_syscall_cnt, syscall_num);
+	fprintf (log_f, "pid %d syscall %d global syscall cnt %lu num %d clock %ld\n", current_thread->record_pid, 
+		 current_thread->syscall_cnt, global_syscall_cnt, syscall_num, *ppthread_log_clock);
 #endif
     }
 }
@@ -443,7 +444,7 @@ static inline void sys_read_stop(int rc)
     struct read_info* ri = (struct read_info*) &current_thread->read_info_cache;
 
     // If global_syscall_cnt == 0, then read handled in previous epoch
-    if (rc > 0 && global_syscall_cnt > 0) {
+    if (rc > 0) {
         struct taint_creation_info tci;
         char* channel_name = (char *) "--";
 
@@ -499,7 +500,7 @@ static inline void sys_pread_stop(int rc)
     struct read_info* ri = (struct read_info*) &current_thread->read_info_cache;
 
     // If global_syscall_cnt == 0, then handled in previous epoch
-    if (rc > 0 && global_syscall_cnt > 0) {
+    if (rc > 0) {
         struct taint_creation_info tci;
         char* channel_name = (char *) "--";
 
@@ -544,7 +545,7 @@ static void sys_select_start(int nfds, fd_set* readfds, fd_set* writefds, fd_set
 static void sys_select_stop(int rc)
 {
     // If global_syscall_cnt == 0, then handled in previous epoch
-    if (rc != -1 && global_syscall_cnt > 0) {
+    if (rc != -1) {
         // create a taint
         struct taint_creation_info tci;
         tci.rg_id = current_thread->rg_id;
@@ -577,7 +578,7 @@ static void sys_mmap_stop(int rc)
     struct mmap_info* mmi = (struct mmap_info*) current_thread->save_syscall_info;
 #ifdef MMAP_INPUTS
     // If global_syscall_cnt == 0, then handled in previous epoch
-    if (rc != -1 && (mmi->fd != -1) && global_syscall_cnt > 0) {
+    if (rc != -1 && (mmi->fd != -1)) {
         fprintf(stderr, "mmap stop fd %d\n", mmi->fd);
         int read_fileno = -1;
         struct open_info* oi = NULL;
@@ -628,7 +629,7 @@ static inline void sys_write_stop(int rc)
     struct write_info* wi = (struct write_info *) &current_thread->write_info_cache;
     int channel_fileno = -1;
     // If syscall cnt = 0, then write handled in previous epoch
-    if (rc > 0 && global_syscall_cnt > 0) {
+    if (rc > 0) {
         struct taint_creation_info tci;
         SYSCALL_DEBUG (stderr, "write_stop: sucess write of size %d\n", rc);
 
@@ -674,7 +675,7 @@ static inline void sys_writev_start(int fd, struct iovec* iov, int count)
 static inline void sys_writev_stop(int rc)
 {
     // If syscall cnt = 0, then write handled in previous epoch
-    if (rc > 0 && global_syscall_cnt > 0) {
+    if (rc > 0) {
         struct taint_creation_info tci;
         struct writev_info* wvi = (struct writev_info *) &current_thread->writev_info_cache;
         int channel_fileno = -1;
@@ -861,7 +862,7 @@ static void sys_recv_stop(int rc)
     SYSCALL_DEBUG (stderr, "Pid %d syscall recv returns %d\n", PIN_GetPid(), rc);
 
     // If syscall cnt = 0, then write handled in previous epoch
-    if (rc > 0 && global_syscall_cnt > 0) {
+    if (rc > 0) {
         struct taint_creation_info tci;
         char* channel_name = (char *) "--";
         int read_fileno = -1;
@@ -921,7 +922,7 @@ static void sys_recvmsg_stop(int rc)
     struct recvmsg_info* rmi = (struct recvmsg_info *) current_thread->save_syscall_info;
 
     // If syscall cnt = 0, then write handled in previous epoch
-    if (rc > 0 && global_syscall_cnt > 0) {
+    if (rc > 0) {
         struct taint_creation_info tci;
         char* channel_name = (char *) "recvmsgsocket";
         u_int i;
@@ -979,7 +980,7 @@ static void sys_sendmsg_stop(int rc)
     int channel_fileno = -1;
 
     // If syscall cnt = 0, then write handled in previous epoch
-    if (rc > 0 && global_syscall_cnt > 0) {
+    if (rc > 0) {
         struct taint_creation_info tci;
         SYSCALL_DEBUG (stderr, "sendmsg_stop: sucess sendmsg of size %d\n", rc);
         if (monitor_has_fd(open_socks, smi->fd)) {
@@ -1185,6 +1186,14 @@ void instrument_syscall(ADDRINT syscall_num,
 	printf ("calling group exit - cleanup time\n");
 	dift_done();
     }
+
+    if (segment_length && *ppthread_log_clock >= segment_length) {
+	// Done with this replay - do exit stuff now because we may not get clean unwind
+	printf("Pin terminating at Pid %d, entry to syscall %ld, term. clock %ld cur. clock %ld\n", PIN_GetPid(), global_syscall_cnt, segment_length, *ppthread_log_clock);
+	dift_done ();
+	try_to_exit(dev_fd, PIN_GetPid());
+        PIN_ExitApplication(0);
+    }
 	
     syscall_start(sysnum, syscallarg0, syscallarg1, syscallarg2, 
 		  syscallarg3, syscallarg4, syscallarg5);
@@ -1212,14 +1221,6 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
     // reset the syscall number after returning from system call
     increment_syscall_cnt (current_thread->sysnum);
     current_thread->sysnum = 0;
-
-    if (segment_length && global_syscall_cnt == (unsigned long) segment_length + 1) {
-	// Done with this replay - do exit stuff now because we may not get clean unwind
-	printf("Pin terminating at Pid %d, syscall %d\n", PIN_GetPid(), current_thread->syscall_cnt);
-	dift_done ();
-	try_to_exit(dev_fd, PIN_GetPid());
-        PIN_ExitApplication(0);
-    }
 }
 
 void track_inst(INS ins, void* data) 
@@ -13327,24 +13328,17 @@ void instrument_pmovmskb(INS ins)
 #endif
 }
 
-#ifdef TRACE_TAINT
+#if 0
 void trace_inst(ADDRINT ptr)
 {
-    static taint_t oldval = 0;
-    taint_t val = 0;
-    taint_t* mem  = get_mem_taints(0xb786f230, 1);
-    if (mem) {
-	val = *mem;
-    }
-    if (val != oldval) {
-	fprintf (log_f, "address 0xb786f230 gets value %llx\n", val);
+    if (detailed_debugging) {
 	PIN_LockClient();
 	fprintf (log_f, "[INST] Pid %d (tid: %d) (record %d) syscall %ld - %#x\n", PIN_GetPid(), PIN_GetTid(), get_record_pid(), global_syscall_cnt, ptr);
 	if (IMG_Valid(IMG_FindByAddress(ptr))) {
 	    fprintf(log_f, "%s -- img %s static %#x\n", RTN_FindNameByAddress(ptr).c_str(), IMG_Name(IMG_FindByAddress(ptr)).c_str(), find_static_address(ptr));
 	}
 	PIN_UnlockClient();
-	oldval = val;
+	fflush (log_f);
     }
 }
 #endif
@@ -13358,7 +13352,7 @@ void instruction_instrumentation(INS ins, void *v)
     opcode = INS_Opcode(ins);
     category = INS_Category(ins);
 
-#ifdef TRACE_TAINT
+#if 0
     INS_InsertCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_inst),
                     IARG_INST_PTR,
@@ -14270,6 +14264,10 @@ int main(int argc, char** argv)
         open_x_fds = new_xray_monitor(0);
     }
 
+    // Try to map the log clock for this epoch
+    ppthread_log_clock = map_shared_clock(dev_fd);
+    //printf ("Log clock is %p, value is %ld\n", ppthread_log_clock, *ppthread_log_clock);
+
     //fprintf(stderr, "starting init_slab_allocs\n");
     init_slab_allocs();
     // how about 1000 opened files...ever?
@@ -14324,7 +14322,7 @@ int main(int argc, char** argv)
 
     main_prev_argv = argv;
 
-    INS_AddInstrumentFunction(track_inst, 0);
+    INS_AddInstrumentFunction(track_inst, 0); // Fixme - this should be in the routing below I would think
     INS_AddInstrumentFunction(instruction_instrumentation, 0);
 
     // Register a notification handler that is called when the application
@@ -14338,7 +14336,6 @@ int main(int argc, char** argv)
 #endif
 
     PIN_AddSyscallExitFunction(instrument_syscall_ret, 0);
-    //fprintf(stderr, "Starting the linkage Pin tool\n");
 #ifdef HEARTBLEED
     fprintf(stderr, "heartbleed defined\n");
 #endif

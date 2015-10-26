@@ -8,8 +8,10 @@
 #include <assert.h>
 #include <dirent.h>
 
-#include <map>
+#include "parseklib.h"
 
+#include <map>
+#include <vector>
 using namespace std;
 
 struct replay_timing {
@@ -22,6 +24,7 @@ struct replay_timing {
 struct extra_data {
     double   dtiming;
     u_long   aindex;
+    u_long   start_clock;
 };
 
 struct ckpt_data {
@@ -104,13 +107,13 @@ long read_ckpts (char* dirname)
     return 0;
 }
 
-void print_timing (struct replay_timing* timings, int start, int end)
+void print_timing (struct replay_timing* timings, struct extra_data* edata, int start, int end)
 { 
     //printf ("--- %5d %6lu (%6u) %6lu (%6u) ---\n", timings[start].pid, timings[start].index, start, timings[end].index, end);
-    printf ("%5d %6lu %6d ", timings[start].pid, timings[start].index, end-start);
+    printf ("%5d %6lu %6lu ", timings[start].pid, timings[start].index, edata[end].start_clock);
 
     if (filter_syscall > 0) {
-	if (filter_syscall > timings[start].index && filter_syscall <= timings[end].index) {
+	if ((long) filter_syscall > timings[start].index && (long) filter_syscall <= timings[end].index) {
 	    printf (" %6lu", filter_syscall-timings[start].index+1);
 	} else {
 	    printf (" 999999");
@@ -155,7 +158,7 @@ int gen_timings (struct replay_timing* timings, struct extra_data* edata, int st
     assert (partitions <= cnt_interval(edata, start, end));
 
     if (partitions == 1) {
-	print_timing (timings, start, end);
+	print_timing (timings, edata, start, end);
 	return 0;
     }
 
@@ -185,7 +188,7 @@ int gen_timings (struct replay_timing* timings, struct extra_data* edata, int st
 	total_time -= (edata[gap_end].dtiming - edata[gap_start].dtiming);
 	partitions--;
 	if (gap_start == start) {
-	    print_timing (timings, gap_start, gap_end);
+	    print_timing (timings, edata, gap_start, gap_end);
 	    return gen_timings (timings, edata, gap_end, end, partitions);
 	}
 
@@ -204,7 +207,7 @@ int gen_timings (struct replay_timing* timings, struct extra_data* edata, int st
 	    printf ("gap - new part %d\n", new_part);
 	}
 	gen_timings (timings, edata, start, gap_start, new_part);
-	print_timing (timings, gap_start, gap_end);
+	print_timing (timings, edata, gap_start, gap_end);
 	return gen_timings (timings, edata, gap_end, end, partitions - new_part);
     } else {
 	// Allocate first interval
@@ -215,7 +218,7 @@ int gen_timings (struct replay_timing* timings, struct extra_data* edata, int st
 	for (i = start+1; i < end; i++) {
 	    if (can_attach(timings[i].syscall)) {
 		if (edata[i].dtiming-edata[start].dtiming > goal || cnt_interval(edata, i, end) == partitions-1) {
-		    print_timing (timings, start, i);
+		    print_timing (timings, edata, start, i);
 		    return gen_timings(timings, edata, i, end, partitions-1);
 		}
 	    }
@@ -336,9 +339,52 @@ int main (int argc, char* argv[])
 	}
     }
 
+    // Fill in start clock time from klogs - start with parent process
+    char path[256];
+    sprintf (path, "%sklog.id.%d", argv[1], timings[0].pid);
+    struct klogfile* log = parseklog_open(path);
+    if (!log) {
+	fprintf(stderr, "%s doesn't appear to be a valid klog file!\n", path);
+	return -1;
+    }
+
+    struct klog_result* res = parseklog_get_next_psr(log); // exec
+    int lindex = 0;
+    vector<pid_t> children;
+    while ((res = parseklog_get_next_psr(log)) != NULL) {
+	while (timings[lindex].pid != timings[0].pid) {
+	    if (timings[lindex].index == 0) children.push_back(timings[lindex].pid);
+	    lindex++;
+	}
+	edata[lindex++].start_clock = res->start_clock;
+	if (lindex >= num) break;
+    }
+    parseklog_close(log);
+
+    // Now do children
+    for (auto iter = children.begin(); iter != children.end(); iter++) {
+	sprintf (path, "%sklog.id.%d", argv[1], *iter);	
+	struct klogfile* log = parseklog_open(path);
+	if (!log) {
+	    fprintf(stderr, "%s doesn't appear to be a valid klog file!\n", path);
+	    return -1;
+	}
+	lindex = 0;
+	while ((res = parseklog_get_next_psr(log)) != NULL) {
+	    while (timings[lindex].pid != *iter) {
+		lindex++;
+		if (lindex >= num) break;
+	    }
+	    if (lindex >= num) break;
+	    edata[lindex++].start_clock = res->start_clock;
+	    if (lindex >= num) break;
+	}
+	parseklog_close(log);
+    }
+
     if (details) {
 	for (i = 0; i < num; i++) {
-	    printf ("%d: pid %d syscall %lu type %d ut %u %.3f\n", i, timings[i].pid, timings[i].index, timings[i].syscall, timings[i].ut, edata[i].dtiming);
+	    printf ("%d: pid %d syscall %lu type %d sc %lu ut %u %.3f\n", i, timings[i].pid, timings[i].index, timings[i].syscall, edata[i].start_clock, timings[i].ut, edata[i].dtiming);
 	}
 	printf ("----------------------------------------\n");
     }
