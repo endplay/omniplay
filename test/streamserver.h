@@ -1,6 +1,8 @@
 #ifndef __STREAMSERVER_H__
 #define __STREAMSERVER_H__
 
+#include <semaphore.h>
+
 #define STREAMSERVER_PORT 19764
 #define AGG_BASE_PORT     10000
 
@@ -52,6 +54,7 @@ struct epoch_ack {
 #define TAINTQSIZE (512*1024*1024)
 #define TAINTENTRIES ((TAINTQSIZE-sizeof(atomic_ulong)*2)/sizeof(uint32_t))
 struct taintq {
+    sem_t           epoch_sem;
     atomic_ulong    read_index;
     atomic_ulong    write_index;
     uint32_t        buffer[TAINTENTRIES];

@@ -11,7 +11,7 @@
 
 using namespace std;
 
-#include "streamserver.h"
+#include "../../test/streamserver.h"
 #include "streamnw.h"
 
 long safe_read (int s, void* buf, u_long size) 
