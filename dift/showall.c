@@ -14,7 +14,7 @@ int main (int argc, char* argv[])
     char tokfile[80], outfile[80], mergefile[80];
     int tfd, ofd, mfd;
     u_long tdatasize, odatasize, mdatasize, tmapsize, omapsize, mmapsize;
-    char* tbuf, *obuf, *mbuf, *dir, *pid, opt;
+    char* tbuf, *obuf, *mbuf, *dir, *pid = NULL, opt;
     u_long* mptr;
     u_long buf_size, i;
     long rc;
@@ -73,8 +73,6 @@ int main (int argc, char* argv[])
 	struct taint_creation_info* tci = (struct taint_creation_info *) obuf;
 	u_long syscall = tci->syscall_cnt;
 	int record_pid = tci->record_pid;
-	int input_syscalls[MAX_INPUT_SYSCALLS];
-	int input_syscalls_index = 0;
 
 	obuf += sizeof(struct taint_creation_info);
 	obuf += sizeof(u_long); 
@@ -85,13 +83,13 @@ int main (int argc, char* argv[])
 		if (*mptr) {
 		    u_long tokval = *mptr;
 		    
-		    printf ("output syscall %lu offset %lu (%lx) <- (%lx)", syscall, i, ocnt, *mptr);
+		    printf ("output syscall %d,%lu offset %lu (%lx) <- (%lx)", record_pid,syscall, i, ocnt, *mptr);
 		    struct token* ptok = (struct token *) tbuf;
 		    while (tokval > ptok->size) {
 			tokval -= ptok->size;
 			ptok++;
 		    } 
-		    printf ("input syscall %d offset %lu\n", ptok->syscall_cnt, tokval);
+		    printf ("input syscall %d,%d offset %lu\n", ptok->record_pid,ptok->syscall_cnt, tokval);
 		    
 		    mptr++;
 		} else {

@@ -2,6 +2,8 @@
 #include "xray_token.h"
 #include "taint_interface/taint_creation.h"
 
+#define BUFFER_SIZE_MAX 1024
+
 void print_token(struct token* token) {
     fprintf(stdout, "%d %lu %lu %d %d %d %lld %d\n",
         token->type,
@@ -358,9 +360,9 @@ int main(int argc, char** argv) {
 	    snprintf(dataflow_filename, 256, "%s/dataflow.result", group_dir);
     }
 
-    snprintf(tokens_filename, 256, "%s/tokens", group_dir);
-    snprintf(filenames_filename, 256, "%s/filenames", group_dir);
-    snprintf(dataflow_filename, 256, "%s/dataflow.result", group_dir);
+//    snprintf(tokens_filename, 256, "%s/tokens", group_dir);
+//    snprintf(filenames_filename, 256, "%s/filenames", group_dir);
+//    snprintf(dataflow_filename, 256, "%s/dataflow.result", group_dir);
     snprintf(merge_filename, 256, "%s/mergeout", group_dir);
 
     fprintf(stdout, "OUTPUT\n");

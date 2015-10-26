@@ -73,7 +73,6 @@ int main (int argc, char* argv[])
     }
 
     // Wait for cpid to complete
-    //I think that when we fork.. right now we're screwing up because we don't wait 
 
     rc = wait_for_replay_group(fd, cpid);
     rc = waitpid (cpid, &status, 0);
@@ -86,6 +85,7 @@ int main (int argc, char* argv[])
     // Now post-process the results
     //do some magic to get all of the underling's pids. 
     
+    printf("DIFT finished\n");
     sprintf(tmpdir, "/tmp/%d",cpid);
     sprintf(lscmd, "/bin/ls %s/dataflow.result*", tmpdir);
     fp = popen(lscmd, "r");
@@ -94,7 +94,7 @@ int main (int argc, char* argv[])
 	return -1;
     }
 
-    lscmd_output = malloc(n); //malloc! 
+    lscmd_output = malloc(n); 
     while((rc = getline(&lscmd_output, &n, fp)) > 0) 
     { 
 	char* pid;

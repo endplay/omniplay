@@ -1,4 +1,3 @@
-
 #include "pin.H"
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,11 +50,13 @@
 #define LOG_F log_f
 #define ERROR_PRINT fprintf
 #ifdef LOGGING_ON
+/*
 #define LOG_PRINT(args...) \
 {                           \
     fprintf(LOG_F, args);   \
     fflush(LOG_F);          \
 }
+*/
 /*
 #define INSTRUMENT_PRINT(args...) \
 {                                   \
@@ -63,6 +64,7 @@
     fflush(log_f);                  \
 }
 */
+ #define LOG_PRINT printf
  #define INSTRUMENT_PRINT(x,...);
  #define PRINTX fprintf
  #define SYSCALL_DEBUG fprintf
@@ -145,9 +147,13 @@ const char* splice_input = NULL;
 taint_t* pregs = NULL; // Only works for single-threaded program
 u_long num_merge_entries = 0x40000000/(sizeof(taint_t)*2);
 u_long inst_cnt = 0;
+int stop_pid = 0;
+const char* fork_flags = NULL; //we're going to have to create an array for this thing. 
+u_long fork_flags_offset = 0;
+
 
 struct slab_alloc open_info_alloc;
-struct slab_alloc thread_data_alloc;
+ struct slab_alloc thread_data_alloc;
 
 KNOB<bool> KnobFilterInputs(KNOB_MODE_WRITEONCE,
     "pintool", "i", "",
@@ -197,6 +203,14 @@ KNOB<string> KnobSpliceSemaphore(KNOB_MODE_WRITEONCE,
 KNOB<int> KnobMergeEntries(KNOB_MODE_WRITEONCE,
     "pintool", "me", "",
     "merge entries"); //FIXME: take into consideration offset of being attached later. Remember, this is to specify where to kill application.
+KNOB<int> KnobStopPid(KNOB_MODE_WRITEONCE,
+    "pintool", "spid", "",
+    "pid for the last syscall");
+
+KNOB<string> KnobForkFlags(KNOB_MODE_WRITEONCE,
+    "pintool", "ff", "",
+    "fork flags string");
+
 
 // Specific output functions
 // #define HEARTBLEED
@@ -215,7 +229,7 @@ static void copy_file(int src, int dest) {
     char buff[COPY_BUFFER_SIZE]; 
     int read_bytes, written_bytes,rc;
 
-    fprintf(stderr, "copy_file src %d, dest %d\n",src, dest);
+//    fprintf(stderr, "copy_file src %d, dest %d\n",src, dest);
 
     rc = lseek(src,0, SEEK_SET);
     if(rc < 0) 
@@ -227,6 +241,7 @@ static void copy_file(int src, int dest) {
 	while(written_bytes < read_bytes) { 
 	    written_bytes += write(dest,buff,read_bytes - written_bytes);
 	}
+//	fprintf(stderr, "\t wrote another %d bytes\n",written_bytes);
     }
     if(read_bytes < 0) { 
 	fprintf(stderr, "There was an error reading file (int) rc %d, errno %d\n",read_bytes,errno);
@@ -241,17 +256,19 @@ static void copy_file(FILE* src, FILE* dest) {
     if(rc < 0) 
 	fprintf(stderr, "There was an error using lseek rc %d, errno %d\n",rc,errno);
 
-
+//    fprintf(stderr, "\t copy_file for filepointers\n");
     while((read_chars = fread(buff,sizeof(char),COPY_BUFFER_SIZE,src)) > 0) 
     { 
 	written_chars = 0;
 	while(written_chars < read_chars) { 
 	    written_chars += fwrite(buff,sizeof(char),read_chars-written_chars, dest);
 	}
+	fprintf(stderr, "\t wrote another %d bytes\n",written_chars);
     }
     if(read_chars < 0) { 
 	fprintf(stderr, "There was an error reading file (FILE*) rc %d, errno %d\n",read_chars,errno);
     }
+}
 
 static int terminated = 0;
 extern int dump_mem_taints (int fd);
@@ -987,11 +1004,9 @@ static void sys_recvmsg_stop(int rc)
             create_taints_from_buffer(vi->iov_base, vi->iov_len, &tci, tokens_fd,
                                         channel_name);
             tci.offset += vi->iov_len;
-            fprintf (stderr, "syscall cnt: %d recvmsg (%u) at %#lx, size %d\n",
-                    current_thread->syscall_cnt, i, (unsigned long) vi->iov_base, vi->iov_len);
         }
     }
-    SYSCALL_DEBUG (stderr, "recvmsg_stop done %d,%d\n", ptdata->record_pid, ptdata->syscall_cnt);
+
     free(rmi);
 }
 
@@ -1040,19 +1055,14 @@ static void sys_sendmsg_stop(int rc)
             struct iovec* vi = (smi->msg->msg_iov + i);
             output_buffer_result(vi->iov_base, vi->iov_len, &tci, outfd);
             tci.offset += vi->iov_len;
-
-            fprintf (stderr, "syscall cnt: %d sendmsg (%u) at %#lx, size %d\n",
-                    current_thread->syscall_cnt, i, (unsigned long) vi->iov_base, vi->iov_len);
         }
     }
-    SYSCALL_DEBUG (stderr, "sys_sendmsg_stop done %d,%d\n", ptdata->record_pid, ptdata->syscall_cnt);
     free(smi);
 }
 
 void syscall_start(int sysnum, ADDRINT syscallarg0, ADDRINT syscallarg1,
 		   ADDRINT syscallarg2, ADDRINT syscallarg3, ADDRINT syscallarg4, ADDRINT syscallarg5)
 {
-	fprintf(stderr, "syscall_start sysnum: %d, sys_sendfile64 %d\n",sysnum, SYS_sendfile64);
     switch (sysnum) {
     case SYS_sendfile: 
 	    fprintf(stderr, "found a sendfile\n");
@@ -1117,7 +1127,7 @@ void syscall_start(int sysnum, ADDRINT syscallarg0, ADDRINT syscallarg1,
                 case SYS_RECVMSG:
 
                     SYSCALL_DEBUG(stderr, "recvmsg_start\n");                    
-		    sys_recvmsg_start(ptdata, (int)args[0], (struct msghdr *)args[1],
+		    sys_recvmsg_start((int)args[0], (struct msghdr *)args[1],
                                             (int)args[2]);
                     break;
                 case SYS_SENDMSG:
@@ -1187,7 +1197,7 @@ void syscall_end(int sysnum, ADDRINT ret_value)
                     sys_recv_stop(rc);
                     break;
                 case SYS_RECVMSG:
-                    sys_recvmsg_stop(ptdata, rc);
+                    sys_recvmsg_stop(rc);
 		    break;
                 case SYS_SENDMSG:
                     sys_sendmsg_stop(rc);
@@ -1250,8 +1260,11 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
     // reset the syscall number after returning from system call
     increment_syscall_cnt (current_thread->sysnum);
     current_thread->sysnum = 0;
+    
+    //segment_length needs to also have a pid... so we can ignore weirdness with fork
+    if (segment_length && global_syscall_cnt == (unsigned long) segment_length + 1 &&
+	(!stop_pid || (stop_pid && stop_pid == get_record_pid()))){
 
-    if (segment_length && global_syscall_cnt == (unsigned long) segment_length + 1) {
 	// Done with this replay - do exit stuff now because we may not get clean unwind
 	printf("Pin terminating at Pid %d, syscall %d\n", PIN_GetPid(), current_thread->syscall_cnt);
 	dift_done ();
@@ -14003,8 +14016,7 @@ BOOL follow_child(CHILD_PROCESS child, void* data)
 
 void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
 {
-    fprintf(stderr, "AfterForkInChild\n");
-<<<<<<< HEAD
+    PRINTX(stderr, "AfterForkInChild\n");
 
     /* grab the old file descriptors for things that we're going to have to copy
      * - close the old log, open a new log
@@ -14022,8 +14034,6 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
     int record_pid = get_record_pid();
     FILE* filenames_f_old = filenames_f; 
     int tokens_fd_old = tokens_fd;
-    struct stat buf;
-    int rc;
 
     //open new filenames
     char filename_mapping[256];
@@ -14055,39 +14065,92 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
     }
 
     //copy the files and close the old ones 
-    fprintf(stderr, "\t- record_pid %d\n", record_pid);
+    PRINTX(stderr, "\t- record_pid %d\n", record_pid);
 
     copy_file(tokens_fd_old, tokens_fd); 
     copy_file(filenames_f_old, filenames_f); 
     
-    rc = fstat(tokens_fd_old, &buf);
-    if (rc < 0) {
-        fprintf(stderr, "could not stat file, %d\n",tokens_fd_old);
-    }
-
-    if (buf.st_size) {
-        fprintf(stderr, "old file size is %ld\n", buf.st_size);
-    }
-
-    rc = fstat(tokens_fd, &buf);
-    if (rc < 0) {
-        fprintf(stderr, "could not stat file, %d\n", tokens_fd);
-    }
-
-    if (buf.st_size) {
-        fprintf(stderr, "new file size is %ld\n", buf.st_size);
-    }
-
-
-
     close(tokens_fd_old);
     fclose(filenames_f_old);
+
+//    fprintf(stderr, "fork_flags %s\n",fork_flags);
+    if(strlen(fork_flags) && 
+       strlen(fork_flags) == fork_flags_offset &&
+       fork_flags[fork_flags_offset] == 0) { 
+	// a 0 here means we really oughta detach
+	
+	PIN_Detach(); //does this work....? 
+    }
+    else{ 
+	fork_flags_offset++;
+    }
+
 
 
     current_thread->record_pid = get_record_pid();
     // reset syscall index for thread
-    current_thread->syscall_cnt = 0;
+    current_thread->syscall_cnt = 0; //not ceratin that this is right anymore.. 
 }
+
+void AfterForkInParent(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
+{
+    fprintf(stderr, "AfterForkInParent\n");
+
+    /* grab the old file descriptors for things that we're going to have to copy
+     * - close the old log, open a new log
+     * - copy the filenames file
+     * - copy the tokens file
+     * - creating a new output file
+     * 
+     * are there any log files and things that need to be cleaned? 
+     */
+    
+    //get_record_pid won't work.. 
+//    int record_pid = get_record_pid();
+
+    int record_pid = 1; //For now...
+    FILE* filenames_f_child;
+    int tokens_fd_child;
+
+    //open new filenames
+    char filename_mapping[256];
+    char name[256];
+
+    snprintf(filename_mapping, 256, "%s/filenames.%d", group_directory, record_pid);
+    filenames_f_child = fopen(filename_mapping, "w");
+    if (!filenames_f) {
+      fprintf(stderr, "Could not open filenames mapping file %s\n", filename_mapping);
+      exit(-1);
+    }
+
+    snprintf(name, 256, "%s/tokens.%d", group_directory, record_pid);
+    tokens_fd_child = open(name, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    if (tokens_fd == -1) {
+      fprintf(stderr, "Could not open tokens file %s\n", name);
+      exit(-1);
+    }
+
+    //copy the files and close the old ones 
+    PRINTX(stderr, "\t- record_pid %d\n", record_pid);
+    copy_file(tokens_fd, tokens_fd_child);
+    copy_file(filenames_f, filenames_f_child);     
+    close(tokens_fd_child);
+    fclose(filenames_f_child);
+
+//    fprintf(stderr, "fork_flags %s\n",fork_flags);
+    if(strlen(fork_flags) && 
+       strlen(fork_flags) == fork_flags_offset &&
+       fork_flags[fork_flags_offset] == 1) { 
+	// a 1 here means we really oughta detach
+	
+	PIN_Detach(); //does this work....? 
+    }
+    else{ 
+	fork_flags_offset++;
+    }
+}
+
+
 
 
 void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
@@ -14117,7 +14180,6 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 
     current_thread = ptdata;
     set_pin_addr (dev_fd, (u_long) &(ptdata->app_syscall), ptdata, (void **) &current_thread);
-
     if (child) {
         restore_state_from_disk(ptdata);
     }
@@ -14133,6 +14195,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
         if (!ptdata->syscall_cnt) {
             ptdata->syscall_cnt = 1;
         }
+
         if (!filenames_f) {
             // setup initial maps
             char filename_mapping[256];
@@ -14154,7 +14217,6 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
                 fprintf(stderr, "Could not open tokens file %s\n", name);
                 exit(-1);
             }
-	    fprintf(stderr, "parent tokens_fd: %d\n",tokens_fd);
         }
         if (outfd == -1) {
             char output_file_name[256];
@@ -14178,46 +14240,55 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 
 #ifdef EXEC_INPUTS
         args = (char **) get_replay_args (dev_fd);
+
         tci.rg_id = ptdata->rg_id;
         tci.record_pid = ptdata->record_pid;
         tci.syscall_cnt = ptdata->syscall_cnt;
         tci.offset = 0;
         tci.fileno = FILENO_ARGS;
         tci.data = NULL;
-        while (1) {
-            char* arg;
-            arg = *args;
-            // args ends with a NULL
-            if (!arg) {
-                break;
-            }
-            LOG_PRINT ("arg is %s\n", arg);
-            tci.offset = acc;
-            create_taints_from_buffer(arg, strlen(arg) + 1, &tci, tokens_fd,
-                                                            (char *) "EXEC_ARG");
-            acc += strlen(arg) + 1;
-            args += 1;
-        }
+	
+	if(args) {
+	    while (1) {
+		char* arg;
+		arg = *args;
+		// args ends with a NULL
+		if (!arg) {
+		    break;
+		}
+		LOG_PRINT ("arg is %s\n", arg);
+		tci.offset = acc;
+		create_taints_from_buffer(arg, strlen(arg) + 1, &tci, tokens_fd,
+					  (char *) "EXEC_ARG");
+		acc += strlen(arg) + 1;
+		args += 1;
+	    }
+	}
+
         // Retrieve the location of the env. var from the kernel
         args = (char **) get_env_vars (dev_fd);
         LOG_PRINT ("env. vars are %#lx\n", (unsigned long) args);
         tci.fileno = FILENO_ENVP;
-        while (1) {
-            char* arg;
-            arg = *args;
-            // args ends with a NULL
-            if (!arg) {
-                break;
-            }
-            LOG_PRINT ("arg is %s\n", arg);
-            tci.offset = acc;
-            create_taints_from_buffer(arg, strlen(arg) + 1, &tci, tokens_fd,
-                                                            (char *) "EXEC_ENV");
-            acc += strlen(arg) + 1;
-            args += 1;
-        }
+	
+	if(args) {
+	    while (1) {
+		char* arg;
+		arg = *args;
+		// args ends with a NULL
+		if (!arg) {
+		    break;
+		}
+		LOG_PRINT ("arg is %s\n", arg);
+		tci.offset = acc;
+		create_taints_from_buffer(arg, strlen(arg) + 1, &tci, tokens_fd,
+					  (char *) "EXEC_ENV");
+		acc += strlen(arg) + 1;
+		args += 1;
+	    }
+	}
 #endif
     }
+
 #ifdef HEARTBLEED
     if (heartbleed_fd == -1) {
         char heartbleed_filename[256];
@@ -14297,7 +14368,7 @@ int main(int argc, char** argv)
     global_syscall_cnt = 0;
 
     /* Create a directory for logs etc for this replay group*/
-    snprintf(group_directory, 256, "/tmp/%d", PIN_GetPid());
+    snprintf(group_directory, 256, "/tmp/%d", PIN_GetPid());  
     if (mkdir(group_directory, 0755)) {
         if (errno == EEXIST) {
             fprintf(stderr, "directory already exists, using it: %s\n", group_directory);
@@ -14316,6 +14387,10 @@ int main(int argc, char** argv)
     all_output = KnobAllOutput.Value();
     splice_input = KnobSpliceInput.Value().c_str();
     splice_semname = KnobSpliceSemaphore.Value().c_str();
+    stop_pid = KnobStopPid.Value();
+    fork_flags = KnobForkFlags.Value().c_str(); //not positive how this should be handled. 
+    fork_flags_offset = 0;
+
     if (KnobMergeEntries.Value() > 0) {
 	num_merge_entries = KnobMergeEntries.Value();
     }
@@ -14390,7 +14465,10 @@ int main(int argc, char** argv)
 
     // Register a notification handler that is called when the application
     // forks a new process
+
     PIN_AddForkFunction(FPOINT_AFTER_IN_CHILD, AfterForkInChild, 0);
+
+
     TRACE_AddInstrumentFunction (track_trace, 0);
     RTN_AddInstrumentFunction(track_function, 0);
 

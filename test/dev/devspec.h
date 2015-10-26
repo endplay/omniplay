@@ -74,6 +74,12 @@ struct get_record_pid_data {
 	pid_t nonrecordPid;
 };
 
+struct get_replay_pid_data {
+	pid_t record_pid;
+        pid_t parent_pid;
+};
+
+
 struct set_pin_address_data {
 	u_long pin_address;
 	u_long pthread_data;
@@ -101,6 +107,7 @@ struct set_pin_address_data {
 #define SPECI_GET_ATTACH_STATUS _IOR('u', 18, pid_t)
 #define SPECI_WAIT_FOR_REPLAY_GROUP _IOR('u', 19, pid_t)
 #define SPECI_TRY_TO_EXIT _IOR('u', 20, pid_t)
+#define SPECI_GET_REPLAY_PID _IOR('u', 21, struct get_replay_pid_data)
 
 
 #endif

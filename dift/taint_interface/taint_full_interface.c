@@ -141,12 +141,12 @@ int is_in_trace_set(u_long val)
 static void 
 flush_merge_buffer ()
 {
-    int rc;
+    long rc;
     long bytes_written = 0;
     long size = num_merge_entries*sizeof(struct taint_number);
     
     while (bytes_written < size) {
-	long rc = write (node_num_fd, (char *) merge_buffer+bytes_written, size-bytes_written);	
+	rc = write (node_num_fd, (char *) merge_buffer+bytes_written, size-bytes_written);	
 	if (rc <= 0) {
 	    fprintf (stderr, "Canot write to merge log, rc=%ld\n", rc);
 	    assert (0);
@@ -338,6 +338,7 @@ static inline void init_taint_index(char* group_dir)
 	for (i = 1; i < strlen(node_num_shmemname); i++) {
 	  if (node_num_shmemname[i] == '/') node_num_shmemname[i] = '.';
 	}
+	
         snprintf(node_num_filename, 256, "%s/node_nums", group_dir);
         node_num_fd = shm_open(node_num_shmemname, O_CREAT | O_TRUNC | O_RDWR, 0644);
         if (node_num_fd < 0) {
@@ -358,6 +359,9 @@ static inline void init_taint_index(char* group_dir)
 	    assert (0);
 	}
     }
+
+
+    
 
     //new_slab_alloc((char *)"UINT_ALLOC", &uint_alloc, sizeof(guint64), 2000000);
     new_slab_alloc((char *)"UINT_ALLOC", &uint_alloc, sizeof(guint64), 4000000);
@@ -562,7 +566,7 @@ taintvalue_t get_taint_value (taint_t t, option_t option)
 
 void finish_and_print_taint_stats(FILE* fp)
 {
-    if (merge_buf_overflow) flush_merge_buffer ();
+    if (merge_control_shm->merge_buf_overflow) flush_merge_buffer ();
 
 #ifdef TAINT_STATS
     fprintf(fp, "Taint statistics:\n");
