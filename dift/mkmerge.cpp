@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <assert.h>
+#include <stdint.h>
 
 #include <unordered_set>
 

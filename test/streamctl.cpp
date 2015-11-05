@@ -237,7 +237,7 @@ int main (int argc, char* argv[])
     ehdr.epochs = epochs.size();
     ehdr.start_flag = true;
     ehdr.finish_flag = true;
-    ehdr.agg_type = agg_type;
+    ehdr.cmd_type = agg_type;
 
     int sa = connect_to_server (agg_hostname, STREAMSERVER_PORT);
     if (sa < 0) return sa;
@@ -266,6 +266,7 @@ int main (int argc, char* argv[])
 	    if (sd < 0) return sd;
 
 	    struct epoch_hdr ehdr;
+	    ehdr.cmd_type = DO_DIFT;
 	    ehdr.flags = 0;
 	    if (sync_files) ehdr.flags |= SYNC_LOGFILES;
 	    strcpy (ehdr.dirname, dirname);

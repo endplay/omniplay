@@ -23,15 +23,17 @@ struct cache_info {
     struct timespec mtime;
 };
 
-#define AGG_TYPE_STREAM 0
-#define AGG_TYPE_SEQ    1
+// Possible commands
+#define DO_DIFT         0
+#define AGG_TYPE_STREAM 1
+#define AGG_TYPE_SEQ    2
 
 // Info from description file
 struct epoch_hdr {
     uint32_t epochs;
     bool     start_flag;
     bool     finish_flag;
-    u_char   agg_type;
+    u_char   cmd_type;
     char     flags;
     char     dirname[NAMELEN];
     char     next_host[NAMELEN];

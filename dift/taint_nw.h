@@ -1,10 +1,18 @@
 #ifndef __TAINT_NW__
 #define __TAINT_NW__
 
-#define USE_NW
-
 #ifdef __cplusplus
 extern "C" {
+#endif
+
+  //#define USE_NW
+#define USE_SHMEM
+
+#ifdef USE_SHMEM
+#define MAX_MERGE_SIZE 0x80000000 /*   2 GB */
+#define MAX_OUT_SIZE   0x40000000 /*   1 GB */
+#define MAX_DUMP_SIZE  0x40000000 /*   1 GB */
+#define MAX_TOKENS_SIZE 0x1000000 /*  16 MB */
 #endif
 
 #define TAINT_DATA_MERGE  1

@@ -38,7 +38,7 @@ using namespace std;
 #include "splice.h"
 #include "taint_nw.h"
 
-#ifdef USE_NW
+#if defined(USE_NW) || defined(USE_SHMEM)
 int s = -1;
 #endif
 
@@ -208,67 +208,83 @@ extern int dump_mem_taints (int fd);
 extern int dump_reg_taints (int fd, taint_t* pregs);
 extern int dump_mem_taints_start (int fd);
 extern int dump_reg_taints_start (int fd, taint_t* pregs);
+extern void write_token_finish (int fd);
+extern void output_finish (int fd);
 
 static void dift_done ()
 {
-    struct timeval tv;
-
     if (terminated) return;  // Only do this once
     terminated = 1;
 
-#ifndef USE_NW
+    fprintf (stderr, "starting dift_done\n");
+
+#ifdef USE_FILE
     char taint_structures_file[256];
     snprintf(taint_structures_file, 256, "%s/taint_structures", group_directory);
     int taint_fd = open(taint_structures_file, O_WRONLY | O_CREAT | O_TRUNC | O_LARGEFILE, 0644);
     assert(taint_fd > 0);
 #endif
+#ifdef USE_SHMEM
+    char taint_structures_file[256];
+    snprintf(taint_structures_file, 256, "/taint_structures_shm%s", group_directory);
+    for (u_int i = 1; i < strlen(taint_structures_file); i++) {
+	if (taint_structures_file[i] == '/') taint_structures_file[i] = '.';
+    }
+    int taint_fd = shm_open(taint_structures_file, O_CREAT | O_TRUNC | O_RDWR, 0644);
+    if (taint_fd < 0) {
+	fprintf(stderr, "could not open taint shmem %s, errno %d\n", taint_structures_file, errno);
+	assert(0);
+    }
+    if (all_output) {
+	int rc = ftruncate (taint_fd, MAX_DUMP_SIZE);
+	if (rc < 0) {
+	    fprintf(stderr, "could not truncate shmem %s, errno %d\n", taint_structures_file, errno);
+	    assert(0);
+	}
+    }
+#endif
+#ifdef USE_NW
+    int taint_fd = s;
+#endif
     
     if (all_output) {
-	gettimeofday(&tv, NULL);
-	printf("dump start dir %s %lu sec %lu usec\n", group_directory, tv.tv_sec, tv.tv_usec);
-
 	if (splice_output) {
 	    // Dump out the active registers in order of the record thread id
 	    for (map<pid_t,struct thread_data*>::iterator iter = active_threads.begin(); 
 		 iter != active_threads.end(); iter++) {
-	      //printf ("dumping record pid %d regs\n", iter->second->record_pid);
-#ifdef USE_NW
-		dump_reg_taints(s, iter->second->shadow_reg_table);
-#else
+		//printf ("dumping record pid %d regs\n", iter->second->record_pid);
 		dump_reg_taints(taint_fd, iter->second->shadow_reg_table);
-#endif
 	    }
-#ifdef USE_NW
-	    dump_mem_taints(s);
-#else 
 	    dump_mem_taints(taint_fd);
-#endif
 	} else {
 	    // Dump out the active registers in order of the record thread id
 	    for (map<pid_t,struct thread_data*>::iterator iter = active_threads.begin(); 
 		 iter != active_threads.end(); iter++) {
-	      //printf ("dumping record pid %d regs\n", iter->second->record_pid);
-#ifdef USE_NW
-		dump_reg_taints_start(s, iter->second->shadow_reg_table);
-#else
 		dump_reg_taints_start(taint_fd, iter->second->shadow_reg_table);
-#endif
 	    }
-#ifdef USE_NW
-	    dump_mem_taints_start(s);
-#else 
 	    dump_mem_taints_start(taint_fd);
-#endif
 	}
     }
-#ifndef USE_NW
-    close(taint_fd);
+
+    // Finish up output of other files
+#ifdef USE_NW
+    write_token_finish (s);
 #endif
-    fclose (log_f);
+#ifdef USE_SHMEM
+    write_token_finish (tokens_fd);
+    output_finish (outfd);
+#endif
 
     finish_and_print_taint_stats(stdout);
-
     printf("DIFT done at %ld\n", global_syscall_cnt);
+
+#ifdef USE_SHMEM
+    // Send "done" message to aggregator
+    int rc = write (s, &group_directory, sizeof(group_directory));
+    if (rc != sizeof(group_directory)) {
+	fprintf (stderr, "write of directory failed, rc=%d, errno=%d\n", rc, errno);
+    }
+#endif
 }
 
 ADDRINT find_static_address(ADDRINT ip)
@@ -1182,10 +1198,7 @@ void instrument_syscall(ADDRINT syscall_num,
 	sysnum == 174 || sysnum == 175 || sysnum == 190 || sysnum == 192) {
 	check_clock_before_syscall (dev_fd, (int) syscall_num);
     }
-    if (sysnum == 252) {
-	printf ("calling group exit - cleanup time\n");
-	dift_done();
-    }
+    if (sysnum == 252) dift_done();
 
     if (segment_length && *ppthread_log_clock >= segment_length) {
 	// Done with this replay - do exit stuff now because we may not get clean unwind
@@ -14038,11 +14051,29 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
         if (tokens_fd == -1) {
 #ifdef USE_NW
 	    tokens_fd = s;
-#else
+#endif
+#ifdef USE_SHMEM
+	    char token_file[256];
+	    snprintf(token_file, 256, "/tokens_shm%s", group_directory);
+	    for (u_int i = 1; i < strlen(token_file); i++) {
+		if (token_file[i] == '/') token_file[i] = '.';
+	    }
+	    tokens_fd = shm_open(token_file, O_CREAT | O_TRUNC | O_RDWR, 0644);
+	    if (tokens_fd < 0) {
+		fprintf(stderr, "could not open tokens shmem %s, errno %d\n", token_file, errno);
+		assert(0);
+	    }
+	    int rc = ftruncate (tokens_fd, MAX_TOKENS_SIZE);
+	    if (rc < 0) {
+		fprintf(stderr, "could not truncate tokens %s, errno %d\n", token_file, errno);
+		assert(0);
+	    }
+#endif
+#ifdef USE_FILE
             char name[256];
             snprintf(name, 256, "%s/tokens", group_directory);
             tokens_fd = open(name, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-            if (tokens_fd == -1) {
+            if (tokens_fd < 0) {
                 fprintf(stderr, "Could not open tokens file %s\n", name);
                 exit(-1);
             }
@@ -14051,7 +14082,25 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
         if (outfd == -1) {
 #ifdef USE_NW
 	    outfd = s;
-#else
+#endif
+#ifdef USE_SHMEM
+	    char output_file[256];
+	    snprintf(output_file, 256, "/dataflow.results_shm%s", group_directory);
+	    for (u_int i = 1; i < strlen(output_file); i++) {
+		if (output_file[i] == '/') output_file[i] = '.';
+	    }
+	    outfd = shm_open(output_file, O_CREAT | O_TRUNC | O_RDWR, 0644);
+	    if (outfd < 0) {
+		fprintf(stderr, "could not open tokens shmem %s, errno %d\n", output_file, errno);
+		assert(0);
+	    }
+	    int rc = ftruncate (outfd, MAX_OUT_SIZE);
+	    if (rc < 0) {
+		fprintf(stderr, "could not truncate tokens %s, errno %d\n", output_file, errno);
+		assert(0);
+	    }
+#endif
+#ifdef USE_FILE
             char output_file_name[256];
             snprintf(output_file_name, 256, "%s/dataflow.result", group_directory);
             outfd = open(output_file_name, O_CREAT | O_TRUNC | O_LARGEFILE | O_RDWR, 0644);
@@ -14223,8 +14272,8 @@ int main(int argc, char** argv)
 	num_merge_entries = KnobMergeEntries.Value();
     }
 
-#ifdef USE_NW
-    // Open a connection to the 64-bit consumer porocess
+#if defined(USE_NW) || defined(USE_SHMEM)
+    // Open a connection to the 64-bit consumer process
     const char* hostname = KnobNWHostname.Value().c_str();
     int port = KnobNWPort.Value();
     
@@ -14245,11 +14294,20 @@ int main(int argc, char** argv)
     addr.sin_port = htons(port);
     memcpy (&addr.sin_addr, hp->h_addr, hp->h_length);
 
-    rc = connect (s, (struct sockaddr *) &addr, sizeof(addr));
+    int tries = 0;
+    do {
+	rc = connect (s, (struct sockaddr *) &addr, sizeof(addr));
+	if (rc < 0) {
+	    tries++;
+	    usleep(1000);
+	}
+    } while (rc < 0 && tries <=10);
+
     if (rc < 0) {
 	fprintf (stderr, "Cannot connect to socket (host %s, port %d), errno=%d\n", hostname, port, errno);
 	return -1;
     }
+
 #endif
 
     init_logs();
@@ -14338,13 +14396,6 @@ int main(int argc, char** argv)
     PIN_AddSyscallExitFunction(instrument_syscall_ret, 0);
 #ifdef HEARTBLEED
     fprintf(stderr, "heartbleed defined\n");
-#endif
-#if 0
-    {
-        struct timeval tv;
-        gettimeofday(&tv, NULL);
-        fprintf(stderr, "time start %lu sec %lu usec\n", tv.tv_sec, tv.tv_usec);
-    }
 #endif
 
     PIN_StartProgram();

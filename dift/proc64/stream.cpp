@@ -22,14 +22,19 @@ using namespace std;
 #include "../taint_nw.h"
 #include "../../test/streamserver.h"
 
-//#define DEBUG(x) ((x)==0x3378 || (x) == 0x3379 || (x) == 0x33be || (x) == 0x5864)
+//#define DEBUG(x) ((x)==0x1cec000 || (x)==0x0)
 #define STATS
 
+#ifdef USE_NW
 const u_long MERGE_SIZE  = 0x400000000; // 16GB max
 const u_long OUTPUT_SIZE = 0x100000000; // 4GB max
 const u_long TOKEN_SIZE =   0x10000000; // 256MB max
 const u_long TS_SIZE =      0x40000000; // 1GB max
 const u_long OUTBUFSIZE =   0x10000000; // 1GB size
+#endif
+#ifdef USE_SHMEM
+const u_long OUTBUFSIZE =   0x1000000; // 64MB size
+#endif
 
 #define TERM_VAL 0xffffffff // Sentinel for queue transmission
 
@@ -145,6 +150,50 @@ static void flush_outrbuf()
 #define STACK_SIZE 1000000
 taint_t stack[STACK_SIZE];
 
+static int
+init_socket (int port)
+{
+   int c = socket (AF_INET, SOCK_STREAM, 0);
+    if (c < 0) {
+	fprintf (stderr, "Cannot create socket, errno=%d\n", errno);
+	return c;
+    }
+
+    int on = 1;
+    long rc = setsockopt (c, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+    if (rc < 0) {
+	fprintf (stderr, "Cannot set socket option, errno=%d\n", errno);
+	return rc;
+    }
+
+    struct sockaddr_in addr;
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = INADDR_ANY;
+
+    rc = bind (c, (struct sockaddr *) &addr, sizeof(addr));
+    if (rc < 0) {
+	fprintf (stderr, "Cannot bind socket, errno=%d\n", errno);
+	return rc;
+    }
+
+    rc = listen (c, 5);
+    if (rc < 0) {
+	fprintf (stderr, "Cannot listen on socket, errno=%d\n", errno);
+	return rc;
+    }
+    
+    int s = accept (c, NULL, NULL);
+    if (s < 0) {
+	fprintf (stderr, "Cannot accept connection, errno=%d\n", errno);
+	return s;
+    }
+
+    close (c);
+    return s;
+}
+
+#ifdef USE_NW
 static long recv_taint_data (int s, char* buffer, u_long bufsize, uint32_t inputsize, u_long& ndx)
 {
     if (ndx+inputsize > bufsize) {
@@ -194,43 +243,7 @@ read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, ta
     }
 
     // Initialize a socket to receive input data
-    int c = socket (AF_INET, SOCK_STREAM, 0);
-    if (c < 0) {
-	fprintf (stderr, "Cannot create socket, errno=%d\n", errno);
-	return c;
-    }
-
-    int on = 1;
-    long rc = setsockopt (c, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
-    if (rc < 0) {
-	fprintf (stderr, "Cannot set socket option, errno=%d\n", errno);
-	return rc;
-    }
-
-    struct sockaddr_in addr;
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    addr.sin_addr.s_addr = INADDR_ANY;
-
-    rc = bind (c, (struct sockaddr *) &addr, sizeof(addr));
-    if (rc < 0) {
-	fprintf (stderr, "Cannot bind socket, errno=%d\n", errno);
-	return rc;
-    }
-
-    rc = listen (c, 5);
-    if (rc < 0) {
-	fprintf (stderr, "Cannot listen on socket, errno=%d\n", errno);
-	return rc;
-    }
-    
-    int s = accept (c, NULL, NULL);
-    if (s < 0) {
-	fprintf (stderr, "Cannot accept connection, errno=%d\n", errno);
-	return s;
-    }
-
-    close (c);
+    s = init_socket (port);
 
     // Now receive the data into our memory buffers
     while (1) {
@@ -268,6 +281,71 @@ read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, ta
 
     return 0;
 }
+#endif 
+#ifdef USE_SHMEM
+
+static void*
+map_buffer (const char* prefix, const char* group_directory, u_long& datasize)
+{
+    char filename[256];
+    snprintf(filename, 256, "/%s_shm%s", prefix, group_directory);
+    for (u_int i = 1; i < strlen(filename); i++) {
+	if (filename[i] == '/') filename[i] = '.';
+    }
+
+    int fd = shm_open(filename, O_RDWR, 0644);
+    if (fd < 0) {
+	fprintf(stderr, "could not open shmem %s, errno %d\n", filename, errno);
+	return NULL;
+    }
+
+    struct stat64 st;
+    int rc = fstat64 (fd, &st);
+    if (rc < 0) {
+	fprintf (stderr, "Cannot fstat shmem %s, rc=%d, errno=%d\n", filename, rc, errno);
+	return NULL;
+    }
+    fprintf (stderr, "Size of the shmem %s is %lld\n", filename, st.st_size);
+
+    datasize = st.st_size;
+
+    int mapsize = datasize;
+    if (mapsize%4096) mapsize += (4096-mapsize%4096);
+    void* ptr = mmap (NULL, mapsize, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+    if (ptr == MAP_FAILED) {
+	fprintf (stderr, "Cannot map input data for %s, errno=%d\n", filename, errno);
+	return NULL;
+    }
+    rc = shm_unlink (filename);
+    if (rc < 0) {
+	fprintf (stderr, "shm_unlink of %s failed, rc=%d, errno=%d\n", filename, rc, errno);
+    }
+
+    return ptr;
+}
+
+static long
+read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, taint_entry*& merge_log,
+	     u_long& mdatasize, u_long& odatasize, u_long& idatasize, u_long& adatasize)
+{
+    // Initialize a socket to receive a little bit of input data
+    int s = init_socket (port);
+
+    // This will be sent after processing is completed 
+    char group_directory[256];
+    int rc = read (s, &group_directory, sizeof(group_directory));
+    if (rc != sizeof(group_directory)) {
+	fprintf (stderr, "read of group directory failed, rc=%d, errno=%d\n", rc, errno);
+	return -1;
+    }
+
+    token_log = (char *) map_buffer ("tokens", group_directory, idatasize);
+    output_log = (char *) map_buffer ("dataflow.results", group_directory, odatasize);
+    ts_log = (taint_t *) map_buffer ("taint_structures", group_directory, adatasize);
+    merge_log = (taint_entry *) map_buffer ("node_nums", group_directory, mdatasize);
+    return 0;
+}
+#endif
 
 static void map_iter (taint_t value, uint32_t output_token, bool& unresolved_vals, bool& resolved_vals)
 {
@@ -441,7 +519,7 @@ long stream_epoch (const char* dirname, int port)
 			PUT_QVALUE (0,outputq);
 #ifdef DEBUG
 			if (DEBUG(output_token)) {
-			    fprintf (debugfile, "output %x to unresolved addr %llx\n", output_token, value);
+			    fprintf (debugfile, "output %x to unresolved addr %lx\n", output_token, (long) value);
 			}
 #endif
 			    
@@ -451,14 +529,14 @@ long stream_epoch (const char* dirname, int port)
 			    PRINT_RVALUE (value);
 #ifdef DEBUG
 			    if (DEBUG(output_token)) {
-				fprintf (debugfile, "output %x to resolved start input %llx\n", output_token, value);
+				fprintf (debugfile, "output %x to resolved start input %lx\n", output_token, (long) value);
 			    }
 #endif
 			} else {
 			    PRINT_RVALUE (value-0xc0000000);
 #ifdef DEBUG
 			    if (DEBUG(output_token)) {
-				fprintf (debugfile, "output %x to resolved input %llx\n", output_token, value-0xc0000000);
+				fprintf (debugfile, "output %x to resolved input %lx\n", output_token, (long) value-0xc0000000);
 			    }
 #endif
 			}
@@ -486,6 +564,9 @@ long stream_epoch (const char* dirname, int port)
     output_merges = merges;
     merges = 0;
 #endif
+#ifdef DEBUG
+    fprintf (debugfile, "output token is %x\n", output_token);
+#endif
 
     if (!finish_flag) {
 	// Next, build index of output addresses
@@ -493,6 +574,7 @@ long stream_epoch (const char* dirname, int port)
 	
 	for (uint32_t i = 0; i < adatasize/(sizeof(taint_t)*2); i++) {
 	    address_map[ts_log[2*i]] = ts_log[2*i+1];
+	    //fprintf (debugfile, "address %x goes to %x\n", ts_log[2*i], ts_log[2*i+1]);
 	}
 
 #ifdef STATS
@@ -526,7 +608,7 @@ long stream_epoch (const char* dirname, int port)
 			}
 #ifdef DEBUG
 			if (DEBUG(otoken+output_token) || DEBUG(otoken)) {
-			    fprintf (debugfile, "output %x(%x/%x) pass through value %llx\n", otoken+output_token, otoken, output_token, value);
+			    fprintf (debugfile, "output %x(%x/%x) pass through value %lx\n", otoken+output_token, otoken, output_token, (long) value);
 			}
 #endif
 			PUT_QVALUE(value,outputq);
@@ -544,7 +626,7 @@ long stream_epoch (const char* dirname, int port)
 			    }
 #ifdef DEBUG
 			    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-				fprintf (debugfile, "output %x to unresolved value %llx via %llx\n", otoken+output_token, iter->second, value);
+				fprintf (debugfile, "output %x to unresolved value %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
 			    }
 #endif
 			    PUT_QVALUE(iter->second,outputq);
@@ -561,14 +643,15 @@ long stream_epoch (const char* dirname, int port)
 			if (start_flag) {
 #ifdef DEBUG
 			    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-			      fprintf (debugfile, "output %x to resolved value %llx via %llx\n", otoken+output_token, iter->second, value);
+				fprintf (debugfile, "output %x to resolved value %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
 			    }
 #endif
 			    PRINT_RVALUE(iter->second);
 			} else {
 #ifdef DEBUG
 			    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-			      fprintf (debugfile, "output %x to resolved value %llx via %llx\n", otoken+output_token, iter->second-0xc0000000, value);
+				fprintf (debugfile, "output %x to resolved value %lx via %lx\n", 
+					 otoken+output_token, (long) iter->second-0xc0000000, (long) value);
 			    }
 #endif
 			    PRINT_RVALUE(iter->second-0xc0000000);
@@ -580,7 +663,7 @@ long stream_epoch (const char* dirname, int port)
 #endif
 #ifdef DEBUG
 			if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-			    fprintf (debugfile, "output %x to merge chain %llx via %llx\n", otoken+output_token, iter->second, value);
+			    fprintf (debugfile, "output %x to merge chain %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
 			}
 #endif
 			map_iter (iter->second, otoken+output_token, unresolved_vals, resolved_vals);
@@ -691,7 +774,7 @@ long stream_epoch (const char* dirname, int port)
 	written = outputq->write_index;
 	fprintf (statsfile, "Wrote %lu entries (%lu bytes)\n", written, written*sizeof(u_long)); 
     }
-    fprintf (statsfile, "Unique indirects %ld\n", resolved.size());
+    fprintf (statsfile, "Unique indirects %ld\n", (long) resolved.size());
 #endif
 
     return 0;
@@ -786,7 +869,7 @@ long seq_epoch (const char* dirname, int port)
 
 	struct timeval tv_live_receive_done;
 	gettimeofday(&tv_live_receive_done, NULL);
-	printf ("Received %ld values in live set at %ld.%ld\n", live_set.size(), tv_live_receive_done.tv_sec, tv_live_receive_done.tv_usec);
+	printf ("Received %ld values in live set at %ld.%ld\n", (long) live_set.size(), tv_live_receive_done.tv_sec, tv_live_receive_done.tv_usec);
 
 	// Wait on sender
 	UP_QSEM (outputq);
@@ -866,7 +949,7 @@ long seq_epoch (const char* dirname, int port)
 	}
 	struct timeval tv_new_live_send;
 	gettimeofday(&tv_new_live_send, NULL);
-	printf ("About to send new live set of size %ld at %ld.%ld\n", new_live_set.size(), tv_new_live_send.tv_sec, tv_new_live_send.tv_usec);
+	printf ("About to send new live set of size %ld at %ld.%ld\n", (long) new_live_set.size(), tv_new_live_send.tv_sec, tv_new_live_send.tv_usec);
 	printf ("zeros %lu, inputs %lu, merges %lu, merge_zeros %lu\n", new_live_zeros, 
 		new_live_inputs, new_live_merges, new_live_merge_zeros);
 
@@ -900,7 +983,7 @@ long seq_epoch (const char* dirname, int port)
 			PUT_QVALUE (0,outputq);
 #ifdef DEBUG
 			if (DEBUG(output_token)) {
-			    fprintf (debugfile, "output %x to unresolved addr %llx\n", output_token, value);
+			    fprintf (debugfile, "output %x to unresolved addr %lx\n", output_token, (long) value);
 			}
 #endif
 			    
@@ -910,14 +993,14 @@ long seq_epoch (const char* dirname, int port)
 			    PRINT_RVALUE (value);
 #ifdef DEBUG
 			    if (DEBUG(output_token)) {
-				fprintf (debugfile, "output %x to resolved start input %llx\n", output_token, value);
+				fprintf (debugfile, "output %x to resolved start input %lx\n", output_token, (long) value);
 			    }
 #endif
 			} else {
 			    PRINT_RVALUE (value-0xc0000000);
 #ifdef DEBUG
 			    if (DEBUG(output_token)) {
-				fprintf (debugfile, "output %x to resolved input %llx\n", output_token, value-0xc0000000);
+				fprintf (debugfile, "output %x to resolved input %lx\n", output_token, (long) value-0xc0000000);
 			    }
 #endif
 			}
@@ -929,7 +1012,7 @@ long seq_epoch (const char* dirname, int port)
 #endif
 #ifdef DEBUG
 		    if (DEBUG(output_token)) {
-			fprintf (debugfile, "output %x to merge log entry %llx\n", output_token, value);
+			fprintf (debugfile, "output %x to merge log entry %lx\n", output_token, (long) value);
 		    }
 #endif
 		    struct taint_entry* pentry = &merge_log[value-0xe0000001];
@@ -985,7 +1068,7 @@ long seq_epoch (const char* dirname, int port)
 	    GET_QVALUE(value, inputq);
 #ifdef DEBUG
 	    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-		fprintf (debugfile, "otoken %x to value %llx\n", otoken+output_token, value);
+		fprintf (debugfile, "otoken %x to value %lx\n", otoken+output_token, (long) value);
 	    }
 #endif
 	    while (value) {
@@ -1005,7 +1088,7 @@ long seq_epoch (const char* dirname, int port)
 			}
 #ifdef DEBUG
 			if (DEBUG(otoken+output_token) || DEBUG(otoken)) {
-			    fprintf (debugfile, "output %x(%x/%x) pass through value %llx\n", otoken+output_token, otoken, output_token, value);
+			    fprintf (debugfile, "output %x(%x/%x) pass through value %lx\n", otoken+output_token, otoken, output_token, (long) value);
 			}
 #endif
 			PUT_QVALUE(value,outputq);
@@ -1023,7 +1106,7 @@ long seq_epoch (const char* dirname, int port)
 			    }
 #ifdef DEBUG
 			    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-				fprintf (debugfile, "output %x to unresolved value %llx via %llx\n", otoken+output_token, iter->second, value);
+				fprintf (debugfile, "output %x to unresolved value %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
 			    }
 #endif
 			    PUT_QVALUE(iter->second,outputq);
@@ -1040,14 +1123,15 @@ long seq_epoch (const char* dirname, int port)
 			if (start_flag) {
 #ifdef DEBUG
 			    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-			      fprintf (debugfile, "output %x to resolved value %llx via %llx\n", otoken+output_token, iter->second, value);
+				fprintf (debugfile, "output %x to resolved value %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
 			    }
 #endif
 			    PRINT_RVALUE(iter->second);
 			} else {
 #ifdef DEBUG
 			    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-			      fprintf (debugfile, "output %x to resolved value %llx via %llx\n", otoken+output_token, iter->second-0xc0000000, value);
+				fprintf (debugfile, "output %x to resolved value %lx via %lx\n", 
+					 otoken+output_token, (long) iter->second-0xc0000000, (long) value);
 			    }
 #endif
 			    PRINT_RVALUE(iter->second-0xc0000000);
@@ -1059,7 +1143,7 @@ long seq_epoch (const char* dirname, int port)
 #endif
 #ifdef DEBUG
 			if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-			    fprintf (debugfile, "output %x to merge chain %llx via %llx\n", otoken+output_token, iter->second, value);
+			    fprintf (debugfile, "output %x to merge chain %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
 			}
 #endif
 			// This should happen a lot, so short-circuit
@@ -1174,7 +1258,7 @@ long seq_epoch (const char* dirname, int port)
 	written = outputq->write_index;
 	fprintf (statsfile, "Wrote %lu entries (%lu bytes)\n", written, written*sizeof(u_long)); 
     }
-    fprintf (statsfile, "Unique indirects %ld\n", resolved.size());
+    fprintf (statsfile, "Unique indirects %ld\n", (long) resolved.size());
 #endif
 
     return 0;
