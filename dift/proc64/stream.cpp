@@ -26,8 +26,13 @@ using namespace std;
 #define STATS
 
 #ifdef USE_NW
+#ifdef BUILD_64
 const u_long MERGE_SIZE  = 0x400000000; // 16GB max
 const u_long OUTPUT_SIZE = 0x100000000; // 4GB max
+#else
+const u_long MERGE_SIZE  = 0x40000000; // 1GB max
+const u_long OUTPUT_SIZE = 0x40000000; // 1GB max
+#endif
 const u_long TOKEN_SIZE =   0x10000000; // 256MB max
 const u_long TS_SIZE =      0x40000000; // 1GB max
 const u_long OUTBUFSIZE =   0x10000000; // 1GB size
