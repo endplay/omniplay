@@ -250,13 +250,24 @@ read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, ta
 	
 	// Receive header
 	struct taint_data_header header;
-	rc = read (s, &header, sizeof(header));
-	if (rc == 0) break; // socket closed - no more data
-	if (rc != sizeof(header)) {
-	    printf ("Could not receive taint data header, rc=%ld\n", rc);
-	    return -1;
-	}
-	
+	int hbytes_received = 0;
+	do {
+	    rc = read (s, ((char *) (&header)) + hbytes_received, sizeof(header)-hbytes_received);
+	    if (rc == 0) {
+		if (hbytes_received) {
+		    printf ("Partial header received, %d bytes\n", hbytes_received);
+		    return -1;
+		}
+		close (s); // Socket closed - no more data
+		return 0;
+	    }
+	    if (rc < 0) {
+		printf ("Could not receive taint data header, rc=%ld, errno=%d\n", rc, errno);
+		return -1;
+	    }
+	    hbytes_received += rc;
+	} while (hbytes_received != sizeof(header));
+
 	// Receive data
 	switch (header.type) {
 	case TAINT_DATA_MERGE:

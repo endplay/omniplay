@@ -10,17 +10,28 @@
 #include "../maputil.h"
 
 #include <set>
+#include <vector>
 using namespace std;
 
 #include "../taint_interface/taint.h"
 #include "../taint_interface/taint_creation.h"
 
-//#define TARGET(x) (x==0x5864)
+//#define TARGET(x) (x==0xd7bab5 || x == 0xd7babd)
 //#define ITARGET 0x201e42
 
 #define ALLOW_DUPS
 
 #define BUFSIZE 100000
+
+#ifdef OUTPUT_CMP
+struct output_info {
+    uint32_t tokval;
+    int32_t record_pid;
+    uint32_t syscall;
+    uint32_t buf_size;
+};
+vector<output_info> outputs;
+#endif
 
 int cmp (const void* p1, const void* p2)
 {
@@ -46,6 +57,9 @@ int main (int argc, char* argv[])
     long rc;
     int out_start;
     const char* out_dir;
+#ifdef OUTPUT_CMP
+    struct output_info oi;
+#endif
 
     if (argc < 3) {
 	fprintf (stderr, "format: out2mergecmp.c <mergeout dir> [-d dir] <list of output dirs>\n");
@@ -67,7 +81,10 @@ int main (int argc, char* argv[])
 	out_dir = "/tmp";
 	out_start = 2;
     }
-      
+
+#ifdef OUTPUT_CMP      
+    uint32_t tokval = 0;
+#endif
     mptr = (uint32_t *) mbuf;
     dptr = dbuf;
 #ifdef TARGET
@@ -75,6 +92,17 @@ int main (int argc, char* argv[])
 #endif
     dptr += sizeof(struct taint_creation_info) + sizeof(uint32_t);
     buf_size = *((uint32_t *) dptr);
+
+#ifdef OUTPUT_CMP
+    printf ("outputs %x-%x: record pid %d syscall %d size %d\n", tokval, tokval+buf_size, tci->record_pid, tci->syscall_cnt, buf_size);
+    oi.tokval = tokval;
+    oi.record_pid = tci->record_pid;
+    oi.syscall = tci->syscall_cnt;
+    oi.buf_size = buf_size;
+    outputs.push_back(oi);
+    tokval += buf_size;
+#endif
+
     dptr += sizeof(uint32_t);
     buf_cnt = 0;
     while ((u_long) mptr < (u_long) mbuf + mdatasize) {
@@ -102,6 +130,15 @@ int main (int argc, char* argv[])
 #endif
 	    dptr += sizeof(struct taint_creation_info) + sizeof(uint32_t);
 	    buf_size = *((uint32_t *) dptr);
+#ifdef OUTPUT_CMP
+	    printf ("outputs %x-%x: record pid %d syscall %d size %d\n", tokval, tokval+buf_size, tci->record_pid, tci->syscall_cnt, buf_size);
+	    oi.tokval = tokval;
+	    oi.record_pid = tci->record_pid;
+	    oi.syscall = tci->syscall_cnt;
+	    oi.buf_size = buf_size;
+	    outputs.push_back(oi);
+	    tokval += buf_size;
+#endif
 	    dptr += sizeof(uint32_t);
 	    buf_cnt = 0;
 	}
@@ -111,7 +148,37 @@ int main (int argc, char* argv[])
     unmap_file (dbuf, dfd, dmapsize);
 
     // Now handle the output files 
+#ifdef OUTPUT_CMP
+    tokval = 0;
+    int ocnt = 0;
+#endif
     for (int i = out_start; i < argc; i++) {
+#ifdef OUTPUT_CMP
+	char dffile[256];
+	int dffd;
+	u_long dfdatasize, dfmapsize;
+	char* dfbuf;
+
+	sprintf (dffile, "%s/%s/dataflow.results", out_dir, argv[i]);
+	rc = map_file (dffile, &dffd, &dfdatasize, &dfmapsize, &dfbuf);
+	if (rc < 0) return rc;	
+
+	char* dfptr = dfbuf;
+	while ((u_long) dfptr < (u_long) dfbuf + dfdatasize) {
+	    struct taint_creation_info* tci = (taint_creation_info *) dfptr;
+	    dfptr += sizeof(taint_creation_info);
+	    uint32_t* psize = (uint32_t *) dfptr;
+	    dfptr += sizeof(uint32_t);
+	    printf ("outputs %x-%x: record pid %d syscall %d size %d\n", tokval, tokval+*psize, tci->record_pid, tci->syscall_cnt, *psize);
+	    oi = outputs[ocnt];
+	    if (tokval != oi.tokval || tci->record_pid != oi.record_pid || *psize != oi.buf_size) {
+		printf ("!!! was %x-%x: record pid %d syscall %d size %d\n", oi.tokval, oi.tokval+oi.buf_size, oi.record_pid, oi.syscall, oi.buf_size);
+		//exit (0);
+	    } 
+	    ocnt++;
+	    tokval += *psize;
+	}
+#endif
 	sprintf (ofile, "%s/%s/merge-outputs-resolved", out_dir, argv[i]);
 	rc = map_file (ofile, &ofd, &odatasize, &omapsize, &obuf);
 	if (rc < 0) return rc;	
