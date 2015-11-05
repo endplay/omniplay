@@ -217,6 +217,8 @@ static long
 read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, taint_entry*& merge_log,
 	     u_long& mdatasize, u_long& odatasize, u_long& idatasize, u_long& adatasize)
 {
+    int rc;
+
     // Create mappings for inputs - we have to commit to a max size here
     token_log = (char *) mmap (NULL, TOKEN_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0);
     if (token_log == MAP_FAILED) {
@@ -243,7 +245,7 @@ read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, ta
     }
 
     // Initialize a socket to receive input data
-    s = init_socket (port);
+    int s = init_socket (port);
 
     // Now receive the data into our memory buffers
     while (1) {
@@ -262,7 +264,7 @@ read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, ta
 		return 0;
 	    }
 	    if (rc < 0) {
-		printf ("Could not receive taint data header, rc=%ld, errno=%d\n", rc, errno);
+		printf ("Could not receive taint data header, rc=%d, errno=%d\n", rc, errno);
 		return -1;
 	    }
 	    hbytes_received += rc;
@@ -285,7 +287,7 @@ read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, ta
 	default:
 	    fprintf (stderr, "Received unspecified taint header type %d\n", header.type);
 	}
-	if (rc != header.datasize) return -1;
+	if ((u_long) rc != header.datasize) return -1;
     }
 
     close (s);
@@ -316,7 +318,7 @@ map_buffer (const char* prefix, const char* group_directory, u_long& datasize)
 	fprintf (stderr, "Cannot fstat shmem %s, rc=%d, errno=%d\n", filename, rc, errno);
 	return NULL;
     }
-    fprintf (stderr, "Size of the shmem %s is %lld\n", filename, st.st_size);
+    fprintf (stderr, "Size of the shmem %s is %ld\n", filename, (long) st.st_size);
 
     datasize = st.st_size;
 

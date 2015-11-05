@@ -217,6 +217,7 @@ int sync_logfiles (int s)
 
 void do_dift (int s, struct epoch_hdr& ehdr) 
 {
+#ifndef BUILD_64
     int rc;
     struct timeval tv_start, tv_done;
     gettimeofday (&tv_start, NULL);
@@ -349,6 +350,7 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 
     close (s);
     close (fd);
+#endif
 }
 
 void do_stream (int s, struct epoch_hdr& ehdr)

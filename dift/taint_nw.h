@@ -5,8 +5,11 @@
 extern "C" {
 #endif
 
-  //#define USE_NW
-#define USE_SHMEM
+/* Note: define exactly 1 of these 4 */
+#define USE_NW
+//#define USE_SHMEM
+//#define USE_FILE
+//#define USE_NULL
 
 #ifdef USE_SHMEM
 #define MAX_MERGE_SIZE 0x80000000 /*   2 GB */
