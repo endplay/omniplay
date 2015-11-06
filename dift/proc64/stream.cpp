@@ -38,7 +38,7 @@ const u_long TS_SIZE =      0x40000000; // 1GB max
 const u_long OUTBUFSIZE =   0x10000000; // 1GB size
 #endif
 #ifdef USE_SHMEM
-const u_long OUTBUFSIZE =   0x1000000; // 64MB size
+const u_long OUTBUFSIZE =   0x2000000; // 128MB size
 #endif
 
 #define TERM_VAL 0xffffffff // Sentinel for queue transmission
@@ -78,7 +78,10 @@ FILE* debugfile;
 FILE* statsfile;
 u_long merges = 0, directs = 0, indirects = 0, values = 0, idle = 0, output_merges;
 u_long atokens = 0, passthrus = 0, aresolved = 0, aindirects = 0, avalues = 0, unmodified = 0, written = 0;
+u_long prune_cnt = 0, simplify_cnt = 0;
+u_long new_live_zeros = 0, new_live_inputs = 0, new_live_merges = 0, new_live_merge_zeros = 0, new_live_notlive = 0;
 struct timeval start_tv, recv_done_tv, output_done_tv, index_created_tv, address_done_tv, end_tv;
+struct timeval live_receive_done_tv, new_live_start_tv, live_done_tv, new_live_send_tv;
 
 static long ms_diff (struct timeval tv1, struct timeval tv2)
 {
@@ -323,9 +326,8 @@ map_buffer (const char* prefix, const char* group_directory, u_long& datasize)
 	fprintf (stderr, "Cannot fstat shmem %s, rc=%d, errno=%d\n", filename, rc, errno);
 	return NULL;
     }
-    fprintf (stderr, "Size of the shmem %s is %ld\n", filename, (long) st.st_size);
-
     datasize = st.st_size;
+    if (datasize == 0) return NULL;  // Some inputs may actually have no data
 
     int mapsize = datasize;
     if (mapsize%4096) mapsize += (4096-mapsize%4096);
@@ -872,10 +874,6 @@ long seq_epoch (const char* dirname, int port)
 
     if (!start_flag) {
 
-	struct timeval tv_live_start;
-	gettimeofday(&tv_live_start, NULL);
-	printf ("Waiting to receive live set at %ld.%ld\n", tv_live_start.tv_sec, tv_live_start.tv_usec);
-
 	// Wait for preceding epoch to send list of live addresses
 	uint32_t val;
 	do {
@@ -885,15 +883,13 @@ long seq_epoch (const char* dirname, int port)
 	    if (!finish_flag) new_live_set.insert(val);
 	}  while (1);
 
-	struct timeval tv_live_receive_done;
-	gettimeofday(&tv_live_receive_done, NULL);
-	printf ("Received %ld values in live set at %ld.%ld\n", (long) live_set.size(), tv_live_receive_done.tv_sec, tv_live_receive_done.tv_usec);
-
+#ifdef STATS
+	gettimeofday(&live_receive_done_tv, NULL);
+#endif
 	// Wait on sender
 	UP_QSEM (outputq);
 
 	// Prune the merge log
-	u_long prune_cnt = 0, simplify_cnt = 0;
 	taint_entry* mptr = merge_log;
 	while ((u_long) mptr < (u_long) merge_log + mdatasize) {
 	    if (mptr->p1 < 0xc0000000) {
@@ -920,66 +916,74 @@ long seq_epoch (const char* dirname, int port)
 		    mptr->p2 = pentry->p1;
 		}
 	    }
+#ifdef STATS
 	    if (mptr->p1 == 0 && mptr->p2 == 0) prune_cnt++;
 	    else if (mptr->p1 == 0 || mptr->p2 == 0) simplify_cnt++;
+#endif
 	    mptr++;
 	}
 
-	struct timeval tv_live_prune_done;
-	gettimeofday(&tv_live_prune_done, NULL);
-	printf ("Pruned %ld simplified %ld of %ld merge values using live set at %ld.%ld\n", prune_cnt, simplify_cnt, 
-		mdatasize/sizeof(struct taint_entry), tv_live_prune_done.tv_sec, tv_live_prune_done.tv_usec);
     }
 
     // Construct and send out new live set
     if (!finish_flag) {
-
-	struct timeval tv_new_live_start;
-	gettimeofday(&tv_new_live_start, NULL);
-	printf ("About to construct new live set at %ld.%ld\n", tv_new_live_start.tv_sec, tv_new_live_start.tv_usec);
+#ifdef STATS
+	gettimeofday(&new_live_start_tv, NULL);
+#endif
 
 	// Add live addresses
-	u_long new_live_zeros = 0, new_live_inputs = 0, new_live_merges = 0, new_live_merge_zeros = 0;
 	for (uint32_t i = 0; i < adatasize/(sizeof(taint_t)*2); i++) {
 	    taint_t addr = ts_log[2*i];
 	    taint_t val = ts_log[2*i+1];
 	    if (val == 0) {
 		new_live_set.erase(addr);
+#ifdef STATS
 		new_live_zeros++;
+#endif
 	    } else if (val < 0xc0000000) {
 		if (start_flag || live_set.count(val)) {
 		    new_live_set.insert(addr);
+#ifdef STATS
 		    new_live_inputs++;
+#endif
+		} else {
+#ifdef STATS
+		    new_live_notlive++;
+#endif
 		}
 	    } else if (val <= 0xe0000000) {
 		new_live_set.insert(addr);
+#ifdef STATS
 		new_live_inputs++;
+#endif
 	    } else {
 		taint_entry* pentry = &merge_log[val-0xe0000001];
 		if (pentry->p1 || pentry->p2) {
 		    new_live_set.insert(addr);
+#ifdef STATS
 		    new_live_merges++;
+#endif
 		} else {
 		    new_live_set.erase(addr);
+#ifdef STATS
 		    new_live_merge_zeros++;
+#endif
 		}
 	    }
 	}
-	struct timeval tv_new_live_send;
-	gettimeofday(&tv_new_live_send, NULL);
-	printf ("About to send new live set of size %ld at %ld.%ld\n", (long) new_live_set.size(), tv_new_live_send.tv_sec, tv_new_live_send.tv_usec);
-	printf ("zeros %lu, inputs %lu, merges %lu, merge_zeros %lu\n", new_live_zeros, 
-		new_live_inputs, new_live_merges, new_live_merge_zeros);
-
+#ifdef STATS
+	gettimeofday(&new_live_send_tv, NULL);
+#endif
 	for (auto iter = new_live_set.begin(); iter != new_live_set.end(); iter++) {
 	    PUT_QVALUE(*iter,inputq);
 	}
 	PUT_QVALUE(TERM_VAL,inputq);
 
-	struct timeval tv_new_live_sent;
-	gettimeofday(&tv_new_live_sent, NULL);
-	printf ("Sent new live set at %ld.%ld\n", tv_new_live_sent.tv_sec, tv_new_live_sent.tv_usec);
     }
+
+#ifdef STATS
+    gettimeofday(&live_done_tv, NULL);
+#endif
 
     plog = output_log;
     while ((u_long) plog < (u_long) output_log + odatasize) {
@@ -1252,7 +1256,19 @@ long seq_epoch (const char* dirname, int port)
 
     fprintf (statsfile, "Total time:              %6ld ms\n", ms_diff (end_tv, start_tv));
     fprintf (statsfile, "Receive time:            %6ld ms\n", ms_diff (recv_done_tv, start_tv));
-    fprintf (statsfile, "Output processing time:  %6ld ms\n", ms_diff (output_done_tv, recv_done_tv));
+    if (!start_flag) {
+	fprintf (statsfile, "Receive live set time:   %6ld ms\n", ms_diff (live_receive_done_tv, recv_done_tv));
+	if (!finish_flag) {
+	    fprintf (statsfile, "Prune live set time:     %6ld ms\n", ms_diff (new_live_start_tv, live_receive_done_tv));
+	} else {
+	    fprintf (statsfile, "Prune live set time:     %6ld ms\n", ms_diff (live_done_tv, live_receive_done_tv));
+	}
+    }
+    if (!finish_flag) {
+	fprintf (statsfile, "Make live set time:      %6ld ms\n", ms_diff (new_live_send_tv, new_live_start_tv));
+	fprintf (statsfile, "Send live set time:      %6ld ms\n", ms_diff (live_done_tv, new_live_send_tv));
+    }
+    fprintf (statsfile, "Output processing time:  %6ld ms\n", ms_diff (output_done_tv, live_done_tv));
     if (!finish_flag) {
 	fprintf (statsfile, "Index generation time:   %6ld ms\n", ms_diff (index_created_tv, output_done_tv));
 	fprintf (statsfile, "Address processing time: %6ld ms\n", ms_diff (address_done_tv, index_created_tv));
@@ -1267,10 +1283,21 @@ long seq_epoch (const char* dirname, int port)
     fprintf (statsfile, "Received %ld bytes of input data\n", idatasize);
     fprintf (statsfile, "Received %ld bytes of addr data\n", adatasize);
     fprintf (statsfile, "\n");
+    if (!start_flag) {
+	fprintf (statsfile, "Received %ld values in live set\n", (long) live_set.size());
+    }
     fprintf (statsfile, "Output directs %lu indirects %lu values %lu, merges %lu\n", directs, indirects, values, output_merges);
     if (!finish_flag) {
+	fprintf (statsfile, "Pruned %ld simplified %ld unchanged %ld of %ld merge values using live set\n", 
+		prune_cnt, simplify_cnt, mdatasize/sizeof(struct taint_entry)-prune_cnt-simplify_cnt,
+		mdatasize/sizeof(struct taint_entry));
 	fprintf (statsfile, "Address tokens %lu passthrus %lu resolved %lu, indirects %lu values %lu unmodified %lu, merges %lu\n", 
 		 atokens, passthrus, aresolved, aindirects, avalues, unmodified, merges);
+    }
+    if (!start_flag) {
+	fprintf (statsfile, "New live set has size %ld\n", (long) new_live_set.size());
+	fprintf (statsfile, "zeros %lu, inputs %lu, merges %lu, merge_zeros %lu, not live %lu\n", new_live_zeros, 
+		 new_live_inputs, new_live_merges, new_live_merge_zeros, new_live_notlive);
     }
     if (!start_flag) {
 	written = outputq->write_index;

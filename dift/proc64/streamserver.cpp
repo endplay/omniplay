@@ -437,11 +437,11 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	}
     }
 
-    for (uint32_t i = epochs-1; i >= 0; i--) {
+    for (int i = (int) epochs-1; i >= 0; i--) {
 	int status;
 	pid_t wpid = waitpid (ectl[i].spid, &status, 0);
 	if (wpid < 0) {
-	    fprintf (stderr, "waitpid returns %d, errno %d\n", rc, errno);
+	    fprintf (stderr, "waitpid of %d/%d returns %d, errno %d\n", i, ectl[i].spid, rc, errno);
 	    return;
 	} else {
 	    ectl[i].status = STATUS_DONE;

@@ -13,7 +13,7 @@
 #include <sys/mman.h>
 
 #define USE_MERGE_HASH
-#define TAINT_STATS
+//#define TAINT_STATS
 //#define TRACE_TAINT
 
 #ifdef TRACE_TAINT
@@ -567,8 +567,6 @@ taintvalue_t get_taint_value (taint_t t, option_t option)
 void finish_and_print_taint_stats(FILE* fp)
 {
 #ifdef USE_SHMEM
-    fprintf (stderr, "merge buffer count is %x\n", merge_total_count);
-    fprintf (stderr, "Final merge size is %x\n", (merge_total_count-0xe0000001)*sizeof(struct taint_number));
     int rc = ftruncate64 (node_num_fd, (merge_total_count-0xe0000001)*sizeof(struct taint_number));
     if (rc < 0) {
 	fprintf (stderr, "ftrunacte of merge file failed,rc=%d, errno=%d\n", rc, errno);

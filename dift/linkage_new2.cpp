@@ -55,9 +55,11 @@ int s = -1;
 // #define ALT_PATH_EXPLORATION         // indirect control flow
 // #define CONFAID
 
+#define NO_FILE_OUTPUT
 //#define LOGGING_ON
 #define LOG_F log_f
-#define ERROR_PRINT fprintf
+//#define ERROR_PRINT fprintf
+#define ERROR_PRINT(x,...);
 #ifdef LOGGING_ON
 #define LOG_PRINT(args...) \
 {                           \
@@ -107,13 +109,14 @@ int first_thread = 1;
 int child = 0;
 char** main_prev_argv = 0;
 char group_directory[256];
+#ifndef NO_FILE_OUTPUT
 FILE* log_f = NULL; // For debugging
+#endif
 unsigned long global_syscall_cnt = 0;
 unsigned long open_file_cnt = FILENO_START; // 0 is stdin, 1 is exec args, 2 is env
 struct xray_monitor* open_fds = NULL; // List of open fds
 struct xray_monitor* open_socks = NULL; // list of open sockets
 struct xray_monitor* open_x_fds = NULL; // list of open x sockets
-FILE* filenames_f = NULL; // Mapping of all opened filenames
 FILE* filter_f = NULL;
 int tokens_fd = -1;
 int outfd = -1;
@@ -136,6 +139,9 @@ u_long num_merge_entries = 0x40000000/(sizeof(taint_t)*2);
 u_long inst_cnt = 0;
 map<pid_t,struct thread_data*> active_threads;
 u_long* ppthread_log_clock = NULL;
+#ifdef OUTPUT_FILENAMES
+FILE* filenames_f = NULL; // Mapping of all opened filenames
+#endif
 
 struct slab_alloc open_info_alloc;
 struct slab_alloc thread_data_alloc;
@@ -216,7 +222,7 @@ static void dift_done ()
     if (terminated) return;  // Only do this once
     terminated = 1;
 
-    fprintf (stderr, "starting dift_done\n");
+    //fprintf (stderr, "starting dift_done\n");
 
 #ifdef USE_FILE
     char taint_structures_file[256];
@@ -402,8 +408,9 @@ static inline void sys_open_stop(int rc)
         monitor_add_fd(open_fds, rc, 0, current_thread->save_syscall_info);
 
 	SYSCALL_DEBUG(stderr, "open: added fd %d\n", rc);
-
+#ifdef OUTPUT_FILENAMES
         write_filename_mapping(filenames_f, oi->fileno, oi->name);
+#endif
 
 #ifdef LINKAGE_FDTRACK
         int cloexec = oi->flags | O_CLOEXEC;
@@ -855,7 +862,9 @@ static void sys_connect_stop(int rc)
         si->fileno = open_file_cnt;
         open_file_cnt++;
         create_connect_info_name(connect_info_name, si->domain, ci);
+#ifdef OUTPUT_FILENAMES
         write_filename_mapping(filenames_f, si->fileno, connect_info_name);
+#endif
 
         current_thread->save_syscall_info = NULL; // Socket_info owns this now
     }
@@ -2667,11 +2676,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #endif
                 break;
             case 16:
-                fprintf (log_f, "%#x: %#x %s\n",
-                        INS_Address(ins),
-                        find_static_address(INS_Address(ins)),
-                        (IMG_Valid(IMG_FindByAddress(INS_Address(ins))) ?
-                         IMG_Name(IMG_FindByAddress(INS_Address(ins))).c_str() : "--"));
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
@@ -7273,11 +7277,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #endif
                 break;
             case 16:
-                fprintf (log_f, "%#x: %#x %s\n",
-                        INS_Address(ins),
-                        find_static_address(INS_Address(ins)),
-                        (IMG_Valid(IMG_FindByAddress(INS_Address(ins))) ?
-                         IMG_Name(IMG_FindByAddress(INS_Address(ins))).c_str() : "--"));
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
@@ -11442,9 +11441,6 @@ void instrument_mov (INS ins)
     REG dstreg = REG_INVALID();
     int treg = (int)REG_INVALID();
 
-    INSTRUMENT_PRINT (log_f, "%#x starting instrument_mov\n", INS_Address(ins));
-    fflush(log_f);
-
     if(INS_IsMemoryRead(ins)) {
         ismemread = 1;
         reg = INS_OperandReg(ins, 0);
@@ -11547,15 +11543,11 @@ void instrument_mov (INS ins)
 #endif // COPY_ONLY
         } else {
             //move immediate to memory location
-            INSTRUMENT_PRINT(log_f, "instrument mov is mem write: with immval\n"); 
-            fflush(log_f);
             instrument_taint_immval2mem(ins);
         }
     } else if (!SPECIAL_REG(dstreg)) {
         if(immval) {
             treg = translate_reg((int)dstreg);
-            INSTRUMENT_PRINT(log_f, "instrument mov is immval into register, reg: %d (treg: %d)\n", dstreg, treg); 
-            fflush(log_f);
             //mov immediate value into register
             switch(REG_Size(dstreg)) {
                 case 1:
@@ -11614,8 +11606,6 @@ void instrument_mov (INS ins)
                 fprintf(stderr, "%#x instrument mov is src reg: %d into dst reg: %d\n", INS_Address(ins), reg, dstreg); 
             }
             assert(REG_Size(reg) == REG_Size(dstreg));
-            INSTRUMENT_PRINT(log_f, "%#x instrument mov is src reg: %d into dst reg: %d\n", INS_Address(ins), reg, dstreg); 
-            fflush(log_f);
             instrument_taint_reg2reg(ins, dstreg, reg, 0);
         }
     }
@@ -11734,8 +11724,6 @@ void instrument_cmov(INS ins)
     REG dstreg = REG_INVALID();
     int treg = (int)REG_INVALID();
 
-    INSTRUMENT_PRINT (log_f, "%#x starting instrument_cmov\n", INS_Address(ins));
-    fflush(log_f);
     assert(INS_IsPredicated(ins));
 
     if(INS_IsMemoryRead(ins)) {
@@ -11831,15 +11819,11 @@ void instrument_cmov(INS ins)
 #endif // ONLY_COPY
         } else {
             //move immediate to memory location
-            INSTRUMENT_PRINT(log_f, "instrument mov is mem write: with immval\n"); 
-            fflush(log_f);
             pred_instrument_taint_immval2mem(ins);
         }
     } else if (!SPECIAL_REG(dstreg)) {
         if(immval) {
             treg = translate_reg((int)dstreg);
-            INSTRUMENT_PRINT(log_f, "instrument mov is immval into register, reg: %d (treg: %d)\n", dstreg, treg); 
-            fflush(log_f);
             //mov immediate value into register
             switch(addrsize) {
                 case 1:
@@ -13362,6 +13346,18 @@ void instruction_instrumentation(INS ins, void *v)
     UINT32 category;
     int instrumented = 0;
 
+    if(INS_IsSyscall(ins)) {
+        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(instrument_syscall),
+                IARG_SYSCALL_NUMBER, 
+                IARG_SYSARG_VALUE, 0, 
+                IARG_SYSARG_VALUE, 1,
+                IARG_SYSARG_VALUE, 2,
+                IARG_SYSARG_VALUE, 3,
+                IARG_SYSARG_VALUE, 4,
+                IARG_SYSARG_VALUE, 5,
+                IARG_END);
+    }
+
     opcode = INS_Opcode(ins);
     category = INS_Category(ins);
 
@@ -14036,6 +14032,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
         if (!ptdata->syscall_cnt) {
             ptdata->syscall_cnt = 1;
         }
+#ifdef OUTPUT_FILENAME
         if (!filenames_f) {
             // setup initial maps
             char filename_mapping[256];
@@ -14047,7 +14044,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
             }
             init_filename_mapping(filenames_f);
         }
-
+#endif
         if (tokens_fd == -1) {
 #ifdef USE_NW
 	    tokens_fd = s;
@@ -14184,6 +14181,7 @@ void thread_fini (THREADID threadid, const CONTEXT* ctxt, INT32 code, VOID* v)
     active_threads.erase(tdata->record_pid);
 }
 
+#ifndef NO_FILE_OUTPUT
 void init_logs(void)
 {
     char log_name[256];
@@ -14208,6 +14206,7 @@ void init_logs(void)
     }
 #endif
 }
+#endif
 
 void fini(INT32 code, void* v)
 {
@@ -14252,6 +14251,7 @@ int main(int argc, char** argv)
 
     /* Create a directory for logs etc for this replay group*/
     snprintf(group_directory, 256, "/tmp/%d", PIN_GetPid());
+#ifndef NO_FILE_OUTPUT
     if (mkdir(group_directory, 0755)) {
         if (errno == EEXIST) {
             fprintf(stderr, "directory already exists, using it: %s\n", group_directory);
@@ -14260,6 +14260,7 @@ int main(int argc, char** argv)
             exit(-1);
         }
     }
+#endif
 
     // Read in command line args
     trace_x = KnobTraceX.Value();
@@ -14310,7 +14311,9 @@ int main(int argc, char** argv)
 
 #endif
 
+#ifndef NO_FILE_OUTPUT
     init_logs();
+#endif
     init_taint_structures(group_directory);
     if (!open_fds) {
         open_fds = new_xray_monitor(sizeof(struct open_info));
@@ -14380,7 +14383,7 @@ int main(int argc, char** argv)
 
     main_prev_argv = argv;
 
-    INS_AddInstrumentFunction(track_inst, 0); // Fixme - this should be in the routing below I would think
+    //INS_AddInstrumentFunction(track_inst, 0); // Fixme - this should be in the routing below I would think
     INS_AddInstrumentFunction(instruction_instrumentation, 0);
 
     // Register a notification handler that is called when the application
