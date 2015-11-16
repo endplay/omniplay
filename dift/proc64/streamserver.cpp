@@ -295,7 +295,7 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 			    args[argcnt++] = "-ofs";
 			    args[argcnt++] = output_filter;
 			}
-			printf ("hostname %s port %d\n", edata[i].hostname, edata[i].port);
+			printf ("%lu: hostname %s port %d\n", i, edata[i].hostname, edata[i].port);
 			args[argcnt++] = "-host";
 			args[argcnt++] = edata[i].hostname;
 			args[argcnt++] = "-port";

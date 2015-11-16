@@ -36,6 +36,7 @@ struct epoch_hdr {
     u_char   cmd_type;
     char     flags;
     char     dirname[NAMELEN];
+    char     prev_host[NAMELEN];
     char     next_host[NAMELEN];
 };
 
@@ -45,8 +46,8 @@ struct epoch_data {
     uint32_t stop_syscall;
     uint32_t filter_syscall;
     uint32_t ckpt;
-    uint32_t port;
-    char     hostname[NAMELEN];
+    uint32_t port;              // Aggregation port
+    char     hostname[NAMELEN]; // Aggregation hostname
 };
 
 struct epoch_ack {
