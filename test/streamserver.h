@@ -52,11 +52,19 @@ struct epoch_ack {
 };
 
 #define TAINTQSIZE (512*1024*1024)
-#define TAINTENTRIES ((TAINTQSIZE-sizeof(atomic_ulong)*2)/sizeof(uint32_t))
+#define TAINTENTRIES ((TAINTQSIZE- 64*3)/sizeof(uint32_t))
+
 struct taintq {
-    sem_t           epoch_sem;
-    atomic_ulong    read_index;
-    atomic_ulong    write_index;
+    static_assert(sizeof(sem_t) <= 4096, "sem_t too big!");
+    static_assert(sizeof(atomic_ulong) <= 4096, "atomic_ulong too big!");
+    union{sem_t epoch_sem;char unused0_[4096];} __attribute__((aligned (4096))) ; 
+    union{atomic_ulong read_index; char unused1_[4096];} __attribute__((aligned (4096))); 
+    union{atomic_ulong write_index; char unused2_[4096];} __attribute__((aligned (4096))); 
+
+//    sem_t           epoch_sem;
+//    atomic_ulong    read_index;
+//    atomic_ulong    write_index;
+
     uint32_t        buffer[TAINTENTRIES];
 };
 

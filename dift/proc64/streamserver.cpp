@@ -29,6 +29,8 @@ using namespace std;
 #define STATUS_STREAM 3
 #define STATUS_DONE 4
 
+int agg_port = -1;
+
 struct epoch_ctl {
     int    status;
     char   inputqname[256];
@@ -65,7 +67,7 @@ void* do_stream (void* arg)
     if (ehdr.finish_flag) qcnt--;
     for (u_long i = 0; i < qcnt; i++) {
 	if (i == 0 && ehdr.start_flag) continue; // No queue needed
-	sprintf(ectl[i].inputqname, "/input_queue%lu", i);
+	sprintf(ectl[i].inputqname, "/input_queue%d.%lu",agg_port, i);
 	int iqfd = shm_open (ectl[i].inputqname, O_CREAT|O_RDWR|O_TRUNC, 0644);	
 	if (iqfd < 0) {
 	    fprintf (stderr, "Cannot create input queue %s,errno=%d\n", ectl[i].inputqname, errno);
@@ -92,6 +94,7 @@ void* do_stream (void* arg)
 
     // Start a stream processor for all epochs at once
     printf ("Starting %ld epochs\n", epochs);
+    printf ("dir %s\n", ehdr.dirname);
     for (u_long i = 0; i < epochs; i++) {
 	
 	ectl[i].spid = fork ();
@@ -102,9 +105,9 @@ void* do_stream (void* arg)
 	    int argcnt = 0;
 			    
 	    args[argcnt++] = "stream";
-	    sprintf (dirname, "/tmp/%ld", i);
+	    sprintf (dirname, "/tmp/%d.%ld", agg_port,i);
 	    args[argcnt++] = dirname;
-	    sprintf (port, "%ld", AGG_BASE_PORT+i);
+	    sprintf (port, "%ld", agg_port+(i+1));
 	    args[argcnt++] = port;
 	    if (i < epochs-1 || !ehdr.finish_flag) {
 		args[argcnt++] = "-iq";
@@ -175,23 +178,45 @@ void* do_stream (void* arg)
     printf ("Overall:\n");
     printf ("\tStart time: %ld.%06ld\n", tv_start.tv_sec, tv_start.tv_usec);
     printf ("\tEnd time: %ld.%06ld\n", tv_done.tv_sec, tv_done.tv_usec);
+
+    long diff_usec = tv_done.tv_usec - tv_start.tv_usec;
+    long carryover = 0;
+    if(diff_usec < 0) {
+	carryover = -1;
+	diff_usec = 1 - diff_usec;
+    }
+    long diff_sec = tv_done.tv_sec - tv_start.tv_sec - carryover;
+    printf ("Start -> End: %ld.%06ld\n", diff_sec,diff_usec);
+
     for (u_long i = 0; i < epochs; i++) {
 	printf ("Epoch %lu:\n", i); 
 	printf ("\tStream start time: %ld.%06ld\n", ectl[i].tv_start_stream.tv_sec, ectl[i].tv_start_stream.tv_usec);
 	printf ("\tEpoch end time: %ld.%06ld\n", ectl[i].tv_done.tv_sec, ectl[i].tv_done.tv_usec);
-   }
 
+	diff_usec = ectl[i].tv_done.tv_usec - ectl[i].tv_start_stream.tv_usec;
+        carryover = 0;
+        if(diff_usec < 0) {
+	    carryover = -1;
+	    diff_usec = 1 - diff_usec;
+	}
+        diff_sec = ectl[i].tv_done.tv_sec - ectl[i].tv_start_stream.tv_sec - carryover;
+	printf ("\tStart -> End: %ld.%06ld\n", diff_sec,diff_usec);
+
+
+   }
+    
+    fflush(stdout);
     // send results if requeted
     if (ehdr.flags&SEND_RESULTS) {
 	for (u_long i = 0; i < epochs; i++) {
 	    char pathname[PATHLEN];
-	    sprintf (pathname, "/tmp/%d/merge-addrs", ectl[i].cpid);
+	    sprintf (pathname, "/tmp/%d.%d/merge-addrs", agg_port, ectl[i].cpid);
 	    send_file (s, pathname, "merge-addrs");
-	    sprintf (pathname, "/tmp/%d/merge-outputs-resolved", ectl[i].cpid);
+	    sprintf (pathname, "/tmp/%d.%d/merge-outputs-resolved", agg_port, ectl[i].cpid);
 	    send_file (s, pathname, "merge-outputs-resolved");
-	    sprintf (pathname, "/tmp/%d/tokens", ectl[i].cpid);
+	    sprintf (pathname, "/tmp/%d.%d/tokens", agg_port, ectl[i].cpid);
 	    send_file (s, pathname, "tokens");
-	    sprintf (pathname, "/tmp/%d/dataflow.result", ectl[i].cpid);
+	    sprintf (pathname, "/tmp/%d.%d/dataflow.result", agg_port,ectl[i].cpid);
 	    send_file (s, pathname, "dataflow.results");
 	}
     }
@@ -203,6 +228,8 @@ void* do_stream (void* arg)
 int main (int argc, char* argv[]) 
 {
     int rc; 
+    if(argc > 1)
+	agg_port = atoi(argv[1]);   
 
     // Listen for incoming commands
     int c = socket (AF_INET, SOCK_STREAM, 0);
@@ -220,10 +247,15 @@ int main (int argc, char* argv[])
 
     struct sockaddr_in addr;
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(STREAMSERVER_PORT);
+    if(agg_port > 0)
+	addr.sin_port = htons(agg_port);
+    else 
+	addr.sin_port = htons(STREAMSERVER_PORT);
+
     addr.sin_addr.s_addr = INADDR_ANY;
     rc = bind (c, (struct sockaddr *) &addr, sizeof(addr));
     if (rc < 0) {
+	fprintf (stderr, "in streamserver, agg_port %d\n", agg_port);
 	fprintf (stderr, "Cannot bind socket, errno=%d\n", errno);
 	return rc;
     }

@@ -1,4 +1,6 @@
-all: mkmerge merge3 out2mergecmp fullrecv stream streamserver streamctl
+TARGETS=mkmerge merge3 out2mergecmp fullrecv stream streamserver streamctl
+
+all: $(TARGETS)
 
 mkmerge: mkmerge.cpp ../maputil.c ../maputil.h
 	$(CXX) -std=c++0x -Wall -Werror -O8 -o mkmerge mkmerge.cpp ../maputil.c -lrt
@@ -20,3 +22,6 @@ streamserver: streamserver.cpp streamnw.cpp streamnw.h ../../test/streamserver.h
 
 streamctl: streamctl.cpp streamnw.cpp streamnw.h
 	$(CXX) -std=c++0x -Wall -Werror -O8 -o streamctl streamctl.cpp streamnw.cpp 
+
+clean:
+	rm -f *.a *.o $(TARGETS)

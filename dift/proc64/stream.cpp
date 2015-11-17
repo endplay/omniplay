@@ -26,7 +26,7 @@ using namespace std;
 #define STATS
 
 const u_long MERGE_SIZE  = 0x400000000; // 16GB max
-const u_long OUTPUT_SIZE = 0x100000000; // 4GB max
+const u_long OUTPUT_SIZE = 0x800000000; // 32GB max
 const u_long TOKEN_SIZE =   0x10000000; // 256MB max
 const u_long TS_SIZE =      0x40000000; // 1GB max
 const u_long OUTBUFSIZE =   0x10000000; // 1GB size
@@ -85,7 +85,6 @@ static long ms_diff (struct timeval tv1, struct timeval tv2)
 #define PUT_QVALUE(val,q)						\
     {									\
 	while (can_write == 0) {					\
-	    usleep (100);						\
 	    IDLE;							\
 	    if ((q)->write_index >= (q)->read_index) {		\
 		can_write = TAINTENTRIES - ((q)->write_index - (q)->read_index); \
@@ -128,7 +127,7 @@ static void flush_outrbuf()
     while (bytes_written < size) {
 	long rc = write (outrfd, ((char *) outrbuf)+bytes_written, size-bytes_written);	
 	if (rc <= 0) {
-	    fprintf (stderr, "Canot write to resolved file, rc=%ld\n", rc);
+	    fprintf (stderr, "Canot write to resolved file, rc=%ld, errno %d\n", rc, errno);
 	    exit (rc);
 	}
 	bytes_written += rc;
@@ -148,7 +147,7 @@ taint_t stack[STACK_SIZE];
 static long recv_taint_data (int s, char* buffer, u_long bufsize, uint32_t inputsize, u_long& ndx)
 {
     if (ndx+inputsize > bufsize) {
-	fprintf (stderr, "recv_taint_data: buffer of %lu bytes too small\n", bufsize);
+	fprintf (stderr, "recv_taint_data: buffer of %lu bytes too small, we need %lu\n", bufsize, ndx+inputsize);
 	return -1;
     }
     uint32_t bytes_received = 0;
@@ -214,6 +213,7 @@ read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, ta
 
     rc = bind (c, (struct sockaddr *) &addr, sizeof(addr));
     if (rc < 0) {
+	fprintf (stderr, "in stream, port %d\n", port);
 	fprintf (stderr, "Cannot bind socket, errno=%d\n", errno);
 	return rc;
     }
@@ -325,6 +325,7 @@ static void map_iter (taint_t value, uint32_t output_token, bool& unresolved_val
 	//}
 
 	pset->erase(0);
+
     for (auto iter2 = pset->begin(); iter2 != pset->end(); iter2++) {
 	if (*iter2 < 0xc0000000 && !start_flag) {
 	    if (!unresolved_vals) {
@@ -668,7 +669,51 @@ long stream_epoch (const char* dirname, int port)
 #ifdef STATS
     gettimeofday(&end_tv, NULL);
 
+
     char statsname[256];
+    sprintf (statsname, "%s/machine-readable-stream-stats.csv", dirname);
+    statsfile = fopen (statsname, "w");
+    if (statsfile == NULL) {
+	fprintf (stderr, "Cannot create %s, errno=%d\n", statsname, errno);
+	return -1;
+    }
+    
+    //first print out all of the time info: 
+    fprintf (statsfile,"%ld,%ld,%ld,", 
+	    ms_diff (end_tv, start_tv),
+	    ms_diff (recv_done_tv, start_tv), 
+	    ms_diff (output_done_tv, recv_done_tv));
+
+    if(!finish_flag) {
+	fprintf(statsfile,"%ld,%ld,%ld,",
+		ms_diff (index_created_tv, output_done_tv),
+		ms_diff (address_done_tv, index_created_tv),
+		ms_diff (end_tv, address_done_tv));
+    }
+    else {
+	fprintf(statsfile,"0,0,%ld,", ms_diff (end_tv, output_done_tv));       
+    }
+    fprintf(statsfile,"%lu,", idle/10);
+    fprintf (statsfile, "%ld, %ld, %ld, %ld,", mdatasize, odatasize,idatasize, adatasize);
+    fprintf (statsfile, "%lu, %lu, %lu, %lu,", directs, indirects, values, output_merges);
+    if (!finish_flag) {
+	fprintf (statsfile, "%lu,%lu,%lu,%lu,%lu,%lu,%lu,", 
+		 atokens, passthrus, aresolved, aindirects, avalues, unmodified, merges);
+    }
+    else {
+	fprintf (statsfile, "0,0,0,0,0,0,0,");
+    }
+    if (!start_flag){
+	written = outputq->write_index;
+	fprintf (statsfile, "%lu,", written*sizeof(u_long)); 
+    }
+    else { 
+	fprintf (statsfile, "0,"); 
+    }
+    fprintf (statsfile, "%ld", resolved.size());
+    fclose (statsfile);
+
+
     sprintf (statsname, "%s/stream-stats", dirname);
     statsfile = fopen (statsname, "w");
     if (statsfile == NULL) {
@@ -703,6 +748,8 @@ long stream_epoch (const char* dirname, int port)
 	fprintf (statsfile, "Wrote %lu entries (%lu bytes)\n", written, written*sizeof(u_long)); 
     }
     fprintf (statsfile, "Unique indirects %ld\n", resolved.size());
+    fclose(statsfile);
+
 #endif
 
     return 0;

@@ -54,7 +54,7 @@ long send_file (int s, const char* pathname, const char* filename)
 
     // Send the filename
     strcpy (sendfilename, filename);
-    rc = write (s, sendfilename, sizeof(sendfilename));
+    rc = safe_write (s, sendfilename, sizeof(sendfilename)); //here
     if (rc != sizeof(sendfilename)) {
 	fprintf (stderr, "send_file: cannot write filename, rc=%ld, errno=%d\n", rc, errno);
 	return rc;
@@ -66,12 +66,14 @@ long send_file (int s, const char* pathname, const char* filename)
 	fprintf (stderr, "send_file: cannot stat %s, rc=%ld, errno=%d\n", filename, rc, errno);
 	return rc;
     }
-    rc = write (s, &st, sizeof(st));
+    rc = safe_write (s, &st, sizeof(st));
     if (rc != sizeof(st)) {
 	fprintf (stderr, "send_file: cannot write file %s stats, rc=%ld, errno=%d\n", filename, rc, errno);
 	return rc;
     }
 	
+    fprintf(stderr, "send_file filename %s, size %ld\n",filename, st.st_size);
+
     // Send file data
     u_long bytes_written = 0;
     while (bytes_written < (u_long) st.st_size) {
@@ -93,6 +95,7 @@ long send_file (int s, const char* pathname, const char* filename)
 
     return rc;
 }
+
 
 long fetch_file (int s, const char* dest_dir)
 {

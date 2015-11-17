@@ -56,29 +56,41 @@ int main (int argc, char* argv[])
     long rc;
     int out_start;
     const char* out_dir;
+
+    int dir_start = 2;
 #ifdef OUTPUT_CMP
     struct output_info oi;
 #endif
 
     if (argc < 3) {
-	fprintf (stderr, "format: out2mergecmp.c <mergeout dir> [-d dir] <list of output dirs>\n");
+	fprintf (stderr, "format: out2mergecmp.c <mergeout dir> [-p pid] [-d dir] <list of output dirs>\n");
 	return -1;
     }
+    
+    if (!strcmp(argv[2], "-p")) {
+	dir_start = 4;
+	sprintf (mfile, "%s/mergeout.%s", argv[1], argv[3]);
+	sprintf (dfile, "%s/dataflow.result.%s", argv[1], argv[3]);
 
-    sprintf (mfile, "%s/mergeout", argv[1]);
+    } 
+    else { 
+	sprintf (mfile, "%s/mergeout", argv[1]);
+	sprintf (dfile, "%s/dataflow.result", argv[1]);
+
+    }
+
     rc = map_file (mfile, &mfd, &mdatasize, &mmapsize, &mbuf);
     if (rc < 0) return rc;
-
-    sprintf (dfile, "%s/dataflow.result", argv[1]);
     rc = map_file (dfile, &dfd, &ddatasize, &dmapsize, &dbuf);
     if (rc < 0) return rc;
 
-    if (!strcmp(argv[2], "-d")) {
-        out_dir = argv[3];
-	out_start = 4;
+
+    if (!strcmp(argv[dir_start], "-d")) {
+        out_dir = argv[dir_start+1];
+	out_start = dir_start+2;
     } else {
 	out_dir = "/tmp";
-	out_start = 2;
+	out_start = dir_start;
     }
 
 #ifdef OUTPUT_CMP      
