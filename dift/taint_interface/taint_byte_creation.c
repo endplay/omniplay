@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <regex.h>
+#include <sys/mman.h>
 #include "../list.h"
 #include "taint_creation.h"
 #include "taint_interface.h"
@@ -237,11 +238,14 @@ int filter_byte_range(int syscall, int byteoffset)
     return 0;
 }
 
-#ifdef USE_NW
-#define TOKENBUFSIZE 10000
-static struct token tokenbuf[TOKENBUFSIZE];
+#define TOKENBUFSIZE 0x2000
+static struct token* tokenbuf;
 static u_long tokenindex = 0;
+#ifdef USE_SHMEM
+static u_long token_total_count = 0;
+#endif
 
+#ifdef USE_NW
 void flush_tokenbuf(int s)
 {
     struct taint_data_header hdr;
@@ -273,8 +277,71 @@ void flush_tokenbuf(int s)
 
 static void write_token_to_nw (int s, struct token* ptoken)
 {
+    if (tokenbuf == NULL) {
+	tokenbuf = (struct token *) malloc (TOKENBUFSIZE*sizeof(struct token));
+	if (tokenbuf == NULL) {
+	    fprintf (stderr, "could not malloc token buffer, errno=%d\n", errno);
+	    assert (0);
+	}
+    }
     if (tokenindex == TOKENBUFSIZE) flush_tokenbuf(s);
     tokenbuf[tokenindex++] = *ptoken;
+}
+
+void write_token_finish (int s) 
+{
+    flush_tokenbuf (s);
+}
+
+#endif
+#ifdef USE_SHMEM
+static void flush_tokenbuf(int tokenfd)
+{
+    token_total_count += tokenindex*sizeof(taint_t);
+
+    // Check for overflow
+    if (token_total_count >= MAX_TOKENS_SIZE/sizeof(struct token)) {
+	fprintf (stderr, "Cannot allocate any more token buffer than %ld\n", (u_long) token_total_count);
+	assert (0);
+    }
+
+    // Unmap the current region
+    if (munmap (tokenbuf, TOKENBUFSIZE*sizeof(struct token)) < 0) {
+	fprintf (stderr, "could not munmap token buffer, errno=%d\n", errno);
+	assert (0);
+    }
+
+    // Map in the next region
+    tokenbuf = (struct token *) mmap (0, TOKENBUFSIZE*sizeof(struct token), PROT_READ|PROT_WRITE, MAP_SHARED, 
+				      tokenfd, token_total_count*sizeof(taint_t));
+    if (tokenbuf == MAP_FAILED) {
+	fprintf (stderr, "could not map token buffer, errno=%d\n", errno);
+	assert (0);
+    }
+    tokenindex = 0;
+}
+
+static void write_token_to_shmem (int tokenfd, struct token* ptoken)
+{
+    if (tokenbuf == NULL) {
+	tokenbuf = (struct token *) mmap (0, TOKENBUFSIZE*sizeof(struct token), PROT_READ|PROT_WRITE, MAP_SHARED, tokenfd, 0);
+	if (tokenbuf == MAP_FAILED) {
+	    fprintf (stderr, "could not map token buffer, errno=%d\n", errno);
+	    assert (0);
+	}
+    }
+
+    if (tokenindex == TOKENBUFSIZE) flush_tokenbuf(tokenfd);
+    tokenbuf[tokenindex++] = *ptoken;
+}
+
+void write_token_finish (int tokenfd) 
+{
+    int rc = ftruncate (tokenfd, (token_total_count+tokenindex)*sizeof(struct token));
+    if (rc < 0) {
+	fprintf (stderr, "Unable to truncate token shmem, rc=%d, errno=%d\n", rc, errno);
+    }
+    close (tokenfd);
 }
 #endif
 
@@ -287,7 +354,11 @@ void write_tokens_info(int outfd, taint_t start,
 		   tci->offset, tci->rg_id, tci->record_pid, tci->fileno);
 #ifdef USE_NW
     write_token_to_nw(outfd, &tok);
-#else 
+#endif
+#ifdef USE_SHMEM
+    write_token_to_shmem(outfd, &tok);
+#endif
+#ifdef USE_FILE
     write_token_to_file(outfd, &tok);
 #endif
 }
@@ -460,6 +531,41 @@ int filter_outputs (struct taint_creation_info* tci)
     return 0;
 }
 
+#ifdef USE_SHMEM
+#define OUTBUFSIZE 0x1000000
+static char* outputbuf = NULL;
+static u_long outputindex = 0;
+static u_long output_total_count = 0;
+#endif
+
+static inline void fill_outbuf (char* pout, struct taint_creation_info* tci, void* buf, int size)
+{
+    memcpy (pout, tci, sizeof(struct taint_creation_info));
+    pout += sizeof(struct taint_creation_info);
+    memcpy (pout, &buf, sizeof(u_long));
+    pout += sizeof(u_long);
+    memcpy (pout, &size, sizeof(int));
+    pout += sizeof(int);
+
+    for (int i = 0; i < size; i++) {
+	taint_t* mem_taints;
+	u_long addr = ((u_long) buf) + i;
+	taint_t value;
+	
+	memcpy (pout, &addr, sizeof(u_long));
+	pout += sizeof(u_long);
+	
+	mem_taints = get_mem_taints(addr, 1);
+	if (mem_taints) {
+	    value = mem_taints[0];
+	} else {
+	    value = 0;
+	}
+	memcpy (pout, &value, sizeof(taint_t));
+	pout += sizeof(taint_t);
+    }
+}
+
 void output_buffer_result (void* buf, int size,
 			   struct taint_creation_info* tci,
 			   int outfd)
@@ -473,10 +579,7 @@ void output_buffer_result (void* buf, int size,
     if (!filter_outputs(tci)) {
 #ifdef USE_NW
 	struct taint_data_header hdr;
-	char* outbuf, *pout;
-	long rc;
-	u_long bytes_written = 0;
-	int i;
+	char* outbuf;
 
 	hdr.type = TAINT_DATA_OUTPUT;
 	hdr.datasize = sizeof(struct taint_creation_info) + sizeof(u_long) + sizeof(int) +
@@ -486,38 +589,14 @@ void output_buffer_result (void* buf, int size,
 	    fprintf(stderr,"outbut is NULL, cannot malloc size %d, errno %d\n",hdr.datasize,errno);
 	}
 	assert (outbuf);
-	pout = outbuf;
-	memcpy (pout, tci, sizeof(struct taint_creation_info));
-	pout += sizeof(struct taint_creation_info);
-	memcpy (pout, &buf, sizeof(u_long));
-	pout += sizeof(u_long);
-	memcpy (pout, &size, sizeof(int));
-	pout += sizeof(int);
-
-	for (i = 0; i < size; i++) {
-	    taint_t* mem_taints;
-	    u_long addr = ((u_long) buf) + i;
-	    taint_t value;
-
-	    memcpy (pout, &addr, sizeof(u_long));
-	    pout += sizeof(u_long);
-
-	    mem_taints = get_mem_taints(addr, 1);
-	    if (mem_taints) {
-		value = mem_taints[0];
-	    } else {
-		value = 0;
-	    }
-	    memcpy (pout, &value, sizeof(taint_t));
-	    pout += sizeof(taint_t);
-	}
-	
-	rc = write (outfd, &hdr, sizeof(hdr));
+	fill_outbuf (outbuf, tci, buf, size);
+	long rc = write (outfd, &hdr, sizeof(hdr));
 	if (rc != sizeof(hdr)) {
 	    fprintf (stderr, "Cannot write nw header for output data, rc=%ld, errno=%d\n", rc, errno);
 	    assert (0);
 	}
-	total_output_written += rc;
+
+	u_long bytes_written = 0;
 	while (bytes_written < hdr.datasize) {
 	    rc = write (outfd, (char *) outbuf+bytes_written, hdr.datasize-bytes_written);	
 	    if (rc <= 0) {
@@ -530,13 +609,72 @@ void output_buffer_result (void* buf, int size,
 	}
 	
 	free(outbuf);
+#endif
+#ifdef USE_SHMEM
+	u_long datasize = sizeof(struct taint_creation_info) + sizeof(u_long) + sizeof(int) + size * (sizeof(u_long) + sizeof(taint_t));
 
-#else
+	if (outputbuf == NULL) {
+	    outputbuf = (char *) mmap (0, OUTBUFSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, outfd, 0);
+	    if (outputbuf == MAP_FAILED) {
+		fprintf (stderr, "could not map output buffer, errno=%d\n", errno);
+		assert (0);
+	    }
+	}
+	// Check for overflow
+	if (output_total_count+datasize >= MAX_OUT_SIZE) {
+	    fprintf (stderr, "Cannot allocate any more output buffer than %ld\n", (u_long) output_total_count+datasize);
+	    assert (0);
+	}
+	if (outputindex+datasize >= OUTBUFSIZE) {
+	    // Fill in temporary buffer
+	    char* outbuf = (char *) malloc(datasize);
+	    assert (outbuf);
+	    fill_outbuf (outbuf, tci, buf, size);
+	    
+	    // Copy first n bytes to the previous shmem
+	    memcpy (outputbuf+outputindex, outbuf, OUTBUFSIZE-outputindex);
+	    
+	    // Unmap the current region
+	    if (munmap (outputbuf, OUTBUFSIZE) < 0) {
+		fprintf (stderr, "could not munmap dump buffer, errno=%d\n", errno);
+		assert (0);
+	    }
+	
+	    // Map in the next region
+	    outputbuf = (char *) mmap (0, OUTBUFSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, 
+				       outfd, output_total_count+OUTBUFSIZE-outputindex);
+	    if (outputbuf == MAP_FAILED) {
+		fprintf (stderr, "could not map output buffer at offset %lx, errno=%d\n", output_total_count+OUTBUFSIZE-outputindex, errno);
+		assert (0);
+	    }
+	    
+	    // Now copy last bytes to new shmem
+	    memcpy (outputbuf, outbuf + (OUTBUFSIZE-outputindex), datasize - (OUTBUFSIZE-outputindex));
+	    outputindex = datasize - (OUTBUFSIZE-outputindex);
+	} else {
+	    fill_outbuf (outputbuf+outputindex, tci, buf, size);
+	    outputindex += datasize;
+	}
+	output_total_count += datasize;
+	free(outbuf);
+#endif
+#ifdef USE_FILE
         write_output_header(outfd, tci, buf, size); 
         write_output_taints(outfd, buf, size);
 #endif
     }
 }
+
+#ifdef USE_SHMEM
+void output_finish (int outfd)
+{
+    int rc = ftruncate (outfd, output_total_count);
+    if (rc < 0) {
+	fprintf (stderr, "Unable to truncate output shmem, rc=%d, errno=%d\n", rc, errno);
+    }
+    close (outfd);
+}
+#endif
 
 void output_xcoords (int outfd, int syscall_cnt, 
                         int dest_x, int dest_y, u_long mem_loc)

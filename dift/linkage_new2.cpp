@@ -38,7 +38,7 @@ using namespace std;
 #include "splice.h"
 #include "taint_nw.h"
 
-#ifdef USE_NW
+#if defined(USE_NW) || defined(USE_SHMEM)
 int s = -1;
 #endif
 
@@ -55,9 +55,11 @@ int s = -1;
 // #define ALT_PATH_EXPLORATION         // indirect control flow
 // #define CONFAID
 
+#define NO_FILE_OUTPUT
 //#define LOGGING_ON
 #define LOG_F log_f
-#define ERROR_PRINT fprintf
+//#define ERROR_PRINT fprintf
+#define ERROR_PRINT(x,...);
 #ifdef LOGGING_ON
 /*
 #define LOG_PRINT(args...) \
@@ -112,13 +114,14 @@ int first_thread = 1;
 int child = 0;
 char** main_prev_argv = 0;
 char group_directory[256];
+#ifndef NO_FILE_OUTPUT
 FILE* log_f = NULL; // For debugging
+#endif
 unsigned long global_syscall_cnt = 0;
 unsigned long open_file_cnt = FILENO_START; // 0 is stdin, 1 is exec args, 2 is env
 struct xray_monitor* open_fds = NULL; // List of open fds
 struct xray_monitor* open_socks = NULL; // list of open sockets
 struct xray_monitor* open_x_fds = NULL; // list of open x sockets
-FILE* filenames_f = NULL; // Mapping of all opened filenames
 FILE* filter_f = NULL;
 int tokens_fd = -1;
 int outfd = -1;
@@ -146,6 +149,9 @@ u_long* ppthread_log_clock = NULL;
 const char* fork_flags = NULL;
 int fork_flags_index = 0;
 
+#ifdef OUTPUT_FILENAMES
+FILE* filenames_f = NULL; // Mapping of all opened filenames
+#endif
 
 
 struct slab_alloc open_info_alloc;
@@ -246,7 +252,7 @@ static void copy_file(int src, int dest) {
 	fprintf(stderr, "There was an error reading file (int) rc %d, errno %d\n",read_bytes,errno);
     }
 }
-
+#ifdef OUTPUT_FILENAME
 static void copy_file(FILE* src, FILE* dest) { 
     char buff[COPY_BUFFER_SIZE]; 
     int read_chars,written_chars, rc;
@@ -269,72 +275,90 @@ static void copy_file(FILE* src, FILE* dest) {
     }
 }
 #endif
+#endif
 
 static int terminated = 0;
 extern int dump_mem_taints (int fd);
 extern int dump_reg_taints (int fd, taint_t* pregs);
 extern int dump_mem_taints_start (int fd);
 extern int dump_reg_taints_start (int fd, taint_t* pregs);
+extern void write_token_finish (int fd);
+extern void output_finish (int fd);
 
 static void dift_done ()
 {
-    struct timeval tv;
-
     if (terminated) return;  // Only do this once
     terminated = 1;
 
-#ifndef USE_NW
+    //fprintf (stderr, "starting dift_done\n");
+
+#ifdef USE_FILE
     char taint_structures_file[256];
     snprintf(taint_structures_file, 256, "%s/taint_structures", group_directory);
     int taint_fd = open(taint_structures_file, O_WRONLY | O_CREAT | O_TRUNC | O_LARGEFILE, 0644);
     assert(taint_fd > 0);
 #endif
+#ifdef USE_SHMEM
+    char taint_structures_file[256];
+    snprintf(taint_structures_file, 256, "/taint_structures_shm%s", group_directory);
+    for (u_int i = 1; i < strlen(taint_structures_file); i++) {
+	if (taint_structures_file[i] == '/') taint_structures_file[i] = '.';
+    }
+    int taint_fd = shm_open(taint_structures_file, O_CREAT | O_TRUNC | O_RDWR, 0644);
+    if (taint_fd < 0) {
+	fprintf(stderr, "could not open taint shmem %s, errno %d\n", taint_structures_file, errno);
+	assert(0);
+    }
+    if (all_output) {
+	int rc = ftruncate (taint_fd, MAX_DUMP_SIZE);
+	if (rc < 0) {
+	    fprintf(stderr, "could not truncate shmem %s, errno %d\n", taint_structures_file, errno);
+	    assert(0);
+	}
+    }
+#endif
+#ifdef USE_NW
+    int taint_fd = s;
+#endif
     
     if (all_output) {
-	gettimeofday(&tv, NULL);
-	printf("dump start dir %s %lu sec %lu usec\n", group_directory, tv.tv_sec, tv.tv_usec);
-
 	if (splice_output) {
 	    // Dump out the active registers in order of the record thread id
 	    for (map<pid_t,struct thread_data*>::iterator iter = active_threads.begin(); 
 		 iter != active_threads.end(); iter++) {
-	      //printf ("dumping record pid %d regs\n", iter->second->record_pid);
-#ifdef USE_NW
-		dump_reg_taints(s, iter->second->shadow_reg_table);
-#else
+		//printf ("dumping record pid %d regs\n", iter->second->record_pid);
 		dump_reg_taints(taint_fd, iter->second->shadow_reg_table);
-#endif
 	    }
-#ifdef USE_NW
-	    dump_mem_taints(s);
-#else 
 	    dump_mem_taints(taint_fd);
-#endif
 	} else {
 	    // Dump out the active registers in order of the record thread id
 	    for (map<pid_t,struct thread_data*>::iterator iter = active_threads.begin(); 
 		 iter != active_threads.end(); iter++) {
-	      //printf ("dumping record pid %d regs\n", iter->second->record_pid);
-#ifdef USE_NW
-		dump_reg_taints_start(s, iter->second->shadow_reg_table);
-#else
 		dump_reg_taints_start(taint_fd, iter->second->shadow_reg_table);
-#endif
 	    }
-#ifdef USE_NW
-	    dump_mem_taints_start(s);
-#else 
 	    dump_mem_taints_start(taint_fd);
-#endif
 	}
     }
-#ifndef USE_NW
-    close(taint_fd);
+
+    // Finish up output of other files
+#ifdef USE_NW
+    write_token_finish (s);
 #endif
-    fclose (log_f);
+#ifdef USE_SHMEM
+    write_token_finish (tokens_fd);
+    output_finish (outfd);
+#endif
 
     finish_and_print_taint_stats(stdout);
     printf("DIFT done at %ld\n", global_syscall_cnt);
+
+#ifdef USE_SHMEM
+    // Send "done" message to aggregator
+    int rc = write (s, &group_directory, sizeof(group_directory));
+    if (rc != sizeof(group_directory)) {
+	fprintf (stderr, "write of directory failed, rc=%d, errno=%d\n", rc, errno);
+    }
+#endif
 }
 
 ADDRINT find_static_address(ADDRINT ip)
@@ -448,12 +472,12 @@ char* get_file_ext(char* filename){
 static inline void sys_open_stop(int rc)
 {
     if (rc > 0) {
-        struct open_info* oi = (struct open_info *) current_thread->save_syscall_info;
         monitor_add_fd(open_fds, rc, 0, current_thread->save_syscall_info);
-
 	SYSCALL_DEBUG(stderr, "open: added fd %d\n", rc);
-
+#ifdef OUTPUT_FILENAMES
+        struct open_info* oi = (struct open_info *) current_thread->save_syscall_info;
         write_filename_mapping(filenames_f, oi->fileno, oi->name);
+#endif
 
 
 
@@ -908,7 +932,9 @@ static void sys_connect_stop(int rc)
         si->fileno = open_file_cnt;
         open_file_cnt++;
         create_connect_info_name(connect_info_name, si->domain, ci);
+#ifdef OUTPUT_FILENAMES
         write_filename_mapping(filenames_f, si->fileno, connect_info_name);
+#endif
 
         current_thread->save_syscall_info = NULL; // Socket_info owns this now
     }
@@ -1255,7 +1281,7 @@ void instrument_syscall(ADDRINT syscall_num,
 	check_clock_before_syscall (dev_fd, (int) syscall_num);
     }
     if (sysnum == 252) {
-	//ARQUINN: I'm not certain this will work for my stuff...? 
+	//ARQUINN: I'm not certain this will work for my stuff...? here
 	if((!stop_pid || stop_pid == get_record_pid())) {
 	    printf ("pid %d, rec_pid %d: calling group exit - cleanup time\n",  PIN_GetPid() , get_record_pid());	
 	    dift_done();
@@ -1266,7 +1292,6 @@ void instrument_syscall(ADDRINT syscall_num,
 
 	}
     }
-
     if ((!stop_pid || stop_pid == get_record_pid()) &&
 	(segment_length && *ppthread_log_clock >= segment_length)) {
 	// Done with this replay - do exit stuff now because we may not get clean unwind
@@ -2737,11 +2762,6 @@ void instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #endif
                 break;
             case 16:
-                fprintf (log_f, "%#x: %#x %s\n",
-                        INS_Address(ins),
-                        find_static_address(INS_Address(ins)),
-                        (IMG_Valid(IMG_FindByAddress(INS_Address(ins))) ?
-                         IMG_Name(IMG_FindByAddress(INS_Address(ins))).c_str() : "--"));
 #ifdef TRACE_TAINT_OPS
                 INS_InsertCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
@@ -7343,11 +7363,6 @@ void pred_instrument_taint_reg2mem(INS ins, REG reg, int extend)
 #endif
                 break;
             case 16:
-                fprintf (log_f, "%#x: %#x %s\n",
-                        INS_Address(ins),
-                        find_static_address(INS_Address(ins)),
-                        (IMG_Valid(IMG_FindByAddress(INS_Address(ins))) ?
-                         IMG_Name(IMG_FindByAddress(INS_Address(ins))).c_str() : "--"));
 #ifdef TRACE_TAINT_OPS
                 INS_InsertPredicatedCall(ins, IPOINT_BEFORE,
                         AFUNPTR(trace_taint_op_enter),
@@ -11512,9 +11527,6 @@ void instrument_mov (INS ins)
     REG dstreg = REG_INVALID();
     int treg = (int)REG_INVALID();
 
-    INSTRUMENT_PRINT (log_f, "%#x starting instrument_mov\n", INS_Address(ins));
-    fflush(log_f);
-
     if(INS_IsMemoryRead(ins)) {
         ismemread = 1;
         reg = INS_OperandReg(ins, 0);
@@ -11617,15 +11629,11 @@ void instrument_mov (INS ins)
 #endif // COPY_ONLY
         } else {
             //move immediate to memory location
-            INSTRUMENT_PRINT(log_f, "instrument mov is mem write: with immval\n"); 
-            fflush(log_f);
             instrument_taint_immval2mem(ins);
         }
     } else if (!SPECIAL_REG(dstreg)) {
         if(immval) {
             treg = translate_reg((int)dstreg);
-            INSTRUMENT_PRINT(log_f, "instrument mov is immval into register, reg: %d (treg: %d)\n", dstreg, treg); 
-            fflush(log_f);
             //mov immediate value into register
             switch(REG_Size(dstreg)) {
                 case 1:
@@ -11684,8 +11692,6 @@ void instrument_mov (INS ins)
                 fprintf(stderr, "%#x instrument mov is src reg: %d into dst reg: %d\n", INS_Address(ins), reg, dstreg); 
             }
             assert(REG_Size(reg) == REG_Size(dstreg));
-            INSTRUMENT_PRINT(log_f, "%#x instrument mov is src reg: %d into dst reg: %d\n", INS_Address(ins), reg, dstreg); 
-            fflush(log_f);
             instrument_taint_reg2reg(ins, dstreg, reg, 0);
         }
     }
@@ -11804,8 +11810,6 @@ void instrument_cmov(INS ins)
     REG dstreg = REG_INVALID();
     int treg = (int)REG_INVALID();
 
-    INSTRUMENT_PRINT (log_f, "%#x starting instrument_cmov\n", INS_Address(ins));
-    fflush(log_f);
     assert(INS_IsPredicated(ins));
 
     if(INS_IsMemoryRead(ins)) {
@@ -11901,15 +11905,11 @@ void instrument_cmov(INS ins)
 #endif // ONLY_COPY
         } else {
             //move immediate to memory location
-            INSTRUMENT_PRINT(log_f, "instrument mov is mem write: with immval\n"); 
-            fflush(log_f);
             pred_instrument_taint_immval2mem(ins);
         }
     } else if (!SPECIAL_REG(dstreg)) {
         if(immval) {
             treg = translate_reg((int)dstreg);
-            INSTRUMENT_PRINT(log_f, "instrument mov is immval into register, reg: %d (treg: %d)\n", dstreg, treg); 
-            fflush(log_f);
             //mov immediate value into register
             switch(addrsize) {
                 case 1:
@@ -13432,6 +13432,18 @@ void instruction_instrumentation(INS ins, void *v)
     UINT32 category;
     int instrumented = 0;
 
+    if(INS_IsSyscall(ins)) {
+        INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(instrument_syscall),
+                IARG_SYSCALL_NUMBER, 
+                IARG_SYSARG_VALUE, 0, 
+                IARG_SYSARG_VALUE, 1,
+                IARG_SYSARG_VALUE, 2,
+                IARG_SYSARG_VALUE, 3,
+                IARG_SYSARG_VALUE, 4,
+                IARG_SYSARG_VALUE, 5,
+                IARG_END);
+    }
+
     opcode = INS_Opcode(ins);
     category = INS_Category(ins);
 
@@ -14053,9 +14065,11 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
 {
     PRINTX(stderr, "%d,%d:AfterForkInChild\n", PIN_GetPid(),get_record_pid());
 
+#ifndef NO_FILE_OUTPUT
     fclose(log_f); 
     log_f = NULL;
     init_logs();
+#endif
 
     //for now there is no change for not using the network
 #ifdef USE_NW 
@@ -14093,10 +14107,13 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
      * are there any log files and things that need to be cleaned? 
      */
     int record_pid = get_record_pid();
-    FILE* filenames_f_old = filenames_f; 
     int tokens_fd_old = tokens_fd;
 
+
     //open new filenames
+
+#ifdef OUTPUT_FILENAME
+    FILE* filenames_f_old = filenames_f; 
     char filename_mapping[256];
     snprintf(filename_mapping, 256, "%s/filenames.%d", group_directory, record_pid);
     filenames_f = fopen(filename_mapping, "w");
@@ -14105,6 +14122,9 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
       exit(-1);
     }
     init_filename_mapping(filenames_f);
+    copy_file(filenames_f_old, filenames_f); 
+    fclose(filenames_f_old);
+#endif
 
     char name[256];
     snprintf(name, 256, "%s/tokens.%d", group_directory, record_pid);
@@ -14113,6 +14133,8 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
       fprintf(stderr, "Could not open tokens file %s\n", name);
       exit(-1);
     }
+    copy_file(tokens_fd_old, tokens_fd);    
+    close(tokens_fd_old);
 
     char output_file_name[256];
     snprintf(output_file_name, 256, "%s/dataflow.result.%d", group_directory, record_pid);
@@ -14125,11 +14147,6 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
     //copy the files and close the old ones 
     PRINTX(stderr, "\t- record_pid %d\n", record_pid);
 
-    copy_file(tokens_fd_old, tokens_fd); 
-    copy_file(filenames_f_old, filenames_f); 
-    
-    close(tokens_fd_old);
-    fclose(filenames_f_old);
 #endif
 
     current_thread->record_pid = get_record_pid();
@@ -14222,6 +14239,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
             ptdata->syscall_cnt = 1;
         }
 
+#ifdef OUTPUT_FILENAME
         if (!filenames_f) {
             // setup initial maps
             char filename_mapping[256];
@@ -14233,16 +14251,34 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
             }
             init_filename_mapping(filenames_f);
         }
-
+#endif
         if (tokens_fd == -1) {
 #ifdef USE_NW
 	    tokens_fd = s;
-#else
+#endif
+#ifdef USE_SHMEM
+	    char token_file[256];
+	    snprintf(token_file, 256, "/tokens_shm%s", group_directory);
+	    for (u_int i = 1; i < strlen(token_file); i++) {
+		if (token_file[i] == '/') token_file[i] = '.';
+	    }
+	    tokens_fd = shm_open(token_file, O_CREAT | O_TRUNC | O_RDWR, 0644);
+	    if (tokens_fd < 0) {
+		fprintf(stderr, "could not open tokens shmem %s, errno %d\n", token_file, errno);
+		assert(0);
+	    }
+	    int rc = ftruncate (tokens_fd, MAX_TOKENS_SIZE);
+	    if (rc < 0) {
+		fprintf(stderr, "could not truncate tokens %s, errno %d\n", token_file, errno);
+		assert(0);
+	    }
+#endif
+#ifdef USE_FILE
             char name[256];
             snprintf(name, 256, "%s/tokens", group_directory);
 	    //ARQUINN: changed so that we can read this file if forking
             tokens_fd = open(name, O_RDWR | O_CREAT | O_TRUNC, 0644);
-            if (tokens_fd == -1) {
+            if (tokens_fd < 0) {
                 fprintf(stderr, "Could not open tokens file %s\n", name);
                 exit(-1);
             }
@@ -14251,7 +14287,25 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
         if (outfd == -1) {
 #ifdef USE_NW
 	    outfd = s;
-#else
+#endif
+#ifdef USE_SHMEM
+	    char output_file[256];
+	    snprintf(output_file, 256, "/dataflow.results_shm%s", group_directory);
+	    for (u_int i = 1; i < strlen(output_file); i++) {
+		if (output_file[i] == '/') output_file[i] = '.';
+	    }
+	    outfd = shm_open(output_file, O_CREAT | O_TRUNC | O_RDWR, 0644);
+	    if (outfd < 0) {
+		fprintf(stderr, "could not open tokens shmem %s, errno %d\n", output_file, errno);
+		assert(0);
+	    }
+	    int rc = ftruncate (outfd, MAX_OUT_SIZE);
+	    if (rc < 0) {
+		fprintf(stderr, "could not truncate tokens %s, errno %d\n", output_file, errno);
+		assert(0);
+	    }
+#endif
+#ifdef USE_FILE
             char output_file_name[256];
             snprintf(output_file_name, 256, "%s/dataflow.result", group_directory);
             outfd = open(output_file_name, O_CREAT | O_TRUNC | O_LARGEFILE | O_RDWR, 0644);
@@ -14341,6 +14395,7 @@ void thread_fini (THREADID threadid, const CONTEXT* ctxt, INT32 code, VOID* v)
     active_threads.erase(tdata->record_pid);
 }
 
+#ifndef NO_FILE_OUTPUT
 void init_logs(void)
 {
     char log_name[256];
@@ -14365,6 +14420,7 @@ void init_logs(void)
     }
 #endif
 }
+#endif
 
 void fini(INT32 code, void* v)
 {
@@ -14416,7 +14472,8 @@ int main(int argc, char** argv)
     global_syscall_cnt = 0;
 
     /* Create a directory for logs etc for this replay group*/
-    snprintf(group_directory, 256, "/tmp/%d", PIN_GetPid());  
+    snprintf(group_directory, 256, "/tmp/%d", PIN_GetPid());
+#ifndef NO_FILE_OUTPUT
     if (mkdir(group_directory, 0755)) {
         if (errno == EEXIST) {
             fprintf(stderr, "directory already exists, using it: %s\n", group_directory);
@@ -14425,6 +14482,7 @@ int main(int argc, char** argv)
             exit(-1);
         }
     }
+#endif
 
     // Read in command line args
     trace_x = KnobTraceX.Value();
@@ -14441,8 +14499,8 @@ int main(int argc, char** argv)
 	num_merge_entries = KnobMergeEntries.Value();
     }
 
-#ifdef USE_NW
-    // Open a connection to the 64-bit consumer porocess
+#if defined(USE_NW) || defined(USE_SHMEM)
+    // Open a connection to the 64-bit consumer process
     const char* hostname = KnobNWHostname.Value().c_str();
     int port = KnobNWPort.Value();
     
@@ -14463,16 +14521,25 @@ int main(int argc, char** argv)
     addr.sin_port = htons(port);
     memcpy (&addr.sin_addr, hp->h_addr, hp->h_length);
 
-    rc = connect (s, (struct sockaddr *) &addr, sizeof(addr));
+    int tries = 0;
+    do {
+	rc = connect (s, (struct sockaddr *) &addr, sizeof(addr));
+	if (rc < 0) {
+	    tries++;
+	    usleep(1000);
+	}
+    } while (rc < 0 && tries <=10);
 
     if (rc < 0) {
 	fprintf (stderr, "Cannot connect to socket (host %s, port %d), errno=%d\n", hostname, port, errno);
 	return -1;
     }
+
 #endif
 
-
+#ifndef NO_FILE_OUTPUT
     init_logs();
+#endif
     init_taint_structures(group_directory);
     if (!open_fds) {
         open_fds = new_xray_monitor(sizeof(struct open_info));
@@ -14542,7 +14609,7 @@ int main(int argc, char** argv)
 
     main_prev_argv = argv;
 
-    INS_AddInstrumentFunction(track_inst, 0); // Fixme - this should be in the routing below I would think
+    //INS_AddInstrumentFunction(track_inst, 0); // Fixme - this should be in the routing below I would think
     INS_AddInstrumentFunction(instruction_instrumentation, 0);
 
     // Register a notification handler that is called when the application
@@ -14563,13 +14630,6 @@ int main(int argc, char** argv)
     PIN_AddSyscallExitFunction(instrument_syscall_ret, 0);
 #ifdef HEARTBLEED
     fprintf(stderr, "heartbleed defined\n");
-#endif
-#if 0
-    {
-        struct timeval tv;
-        gettimeofday(&tv, NULL);
-        fprintf(stderr, "time start %lu sec %lu usec\n", tv.tv_sec, tv.tv_usec);
-    }
 #endif
 
     PIN_StartProgram();

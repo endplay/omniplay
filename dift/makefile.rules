@@ -170,10 +170,10 @@ $(OBJDIR)taint_forward_debugger: $(TAINTS_INTERFACE)/taint_forward_debugger.c
 $(OBJDIR)xray_slab_alloc$(OBJ_SUFFIX): xray_slab_alloc.h xray_slab_alloc.c
 	$(APP_CC) -Wall -Werror -O2 -c -o $(OBJDIR)xray_slab_alloc$(OBJ_SUFFIX) xray_slab_alloc.c
 
-$(OBJDIR)taint_byte_creation$(OBJ_SUFFIX): $(TAINTS_INTERFACE)/taint_byte_creation.c $(TAINTS_INTERFACE)/taint_creation.h
+$(OBJDIR)taint_byte_creation$(OBJ_SUFFIX): $(TAINTS_INTERFACE)/taint_byte_creation.c $(TAINTS_INTERFACE)/taint_creation.h taint_nw.h
 	$(CXX) $(TOOL_CXXFLAGS) -Wall -Werror -O2 -c -o $(TAINTS_OBJ)taint_byte_creation$(OBJ_SUFFIX) $(GLIB_INCLUDES) $(TAINTS_INTERFACE)/taint_byte_creation.c
 
-$(OBJDIR)taint_full_interface$(OBJ_SUFFIX): $(TAINTS_INTERFACE)/taint_full_interface.c $(TAINTS_INTERFACE)/taint_interface.h
+$(OBJDIR)taint_full_interface$(OBJ_SUFFIX): $(TAINTS_INTERFACE)/taint_full_interface.c $(TAINTS_INTERFACE)/taint_interface.h taint_nw.h
 	$(CXX) $(TOOL_CXXFLAGS) -Wall -Werror -O2 -c -o $(TAINTS_OBJ)taint_full_interface$(OBJ_SUFFIX) $(GLIB_INCLUDES) $(TAINTS_INTERFACE)/taint_full_interface.c
 
 $(OBJDIR)taint_forward_creation$(OBJ_SUFFIX): $(TAINTS_INTERFACE)/taint_forward_creation.c $(TAINTS_INTERFACE)/taint_creation.h
@@ -188,7 +188,7 @@ $(OBJDIR)taint_debug$(OBJ_SUFFIX): $(TAINTS_INTERFACE)/taint_interface.h $(TAINT
 $(OBJDIR)taint_forward_debug$(OBJ_SUFFIX): $(TAINTS_INTERFACE)/taint_interface.h $(TAINTS_INTERFACE)/taint_debug.h $(TAINTS_INTERFACE)/taint_forward_debug.c
 	$(CXX) $(TOOL_CXXFLAGS) -Wall -Werror -O2 -c -o $(TAINTS_OBJ)taint_forward_debug$(OBJ_SUFFIX) $(TAINTS_INTERFACE)/taint_forward_debug.c
 
-$(OBJDIR)linkage_new2$(OBJ_SUFFIX): linkage_new2.cpp xray_slab_alloc.c xray_slab_alloc.h $(TAINTS_INTERFACE)/taint_interface.h $(TAINTS_INTERFACE)/taint_full_interface.c $(TAINTS_INTERFACE)/taint_byte_creation.c 
+$(OBJDIR)linkage_new2$(OBJ_SUFFIX): linkage_new2.cpp xray_slab_alloc.c xray_slab_alloc.h $(TAINTS_INTERFACE)/taint_interface.h $(TAINTS_INTERFACE)/taint_full_interface.c $(TAINTS_INTERFACE)/taint_byte_creation.c taint_nw.h
 	$(CXX) $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
 
 $(OBJDIR)linkage_new2$(PINTOOL_SUFFIX): $(OBJDIR)linkage_new2$(OBJ_SUFFIX)

@@ -650,8 +650,7 @@ void* do_fullsend (void* arg)
 	    fprintf (stderr, "Cannot create %s, errno=%d\n", statsname, errno);
 	    return NULL;
 	}
-	fprintf (statsfile,"%lu,%ld,%ld", 
-		 i, 
+	fprintf (statsfile,"%start time ld\nDift time %ld", 
 		 ms_diff(ectl[i].tv_start_dift, ectl[i].tv_start),
 		 ms_diff(ectl[i].tv_done, ectl[i].tv_start_dift)); 
 	fclose(statsfile);
