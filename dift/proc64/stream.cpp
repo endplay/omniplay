@@ -90,7 +90,15 @@ static long ms_diff (struct timeval tv1, struct timeval tv2)
 #endif
 
 #ifdef STATS
-#define IDLE usleep (100); idle++;  
+#define IDLE					\
+    {						\
+	struct timeval tv1, tv2;		\
+	gettimeofday(&tv1, NULL);		\
+	usleep (100);				\
+	gettimeofday(&tv2, NULL);		\
+	idle += tv2.tv_usec - tv1.tv_usec;	\
+	idle += (tv2.tv_sec - tv1.tv_sec)*1000000;	\
+    }
 #else
 #define IDLE usleep (100);
 #endif
@@ -98,8 +106,8 @@ static long ms_diff (struct timeval tv1, struct timeval tv2)
 #define PUT_QVALUE(val,q)						\
     {									\
 	while (can_write == 0) {					\
-	    IDLE;							\
-	    if ((q)->write_index >= (q)->read_index) {		\
+	    IDLE							\
+	    if ((q)->write_index >= (q)->read_index) {			\
 		can_write = TAINTENTRIES - ((q)->write_index - (q)->read_index); \
 	    } else {							\
 		can_write = (q)->read_index - (q)->write_index; \
@@ -116,7 +124,7 @@ static long ms_diff (struct timeval tv1, struct timeval tv2)
 #define GET_QVALUE(val,q)						\
     {									\
 	while (can_read == 0) {						\
-	    IDLE;							\
+	    IDLE							\
 	    if ((q)->read_index > (q)->write_index) {		\
 		can_read = TAINTENTRIES - ((q)->read_index - (q)->write_index); \
 	    } else {							\
@@ -823,7 +831,7 @@ long stream_epoch (const char* dirname, int port)
     } else {
 	fprintf (statsfile, "Finish time:             %6ld ms\n", ms_diff (end_tv, output_done_tv));
     }
-    fprintf (statsfile, "Idle                     %6lu ms\n", idle/10);
+    fprintf (statsfile, "Idle                     %6lu ms\n", idle/1000);
     fprintf (statsfile, "\n");
     fprintf (statsfile, "Received %ld bytes of merge data\n", mdatasize);
     fprintf (statsfile, "Received %ld bytes of output data\n", odatasize);
