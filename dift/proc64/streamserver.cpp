@@ -480,13 +480,13 @@ void do_stream (int s, struct epoch_hdr& ehdr)
     if (ehdr.flags&SEND_RESULTS) {
 	for (u_long i = 0; i < epochs; i++) {
 	    char pathname[PATHLEN];
-	    sprintf (pathname, "/tmp/%d/merge-addrs", ectl[i].cpid);
+	    sprintf (pathname, "/tmp/%ld/merge-addrs", i);
 	    send_file (s, pathname, "merge-addrs");
-	    sprintf (pathname, "/tmp/%d/merge-outputs-resolved", ectl[i].cpid);
+	    sprintf (pathname, "/tmp/%ld/merge-outputs-resolved", i);
 	    send_file (s, pathname, "merge-outputs-resolved");
-	    sprintf (pathname, "/tmp/%d/tokens", ectl[i].cpid);
+	    sprintf (pathname, "/tmp/%ld/tokens", i);
 	    send_file (s, pathname, "tokens");
-	    sprintf (pathname, "/tmp/%d/dataflow.results", ectl[i].cpid);
+	    sprintf (pathname, "/tmp/%ld/dataflow.results", i);
 	    send_file (s, pathname, "dataflow.results");
 	}
     }
@@ -550,7 +550,9 @@ int main (int argc, char* argv[])
 
     while (1) {
       
+	printf ("About to accept\n");
 	long s = accept (c, NULL, NULL);
+	printf ("Accept returns %ld\n", s);
 	if (s < 0) {
 	    fprintf (stderr, "Cannot accept connection, errno=%d\n", errno);
 	    return s;
