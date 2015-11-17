@@ -422,7 +422,8 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	    }
 	    if (i == 0 && !ehdr.start_flag) {
 		args[argcnt++] = "-oh";
-		args[argcnt++] = ehdr.next_host;
+		args[argcnt++] = ehdr.prev_host;
+		printf ("Setting up output queue to %s\n", ehdr.prev_host);
 	    }
 	    if (ehdr.cmd_type == AGG_TYPE_SEQ) {
 		args[argcnt++] = "-seq";
@@ -485,7 +486,7 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	    send_file (s, pathname, "merge-outputs-resolved");
 	    sprintf (pathname, "/tmp/%d/tokens", ectl[i].cpid);
 	    send_file (s, pathname, "tokens");
-	    sprintf (pathname, "/tmp/%d/dataflow.result", ectl[i].cpid);
+	    sprintf (pathname, "/tmp/%d/dataflow.results", ectl[i].cpid);
 	    send_file (s, pathname, "dataflow.results");
 	}
     }
@@ -504,6 +505,7 @@ void* do_request (void* arg)
 	fprintf (stderr, "Cannot recieve header,rc=%d\n", rc);
 	return NULL;
     }
+    printf ("Recevied command %d\n", ehdr.cmd_type);
     if (ehdr.cmd_type == DO_DIFT) {
 	do_dift (s, ehdr);
     } else {
