@@ -107,7 +107,7 @@ int fetch_results (char* top_dir, struct epoch_ctl ectl)
 
 void format ()
 {
-    fprintf (stderr, "format: streamctl <epoch description file> <host config file> [-w] [-s] [-v dest_dir cmp_no] [-seq]\n");
+    fprintf (stderr, "format: streamctl <epoch description file> <host config file> [-w] [-s] [-v dest_dir cmp_dir] [-seq]\n");
     exit (0);
 }
 
@@ -221,7 +221,7 @@ int main (int argc, char* argv[])
 		printf ("Truncated num_epochs to %d\n", num_epochs);
 	    }
 	    struct dift* d;
-	    if (!prev_dift || !strcmp(dift_host, prev_dift->hostname)) {
+	    if (!prev_dift || strcmp(dift_host, prev_dift->hostname)) {
 		d = new dift;
 		strcpy (d->hostname, dift_host);
 		d->num_epochs = num_epochs;
@@ -234,7 +234,7 @@ int main (int argc, char* argv[])
 	    }
 
 	    struct aggregator* a;
-	    if (!prev_agg || !strcmp(agg_host, prev_agg->hostname)) {
+	    if (!prev_agg || strcmp(agg_host, prev_agg->hostname)) {
 		a = new aggregator;
 		strcpy (a->hostname, agg_host);
 		a->num_epochs = num_epochs;
@@ -520,7 +520,7 @@ int main (int argc, char* argv[])
 
 	// Now actually do the comaprison
 	char cmd[512];
-	sprintf (cmd, "../dift/obj-ia32/out2mergecmp %s -d %s", cmp_dir, dest_dir);
+	sprintf (cmd, "../dift/proc64/out2mergecmp %s -d %s", cmp_dir, dest_dir);
 	for (u_long i = 0; i < conf.epochs.size(); i++) {
 	    char add[64];
 	    sprintf (add, " %lu", i);
