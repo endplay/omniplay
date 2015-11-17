@@ -4,7 +4,7 @@
 #include <semaphore.h>
 
 #define STREAMSERVER_PORT 19764
-#define AGG_BASE_PORT     10000
+#define AGG_BASE_PORT     10000 //we're going to need a way to have multples of these...? 
 
 #define SEND_ACK      0x1
 #define SEND_RESULTS  0x2
@@ -23,10 +23,8 @@ struct cache_info {
     struct timespec mtime;
 };
 
-// Possible commands
-#define DO_DIFT         0
-#define AGG_TYPE_STREAM 1
-#define AGG_TYPE_SEQ    2
+#define AGG_TYPE_STREAM 0
+#define AGG_TYPE_SEQ    1
 
 // Info from description file
 struct epoch_hdr {
@@ -34,20 +32,26 @@ struct epoch_hdr {
     bool     start_flag;
     bool     finish_flag;
     u_char   cmd_type;
+    u_char   agg_type;
     char     flags;
     char     dirname[NAMELEN];
     char     prev_host[NAMELEN];
     char     next_host[NAMELEN];
 };
 
+
 struct epoch_data {
+    uint32_t process_index;  //added for multi-process parallel TT
     pid_t    start_pid;
     uint32_t start_syscall;
+    pid_t    stop_pid;       //added for multi-process parallel TT    
     uint32_t stop_syscall;
     uint32_t filter_syscall;
     uint32_t ckpt;
-    uint32_t port;              // Aggregation port
-    char     hostname[NAMELEN]; // Aggregation hostname
+    uint32_t port;
+    uint32_t fork_flags;
+    char     hostname[NAMELEN];
+    
 };
 
 struct epoch_ack {
@@ -55,25 +59,22 @@ struct epoch_ack {
 };
 
 #define TAINTQSIZE (512*1024*1024)
-#define TAINTENTRIES ((TAINTQSIZE-(sizeof(sem_t)+sizeof(atomic_ulong)*2+64*3))/sizeof(uint32_t))
+#define TAINTENTRIES ((TAINTQSIZE-sizeof(atomic_ulong)*2)/sizeof(uint32_t))
 struct taintq {
     sem_t           epoch_sem;
-    char            pad1[64];
     atomic_ulong    read_index;
-    char            pad2[64];
     atomic_ulong    write_index;
-    char            pad3[64];
     uint32_t        buffer[TAINTENTRIES];
 };
 
-/*
-struct taintq {
-    static_assert(sizeof(sem_t) <= 4096, "sem_t too big!");
-    static_assert(sizeof(atomic_ulong) <= 4096, "atomic_ulong too big!");
-    union{sem_t epoch_sem;char unused0_[4096];} __attribute__((aligned (4096))) ; 
-    union{atomic_ulong read_index; char unused1_[4096];} __attribute__((aligned (4096))); 
-    union{atomic_ulong write_index; char unused2_[4096];} __attribute__((aligned (4096))); 
-    uint32_t buffer[TAINTENTRIES];
-*/
+
+struct aggregator{ 
+    char     hostname[NAMELEN];
+    uint32_t port;
+    uint32_t socket_fd;
+    pid_t    wait_pid;
+    bool     start_flag;    
+    uint32_t epochno;
+};
 
 #endif

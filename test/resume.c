@@ -113,6 +113,7 @@ int main (int argc, char* argv[])
 			//printf("record timing is on\n");
 			record_timing = 1;
 			break;
+
 		default:
 			fprintf(stderr, "Unrecognized option\n");
 			print_help(argv[0]);
@@ -185,8 +186,8 @@ int main (int argc, char* argv[])
 		rc = resume_after_ckpt (fd, attach_pin, attach_gdb, follow_splits, save_mmap, argv[base], libdir, filename,
 					attach_index, attach_pid);
 	} else {
-		rc = resume_with_ckpt (fd, attach_pin, attach_gdb, follow_splits, save_mmap, argv[base], libdir,
-				       attach_index, attach_pid, ckpt_at, record_timing);
+	    rc = resume_with_ckpt (fd, attach_pin, attach_gdb, follow_splits, save_mmap, argv[base], libdir,
+				   attach_index, attach_pid, ckpt_at, record_timing);
 	}
 	if (rc < 0) {
 		perror("resume");

@@ -12,8 +12,9 @@
 #include <sys/types.h>
 #include <sys/mman.h>
 
+#define USE_SHMEM
 #define USE_MERGE_HASH
-//#define TAINT_STATS
+#define TAINT_STATS
 //#define TRACE_TAINT
 
 #ifdef TRACE_TAINT
@@ -90,21 +91,35 @@ struct taint_number {
     taint_t p2;
 };
 
+
+//ARQUINN: the control_info
+
+struct merge_buffer_control { 
+  u_long merge_buffer_count;
+  u_long merge_total_count;
+    bool merge_buf_overflow;
+};
+
 extern u_long num_merge_entries;
+#define MERGE_BLOCK_SIZE (num_merge_entries*sizeof(struct taint_number))
 #define MERGE_FILE_ENTRIES 0x100000
 #define MERGE_FILE_CHUNK (MERGE_FILE_ENTRIES*sizeof(struct taint_number))
-#ifdef USE_SHMEM
-// This is the most we can process in a 32-bit VM
-#define MAX_MERGES (MAX_MERGE_SIZE/sizeof(struct taint_number))
-#endif
+
+static struct taint_number* merge_buffer;
+/*
+ * added for the shared merge_buffer control info accross replaying 
+ * processes. 
+ */
+
+static struct merge_buffer_control * merge_control_shm;
+//static bool merge_buf_overflow = false;
 
 #ifdef USE_NW
 extern int s;
 #endif
 
-static struct taint_number* merge_buffer;
-static u_long merge_buffer_count = 0;
-taint_t merge_total_count = 0xe0000001;
+static char node_num_filename[256];
+
 
 #ifdef DEBUGTRACE
 
@@ -135,12 +150,15 @@ int is_in_trace_set(u_long val)
 static void 
 flush_merge_buffer ()
 {
-    struct timeval tv_start, tv_end;
-    gettimeofday (&tv_start, NULL);
-
     struct taint_data_header hdr;
+
     long bytes_written = 0;
-    long size = merge_buffer_count*sizeof(struct taint_number);
+    long size = merge_control_shm->merge_buffer_count*sizeof(struct taint_number);
+
+    if(s == -99999) { 
+	fprintf(stderr, "skipping flush_merge_buffer... must not be following proc\n");
+	return;
+    }
     
     hdr.type = TAINT_DATA_MERGE;
     hdr.datasize = size;
@@ -157,46 +175,13 @@ flush_merge_buffer ()
 	}
 	bytes_written += rc;
     }
-
-    gettimeofday (&tv_end, NULL);
-    if (tv_start.tv_usec > tv_end.tv_usec) {
-	printf ("merge flush %ld.%6ld seconds\n", tv_end.tv_sec - tv_start.tv_sec - 1, tv_end.tv_usec + 1000000 - tv_start.tv_usec);
-    } else {
-	printf ("merge flush %ld.%6ld seconds\n", tv_end.tv_sec - tv_start.tv_sec, tv_end.tv_usec - tv_start.tv_usec);
-    }
 }
-#endif
-#ifdef USE_SHMEM
-static void 
-flush_merge_buffer ()
-{
-    // Check for overflow
-    if ((merge_total_count-0xe0000001) >= MAX_MERGES) {
-	fprintf (stderr, "Cannot allocate any more merges than %ld\n", (u_long) (merge_total_count-0xe0000001));
-	assert (0);
-    }
-
-    // Unmap the current region
-    if (munmap (merge_buffer, MERGE_FILE_CHUNK) < 0) {
-	fprintf (stderr, "could not munmap merge buffer, errno=%d\n", errno);
-	assert (0);
-    }
-
-    // Map in the next region
-    merge_buffer = (struct taint_number *) mmap (0, MERGE_FILE_CHUNK, PROT_READ|PROT_WRITE, MAP_SHARED, 
-						 node_num_fd, (merge_total_count-0xe0000001)*sizeof(struct taint_number));
-    if (merge_buffer == MAP_FAILED) {
-	fprintf (stderr, "could not map merge buffer, errno=%d\n", errno);
-	assert (0);
-    }
-}
-#endif
-#ifdef USE_FILE
+#else
 static void 
 flush_merge_buffer ()
 {
     long bytes_written = 0;
-    long size = merge_buffer_count*sizeof(struct taint_number);
+    long size = merge_control_shm->merge_buffer_count*sizeof(struct taint_number);
     
     while (bytes_written < size) {
 	long rc = write (node_num_fd, (char *) merge_buffer+bytes_written, size-bytes_written);	
@@ -208,27 +193,69 @@ flush_merge_buffer ()
     }
 }
 #endif
-#ifdef USE_NULL
-flush_merge_buffer ()
-{
-}
-#endif
 
+#ifndef USE_SHMEM
 static taint_t 
 add_merge_number(taint_t p1, taint_t p2)
 {
-    if (merge_buffer_count == MERGE_FILE_ENTRIES) {
+    if (merge_control_shm->merge_buffer_count == MERGE_FILE_ENTRIES) {
 	flush_merge_buffer();
-	merge_buffer_count = 0;
+	merge_control_shm->merge_buffer_count = 0;
     } 
 
-    merge_buffer[merge_buffer_count].p1 = p1;
-    merge_buffer[merge_buffer_count].p2 = p2;
-    TPRINT ("merge: %lx, %lx -> %lx\n", p1, p2, merge_total_count);
+    merge_buffer[merge_control_shm->merge_buffer_count].p1 = p1;
+    merge_buffer[merge_control_shm->merge_buffer_count].p2 = p2;
+    TPRINT ("merge: %lx, %lx -> %lx\n", p1, p2, merge_control_shm->merge_total_count);
 
-    merge_buffer_count++;
-    return merge_total_count++;
+    merge_control_shm->merge_buffer_count++;
+    return merge_control_shm->merge_total_count++;
 }
+#else
+static taint_t 
+add_merge_number(taint_t p1, taint_t p2)
+{
+    if (merge_control_shm->merge_buffer_count == num_merge_entries) {
+	if (!merge_control_shm->merge_buf_overflow) {
+	    /*
+	     * I'm fairly certain that this won't work for multi-process replays... 
+	     * we rely on sharing the output... although it will probably only be an 
+	     * issue for the sequential taint tracking... parallel will not have multiple
+	     * processes taint tracking at the same time anyway. 
+	     */
+
+	    // Need to close the shmem and open the overflow file
+	    if (munmap (merge_buffer, MERGE_BLOCK_SIZE) < 0) {
+		fprintf (stderr, "could not munmap merge buffer, errno=%d\n", errno);
+		assert (0);
+	    }
+	    close (node_num_fd);
+
+	    node_num_fd = open(node_num_filename, O_CREAT | O_TRUNC | O_RDWR | O_LARGEFILE, 0644);
+	    if (node_num_fd < 0) {
+		fprintf(stderr, "could not open node num file %s, errno %d\n",
+			node_num_filename, errno);
+		assert(0);
+	    }
+
+	    merge_buffer = (struct taint_number *) malloc(MERGE_FILE_CHUNK);
+	    if (merge_buffer == NULL) {
+		fprintf (stderr, "Cannnot allocate file write buffer\n");
+		assert (0);
+	    }
+	    num_merge_entries = MERGE_FILE_ENTRIES;
+	    merge_control_shm->merge_buf_overflow = true;
+	} else {
+	    flush_merge_buffer();
+	}
+    }
+
+    merge_buffer[merge_control_shm->merge_buffer_count].p1 = p1;
+    merge_buffer[merge_control_shm->merge_buffer_count].p2 = p2;
+    TPRINT ("merge: %lx, %lx -> %lx\n", p1, p2, merge_control_shm->merge_total_count);
+    merge_control_shm->merge_buffer_count++;
+    return merge_control_shm->merge_total_count++;
+}
+#endif
 
 struct taint_node {
     struct taint_node* parent1;
@@ -239,6 +266,7 @@ struct taint_leafnode {
     struct taint_node node;
     option_t option;
 };
+
 
 #ifdef USE_MERGE_HASH
 
@@ -307,6 +335,48 @@ void check_mem_taints(taint_t* mem_taints, u_long addr, int size)
 }
 #endif
 
+
+//ARQUINN: initialize the shared memory region for the mergeFile
+static inline void init_merge_control_shm(char* group_dir) { 
+    char merge_control_shmemname[256];
+    int rc;
+    u_int i;
+    int merge_control_fd;
+
+    snprintf(merge_control_shmemname, 256, "/taint_shm%s", group_dir);
+    for (i = 1; i < strlen(merge_control_shmemname); i++) {
+        if (merge_control_shmemname[i] == '/') merge_control_shmemname[i] = '.';
+    }
+    merge_control_fd = shm_open(merge_control_shmemname, O_CREAT | O_TRUNC | O_RDWR, 0644);
+    if (merge_control_fd < 0) {
+        fprintf(stderr, "could not open taint control shmem %s, errno %d\n",
+	      merge_control_shmemname, errno);
+      assert(0);
+        }
+    rc = ftruncate (merge_control_fd, sizeof(struct merge_buffer_control));
+    if (rc < 0) {
+      fprintf(stderr, "could not truncate shmem %s, errno %d\n",
+		    merge_control_shmemname, errno);
+      assert(0);
+    }
+    merge_control_shm = (struct merge_buffer_control *) mmap (0, sizeof(struct merge_buffer_control), PROT_READ|PROT_WRITE, MAP_SHARED, merge_control_fd, 0);
+    if (merge_control_shm == MAP_FAILED) {
+      fprintf (stderr, "could not map shared memory for control of merge buffer, errno=%d\n", errno);
+	    assert (0);
+    }
+    
+    /*
+     * initialize with default values:
+     *    merge_buffer_count = 0;
+     *    merge_total_count = 0xe0000001;
+     *    merge_buf_overflow = false;
+     */
+
+    merge_control_shm->merge_buffer_count = 0;
+    merge_control_shm->merge_total_count = 0xe0000001;
+    merge_control_shm->merge_buf_overflow = false;
+}
+
 static inline void init_taint_index(char* group_dir)
 {
 #ifdef USE_MERGE_HASH
@@ -324,29 +394,29 @@ static inline void init_taint_index(char* group_dir)
 
         snprintf(node_num_shmemname, 256, "/node_nums_shm%s", group_dir);
 	for (i = 1; i < strlen(node_num_shmemname); i++) {
-	    if (node_num_shmemname[i] == '/') node_num_shmemname[i] = '.';
+	  if (node_num_shmemname[i] == '/') node_num_shmemname[i] = '.';
 	}
+	
+        snprintf(node_num_filename, 256, "%s/node_nums", group_dir);
         node_num_fd = shm_open(node_num_shmemname, O_CREAT | O_TRUNC | O_RDWR, 0644);
         if (node_num_fd < 0) {
             fprintf(stderr, "could not open node num shmem %s, errno %d\n",
 		    node_num_shmemname, errno);
             assert(0);
         }
-	rc = ftruncate64 (node_num_fd, MAX_MERGE_SIZE);
+	rc = ftruncate (node_num_fd, MERGE_BLOCK_SIZE);
 	if (rc < 0) {
             fprintf(stderr, "could not truncate shmem %s, errno %d\n",
 		    node_num_shmemname, errno);
             assert(0);
         }
-	merge_buffer = (struct taint_number *) mmap (0, MERGE_FILE_CHUNK, PROT_READ|PROT_WRITE, MAP_SHARED, 
+	merge_buffer = (struct taint_number *) mmap (0, MERGE_BLOCK_SIZE, PROT_READ|PROT_WRITE, MAP_SHARED, 
 						     node_num_fd, 0);
 	if (merge_buffer == MAP_FAILED) {
 	    fprintf (stderr, "could not map merge buffer, errno=%d\n", errno);
 	    assert (0);
 	}
 #else
-#ifdef USE_FILE
-	char node_num_filenam[2e56];
         snprintf(node_num_filename, 256, "%s/node_nums", group_dir);
 	node_num_fd = open(node_num_filename, O_CREAT | O_TRUNC | O_RDWR | O_LARGEFILE, 0644);
 	if (node_num_fd < 0) {
@@ -354,7 +424,7 @@ static inline void init_taint_index(char* group_dir)
 		    node_num_filename, errno);
 	    assert(0);
 	}
-#endif	
+	
 	merge_buffer = (struct taint_number *) malloc(MERGE_FILE_CHUNK);
 	if (merge_buffer == NULL) {
 	    fprintf (stderr, "Cannnot allocate file write buffer\n");
@@ -362,6 +432,9 @@ static inline void init_taint_index(char* group_dir)
 	}
 #endif
     }
+
+
+    
 
     //new_slab_alloc((char *)"UINT_ALLOC", &uint_alloc, sizeof(guint64), 2000000);
     new_slab_alloc((char *)"UINT_ALLOC", &uint_alloc, sizeof(guint64), 4000000);
@@ -531,7 +604,6 @@ static inline int get_mem_split(u_long mem_loc, uint32_t size)
         /*
         unsigned shiftpos;
         unsigned bytes_left;
-        shiftpos = (1 << (SECOND_TABLE_BITS + THIRD_TABLE_BITS)); 
         bytes_left = shiftpos - (mem_loc & (shiftpos - 1));
         */
         unsigned bytes_left = HIGH_SHIFTPOS - (mem_loc & HIGH_SHIFTMASK);
@@ -564,16 +636,18 @@ taintvalue_t get_taint_value (taint_t t, option_t option)
     return 0;
 }
 
+extern void flush_tokenbuf (int s);
+
 void finish_and_print_taint_stats(FILE* fp)
 {
 #ifdef USE_SHMEM
-    int rc = ftruncate64 (node_num_fd, (merge_total_count-0xe0000001)*sizeof(struct taint_number));
-    if (rc < 0) {
-	fprintf (stderr, "ftrunacte of merge file failed,rc=%d, errno=%d\n", rc, errno);
-    }
-    close (node_num_fd);
+    if (merge_control_shm->merge_buf_overflow) flush_merge_buffer ();
 #else
     flush_merge_buffer ();
+    printf ("Completed last merge flush, merge_buffer_cnt is %ld\n", merge_control_shm->merge_buffer_count);
+#endif
+#ifdef USE_NW
+    flush_tokenbuf (s);
 #endif
 
 #ifdef TAINT_STATS
@@ -657,12 +731,9 @@ taint_t* get_mem_taints(u_long mem_loc, uint32_t size)
     return second + low_index;
 }
 
-#define DUMPBUFSIZE 0x100000
-static taint_t* dumpbuf = NULL; 
+#define DUMPBUFSIZE 1000000
+static taint_t dumpbuf[DUMPBUFSIZE];
 static u_long dumpindex = 0;
-#ifdef USE_SHMEM
-static u_long dump_total_count = 0;
-#endif
 
 #ifdef USE_NW
 static void flush_dumpbuf(int dumpfd)
@@ -681,42 +752,14 @@ static void flush_dumpbuf(int dumpfd)
     while (bytes_written < size) {
 	rc = write (s, (char *) dumpbuf+bytes_written, size-bytes_written);	
 	if (rc <= 0) {
-	    fprintf (stderr, "Cannot write to addr log, rc=%ld, errno=%d\n", rc, errno);
+	    fprintf (stderr, "Canot write to addr log, rc=%ld, errno=%d\n", rc, errno);
 	    assert (0);
 	}
 	bytes_written += rc;
     }
     dumpindex = 0;
 }
-#endif
-#ifdef USE_SHMEM
-static void flush_dumpbuf(int dumpfd)
-{
-    dump_total_count += dumpindex*sizeof(taint_t);
-
-    // Check for overflow
-    if (dump_total_count >= MAX_DUMP_SIZE/sizeof(taint_t)) {
-	fprintf (stderr, "Cannot allocate any more dump buffer than %ld\n", (u_long) dump_total_count);
-	assert (0);
-    }
-
-    // Unmap the current region
-    if (munmap (dumpbuf, DUMPBUFSIZE*sizeof(taint_t)) < 0) {
-	fprintf (stderr, "could not munmap dump buffer, errno=%d\n", errno);
-	assert (0);
-    }
-
-    // Map in the next region
-    dumpbuf = (taint_t *) mmap (0, DUMPBUFSIZE*sizeof(taint_t), PROT_READ|PROT_WRITE, MAP_SHARED, 
-				dumpfd, dump_total_count*sizeof(taint_t));
-    if (dumpbuf == MAP_FAILED) {
-	fprintf (stderr, "could not map dump buffer, errno=%d\n", errno);
-	assert (0);
-    }
-    dumpindex = 0;
-}
-#endif
-#ifdef USE_FILE
+#else
 static void flush_dumpbuf(int dumpfd)
 {
     long rc = write (dumpfd, dumpbuf, dumpindex*sizeof(taint_t));
@@ -724,11 +767,6 @@ static void flush_dumpbuf(int dumpfd)
 	fprintf (stderr, "write of segment failed, rc=%ld, errno=%d\n", rc, errno);
     }
     dumpindex = 0;
-}
-#endif
-#ifdef USE_NULL
-static void flush_dumpbuf(int dumpfd)
-{
 }
 #endif
 
@@ -765,17 +803,7 @@ int dump_mem_taints(int fd)
 	    }
 	}
     }
-
-#ifdef USE_SHMEM
-    if (ftruncate (fd, (dump_total_count+dumpindex)*sizeof(taint_t))) {
-	fprintf (stderr, "Cound not truncate dump mem to %ld\n", dump_total_count*sizeof(taint_t));
-	assert (0);
-    }
-    close (fd);
-#else
     flush_dumpbuf(fd);
-#endif
-
     return 0;
 }
 
@@ -806,39 +834,13 @@ int dump_mem_taints_start(int fd)
 	    }
 	}
     }
-
-#ifdef USE_SHMEM
-    if (ftruncate (fd, (dump_total_count+dumpindex)*sizeof(taint_t))) {
-	fprintf (stderr, "Cound not truncate dump mem to %ld\n", dump_total_count*sizeof(taint_t));
-	assert (0);
-    }
-    close (fd);
-#else
     flush_dumpbuf(fd);
-#endif
-
     return 0;
 }
 
 int dump_reg_taints (int fd, taint_t* pregs)
 {
     u_long i;
-
-    if (dumpbuf == NULL) {
-#ifdef USE_SHMEM
-	dumpbuf = (taint_t *) mmap (0, DUMPBUFSIZE*sizeof(taint_t), PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
-	if (dumpbuf == MAP_FAILED) {
-	    fprintf (stderr, "could not map dump buffer, errno=%d\n", errno);
-	    assert (0);
-	}
-#else
-	dumpbuf = (taint_t *) malloc(DUMPBUFSIZE*sizeof(taint_t));
-	if (dumpbuf == NULL) {
-	    fprintf (stderr, "Cannot allocate dump buffer\n");
-	    assert (0);
-	}
-#endif
-    }
 
     // Increment by 1 because 0 is reserved for "no taint"
     for (i = 0; i < NUM_REGS*REG_SIZE; i++) {
@@ -859,22 +861,6 @@ int dump_reg_taints (int fd, taint_t* pregs)
 int dump_reg_taints_start (int fd, taint_t* pregs)
 {
     u_long i;
-
-    if (dumpbuf == NULL) {
-#ifdef USE_SHMEM
-	dumpbuf = (taint_t *) mmap (0, DUMPBUFSIZE*sizeof(taint_t), PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
-	if (dumpbuf == MAP_FAILED) {
-	    fprintf (stderr, "could not map dump buffer, errno=%d\n", errno);
-	    assert (0);
-	}
-#else
-	dumpbuf = (taint_t *) malloc(DUMPBUFSIZE*sizeof(taint_t));
-	if (dumpbuf == NULL) {
-	    fprintf (stderr, "Cannot allocate dump buffer\n");
-	    assert (0);
-	}
-#endif
-    }
 
     // Increment by 1 because 0 is reserved for "no taint"
     for (i = 0; i < NUM_REGS*REG_SIZE; i++) {
@@ -1182,6 +1168,9 @@ void init_taint_structures (char* group_dir)
     memset(mem_loc_high, 0, FIRST_TABLE_SIZE * sizeof(void*));
     init_taint_index(group_dir);
 
+    //ARQUINN: added code
+    init_merge_control_shm(group_dir);
+
     if (!taint_fds_table) {
         taint_fds_table = g_hash_table_new(g_direct_hash, g_direct_equal);
         taint_fds_cloexec = g_hash_table_new(g_direct_hash, g_direct_equal);
@@ -1438,6 +1427,15 @@ TAINTSIGN taintx_bmem2wreg (u_long mem_loc, int reg)
     TAINT_START("taintx_bmem2wreg");
     taint_mem2reg(mem_loc, reg, 1);
     zero_partial_reg(reg, 1);
+#if 0
+    {
+        taint_t* mem_taints;
+        mem_taints = get_mem_taints(mem_loc, 1);
+        if (mem_taints) {
+            assert(get_reg_taints(reg)[0] == mem_taints[0]);
+        }
+    }
+#endif
 }
 
 TAINTSIGN taintx_bmem2dwreg (u_long mem_loc, int reg)

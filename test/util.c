@@ -104,6 +104,7 @@ int resume (int fd_spec, int pin, int gdb, int follow_splits, int save_mmap,
 int resume_after_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int save_mmap, 
 		       char* logdir, char* linker, char* filename, loff_t attach_index, int attach_pid)
 {
+    fprintf(stderr, "calling resume_after_ckpt\n");
     struct wakeup_ckpt_data data;
     data.pin = pin;
     data.gdb = gdb;
@@ -116,6 +117,7 @@ int resume_after_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int sav
     data.attach_index = attach_index;
     data.attach_pid = attach_pid;
     return ioctl (fd_spec, SPECI_CKPT_RESUME, &data);    
+
 }
 
 int resume_proc_after_ckpt (int fd_spec, char* logdir, char* filename)
@@ -225,9 +227,24 @@ long get_attach_status(int fd_spec, pid_t pid)
     return ioctl (fd_spec, SPECI_GET_ATTACH_STATUS, &pid);
 }
 
+int wait_for_replay_group(int fd_spec, pid_t pid) 
+{
+    return ioctl(fd_spec,SPECI_WAIT_FOR_REPLAY_GROUP, &pid);
+}
+
 long try_to_exit(int fd_spec, pid_t pid)
 {
     return ioctl (fd_spec, SPECI_TRY_TO_EXIT, &pid);
+}
+
+
+pid_t get_replay_pid(int fd_spec, pid_t parent_pid, pid_t record_pid)
+{
+    struct get_replay_pid_data data;
+    data.parent_pid = parent_pid;
+    data.record_pid = record_pid;
+
+    return ioctl (fd_spec, SPECI_GET_REPLAY_PID, &data);
 }
 
 u_long* map_shared_clock (int fd_spec)
@@ -247,6 +264,5 @@ u_long* map_shared_clock (int fd_spec)
     }
 
     close (fd);
-
     return clock;
 }

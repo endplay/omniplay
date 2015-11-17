@@ -8,7 +8,6 @@
 #include <assert.h>
 #include <fcntl.h>
 #include <glib-2.0/glib.h>
-
 #include "taint_interface/taint.h"
 #include "linkage_common.h"
 #include "xray_slab_alloc.h"
@@ -1539,8 +1538,8 @@ int map_shmem (char* filename, int* pfd, u_long* pdatasize, u_long* pmapsize, ch
 
     // This is the last process to use the merge region
     // This will deallocate it  after we exit
-    rc = shm_unlink (shmemname); 
-    if (rc < 0) perror ("shmem_unlink");
+//    rc = shm_unlink (shmemname); 
+//    if (rc < 0) perror ("shmem_unlink");
 
     *pfd = fd;
     *pdatasize = st.st_size;
@@ -1606,27 +1605,36 @@ int parse_merge (char* results_filename, GHashTable* merge_node_table)
     return 0;
 }
 
-int read_merge (int argc, char** argv)
+int read_merge (char* group_dir, char* pid)
 {
-    char* group_dir;
     char taint_structures_filename[256];
     char results_filename[256];
     char out_filename[256];
     u_long moutsize, mmapsize;
     int mfd, rc;
+    
+    /*
+     * If we are running the code for a specific pid than the output and the 
+     * dataflow.results filenames are different. However, the shared memory 
+     * needs to be handled the same regardless as to whether a pid is
+     * specified.
+    */
 
-    if (argc < 2) {
-        usage();
+    if(pid == NULL) 
+    {
+	snprintf(results_filename, 256, "%s/dataflow.result", group_dir);
+	snprintf (out_filename, 256, "%s/mergeout", group_dir);
+    }
+    else 
+    {
+	snprintf(results_filename, 256, "%s/dataflow.result.%s", group_dir, pid);
+	snprintf (out_filename, 256, "%s/mergeout.%s", group_dir, pid);
     }
 
-    group_dir = argv[2];
     snprintf(taint_structures_filename, 256, "%s/node_nums", group_dir);
-    snprintf(results_filename, 256, "%s/dataflow.result", group_dir);
-    snprintf (out_filename, 256, "%s/mergeout", group_dir);
-
     outfd = open (out_filename, O_CREAT|O_WRONLY|O_TRUNC, 0644);
     if (outfd < 0) {
-        fprintf(stderr, "couldn't open %s\n", out_filename);
+        fprintf(stderr, "couldn't open: %s\n", out_filename);
         return outfd;
     }
 	
@@ -1647,17 +1655,42 @@ int read_merge (int argc, char** argv)
 
 int main(int argc, char** argv)
 {
-    // TOOD proper args parsing
-    if (!strcmp(argv[1], "-f")) {
-        return read_forwards_results(argc, argv);
-    } else if (!strcmp(argv[1], "-x")) {
-        return read_xoutput_results(argc, argv);
-    } else if (!strcmp(argv[1], "-l")) {
-        return read_heartbleed_results(argc, argv);
-    } else if (!strcmp(argv[1], "-n")) {
-        return read_backwards_merge_numbers(argc, argv);
-    } else if (!strcmp(argv[1], "-m")) {
-        return read_merge(argc, argv);
+    char *group_dir = NULL, *pid=NULL, opt;
+
+    while (1) 
+    {
+	opt = getopt(argc, argv, "fxlnm:p:");
+//	printf("getopt returns %c (%d)\n", opt, opt);
+
+	if (opt == -1) 
+	{
+	    break;
+	}
+	switch(opt) 
+	{
+	case 'f':
+	    return read_forwards_results(argc,argv);
+	case 'x':
+	    return read_xoutput_results(argc,argv);
+	case 'l':
+	    return read_heartbleed_results(argc,argv);
+	case 'n':
+	    return read_backwards_merge_numbers(argc,argv);
+	case 'm':
+	    group_dir = optarg;
+	    break;
+	case 'p': 
+	    pid = optarg;
+	    break;
+	default:
+	    fprintf(stderr, "Unrecognized option\n");
+	    break;
+	}
     }
-    return read_backwards_results(argc, argv);
+    if(group_dir != NULL)
+    {
+	return read_merge(group_dir, pid);
+    }
+    return read_backwards_results(argc,argv);
 }
+

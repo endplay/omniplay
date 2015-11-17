@@ -2,6 +2,7 @@
 
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,7 @@
 #include <vector>
 #include <dirent.h>
 #include <unordered_set>
+#include <string>
 
 using namespace std;
 
@@ -55,6 +57,7 @@ struct epoch_ctl {
     u_long start;
     u_long num;
     int    s;
+    pid_t wait_pid;
 };
 
 int connect_to_server (const char* hostname, int port)
@@ -80,7 +83,7 @@ int connect_to_server (const char* hostname, int port)
     // Receiver may not be started, so spin until connection is accepted
     long rc = connect (s, (struct sockaddr *) &addr, sizeof(addr));
     if (rc < 0) {
-	fprintf (stderr, "Cannot connect to %s, errno=%d\n", hostname, errno);
+	fprintf (stderr, "Cannot connect to %s:%d, errno=%d\n", hostname, port, errno);
 	return rc;
     }
     return s;
@@ -115,6 +118,14 @@ int main (int argc, char* argv[])
 {
     int rc;
     char dirname[80];
+
+    struct epoch_data epoch;
+    vector<struct epoch_data> epochs;
+    struct aggregator agg;
+    vector<struct aggregator> aggregators;
+ 
+    vector<struct epoch_ctl> epochctls;
+    unordered_set<int> conns;
     int wait_for_response = 0, validate = 0, sync_files = 0;
     char* dest_dir, *cmp_dir;
     struct vector<struct replay_path> log_files;
@@ -152,7 +163,7 @@ int main (int argc, char* argv[])
 	    agg_type = AGG_TYPE_SEQ;
 	} else {
 	    format();
-	}
+}
     }
 
     if (validate) {
@@ -189,7 +200,29 @@ int main (int argc, char* argv[])
 	    conf.epochs.push_back(e);
 	}
     }
+    fclose(file);
 
+    //get all of the aggregators from the config file
+    file = fopen(config_filename, "r");
+    if (file == NULL) {
+	fprintf (stderr, "Unable to open config description file %s, errno=%d\n", config_filename, errno);
+	return -1;
+    }
+    while (!feof(file)) {
+	char line[256];
+	if (fgets (line, 255, file)) {
+	    rc = sscanf (line, "%s %u\n", agg.hostname, &agg.port);	    
+	    if (rc != 2) {
+		fprintf (stderr, "Unable to parse line of config file, rc=%d, %s\n", rc, line);
+		return -1;
+	    }
+	    agg.wait_pid = -1;
+	    agg.socket_fd = -1;
+	    agg.start_flag = true;
+	    agg.epochno = 1; //start wiht an offset of 1.
+	    aggregators.push_back(agg);       
+	}
+    }
     fclose(file);
 
     // Read in the host configuration file
@@ -313,7 +346,7 @@ int main (int argc, char* argv[])
 	    } 
 	}
 	closedir(dir);
-    }
+    }        
 
     // Set up the aggregators first
     for (u_int i = 0; i < conf.aggregators.size(); i++) {
@@ -490,7 +523,6 @@ int main (int argc, char* argv[])
 	    }
 	}
     }
-
     if (wait_for_response) {
 	for (u_int i = 0; i < conf.aggregators.size(); i++) {
 	    struct epoch_ack ack;
@@ -501,6 +533,7 @@ int main (int argc, char* argv[])
 	    printf ("done reval is %d\n", ack.retval);
 	}
     }
+
 
     if (validate) {
 	// Fetch the files into each directory 
@@ -514,7 +547,10 @@ int main (int argc, char* argv[])
 	    }
 	    // Fetch 4 files: results, addresses, input and output tokens
 	    for (int j = 0; j < 4; j++) {
-		if (fetch_file(conf.epochs[i].pagg->s, rdir) < 0) return -1;
+		struct aggregator agg = aggregators[epochs[i].process_index];				
+		printf("%lu fetch_file on fd %d\n",i,agg.socket_fd);
+		if (fetch_file(agg.socket_fd, rdir) < 0) return -1;
+
 	    }
 	}
 

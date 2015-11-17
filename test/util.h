@@ -39,6 +39,7 @@ int resume(int fd_spec, int attach_pin, int attach_gdb, int follow_splits, int s
 	   char* logdir, char* linker, loff_t attach_index, int attach_pid, int record_timing);
 int resume_with_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int save_mmap, 
 		      char* logdir, char* linker, loff_t attach_index, int attach_pid, int ckpt_at, int record_timing);
+
 int resume_after_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int save_mmap, 
 		       char* logdir, char* linker, char* filename, loff_t attach_index, int attach_pid);
 int resume_proc_after_ckpt (int fd_spec, char* logdir, char* filename);
@@ -52,15 +53,14 @@ int get_replay_stats (int fd_spec, struct replay_stat_data * stats);
 unsigned long get_replay_args (int fd_spec);
 unsigned long get_env_vars (int fd_spec);
 int get_record_group_id (int fd_spec, uint64_t* rg_id);
-
 int get_num_filemap_entries (int fd_spec, int fd, loff_t offset, int size);
 int get_filemap(int fd_spec, int fd, loff_t offset, int size, void* entries, int num_entries);
-
 long reset_replay_ndx(int fd_spec);
-
 pid_t get_current_record_pid(int fd_spec, pid_t nonrecord_pid);
 long get_attach_status (int fd_spec, pid_t pid);
+int wait_for_replay_group(int fd_spec, pid_t pid);
 long try_to_exit (int fd_spec, pid_t pid);
+pid_t get_replay_pid(int fd_spec, pid_t parent_pid, pid_t record_pid);
 u_long* map_shared_clock (int fd_spec);
 
 #ifdef __cplusplus

@@ -24,6 +24,7 @@ struct epoch {
     // Info from description file
     pid_t  start_pid;
     u_long start_syscall;
+    pid_t  stop_pid;  //ARQUINN -> added
     u_long stop_syscall;
     u_long filter_syscall;
     u_long use_ckpt;
@@ -31,6 +32,10 @@ struct epoch {
     int    status;
     pid_t  cpid;
     pid_t  mpid;
+    pid_t  tracked_pid;
+    pid_t  waiting_on_rp_group; //ARQUINN -> added
+    int    process_index;
+
     // For timings
     struct timeval tv_start;
     struct timeval tv_start_dift;
@@ -95,8 +100,8 @@ int main (int argc, char* argv[])
 		    return -1;
 		}
 
-		rc = sscanf (line, "%d %lu %lu %lu %lu\n", &epoch[i].start_pid, &epoch[i].start_syscall, 
-			     &epoch[i].stop_syscall, &epoch[i].filter_syscall, &epoch[i].use_ckpt);
+		rc = sscanf (line, "%d %d %lu %d %lu %lu %lu\n", &epoch[i].process_index, &epoch[i].start_pid, &epoch[i].start_syscall, 
+			     &epoch[i].stop_pid, &epoch[i].stop_syscall, &epoch[i].filter_syscall, &epoch[i].use_ckpt);
 		if (rc < 3) {
 		    fprintf (stderr, "Unable to parse line of epoch descrtion file: %s\n", line);
 		    return -1;
@@ -108,6 +113,7 @@ int main (int argc, char* argv[])
 	    }
 	}
     }
+
     epochs = i;
     fclose(file);
 
@@ -129,8 +135,8 @@ int main (int argc, char* argv[])
 
 	// Start all the epochs at once
 	for (i = gstart; i < gend; i++) {
-	    epoch[i].cpid = fork ();
-	    if (epoch[i].cpid == 0) {
+	    epoch[i].cpid = fork ();   //this actually isn't the child pid that we want. This is the cpid for the
+	    if (epoch[i].cpid == 0) {	       
 		char* args[256];
 		int argcnt = 0;
 		char attach[80], ckpt[80];
@@ -155,34 +161,66 @@ int main (int argc, char* argv[])
 		return -1;
 	    } else {
 		gettimeofday (&epoch[i].tv_start, NULL);
+#ifdef DETAILS			   
+		fprintf (stderr, "started epoch %d, cpid is %d\n",i,epoch[i].cpid);
+#endif
 		epoch[i].status = STATUS_STARTING;
 	    }
 	}
 
 	// Now attach pin to all of the epoch processes
 	executing = 0;
+	int cpid = -1;
 	do {
 	    for (i = gstart; i < gend; i++) {
 		if (epoch[i].status == STATUS_STARTING) {
+
+		    /*
+		     * so we need to wait to attach because pin needs to be waiting for us, 
+		     * but we cannot be certain that this cpid is actually the pid we want to wait
+		     * on... 
+		     */
+
+		    //this code is awful. Gotta figure out how to do better
+		    if(cpid < 0)	    cpid = get_replay_pid(fd, epoch[i].cpid, epoch[i].start_pid);
+		    if(cpid > 0) {
+			epoch[i].tracked_pid = cpid;
+			rc = get_attach_status (fd, cpid);
+		    }
+
+		    if (rc == 1) {
+			//this means that we're ready to attach pin... take this moment to wait on the replay_group:
+			epoch[i].waiting_on_rp_group = fork(); 
+			if(epoch[i].waiting_on_rp_group == 0) { 
+			    wait_for_replay_group(fd,epoch[i].tracked_pid);
+			    return 0;
+			}
+		    }
 		    rc = get_attach_status (fd, epoch[i].cpid);
 		    if (rc > 0) {
 			pid_t mpid = fork();
 			if (mpid == 0) {
-			    char cpids[80], syscalls[80], output_filter[80];
+			    char cpids[80], syscalls[80], output_filter[80], stop_pid[80];
 			    char* args[256];
 			    int argcnt = 0;
 			    
 			    args[argcnt++] = "pin";
-			    args[argcnt++] = "-pid";
-			    sprintf (cpids, "%d", rc);
+			    args[argcnt++] = "-pid";	       
+			    
+			    sprintf (cpids, "%d", epoch[i].tracked_pid);
 			    args[argcnt++] = cpids;
 			    args[argcnt++] = "-t";
 			    args[argcnt++] = "../dift/obj-ia32/linkage_data.so";
 			    if (i < epochs-1) {
-				sprintf (syscalls, "%ld", epoch[i].stop_syscall);
+				sprintf (syscalls, "%ld", epoch[i].stop_syscall);				
 				args[argcnt++] = "-l";
 				args[argcnt++] = syscalls;
 			    }
+
+			    sprintf (stop_pid, "%d", epoch[i].stop_pid);
+			    args[argcnt++] = "-spid";
+			    args[argcnt++] = stop_pid;
+
 			    if (i > 0) {
 				args[argcnt++] = "-so";
 			    }
@@ -208,6 +246,8 @@ int main (int argc, char* argv[])
 			    gettimeofday (&epoch[i].tv_start_dift, NULL);
 			    epoch[i].status = STATUS_EXECUTING;
 			    executing++;
+			    rc = -1; 
+			    cpid = -1;
 #ifdef DETAILS			    
 			    printf ("%d/%d epochs executing\n", executing, gend-gstart);
 #endif
@@ -217,34 +257,45 @@ int main (int argc, char* argv[])
 	    }
 	    usleep(1);
 	} while (executing < (gend-gstart));
+
+	for (i = gstart; i < gend; i++) {
+	    printf("epoch %d, cpid %d, tracked_pid %d\n",i,epoch[i].cpid, epoch[i].tracked_pid);
+	}	
 	
 	// Wait for children to complete
 	epochs_done = 0;
 	do {
-	    pid_t wpid = waitpid (-1, &status, 0);
+	    pid_t wpid = waitpid (0, &status, 0);
 	    if (wpid < 0) {
 		fprintf (stderr, "waitpid returns %d, errno %d for pid %d\n", rc, errno, epoch[i].cpid);
 		return wpid;
 	    } else {
 		for (i = gstart; i < gend; i++) {
-		    if (wpid == epoch[i].cpid) {
-#ifdef DETAILS
+
+		    if (wpid == epoch[i].waiting_on_rp_group) { 
+//#ifdef DETAILS
 			printf ("DIFT of epoch %d is done\n", i);
-#endif
+//#endif
 			epoch[i].mpid = fork ();
 			if (epoch[i].mpid == 0) {
-			    char outname[80];
-			    sprintf (outname, "/tmp/%d", epoch[i].cpid);
-			    if (i == 0) {
-				rc = execl ("../dift/obj-ia32/mkmerge", "mkmerge", outname, "-s", NULL);
-			    } else {
-				rc = execl ("../dift/obj-ia32/mkmerge", "mkmerge", outname, NULL);
+			    char outname[80], pid[80];
+			    sprintf (outname, "/tmp/%d", epoch[i].tracked_pid);
+			    if (epoch[i].start_syscall == 0) {
+				printf("epoch %i is using start flag\n",i);
+				rc = execl ("../dift/obj-ia32/mkmerge", "mkmerge","-m", outname, "-s", NULL);
+			    } 			    
+			    else if(epoch[i].start_pid != epoch[i].stop_pid) { 
+				sprintf (pid, "%d", epoch[i].stop_pid);
+				rc = execl ("../dift/obj-ia32/mkmerge", "mkmerge","-m", outname, "-p", pid, NULL);
+			    }
+			    else {
+				rc = execl ("../dift/obj-ia32/mkmerge", "mkmerge","-m", outname, NULL);
 			    }
 			    fprintf (stderr, "execl of mkmerge failed, rc=%d, errno=%d\n", rc, errno);
 			    return -1;
 			} else {
 			    gettimeofday (&epoch[i].tv_start_map, NULL);
-			    epoch[i].status = STATUS_MAPPING;
+			    epoch[i].status = STATUS_MAPPING;			   
 			}
 		    } else if (wpid == epoch[i].mpid) {
 #ifdef DETAILS
@@ -253,7 +304,7 @@ int main (int argc, char* argv[])
 			gettimeofday (&epoch[i].tv_done, NULL);
 			epoch[i].status = STATUS_DONE;
 			epochs_done++;
-		    }
+		    } 
 		}
 	    }
 	} while (epochs_done < (gend-gstart));
@@ -278,7 +329,7 @@ int main (int argc, char* argv[])
 		fprintf (stderr, "Unable to allocate merge argument %d", i);
 		return -1;
 	    }
-	    sprintf (args[i+1], "%d", epoch[i].cpid);
+	    sprintf (args[i+1], "%d", epoch[i].tracked_pid);
 	}
 	rc = execv ("../dift/obj-ia32/merge_merge", args);
 	fprintf (stderr, "execv of merge_merge failed, rc=%d, errno=%d\n", rc, errno);
@@ -300,8 +351,17 @@ int main (int argc, char* argv[])
 	    int start2 = i + merge_by/2;
 	    int finish1 = start2 - 1;
 	    int finish2 = i + merge_by - 1;
+	    int do_first = 1, do_second = 1;
+
 	    if (start2 >= epochs) continue; // Odd number so no merge this round
 	    if (finish2 >= epochs) finish2 = epochs-1;
+
+	    //don't merge things that are not tracking the same process
+	    if (epoch[start1].process_index != epoch[finish1].process_index) do_first = 0;
+	    if (epoch[start2].process_index != epoch[finish2].process_index) do_second = 0;
+	    if(!do_first && !do_second) continue;
+
+
 	    printf ("Merging [%d,%d] and [%d,%d]\n", start1, finish1, start2, finish2);
 	    gettimeofday (&tv_mergestart, NULL);
 	    printf ("Merge %d %d start %ld.%06ld\n", start1, finish2, tv_mergestart.tv_sec, tv_mergestart.tv_usec);
@@ -311,7 +371,7 @@ int main (int argc, char* argv[])
 		char dir1[80], dir2[80], inname1[80], inname2[80], outname[80], parnum[80];
 		int argcnt = 0;
 		args[argcnt++] = "merge3";
-		sprintf (dir1, "%d", epoch[start1].cpid);
+		sprintf (dir1, "%d", epoch[start1].tracked_pid);
 		args[argcnt++] = dir1;
 		if (start1 == finish1) {
 		    args[argcnt++] = "merge";
@@ -319,7 +379,7 @@ int main (int argc, char* argv[])
 		    sprintf (inname1, "merge.%d.%d", start1, finish1);
 		    args[argcnt++] = inname1;
 		}
-		sprintf (dir2, "%d", epoch[start2].cpid);
+		sprintf (dir2, "%d", epoch[start2].tracked_pid);
 		args[argcnt++] = dir2;
 		if (start2 == finish2) {
 		    args[argcnt++] = "merge";
@@ -368,6 +428,7 @@ int main (int argc, char* argv[])
     for (i = 0; i < epochs; i++) {
 	printf ("Epoch %d:\n", i); 
 	printf ("\tPid: %d\n", epoch[i].cpid);
+	printf ("\tTracked Pid: %d\n", epoch[i].tracked_pid);
 	printf ("\tEpoch start time: %ld.%06ld\n", epoch[i].tv_start.tv_sec, epoch[i].tv_start.tv_usec);
 	printf ("\tDIFT start time: %ld.%06ld\n", epoch[i].tv_start_dift.tv_sec, epoch[i].tv_start_dift.tv_usec);
 	printf ("\tMap start time: %ld.%06ld\n", epoch[i].tv_start_map.tv_sec, epoch[i].tv_start_map.tv_usec);

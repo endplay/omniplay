@@ -45,25 +45,52 @@ int main (int argc, char* argv[])
     int out_start;
     const char* out_dir;
 
+    //Added for multiprocess support: dataflow.results might have an optional dataflow.results.pid file ending:
+    char *pid = NULL;
+    int out_dir_offset = 2;
+    
+
+
     if (argc < 3) {
-	fprintf (stderr, "format: out2mergecmp.c <mergeout dir> [-d dir] <list of output dirs>\n");
+	fprintf (stderr, "format: out2mergecmp.c <mergeout dir> [-p pid] [-d dir] <list of output dirs>\n");
 	return -1;
     }
 
-    sprintf (mfile, "/tmp/%s/mergeout", argv[1]);
-    rc = map_file (mfile, &mfd, &mdatasize, &mmapsize, &mbuf);
-    if (rc < 0) return rc;
 
-    sprintf (dfile, "/tmp/%s/dataflow.result", argv[1]);
-    rc = map_file (dfile, &dfd, &ddatasize, &dmapsize, &dbuf);
-    if (rc < 0) return rc;
-
-    if (!strcmp(argv[2], "-d")) {
-        out_dir = argv[3];
-	out_start = 4;
+    if (!strcmp(argv[2], "-p")) {
+	pid = argv[3];
+	out_dir_offset = 4;
+    }
+    if (!strcmp(argv[out_dir_offset], "-d")) {
+        out_dir = argv[out_dir_offset + 1];
+	out_start = out_dir_offset + 2;
     } else {
 	out_dir = "/tmp";
-	out_start = 2;
+	out_start = out_dir_offset;
+    }
+
+    if(pid == NULL) { 
+	sprintf (mfile, "/tmp/%s/mergeout", argv[1]);
+	sprintf (dfile, "/tmp/%s/dataflow.result", argv[1]);
+    }
+    else { 
+	sprintf (mfile, "/tmp/%s/mergeout.%s", argv[1], pid);
+	sprintf (dfile, "/tmp/%s/dataflow.result.%s", argv[1], pid);
+    }
+
+
+    rc = map_file (mfile, &mfd, &mdatasize, &mmapsize, &mbuf);
+    if (rc < 0) return rc;
+    rc = map_file (dfile, &dfd, &ddatasize, &dmapsize, &dbuf);
+    if (rc < 0) return rc;
+    
+    if(dbuf == NULL) { 
+	printf("%s is an empty file\n", dfile);
+	return -1;
+    }
+    if(mbuf == NULL) { 
+	printf("%s is an empty file\n", mfile);
+	return -1;
     }
       
     mptr = (u_long *) mbuf;
@@ -182,7 +209,7 @@ int main (int argc, char* argv[])
     }
     if (oiter != omapping.end()) {
 	printf ("output files have entries remaining but mergeout does not\n");
-	printf ("Ar mapping %d\n", cnt);
+	printf ("At mapping %d\n", cnt);
 	printf ("extra outputs <%lx,%lx>\n", oiter->first, oiter->second);
 	return 1;
     }

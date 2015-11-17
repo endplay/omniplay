@@ -67,8 +67,8 @@ static struct slab* new_slab(char* name, int size)
     slab->start = mmap(NULL, size, PROT_READ | PROT_WRITE,
                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (slab->start == MAP_FAILED) {
-        fprintf(stderr, "[%s] ERROR could not allocate new slab of size %d\n",
-                            name, size);
+        fprintf(stderr, "[%s] ERROR could not allocate new slab of size %d, errno %d\n",
+		name, size, errno);
         assert(0);
     }
 #ifdef ALLOC_STATS

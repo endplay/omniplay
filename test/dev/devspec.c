@@ -51,6 +51,7 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 	struct filemap_entry_data fedata;
 	struct get_record_pid_data recordpid_data;
 	struct set_pin_address_data pin_data;
+	struct get_replay_pid_data replay_pid_data;
 	int syscall;
 	char logdir[MAX_LOGDIR_STRLEN+1];
 	char filename[MAX_LOGDIR_STRLEN+1];
@@ -280,6 +281,20 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 			return -EFAULT;
 		}
 		return get_attach_status (pid);
+		
+	case SPECI_WAIT_FOR_REPLAY_GROUP:
+		if (len != sizeof(pid_t))
+		{
+			printk("ioctl SPECI_WAIT_REPLAY_GROUP fails, len %d\n", len);
+			return -EINVAL;
+		}
+		if (copy_from_user(&pid, (void *)data, sizeof(pid_t)))
+		{
+			return -EFAULT;
+		}
+		return wait_for_replay_group(pid);
+
+
 	case SPECI_TRY_TO_EXIT:
 		if (len != sizeof(pid_t))
 		{
@@ -291,6 +306,18 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 			return -EFAULT;
 		}
 		return try_to_exit (pid);
+
+	case SPECI_GET_REPLAY_PID:
+		if (len != sizeof(replay_pid_data)) {
+			printk ("ioctl SPECI_GET_REPLAY_PID fails, len %d\n", len);
+			return -EINVAL;
+		}
+		if (copy_from_user (&replay_pid_data, (void *) data, sizeof(replay_pid_data))) {
+			return -EFAULT;
+		}
+
+		return get_replay_pid (replay_pid_data.parent_pid, replay_pid_data.record_pid);
+
 	case SPECI_MAP_CLOCK: {
 		return pthread_shm_path ();
 	}

@@ -115,6 +115,8 @@ long fetch_file (int s, const char* dest_dir)
 	fprintf (stderr, "fetch_file: cannot read file %s stats, rc=%ld, errno=%d\n", filename, rc, errno);
 	return rc;
     }
+
+    printf("size of st: %u\n",sizeof(st));
 	
     // Open the new file
     char pathname[PATHLEN];
@@ -124,7 +126,7 @@ long fetch_file (int s, const char* dest_dir)
 	fprintf (stderr, "fetch_file: cannot create %s, rc=%ld, errno=%d\n", pathname, rc, errno);
 	return rc;
     }
-	
+    	
     // Get the file data and write it out
     bytes_read = 0;
     while (bytes_read < (u_long) st.st_size) {

@@ -21,6 +21,8 @@ u_long taint_filter_outputs_syscall = 0;
 
 int inited_filters = 0;
 
+u_long total_output_written = 0;
+
 /* List of filenames to create new taints from.
  * This list is for the entire replay group */
 unsigned int num_filter_input_files = 0;
@@ -249,7 +251,12 @@ void flush_tokenbuf(int s)
     struct taint_data_header hdr;
     long bytes_written = 0;
     long size = tokenindex*sizeof(struct token);
-    
+
+    if(s == -99999) { 
+	fprintf(stderr, "flush_tokenbuf, shouldn't write output\n");
+	return;
+    }
+
     hdr.type = TAINT_DATA_INPUT;
     hdr.datasize = size;
     long rc = write (s, &hdr, sizeof(hdr));
@@ -361,11 +368,16 @@ void create_taints_from_buffer(void* buf, int size,
 			       int outfd,
 			       char* channel_name)
 {
+
     int i = 0;
     taint_t start;
     u_long buf_addr = (u_long) buf;
     if (size <= 0) return;
     if (!buf) return;
+
+    if(outfd == -99999) { 
+	return;
+    }
 
     // fprintf(stderr, "channel: %s, filter: %d\n", channel_name, filter_filename(channel_name));
     // fprintf(stderr, "hash: %u, filter: %d\n", hash, filter_call_stack(hash));
@@ -558,6 +570,12 @@ void output_buffer_result (void* buf, int size,
 			   struct taint_creation_info* tci,
 			   int outfd)
 {
+
+    //this is our bs outfd.. 
+    if(outfd == -99999) { 
+	
+	return;
+    }
     if (!filter_outputs(tci)) {
 #ifdef USE_NW
 	struct taint_data_header hdr;
@@ -567,6 +585,9 @@ void output_buffer_result (void* buf, int size,
 	hdr.datasize = sizeof(struct taint_creation_info) + sizeof(u_long) + sizeof(int) +
 	    size * (sizeof(u_long) + sizeof(taint_t));
 	outbuf = (char *) malloc(hdr.datasize);
+	if(outbuf == NULL) { 
+	    fprintf(stderr,"outbut is NULL, cannot malloc size %d, errno %d\n",hdr.datasize,errno);
+	}
 	assert (outbuf);
 	fill_outbuf (outbuf, tci, buf, size);
 	long rc = write (outfd, &hdr, sizeof(hdr));
@@ -574,16 +595,18 @@ void output_buffer_result (void* buf, int size,
 	    fprintf (stderr, "Cannot write nw header for output data, rc=%ld, errno=%d\n", rc, errno);
 	    assert (0);
 	}
-
 	u_long bytes_written = 0;
 	while (bytes_written < hdr.datasize) {
 	    rc = write (outfd, (char *) outbuf+bytes_written, hdr.datasize-bytes_written);	
 	    if (rc <= 0) {
 		fprintf (stderr, "Cannot write output data, rc=%ld, errno=%d\n", rc, errno);
+		fprintf (stderr, "already written %lu bytes, tried to write %lu\n",total_output_written, hdr.datasize-bytes_written);
 		assert (0);
 	    }
 	    bytes_written += rc;
+	    total_output_written += rc;
 	}
+	free(outbuf);
 #endif
 #ifdef USE_SHMEM
 	u_long datasize = sizeof(struct taint_creation_info) + sizeof(u_long) + sizeof(int) + size * (sizeof(u_long) + sizeof(taint_t));
@@ -631,6 +654,7 @@ void output_buffer_result (void* buf, int size,
 	    outputindex += datasize;
 	}
 	output_total_count += datasize;
+	free(outbuf);
 #endif
 #ifdef USE_FILE
         write_output_header(outfd, tci, buf, size); 

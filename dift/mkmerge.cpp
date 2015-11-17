@@ -279,7 +279,7 @@ int map_shmem (char* filename, int* pfd, u_long* pdatasize, u_long* pmapsize, ch
     }
 
     // This is the last process to use the merge region
-    // This will deallocate it  after we exit
+    // This will deallocate it  after we exit (this is still true for the multi-proc)
     rc = shm_unlink (shmemname); 
     if (rc < 0) perror ("shmem_unlink");
 
@@ -294,7 +294,7 @@ int map_shmem (char* filename, int* pfd, u_long* pdatasize, u_long* pmapsize, ch
 
 // Generate splice data:
 // list of address for prior segment to track
-static long map_before_segment (char* dirname)
+static long map_before_segment (char* dirname, char* pid)
 {
     struct token token;
     long rc;
@@ -307,9 +307,17 @@ static long map_before_segment (char* dirname)
     struct stat st;
 
     sprintf (mergefile, "%s/node_nums", dirname);
-    sprintf (outfile, "%s/dataflow.result", dirname);
     sprintf (tsfile, "%s/taint_structures", dirname);
-    sprintf (tokfile, "%s/tokens", dirname);
+    if(pid == NULL) 
+    {
+	sprintf (outfile, "%s/dataflow.result", dirname);
+	sprintf (tokfile, "%s/tokens", dirname);
+    }
+    else 
+    {
+	sprintf (outfile, "%s/dataflow.result.%s", dirname, pid);
+	sprintf (tokfile, "%s/tokens.%s", dirname, pid);
+    }
 
     rc = map_shmem (mergefile, &node_num_fd, &ndatasize, &mergesize, (char **) &merge_log);
     if (rc < 0) return rc;
@@ -340,11 +348,13 @@ static long map_before_segment (char* dirname)
     }
 #endif
 
+//jason never uses the read syscall..
     plog = output_log;
     while (plog < output_log + odatasize) {
 	plog += sizeof(struct taint_creation_info) + sizeof(u_long);
 	buf_size = *((u_long *) plog);
-	plog += sizeof(u_long);
+	plog += sizeof(u_long);       
+
 	for (i = 0; i < buf_size; i++) {
 	    plog += sizeof(u_long);
 	    value = *((taint_t *) plog);
@@ -494,13 +504,38 @@ static long map_before_segment (char* dirname)
 
 int main (int argc, char* argv[]) 
 {
+    char* pid = NULL, *group_dir = NULL, opt;
     if (argc < 2) {
-	fprintf (stderr, "format: mkmap <dirname> [-s]\n");
+	fprintf (stderr, "format: mkmap <dirname> [-s] [-p pid]\n");
 	return -1;
     }
+    while (1) 
+    {
+	opt = getopt(argc, argv, "sm:p:");
+//	printf("getopt returns %c (%d): %s\n", opt, opt, optarg);
 
-    if (argc == 3 && !strcmp(argv[2], "-s")) start_flag = 1;
-    map_before_segment (argv[1]);
+	if (opt == -1) 
+	{
+	    break;
+	}
+	switch(opt) 
+	{
+	case 's':
+	    start_flag = 1;
+	    break;
+	case 'm':
+	    group_dir = optarg;
+	    break;
 
+	case 'p': 
+	    pid = optarg;
+	    break;
+	default:
+	    fprintf(stderr, "Unrecognized option\n");
+	    break;
+	}
+    }
+
+    map_before_segment (group_dir, pid);
     return 0;
 }

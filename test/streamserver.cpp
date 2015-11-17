@@ -35,6 +35,8 @@ struct epoch_ctl {
     char   inputqname[256];
     pid_t  cpid;
     pid_t  spid;
+    pid_t  tracked_pid;
+    pid_t  waiting_on_rp_group; //ARQUINN -> added
 
     // For timings
     struct timeval tv_start;
@@ -44,7 +46,10 @@ struct epoch_ctl {
 };
 
 int fd; // Persistent descriptor for replay device
-
+static long ms_diff (struct timeval tv1, struct timeval tv2)
+{
+    return ((tv1.tv_sec - tv2.tv_sec) * 1000 + (tv1.tv_usec - tv2.tv_usec) / 1000);
+}
 int sync_logfiles (int s)
 {
     u_long fcnt, ccnt;
@@ -447,6 +452,7 @@ void* do_fullsend (void* arg)
 
     gettimeofday (&tv_start, NULL);
 
+
     // Receive control data
     struct epoch_hdr ehdr;
     rc = safe_read (s, &ehdr, sizeof(ehdr));
@@ -472,6 +478,7 @@ void* do_fullsend (void* arg)
 
     // Start all the epochs at once
     for (u_long i = 0; i < epochs; i++) {
+
 	ectl[i].cpid = fork ();
 	if (ectl[i].cpid == 0) {
 	    if (i > 0 || !ehdr.start_flag) {
@@ -486,34 +493,88 @@ void* do_fullsend (void* arg)
 	} else {
 	    gettimeofday (&ectl[i].tv_start, NULL);
 	    ectl[i].status = STATUS_STARTING;
+	    ectl[i].tracked_pid = -1;
 	}
     }
 
+    for (u_long i = 0; i < epochs; i++) { 	
+	printf("%lu: cpid %d, epoch %d/%d - %d/%d\n",i, ectl[i].cpid, edata[i].start_pid, edata[i].start_syscall,
+	       edata[i].stop_pid, edata[i].stop_syscall);
+    }
+
+
     // Now attach pin to all of the epoch processes
     u_long executing = 0; 
+
     do {
 	for (u_long i = 0; i < epochs; i++) {
+	    rc = -1;
 	    if (ectl[i].status == STATUS_STARTING) {
-		rc = get_attach_status (fd, ectl[i].cpid);
+
+		/*
+		 * so we need to wait to attach because pin needs to be waiting for us, 
+		 * but we cannot be certain that this cpid is actually the pid we want to wait
+		 * on... 
+		 */
+
+		//this code is awful. Gotta figure out how to do better
+		if(ectl[i].tracked_pid < 0) {
+		    ectl[i].tracked_pid = get_replay_pid(fd, ectl[i].cpid, edata[i].start_pid); //this isn't working. 
+		    
+
+		    //need to guarentee that this stuff only happens once. 
+		    if(ectl[i].tracked_pid > 0) {
+			printf("%lu: found %d for cpid %d, start_pid %d\n",i,ectl[i].tracked_pid,ectl[i].cpid, edata[i].start_pid);
+			
+			ectl[i].waiting_on_rp_group = fork(); 
+			if(ectl[i].waiting_on_rp_group == 0) { 
+			    //we want to close out of our sockets here... kinda weird but still. 
+			    close(s);
+			    s = -99999;
+			    wait_for_replay_group(fd,ectl[i].tracked_pid);
+			    return 0;
+			}	
+		    }	 
+		}
+		if(ectl[i].tracked_pid > 0) {
+		    rc = get_attach_status (fd, ectl[i].tracked_pid);
+		}
+
 		if (rc > 0) {
+//		    printf("starting pin for cpid %d, tracked_pid %d, rec_pid %d\n",ectl[i].cpid,ectl[i].tracked_pid,edata[i].start_pid);
+
+
 		    pid_t mpid = fork();
 		    if (mpid == 0) {
-			char cpids[80], syscalls[80], output_filter[80], port[80];
+			char cpids[80], syscalls[80], output_filter[80], port[80], stop_pid[80], fork_flags[80];
 			const char* args[256];
 			int argcnt = 0;
 			
 			args[argcnt++] = "pin";
 			args[argcnt++] = "-pid";
-			sprintf (cpids, "%d", rc);
+
+			sprintf (cpids, "%d", ectl[i].tracked_pid);
 			args[argcnt++] = cpids;
 			args[argcnt++] = "-t";
 			args[argcnt++] = "../dift/obj-ia32/linkage_data.so";
 			if (i < epochs-1 || !ehdr.finish_flag) {
-			    sprintf (syscalls, "%d", edata[i].stop_syscall);
-			    args[argcnt++] = "-l";
-			    args[argcnt++] = syscalls;
 			    args[argcnt++] = "-ao"; // Last epoch does not need to trace to final addresses
+
 			}
+
+			//we always want the stop_pid to be present
+			sprintf (stop_pid, "%d", edata[i].stop_pid);
+			args[argcnt++] = "-stop_pid";
+			args[argcnt++] = stop_pid;
+			sprintf (syscalls, "%d", edata[i].stop_syscall);
+			args[argcnt++] = "-l";
+			args[argcnt++] = syscalls;
+
+			sprintf (fork_flags, "%d", edata[i].fork_flags);
+			args[argcnt++] = "-fork_flags";
+			args[argcnt++] = fork_flags;
+
+
 			if (i > 0 || !ehdr.start_flag) {
 			    args[argcnt++] = "-so";
 			} 
@@ -522,7 +583,6 @@ void* do_fullsend (void* arg)
 			    args[argcnt++] = "-ofs";
 			    args[argcnt++] = output_filter;
 			}
-			printf ("hostname %s port %d\n", edata[i].hostname, edata[i].port);
 			args[argcnt++] = "-host";
 			args[argcnt++] = edata[i].hostname;
 			args[argcnt++] = "-port";
@@ -556,7 +616,9 @@ void* do_fullsend (void* arg)
 	    return NULL;
 	} else {
 	    for (u_long i = 0; i < epochs; i++) {
-		if (wpid == ectl[i].cpid) {
+
+//		if (wpid == ectl[i].cpid) {
+		if (wpid == ectl[i].waiting_on_rp_group) { 
 #ifdef DETAILS
 		    printf ("DIFT of epoch %lu is done\n", i);
 #endif
@@ -577,15 +639,56 @@ void* do_fullsend (void* arg)
 	}
     }
 
+    char statsname[256];
+    FILE* statsfile; 
+
+    //first print out all of the time info:                                                                               
+    for (u_long i = 0; i < epochs; i++) {
+	sprintf (statsname, "/tmp/machine-readable-stream-stats%lu.csv", i);
+	statsfile = fopen (statsname, "w");
+	if (statsfile == NULL) {
+	    fprintf (stderr, "Cannot create %s, errno=%d\n", statsname, errno);
+	    return NULL;
+	}
+	fprintf (statsfile,"%lu,%ld,%ld", 
+		 i, 
+		 ms_diff(ectl[i].tv_start_dift, ectl[i].tv_start),
+		 ms_diff(ectl[i].tv_done, ectl[i].tv_start_dift)); 
+	fclose(statsfile);
+    }
+
+
     printf ("Overall:\n");
     printf ("\tStart time: %ld.%06ld\n", tv_start.tv_sec, tv_start.tv_usec);
     printf ("\tEnd time: %ld.%06ld\n", tv_done.tv_sec, tv_done.tv_usec);
+
+    long diff_usec = tv_done.tv_usec - tv_start.tv_usec;  
+    long carryover = 0;
+    if(diff_usec < 0) { 
+	carryover = -1;
+	diff_usec = 1 - diff_usec;
+    }
+    long diff_sec = tv_done.tv_sec - tv_start.tv_sec - carryover; 
+    printf ("Start -> End: %ld.%06ld\n", diff_sec,diff_usec);
+
     for (u_long i = 0; i < epochs; i++) {
 	printf ("Epoch %lu:\n", i); 
 	printf ("\tEpoch start time: %ld.%06ld\n", ectl[i].tv_start.tv_sec, ectl[i].tv_start.tv_usec);
 	printf ("\tDIFT start time: %ld.%06ld\n", ectl[i].tv_start_dift.tv_sec, ectl[i].tv_start_dift.tv_usec);
 	printf ("\tEpoch end time: %ld.%06ld\n", ectl[i].tv_done.tv_sec, ectl[i].tv_done.tv_usec);
+
+	diff_usec = ectl[i].tv_done.tv_usec - ectl[i].tv_start.tv_usec;  
+	carryover = 0;
+	if(diff_usec < 0) { 
+	    carryover = -1;
+	    diff_usec = 1 - diff_usec;
+	}
+	diff_sec = ectl[i].tv_done.tv_sec - ectl[i].tv_start.tv_sec - carryover; 
+
+	printf ("\tStart -> End: %ld.%06ld\n", diff_sec,diff_usec);
    }
+    
+    fflush(stdout);
 
     close (s);
     return NULL;

@@ -37,6 +37,13 @@ struct epoch_ctl {
     char   inputqname[256];
     pid_t  cpid;
     pid_t  spid;
+    pid_t  tracked_pid;
+    pid_t  waiting_on_rp_group; //ARQUINN -> added
+
+    // For timings
+    struct timeval tv_start;
+    struct timeval tv_start_dift;
+    struct timeval tv_done;
 };
 
 int sync_logfiles (int s)
@@ -261,6 +268,7 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 	    return;
 	} else {
 	    ectl[i].status = STATUS_STARTING;
+	    gettimeofday (&ectl[i].tv_start, NULL);
 	}
     }
 
@@ -268,8 +276,39 @@ void do_dift (int s, struct epoch_hdr& ehdr)
     u_long executing = 0; 
     do {
 	for (u_long i = 0; i < epochs; i++) {
+
+	    rc = -1;
 	    if (ectl[i].status == STATUS_STARTING) {
-		rc = get_attach_status (fd, ectl[i].cpid);
+		
+		/*
+		 * so we need to wait to attach because pin needs to be waiting for us, 
+		 * but we cannot be certain that this cpid is actually the pid we want to wait
+		 * on... 
+		 */
+
+		//this code is awful. Gotta figure out how to do better
+		if(ectl[i].tracked_pid < 0) {
+		    ectl[i].tracked_pid = get_replay_pid(fd, ectl[i].cpid, edata[i].start_pid);		   
+
+		    //need to guarentee that this stuff only happens once. 
+		    if(ectl[i].tracked_pid > 0) {
+			printf("%lu: found %d for cpid %d, start_pid %d\n",i,ectl[i].tracked_pid,ectl[i].cpid, edata[i].start_pid);
+			
+			ectl[i].waiting_on_rp_group = fork(); 
+			if(ectl[i].waiting_on_rp_group == 0) { 
+			    //we want to close out of our sockets here... kinda weird but still. 
+			    close(s);
+			    s = -99999;
+			    wait_for_replay_group(fd,ectl[i].tracked_pid);
+			    return 0;
+			}	
+		    }	 
+		}
+		if(ectl[i].tracked_pid > 0) {
+		    rc = get_attach_status (fd, ectl[i].tracked_pid);
+		}
+
+
 		if (rc > 0) {
 		    pid_t mpid = fork();
 		    if (mpid == 0) {
@@ -283,15 +322,26 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 			args[argcnt++] = cpids;
 			args[argcnt++] = "-t";
 			args[argcnt++] = "../obj-ia32/linkage_data.so";
+
+			//we always want the stop_pid to be present
+			sprintf (stop_pid, "%d", edata[i].stop_pid);
+			args[argcnt++] = "-stop_pid";
+			args[argcnt++] = stop_pid;
+			sprintf (syscalls, "%d", edata[i].stop_syscall);
+			args[argcnt++] = "-l";
+			args[argcnt++] = syscalls;
+
+			sprintf (fork_flags, "%d", edata[i].fork_flags);
+			args[argcnt++] = "-fork_flags";
+			args[argcnt++] = fork_flags;
+
 			if (i < epochs-1 || !ehdr.finish_flag) {
-			    sprintf (syscalls, "%d", edata[i].stop_syscall);
-			    args[argcnt++] = "-l";
-			    args[argcnt++] = syscalls;
 			    args[argcnt++] = "-ao"; // Last epoch does not need to trace to final addresses
 			}
 			if (i > 0 || !ehdr.start_flag) {
 			    args[argcnt++] = "-so";
 			} 
+
 			if (edata[i].filter_syscall) {
 			    sprintf (output_filter, "%u", edata[i].filter_syscall);
 			    args[argcnt++] = "-ofs";
@@ -309,6 +359,7 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 			fprintf (stderr, "execv of pin tool failed, rc=%d, errno=%d\n", rc, errno);
 			return;
 		    } else {
+			gettimeofday (&ectl[i].tv_start_dift, NULL);			
 			ectl[i].status = STATUS_EXECUTING;
 			executing++;
 #ifdef DETAILS			    
@@ -319,18 +370,32 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 	    }
 	}
     } while (executing < epochs);
+
+
 	
     // Wait for all children to complete
-    for (u_long i = 0; i < epochs; i++) {
+    //this was beefed up... we should care about when each individual epoch was finished.
+    u_long epochs_done = 0;
+    do {
 	int status;
-	pid_t wpid = waitpid (ectl[i].cpid, &status, 0);
+	pid_t wpid = waitpid (-1, &status, 0);
 	if (wpid < 0) {
-	    fprintf (stderr, "DIFT waitpid for %d returns %d, errno %d\n", ectl[i].cpid, wpid, errno);
-	    return;
+	    fprintf (stderr, "waitpid returns %d, errno %d\n", rc, errno);
+	    return NULL;
 	} else {
-	    ectl[i].status = STATUS_DONE;
+	    for (u_long i = 0; i < epochs; i++) {
+
+		if (wpid == ectl[i].waiting_on_rp_group) { 
+#ifdef DETAILS
+		    printf ("DIFT of epoch %lu is done\n", i);
+#endif
+		    gettimeofday (&ectl[i].tv_done, NULL);
+		    ectl[i].status = STATUS_DONE;
+		    epochs_done++;
+		}
+	    }
 	}
-    }
+    } while (epochs_done < epochs);
 
     gettimeofday (&tv_done, NULL);
 
@@ -341,15 +406,21 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 	    fprintf (stderr, "Cannot send ack,rc=%d\n", rc);
 	}
     }
-
-    printf ("Dift start time: %ld.%06ld\n", tv_start.tv_sec, tv_start.tv_usec);
-    printf ("Dift end time: %ld.%06ld\n", tv_done.tv_sec, tv_done.tv_usec);
-    if (tv_done.tv_usec >= tv_start.tv_usec) {
-	printf ("Dift time: %ld.%06ld second\n", tv_done.tv_sec-tv_start.tv_sec, tv_done.tv_usec-tv_start.tv_usec);
-    } else {
-	printf ("Dift time: %ld.%06ld second\n", tv_done.tv_sec-tv_start.tv_sec-1, tv_done.tv_usec+1000000-tv_start.tv_usec);
+    //write all of the stats out to files
+    for (u_long i = 0; i < epochs; i++) {
+	sprintf (statsname, "/tmp/dift-stats%lu", i);
+	statsfile = fopen (statsname, "w");
+	if (statsfile == NULL) {
+	    fprintf (stderr, "Cannot create %s, errno=%d\n", statsname, errno);
+	    return NULL;
+	}
+	fprintf (statsfile,"%start time ld\ndift time %ld", 
+		 ms_diff(ectl[i].tv_start_dift, ectl[i].tv_start),
+		 ms_diff(ectl[i].tv_done, ectl[i].tv_start_dift)); 
+	fclose(statsfile);
     }
 
+    printf ("dift finished\n");
     close (s);
     close (fd);
 #endif
@@ -362,7 +433,6 @@ void do_stream (int s, struct epoch_hdr& ehdr)
     gettimeofday (&tv_start, NULL);
 
     u_long epochs = ehdr.epochs;
-
     struct epoch_ctl ectl[epochs];
 
     // Set up shared memory regions for queues
@@ -410,7 +480,7 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	    args[argcnt++] = "stream";
 	    sprintf (dirname, "/tmp/%d.%ld", agg_port,i);
 	    args[argcnt++] = dirname;
-	    sprintf (port, "%ld", agg_port+(i+1));
+	    sprintf (port, "%ld", AGG_BASE_PORT+(i)); 
 	    args[argcnt++] = port;
 	    if (i < epochs-1 || !ehdr.finish_flag) {
 		args[argcnt++] = "-iq";
@@ -478,17 +548,6 @@ void do_stream (int s, struct epoch_hdr& ehdr)
     } else {
 	printf ("Stream time: %ld.%06ld second\n", tv_done.tv_sec-tv_start.tv_sec-1, tv_done.tv_usec+1000000-tv_start.tv_usec);
     }
-	diff_usec = ectl[i].tv_done.tv_usec - ectl[i].tv_start_stream.tv_usec;
-        carryover = 0;
-        if(diff_usec < 0) {
-	    carryover = -1;
-	    diff_usec = 1 - diff_usec;
-	}
-        diff_sec = ectl[i].tv_done.tv_sec - ectl[i].tv_start_stream.tv_sec - carryover;
-	printf ("\tStart -> End: %ld.%06ld\n", diff_sec,diff_usec);
-
-
-   }
     
     fflush(stdout);
     // send results if requeted
