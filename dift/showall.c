@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 
 #include "taint_interface/taint.h"
 #include "taint_interface/taint_creation.h"

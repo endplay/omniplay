@@ -23,17 +23,20 @@ struct cache_info {
     struct timespec mtime;
 };
 
-#define AGG_TYPE_STREAM 0
-#define AGG_TYPE_SEQ    1
+// Possible commands
+#define DO_DIFT         0
+#define AGG_TYPE_STREAM 1
+#define AGG_TYPE_SEQ    2
 
 // Info from description file
 struct epoch_hdr {
     uint32_t epochs;
     bool     start_flag;
     bool     finish_flag;
-    u_char   agg_type;
+    u_char   cmd_type;
     char     flags;
     char     dirname[NAMELEN];
+    char     prev_host[NAMELEN];
     char     next_host[NAMELEN];
 };
 
@@ -43,8 +46,8 @@ struct epoch_data {
     uint32_t stop_syscall;
     uint32_t filter_syscall;
     uint32_t ckpt;
-    uint32_t port;
-    char     hostname[NAMELEN];
+    uint32_t port;              // Aggregation port
+    char     hostname[NAMELEN]; // Aggregation hostname
 };
 
 struct epoch_ack {
@@ -52,20 +55,25 @@ struct epoch_ack {
 };
 
 #define TAINTQSIZE (512*1024*1024)
-#define TAINTENTRIES ((TAINTQSIZE- 64*3)/sizeof(uint32_t))
+#define TAINTENTRIES ((TAINTQSIZE-(sizeof(sem_t)+sizeof(atomic_ulong)*2+64*3))/sizeof(uint32_t))
+struct taintq {
+    sem_t           epoch_sem;
+    char            pad1[64];
+    atomic_ulong    read_index;
+    char            pad2[64];
+    atomic_ulong    write_index;
+    char            pad3[64];
+    uint32_t        buffer[TAINTENTRIES];
+};
 
+/*
 struct taintq {
     static_assert(sizeof(sem_t) <= 4096, "sem_t too big!");
     static_assert(sizeof(atomic_ulong) <= 4096, "atomic_ulong too big!");
     union{sem_t epoch_sem;char unused0_[4096];} __attribute__((aligned (4096))) ; 
     union{atomic_ulong read_index; char unused1_[4096];} __attribute__((aligned (4096))); 
     union{atomic_ulong write_index; char unused2_[4096];} __attribute__((aligned (4096))); 
-
-//    sem_t           epoch_sem;
-//    atomic_ulong    read_index;
-//    atomic_ulong    write_index;
-
-    uint32_t        buffer[TAINTENTRIES];
-};
+    uint32_t buffer[TAINTENTRIES];
+*/
 
 #endif
