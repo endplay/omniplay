@@ -56,7 +56,7 @@ int main (int argc, char* argv[])
     do {
 	// Wait until we can attach pin
 	rc = get_attach_status (fd, cpid);
-    } while (rc != 1);
+    } while (rc <= 0);
     
     gettimeofday (&tv_attach, NULL);
 
@@ -153,6 +153,26 @@ int main (int argc, char* argv[])
     printf ("Tool done time: %ld.%06ld\n", tv_tool_done.tv_sec, tv_tool_done.tv_usec);
     printf ("End time: %ld.%06ld\n", tv_done.tv_sec, tv_done.tv_usec);
 
+    long diff_usec = tv_done.tv_usec - tv_tool_done.tv_usec;  
+    long carryover = 0;
+    if(diff_usec < 0) { 
+	carryover = -1;
+	diff_usec = 1 - diff_usec;
+    }    
+    long diff_sec = tv_done.tv_sec - tv_tool_done.tv_sec - carryover; 
+
+    printf ("Tool -> End: %ld.%06ld\n", diff_sec,diff_usec);
+
+    diff_usec = tv_done.tv_usec - tv_start.tv_usec;  
+    carryover = 0;
+    if(diff_usec < 0) { 
+	carryover = -1;
+	diff_usec = 1 - diff_usec;
+    }
+    diff_sec = tv_done.tv_sec - tv_start.tv_sec - carryover; 
+
+    printf ("Start -> End: %ld.%06ld\n", diff_sec,diff_usec);
+    
 
     //need to unlink the shared memroy region... need to 'recreate' tmpdir b/c it was not done in the parent
 //    sprintf (tmpdir, "/tmp/%d", cpid);

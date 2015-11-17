@@ -195,6 +195,9 @@ int main (int argc, char* argv[])
 			    wait_for_replay_group(fd,epoch[i].tracked_pid);
 			    return 0;
 			}
+		    }
+		    rc = get_attach_status (fd, epoch[i].cpid);
+		    if (rc > 0) {
 			pid_t mpid = fork();
 			if (mpid == 0) {
 			    char cpids[80], syscalls[80], output_filter[80], stop_pid[80];

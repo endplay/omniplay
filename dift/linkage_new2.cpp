@@ -10,6 +10,7 @@
 #include <sched.h>
 #include <errno.h>
 #include <stdint.h>
+#include <netdb.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -20,6 +21,9 @@
 #include <linux/net.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+
+#include <map>
+using namespace std;
 
 #include "util.h"
 #include "list.h"
@@ -32,6 +36,11 @@
 #include "taint_interface/taint_debug.h"
 #include "trace_x.h"
 #include "splice.h"
+#include "taint_nw.h"
+
+#ifdef USE_NW
+int s = -1;
+#endif
 
 // List of available Linkage macros
 // // DO NOT TURN THESE ON HERE. Turn these on in makefile.rules.
@@ -41,7 +50,7 @@
 // #define LINKAGE_FPU
 // #define LINKAGE_SYSCALL              // system call & libc function abstraction
 // #define LINKAGE_CODE
-#define LINKAGE_FDTRACK
+// #define LINKAGE_FDTRACK
 // #define CTRL_FLOW                    // direct control flow
 // #define ALT_PATH_EXPLORATION         // indirect control flow
 // #define CONFAID
@@ -77,25 +86,7 @@
 #endif
 #define SPECIAL_REG(X) (X == LEVEL_BASE::REG_EBP || X == LEVEL_BASE::REG_ESP)
 
-#ifdef HAVE_REPLAY
-int dev_fd; // File descriptor for the replay device
-int get_record_pid(void);
-#endif
-
-void init_logs(void);
-
-//#define USE_CODEFLUSH_TRACK
-// Debug Macros
-// #define TRACE_TAINT_OPS
-
 //#define MMAP_INPUTS
-#define EXEC_INPUTS
-//#define USE_TLS_SCRATCH
-#ifdef USE_TLS_SCRATCH
-REG tls_reg;
-#else
-TLS_KEY tls_key;
-#endif
 //#define EXEC_INPUTS
 
 //ARQUINN: added constant for copyfile
@@ -112,8 +103,10 @@ struct save_state {
 };
 
 /* Global state */
+TLS_KEY tls_key; // Key for accessing TLS. 
 int dev_fd; // File descriptor for the replay device
 int get_record_pid(void);
+void init_logs(void);
 struct thread_data* current_thread; // Always points to thread-local data (changed by kernel on context switch)
 int first_thread = 1;
 int child = 0;
@@ -139,17 +132,20 @@ int filter_x = 0;
 int filter_inputs = 0;
 int print_all_opened_files = 0;
 const char* filter_read_filename = NULL;
-int segment_length = 0;
+u_long segment_length = 0;
 int splice_output = 0;
 int all_output = 0;
 const char* splice_semname = NULL;
 const char* splice_input = NULL;
-taint_t* pregs = NULL; // Only works for single-threaded program
 u_long num_merge_entries = 0x40000000/(sizeof(taint_t)*2);
 u_long inst_cnt = 0;
+
 int stop_pid = 0;
-const char* fork_flags = NULL; //we're going to have to create an array for this thing. 
-u_long fork_flags_offset = 0;
+map<pid_t,struct thread_data*> active_threads;
+u_long* ppthread_log_clock = NULL;
+const char* fork_flags = NULL;
+int fork_flags_index = 0;
+
 
 
 struct slab_alloc open_info_alloc;
@@ -185,7 +181,7 @@ KNOB<bool> KnobTraceX(KNOB_MODE_WRITEONCE,
 KNOB<bool> KnobRecordOpenedFiles(KNOB_MODE_WRITEONCE,
     "pintool", "o", "",
     "print all opened files");
-KNOB<int> KnobSegmentLength(KNOB_MODE_WRITEONCE,
+KNOB<unsigned int> KnobSegmentLength(KNOB_MODE_WRITEONCE,
     "pintool", "l", "",
     "segment length"); //FIXME: take into consideration offset of being attached later. Remember, this is to specify where to kill application.
 KNOB<bool> KnobSpliceOutput(KNOB_MODE_WRITEONCE,
@@ -194,22 +190,24 @@ KNOB<bool> KnobSpliceOutput(KNOB_MODE_WRITEONCE,
 KNOB<bool> KnobAllOutput(KNOB_MODE_WRITEONCE,
     "pintool", "ao", "",
     "generate output file of changed taints");
-KNOB<string> KnobSpliceInput(KNOB_MODE_WRITEONCE,
-    "pintool", "si", "",
-    "input splice file");
-KNOB<string> KnobSpliceSemaphore(KNOB_MODE_WRITEONCE,
-    "pintool", "sem", "",
-    "input splice semaphore");
 KNOB<int> KnobMergeEntries(KNOB_MODE_WRITEONCE,
     "pintool", "me", "",
-    "merge entries"); //FIXME: take into consideration offset of being attached later. Remember, this is to specify where to kill application.
+    "merge entries"); 
+KNOB<string> KnobNWHostname(KNOB_MODE_WRITEONCE,
+    "pintool", "host", "",
+    "hostname for nw output");
+KNOB<int> KnobNWPort(KNOB_MODE_WRITEONCE,
+    "pintool", "port", "",
+    "port for nw output");
 KNOB<int> KnobStopPid(KNOB_MODE_WRITEONCE,
-    "pintool", "spid", "",
-    "pid for the last syscall");
-
+    "pintool", "stop_pid", "",
+    "the pid of the process that we should stop on");
 KNOB<string> KnobForkFlags(KNOB_MODE_WRITEONCE,
-    "pintool", "ff", "",
-    "fork flags string");
+    "pintool", "fork_flags", "",
+    "flags for which way to go on each fork");
+
+
+//FIXME: take into consideration offset of being attached later. Remember, this is to specify where to kill application.
 
 
 // Specific output functions
@@ -225,6 +223,7 @@ void instrument_before_badmemcpy(void) {
 #endif
 
 //ARQUINN: added helper methods
+#ifndef USE_NW
 static void copy_file(int src, int dest) { 
     char buff[COPY_BUFFER_SIZE]; 
     int read_bytes, written_bytes,rc;
@@ -269,6 +268,7 @@ static void copy_file(FILE* src, FILE* dest) {
 	fprintf(stderr, "There was an error reading file (FILE*) rc %d, errno %d\n",read_chars,errno);
     }
 }
+#endif
 
 static int terminated = 0;
 extern int dump_mem_taints (int fd);
@@ -278,44 +278,63 @@ extern int dump_reg_taints_start (int fd, taint_t* pregs);
 
 static void dift_done ()
 {
-    int taint_fd;
-    char taint_structures_file[256];
     struct timeval tv;
 
     if (terminated) return;  // Only do this once
     terminated = 1;
 
-    if (splice_input && splice_input[0]) {
-	// Also need to consider addresses passed from previous segment as output
-	splice_after_segment (splice_input, splice_semname, outfd);
-    }
-
+#ifndef USE_NW
+    char taint_structures_file[256];
     snprintf(taint_structures_file, 256, "%s/taint_structures", group_directory);
-    
-    taint_fd = open(taint_structures_file, O_WRONLY | O_CREAT | O_TRUNC | O_LARGEFILE, 0644);
+    int taint_fd = open(taint_structures_file, O_WRONLY | O_CREAT | O_TRUNC | O_LARGEFILE, 0644);
     assert(taint_fd > 0);
+#endif
     
     if (all_output) {
 	gettimeofday(&tv, NULL);
 	printf("dump start dir %s %lu sec %lu usec\n", group_directory, tv.tv_sec, tv.tv_usec);
 
 	if (splice_output) {
-	    dump_reg_taints(taint_fd, pregs);
+	    // Dump out the active registers in order of the record thread id
+	    for (map<pid_t,struct thread_data*>::iterator iter = active_threads.begin(); 
+		 iter != active_threads.end(); iter++) {
+	      //printf ("dumping record pid %d regs\n", iter->second->record_pid);
+#ifdef USE_NW
+		dump_reg_taints(s, iter->second->shadow_reg_table);
+#else
+		dump_reg_taints(taint_fd, iter->second->shadow_reg_table);
+#endif
+	    }
+#ifdef USE_NW
+	    dump_mem_taints(s);
+#else 
 	    dump_mem_taints(taint_fd);
+#endif
 	} else {
-	    dump_reg_taints_start(taint_fd, pregs);
+	    // Dump out the active registers in order of the record thread id
+	    for (map<pid_t,struct thread_data*>::iterator iter = active_threads.begin(); 
+		 iter != active_threads.end(); iter++) {
+	      //printf ("dumping record pid %d regs\n", iter->second->record_pid);
+#ifdef USE_NW
+		dump_reg_taints_start(s, iter->second->shadow_reg_table);
+#else
+		dump_reg_taints_start(taint_fd, iter->second->shadow_reg_table);
+#endif
+	    }
+#ifdef USE_NW
+	    dump_mem_taints_start(s);
+#else 
 	    dump_mem_taints_start(taint_fd);
+#endif
 	}
     }
+#ifndef USE_NW
     close(taint_fd);
+#endif
+    fclose (log_f);
 
     finish_and_print_taint_stats(stdout);
-#if 0
-    gettimeofday(&tv, NULL);
-    fprintf(stderr, "time end %lu sec %lu usec\n", tv.tv_sec, tv.tv_usec);
-#endif
-    printf("DIFT done\n");
-
+    printf("DIFT done at %ld\n", global_syscall_cnt);
 }
 
 ADDRINT find_static_address(ADDRINT ip)
@@ -344,10 +363,10 @@ static inline void increment_syscall_cnt (int syscall_num)
 {
     // ignore pthread syscalls, or deterministic system calls that we don't log (e.g. 123, 186, 243, 244)
     if (!(syscall_num == 17 || syscall_num == 31 || syscall_num == 32 || 
-            syscall_num == 35 || syscall_num == 44 || syscall_num == 53 || 
-            syscall_num == 56 || syscall_num == 98 || syscall_num == 119 ||
-            syscall_num == 123 || syscall_num == 186 ||
-            syscall_num == 243 || syscall_num == 244)) {
+	  syscall_num == 35 || syscall_num == 44 || syscall_num == 53 || 
+	  syscall_num == 56 || syscall_num == 58 || syscall_num == 98 || 
+	  syscall_num == 119 || syscall_num == 123 || syscall_num == 186 ||
+	  syscall_num == 243 || syscall_num == 244)) {
         if (current_thread->ignore_flag) {
             if (!(*(int *)(current_thread->ignore_flag))) {
                 global_syscall_cnt++;
@@ -357,8 +376,9 @@ static inline void increment_syscall_cnt (int syscall_num)
             global_syscall_cnt++;
             current_thread->syscall_cnt++;
         }
-#ifdef DEBUGTRACE
-	printf ("syscall cnt %lu num %d\n", global_syscall_cnt, syscall_num);
+#if 0
+	fprintf (log_f, "pid %d syscall %d global syscall cnt %lu num %d clock %ld\n", current_thread->record_pid, 
+		 current_thread->syscall_cnt, global_syscall_cnt, syscall_num, *ppthread_log_clock);
 #endif
     }
 }
@@ -493,7 +513,7 @@ static inline void sys_read_stop(int rc)
     struct read_info* ri = (struct read_info*) &current_thread->read_info_cache;
 
     // If global_syscall_cnt == 0, then read handled in previous epoch
-    if (rc > 0 && global_syscall_cnt > 0) {
+    if (rc > 0) {
         struct taint_creation_info tci;
         char* channel_name = (char *) "--";
 
@@ -514,7 +534,7 @@ static inline void sys_read_stop(int rc)
         tci.syscall_cnt = current_thread->syscall_cnt;
         tci.offset = 0;
         tci.fileno = read_fileno;
-        tci.data = NULL;
+        tci.data = 0;
 
         LOG_PRINT ("Create taints from buffer sized %d at location %#lx\n",
                         rc, (unsigned long) ri->buf);
@@ -549,7 +569,7 @@ static inline void sys_pread_stop(int rc)
     struct read_info* ri = (struct read_info*) &current_thread->read_info_cache;
 
     // If global_syscall_cnt == 0, then handled in previous epoch
-    if (rc > 0 && global_syscall_cnt > 0) {
+    if (rc > 0) {
         struct taint_creation_info tci;
         char* channel_name = (char *) "--";
 
@@ -570,7 +590,7 @@ static inline void sys_pread_stop(int rc)
         tci.syscall_cnt = current_thread->syscall_cnt;
         tci.offset = 0;
         tci.fileno = read_fileno;
-        tci.data = NULL;
+        tci.data = 0;
 
         LOG_PRINT ("Create taints from buffer sized %d at location %#lx\n",
                         rc, (unsigned long) ri->buf);
@@ -584,7 +604,6 @@ static inline void sys_pread_stop(int rc)
 #ifdef LINKAGE_FDTRACK
 static void sys_select_start(int nfds, fd_set* readfds, fd_set* writefds, fd_set* exceptfds, struct timeval* timeout)
 {
-    fprintf(stderr, "sys_select started\n");
     current_thread->select_info_cache.nfds = nfds;
     current_thread->select_info_cache.readfds = readfds;
     current_thread->select_info_cache.writefds = writefds;
@@ -594,10 +613,8 @@ static void sys_select_start(int nfds, fd_set* readfds, fd_set* writefds, fd_set
 
 static void sys_select_stop(int rc)
 {
-    fprintf(stderr, "sys_select returns %d\n", rc);
-
     // If global_syscall_cnt == 0, then handled in previous epoch
-    if (rc != -1 && global_syscall_cnt > 0) {
+    if (rc != -1) {
         // create a taint
         struct taint_creation_info tci;
         tci.rg_id = current_thread->rg_id;
@@ -630,7 +647,7 @@ static void sys_mmap_stop(int rc)
     struct mmap_info* mmi = (struct mmap_info*) current_thread->save_syscall_info;
 #ifdef MMAP_INPUTS
     // If global_syscall_cnt == 0, then handled in previous epoch
-    if (rc != -1 && (mmi->fd != -1) && global_syscall_cnt > 0) {
+    if (rc != -1 && (mmi->fd != -1)) {
         fprintf(stderr, "mmap stop fd %d\n", mmi->fd);
         int read_fileno = -1;
         struct open_info* oi = NULL;
@@ -650,7 +667,7 @@ static void sys_mmap_stop(int rc)
             tci.syscall_cnt = current_thread->syscall_cnt;
             tci.offset = 0;
             tci.fileno = read_fileno;
-            tci.data = NULL;
+            tci.data = 0;
 
             fprintf(stderr, "mmap: call create taints from buffer %#lx, %d\n", (u_long) rc, mmi->length);
             create_taints_from_buffer ((void *) rc, mmi->length, &tci, tokens_fd,
@@ -681,7 +698,7 @@ static inline void sys_write_stop(int rc)
     struct write_info* wi = (struct write_info *) &current_thread->write_info_cache;
     int channel_fileno = -1;
     // If syscall cnt = 0, then write handled in previous epoch
-    if (rc > 0 && global_syscall_cnt > 0) {
+    if (rc > 0) {
         struct taint_creation_info tci;
         SYSCALL_DEBUG (stderr, "write_stop: sucess write of size %d\n", rc);
 
@@ -706,7 +723,7 @@ static inline void sys_write_stop(int rc)
         tci.offset = 0;
         tci.fileno = channel_fileno;
 
-        LOG_PRINT ("Output buffer result syscall %ld, %#lx\n", tci.syscall_cnt, (u_long) wi->buf);
+        //LOG_PRINT ("Output buffer result syscall %zd, %#lx\n", tci.syscall_cnt, (u_long) wi->buf);
         output_buffer_result (wi->buf, rc, &tci, outfd);
     }
     memset(&current_thread->write_info_cache, 0, sizeof(struct write_info));
@@ -727,7 +744,7 @@ static inline void sys_writev_start(int fd, struct iovec* iov, int count)
 static inline void sys_writev_stop(int rc)
 {
     // If syscall cnt = 0, then write handled in previous epoch
-    if (rc > 0 && global_syscall_cnt > 0) {
+    if (rc > 0) {
         struct taint_creation_info tci;
         struct writev_info* wvi = (struct writev_info *) &current_thread->writev_info_cache;
         int channel_fileno = -1;
@@ -914,7 +931,7 @@ static void sys_recv_stop(int rc)
     SYSCALL_DEBUG (stderr, "Pid %d syscall recv returns %d\n", PIN_GetPid(), rc);
 
     // If syscall cnt = 0, then write handled in previous epoch
-    if (rc > 0 && global_syscall_cnt > 0) {
+    if (rc > 0) {
         struct taint_creation_info tci;
         char* channel_name = (char *) "--";
         int read_fileno = -1;
@@ -936,7 +953,7 @@ static void sys_recv_stop(int rc)
         tci.syscall_cnt = current_thread->syscall_cnt;
         tci.offset = 0;
         tci.fileno = read_fileno;
-        tci.data = NULL;
+        tci.data = 0;
 
         LOG_PRINT ("Create taints from buffer sized %d at location %#lx\n",
                         rc, (unsigned long) ri->buf);
@@ -974,7 +991,7 @@ static void sys_recvmsg_stop(int rc)
     struct recvmsg_info* rmi = (struct recvmsg_info *) current_thread->save_syscall_info;
 
     // If syscall cnt = 0, then write handled in previous epoch
-    if (rc > 0 && global_syscall_cnt > 0) {
+    if (rc > 0) {
         struct taint_creation_info tci;
         char* channel_name = (char *) "recvmsgsocket";
         u_int i;
@@ -994,7 +1011,7 @@ static void sys_recvmsg_stop(int rc)
         tci.syscall_cnt = current_thread->syscall_cnt;
         tci.offset = 0;
         tci.fileno = read_fileno;
-        tci.data = NULL;
+        tci.data = 0;
 
         for (i = 0; i < rmi->msg->msg_iovlen; i++) {
             struct iovec* vi = (rmi->msg->msg_iov + i);
@@ -1032,7 +1049,7 @@ static void sys_sendmsg_stop(int rc)
     int channel_fileno = -1;
 
     // If syscall cnt = 0, then write handled in previous epoch
-    if (rc > 0 && global_syscall_cnt > 0) {
+    if (rc > 0) {
         struct taint_creation_info tci;
         SYSCALL_DEBUG (stderr, "sendmsg_stop: sucess sendmsg of size %d\n", rc);
         if (monitor_has_fd(open_socks, smi->fd)) {
@@ -1217,10 +1234,13 @@ void instrument_syscall(ADDRINT syscall_num,
 			ADDRINT syscallarg3, ADDRINT syscallarg4, ADDRINT syscallarg5)
 {   
     int sysnum = (int) syscall_num;
-    current_thread->sysnum = sysnum;
+
+    // Because of Pin restart issues, this function alone has to use PIN thread-specific data
+    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+    tdata->sysnum = sysnum;
 
 #ifdef TRACE_TAINT_OPS
-    trace_syscall_op(current_thread,
+    trace_syscall_op(tdata,
 		     trace_taint_outfd,
 		     0, // TODO Fill in ip later
 		     PIN_ThreadId(),
@@ -1228,16 +1248,40 @@ void instrument_syscall(ADDRINT syscall_num,
 		     sysnum, global_syscall_cnt);
 #endif
     if (sysnum == 31) {
-	current_thread->ignore_flag = (u_long) syscallarg1;
+	tdata->ignore_flag = (u_long) syscallarg1;
     }
     if (sysnum == 45 || sysnum == 91 || sysnum == 120 || sysnum == 125 || 
 	sysnum == 174 || sysnum == 175 || sysnum == 190 || sysnum == 192) {
 	check_clock_before_syscall (dev_fd, (int) syscall_num);
     }
+    if (sysnum == 252) {
+	//ARQUINN: I'm not certain this will work for my stuff...? 
+	if((!stop_pid || stop_pid == get_record_pid())) {
+	    printf ("pid %d, rec_pid %d: calling group exit - cleanup time\n",  PIN_GetPid() , get_record_pid());	
+	    dift_done();
+
+	    //if we have multple threads, we don't have many procs, so we can exit
+	    if(active_threads.size() > 1) 
+		try_to_exit(dev_fd, PIN_GetPid()); // tell all the other processes to bail
+
+	}
+    }
+
+    if ((!stop_pid || stop_pid == get_record_pid()) &&
+	(segment_length && *ppthread_log_clock >= segment_length)) {
+	// Done with this replay - do exit stuff now because we may not get clean unwind
+	printf("Pin terminating at Pid %d/%d, entry to syscall %ld, term. clock %d/%ld cur. clock %ld\n", 
+	       PIN_GetPid(), get_record_pid(),global_syscall_cnt, stop_pid, segment_length, *ppthread_log_clock);
+
+	dift_done ();
+	try_to_exit(dev_fd, PIN_GetPid());
+        PIN_ExitApplication(0);
+    }
+	
     syscall_start(sysnum, syscallarg0, syscallarg1, syscallarg2, 
 		  syscallarg3, syscallarg4, syscallarg5);
     
-    current_thread->app_syscall = syscall_num;
+    tdata->app_syscall = syscall_num;
 }
 
 void syscall_after (ADDRINT ip)
@@ -1260,17 +1304,6 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
     // reset the syscall number after returning from system call
     increment_syscall_cnt (current_thread->sysnum);
     current_thread->sysnum = 0;
-    
-    //segment_length needs to also have a pid... so we can ignore weirdness with fork
-    if (segment_length && global_syscall_cnt == (unsigned long) segment_length + 1 &&
-	(!stop_pid || (stop_pid && stop_pid == get_record_pid()))){
-
-	// Done with this replay - do exit stuff now because we may not get clean unwind
-	printf("Pin terminating at Pid %d, syscall %d\n", PIN_GetPid(), current_thread->syscall_cnt);
-	dift_done ();
-	try_to_exit(dev_fd, PIN_GetPid());
-        PIN_ExitApplication(0);
-    }
 }
 
 void track_inst(INS ins, void* data) 
@@ -13378,16 +13411,18 @@ void instrument_pmovmskb(INS ins)
 #endif
 }
 
-#ifdef TRACE_TAINT
+#if 0
 void trace_inst(ADDRINT ptr)
 {
-    PIN_LockClient();
-    printf ("[INST] Pid %d (tid: %d) (record %d) cnt %ld - %#x\n", PIN_GetPid(), PIN_GetTid(), get_record_pid(), inst_cnt, ptr);
-    if (IMG_Valid(IMG_FindByAddress(ptr))) {
-	printf("%s -- img %s static %#x\n", RTN_FindNameByAddress(ptr).c_str(), IMG_Name(IMG_FindByAddress(ptr)).c_str(), find_static_address(ptr));
+    if (detailed_debugging) {
+	PIN_LockClient();
+	fprintf (log_f, "[INST] Pid %d (tid: %d) (record %d) syscall %ld - %#x\n", PIN_GetPid(), PIN_GetTid(), get_record_pid(), global_syscall_cnt, ptr);
+	if (IMG_Valid(IMG_FindByAddress(ptr))) {
+	    fprintf(log_f, "%s -- img %s static %#x\n", RTN_FindNameByAddress(ptr).c_str(), IMG_Name(IMG_FindByAddress(ptr)).c_str(), find_static_address(ptr));
+	}
+	PIN_UnlockClient();
+	fflush (log_f);
     }
-    PIN_UnlockClient();
-    inst_cnt++;
 }
 #endif
 
@@ -13400,7 +13435,7 @@ void instruction_instrumentation(INS ins, void *v)
     opcode = INS_Opcode(ins);
     category = INS_Category(ins);
 
-#ifdef TRACE_TAINT
+#if 0
     INS_InsertCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_inst),
                     IARG_INST_PTR,
@@ -14016,8 +14051,39 @@ BOOL follow_child(CHILD_PROCESS child, void* data)
 
 void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
 {
-    PRINTX(stderr, "AfterForkInChild\n");
+    PRINTX(stderr, "%d,%d:AfterForkInChild\n", PIN_GetPid(),get_record_pid());
 
+    fclose(log_f); 
+    log_f = NULL;
+    init_logs();
+
+    //for now there is no change for not using the network
+#ifdef USE_NW 
+    //we use the fork_flags to determine which path to follow: 
+    //means that the fork_flag was a 0... so we need to make the outfd's all our bs value:
+    PRINTX(stderr, "\t fork_flags %s\n",fork_flags);
+    PRINTX(stderr, "\t fork_flags_index %d\n",fork_flags_index);
+    PRINTX(stderr, "\t fork_flags char %d\n",fork_flags[fork_flags_index] - '0');
+    if(fork_flags && !(fork_flags[fork_flags_index++] - '0')) { 
+	PRINTX(stderr, "\tnot following child\n");
+	//close the sockets and assign them to some garbage. 
+	close(outfd);
+	close(tokens_fd);
+
+	//null out the pin_addr stuffs
+//	fprintf(stderr, "\t calling set_pin_addr and Pin_detach\n");
+//	int thread_ndx;
+//	set_pin_addr (dev_fd, 2, current_thread, (void **) &current_thread, &thread_ndx);
+//	PIN_Detach(); //detach pind...
+	  	    
+	outfd = -99999;
+	tokens_fd = -99999;
+	s = -99999;
+    }
+    else { 
+	PRINTX(stderr, "\tfollowing child\n");
+    }
+#else
     /* grab the old file descriptors for things that we're going to have to copy
      * - close the old log, open a new log
      * - copy the filenames file
@@ -14026,11 +14092,6 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
      * 
      * are there any log files and things that need to be cleaned? 
      */
-    
-    fclose(log_f); 
-    log_f = NULL;
-    init_logs();
-
     int record_pid = get_record_pid();
     FILE* filenames_f_old = filenames_f; 
     int tokens_fd_old = tokens_fd;
@@ -14043,8 +14104,6 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
       fprintf(stderr, "Could not open filenames mapping file %s\n", filename_mapping);
       exit(-1);
     }
-
-   
     init_filename_mapping(filenames_f);
 
     char name[256];
@@ -14054,7 +14113,6 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
       fprintf(stderr, "Could not open tokens file %s\n", name);
       exit(-1);
     }
-
 
     char output_file_name[256];
     snprintf(output_file_name, 256, "%s/dataflow.result.%d", group_directory, record_pid);
@@ -14072,91 +14130,52 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
     
     close(tokens_fd_old);
     fclose(filenames_f_old);
-
-//    fprintf(stderr, "fork_flags %s\n",fork_flags);
-    if(strlen(fork_flags) && 
-       strlen(fork_flags) == fork_flags_offset &&
-       fork_flags[fork_flags_offset] == 0) { 
-	// a 0 here means we really oughta detach
-	
-	PIN_Detach(); //does this work....? 
-    }
-    else{ 
-	fork_flags_offset++;
-    }
-
-
+#endif
 
     current_thread->record_pid = get_record_pid();
     // reset syscall index for thread
     current_thread->syscall_cnt = 0; //not ceratin that this is right anymore.. 
 }
 
+#ifdef USE_NW
 void AfterForkInParent(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
 {
-    fprintf(stderr, "AfterForkInParent\n");
+    PRINTX(stderr, "%d,%d:AfterForkInParent\n", PIN_GetPid(),get_record_pid());
 
-    /* grab the old file descriptors for things that we're going to have to copy
-     * - close the old log, open a new log
-     * - copy the filenames file
-     * - copy the tokens file
-     * - creating a new output file
-     * 
-     * are there any log files and things that need to be cleaned? 
-     */
-    
-    //get_record_pid won't work.. 
-//    int record_pid = get_record_pid();
 
-    int record_pid = 1; //For now...
-    FILE* filenames_f_child;
-    int tokens_fd_child;
+    //we use the fork_flags to determine which path to follow: 
+    //means that the fork_flag was a 1... so we need to make the outfd's all our bs value:
+    PRINTX(stderr, "\t fork_flags %s\n",fork_flags);
+    PRINTX(stderr, "\t fork_flags_index %d\n",fork_flags_index);
+    PRINTX(stderr, "\t fork_flags char %d\n",fork_flags[fork_flags_index] - '0');
+    if(fork_flags && fork_flags[fork_flags_index++] - '0' ) { 
+	PRINTX(stderr, "\t not following parent\n");
+	//close the sockets and assign them to some garbage. 
+	close(outfd);
+	close(tokens_fd);
 
-    //open new filenames
-    char filename_mapping[256];
-    char name[256];
+	//null out the pin_addr stuffs
+//	fprintf(stderr, "\t calling set_pin_addr and Pin_detach\n");
+	//doesn't even matter
+//	int thread_ndx;
+//	set_pin_addr (dev_fd, 2, current_thread, (void **) &current_thread, &thread_ndx);
+//	PIN_Detach(); //detach pind...
 
-    snprintf(filename_mapping, 256, "%s/filenames.%d", group_directory, record_pid);
-    filenames_f_child = fopen(filename_mapping, "w");
-    if (!filenames_f) {
-      fprintf(stderr, "Could not open filenames mapping file %s\n", filename_mapping);
-      exit(-1);
+	    
+	outfd = -99999;
+	tokens_fd = -99999;
+	s = -99999;
     }
-
-    snprintf(name, 256, "%s/tokens.%d", group_directory, record_pid);
-    tokens_fd_child = open(name, O_RDWR | O_CREAT | O_TRUNC, 0644);
-    if (tokens_fd == -1) {
-      fprintf(stderr, "Could not open tokens file %s\n", name);
-      exit(-1);
-    }
-
-    //copy the files and close the old ones 
-    PRINTX(stderr, "\t- record_pid %d\n", record_pid);
-    copy_file(tokens_fd, tokens_fd_child);
-    copy_file(filenames_f, filenames_f_child);     
-    close(tokens_fd_child);
-    fclose(filenames_f_child);
-
-//    fprintf(stderr, "fork_flags %s\n",fork_flags);
-    if(strlen(fork_flags) && 
-       strlen(fork_flags) == fork_flags_offset &&
-       fork_flags[fork_flags_offset] == 1) { 
-	// a 1 here means we really oughta detach
-	
-	PIN_Detach(); //does this work....? 
-    }
-    else{ 
-	fork_flags_offset++;
+    else { 
+	PRINTX(stderr, "\tfollowing parent\n");
     }
 }
-
-
-
+#endif
 
 void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 {
     struct thread_data* ptdata;
-
+    
     // TODO Use slab allocator
     ptdata = (struct thread_data *) malloc (sizeof(struct thread_data));
     if (ptdata == NULL) {
@@ -14165,21 +14184,28 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
     }
     assert(ptdata);
     memset(ptdata, 0, sizeof(struct thread_data));
-    if (splice_output) {
-	// FIXME - use unique values for multithreaded programs
-	for (int i = 0; i < NUM_REGS * REG_SIZE; i++) {
-	    ptdata->shadow_reg_table[i] = i+1; // Guaranteed to not be a useful part of the address space
-	}
-    }
-    pregs = ptdata->shadow_reg_table;
 
     ptdata->threadid = threadid;
     ptdata->app_syscall = 0;
     ptdata->record_pid = get_record_pid();
     get_record_group_id(dev_fd, &(ptdata->rg_id));
 
-    current_thread = ptdata;
-    set_pin_addr (dev_fd, (u_long) &(ptdata->app_syscall), ptdata, (void **) &current_thread);
+    int thread_ndx;
+    long thread_status = set_pin_addr (dev_fd, (u_long) &(ptdata->app_syscall), ptdata, (void **) &current_thread, &thread_ndx);
+    //printf ("Thread %d gets rc %ld ndx %d from set_pin_addr\n", ptdata->record_pid, thread_status, thread_ndx);
+    if (thread_status < 2) {
+	current_thread = ptdata;
+    }
+    PIN_SetThreadData (tls_key, ptdata, threadid);
+
+    if (splice_output && thread_status > 0) {
+	int base = (NUM_REGS*REG_SIZE)*thread_ndx;
+	//printf ("Thread %d gets reg_taints starting at %d\n", ptdata->record_pid, base+1);
+	for (int i = 0; i < NUM_REGS * REG_SIZE; i++) {
+	    ptdata->shadow_reg_table[i] = base+i+1; // For small number of threads, not part of AS
+	}
+    }
+
     if (child) {
         restore_state_from_disk(ptdata);
     }
@@ -14209,6 +14235,9 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
         }
 
         if (tokens_fd == -1) {
+#ifdef USE_NW
+	    tokens_fd = s;
+#else
             char name[256];
             snprintf(name, 256, "%s/tokens", group_directory);
 	    //ARQUINN: changed so that we can read this file if forking
@@ -14217,8 +14246,12 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
                 fprintf(stderr, "Could not open tokens file %s\n", name);
                 exit(-1);
             }
+#endif
         }
         if (outfd == -1) {
+#ifdef USE_NW
+	    outfd = s;
+#else
             char output_file_name[256];
             snprintf(output_file_name, 256, "%s/dataflow.result", group_directory);
             outfd = open(output_file_name, O_CREAT | O_TRUNC | O_LARGEFILE | O_RDWR, 0644);
@@ -14226,6 +14259,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
                 fprintf(stderr, "could not open output file %s, errno %d\n", output_file_name, errno);
                 exit(-1);
             }
+#endif
         }
 
         if (trace_x && xoutput_fd == -1) {
@@ -14246,24 +14280,21 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
         tci.syscall_cnt = ptdata->syscall_cnt;
         tci.offset = 0;
         tci.fileno = FILENO_ARGS;
-        tci.data = NULL;
-	
-	if(args) {
-	    while (1) {
-		char* arg;
-		arg = *args;
-		// args ends with a NULL
-		if (!arg) {
-		    break;
-		}
-		LOG_PRINT ("arg is %s\n", arg);
-		tci.offset = acc;
-		create_taints_from_buffer(arg, strlen(arg) + 1, &tci, tokens_fd,
-					  (char *) "EXEC_ARG");
-		acc += strlen(arg) + 1;
-		args += 1;
-	    }
-	}
+        tci.data = 0;
+        while (1) {
+            char* arg;
+            arg = *args;
+            // args ends with a NULL
+            if (!arg) {
+                break;
+            }
+            LOG_PRINT ("arg is %s\n", arg);
+            tci.offset = acc;
+            create_taints_from_buffer(arg, strlen(arg) + 1, &tci, tokens_fd,
+                                                            (char *) "EXEC_ARG");
+            acc += strlen(arg) + 1;
+            args += 1;
+        }
 
         // Retrieve the location of the env. var from the kernel
         args = (char **) get_env_vars (dev_fd);
@@ -14301,6 +14332,13 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
         }
     }
 #endif
+    active_threads[ptdata->record_pid] = ptdata;
+}
+
+void thread_fini (THREADID threadid, const CONTEXT* ctxt, INT32 code, VOID* v)
+{
+    struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, threadid);
+    active_threads.erase(tdata->record_pid);
 }
 
 void init_logs(void)
@@ -14330,7 +14368,15 @@ void init_logs(void)
 
 void fini(INT32 code, void* v)
 {
-    dift_done ();
+    //ignore finishes from tracked, but unimportant processes
+    if((!stop_pid || stop_pid == get_record_pid())) {
+	printf ("pid %d, rec_pid %d: calling fini\n",  PIN_GetPid() , get_record_pid());	
+	dift_done();
+
+	//if we have multple threads, we don't have many procs, so we can exit
+	if(active_threads.size() > 1) 
+	    try_to_exit(dev_fd, PIN_GetPid()); // tell all the other processes to bail
+    }
 }
 
 #if 0
@@ -14362,6 +14408,8 @@ int main(int argc, char** argv)
         exit(-1);
     }
 
+    tls_key = PIN_CreateThreadDataKey(0);
+
     // Intialize the replay device
     rc = devspec_init (&dev_fd);
     if (rc < 0) return rc;
@@ -14385,15 +14433,44 @@ int main(int argc, char** argv)
     segment_length = KnobSegmentLength.Value();
     splice_output = KnobSpliceOutput.Value();
     all_output = KnobAllOutput.Value();
-    splice_input = KnobSpliceInput.Value().c_str();
-    splice_semname = KnobSpliceSemaphore.Value().c_str();
     stop_pid = KnobStopPid.Value();
-    fork_flags = KnobForkFlags.Value().c_str(); //not positive how this should be handled. 
-    fork_flags_offset = 0;
+    fork_flags = KnobForkFlags.Value().c_str();
+    fork_flags_index = 0;
 
     if (KnobMergeEntries.Value() > 0) {
 	num_merge_entries = KnobMergeEntries.Value();
     }
+
+#ifdef USE_NW
+    // Open a connection to the 64-bit consumer porocess
+    const char* hostname = KnobNWHostname.Value().c_str();
+    int port = KnobNWPort.Value();
+    
+    struct hostent* hp = gethostbyname (hostname);
+    if (hp == NULL) {
+	fprintf (stderr, "Invalid host %s, errno=%d\n", hostname, h_errno);
+	return -1;
+    }
+
+    s = socket (AF_INET, SOCK_STREAM, 0);
+    if (s < 0) {
+	fprintf (stderr, "Cannot create socket, errno=%d\n", errno);
+	return -1;
+    }
+
+    struct sockaddr_in addr;
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    memcpy (&addr.sin_addr, hp->h_addr, hp->h_length);
+
+    rc = connect (s, (struct sockaddr *) &addr, sizeof(addr));
+
+    if (rc < 0) {
+	fprintf (stderr, "Cannot connect to socket (host %s, port %d), errno=%d\n", hostname, port, errno);
+	return -1;
+    }
+#endif
+
 
     init_logs();
     init_taint_structures(group_directory);
@@ -14406,6 +14483,10 @@ int main(int argc, char** argv)
     if (!open_x_fds) {
         open_x_fds = new_xray_monitor(0);
     }
+
+    // Try to map the log clock for this epoch
+    ppthread_log_clock = map_shared_clock(dev_fd);
+    //printf ("Log clock is %p, value is %ld\n", ppthread_log_clock, *ppthread_log_clock);
 
     //fprintf(stderr, "starting init_slab_allocs\n");
     init_slab_allocs();
@@ -14456,18 +14537,21 @@ int main(int argc, char** argv)
     }
 
     PIN_AddThreadStartFunction(thread_start, 0);
+    PIN_AddThreadFiniFunction(thread_fini, 0);
     PIN_AddFiniFunction(fini, 0);
 
     main_prev_argv = argv;
 
-    INS_AddInstrumentFunction(track_inst, 0);
+    INS_AddInstrumentFunction(track_inst, 0); // Fixme - this should be in the routing below I would think
     INS_AddInstrumentFunction(instruction_instrumentation, 0);
 
     // Register a notification handler that is called when the application
     // forks a new process
 
     PIN_AddForkFunction(FPOINT_AFTER_IN_CHILD, AfterForkInChild, 0);
-
+#ifdef USE_NW
+    PIN_AddForkFunction(FPOINT_AFTER_IN_PARENT, AfterForkInParent, 0);
+#endif
 
     TRACE_AddInstrumentFunction (track_trace, 0);
     RTN_AddInstrumentFunction(track_function, 0);
@@ -14477,7 +14561,6 @@ int main(int argc, char** argv)
 #endif
 
     PIN_AddSyscallExitFunction(instrument_syscall_ret, 0);
-    //fprintf(stderr, "Starting the linkage Pin tool\n");
 #ifdef HEARTBLEED
     fprintf(stderr, "heartbleed defined\n");
 #endif

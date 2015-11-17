@@ -55,7 +55,7 @@ int main(int argc, char** argv)
 		if (epoch_cnt == TARGET) {
 		    addr = *((u_long *) pout);
 		    value = *((u_long *) (pout+sizeof(u_long)));
-		    printf ("syscall %lu byte %d addr %lx value %lx\n", tci->syscall_cnt, i, addr, value);
+		    printf ("syscall %lu byte %d addr %lx value %lx\n", (u_long) tci->syscall_cnt, i, addr, value);
 		}
 		do {
 		    if (*mgbuf) {

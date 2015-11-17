@@ -84,11 +84,12 @@ struct set_pin_address_data {
 	u_long pin_address;
 	u_long pthread_data;
 	u_long __user* pcurthread;
+	int attach_ndx;
 };
 
 #define SPECI_REPLAY_FORK _IOR('u', 0, struct record_data)
 #define SPECI_RESUME _IOR('u', 1, struct wakeup_data)
-#define SPECI_SET_PIN_ADDR _IOR('u',2,struct set_pin_address_data)
+#define SPECI_SET_PIN_ADDR _IOWR('u',2,struct set_pin_address_data)
 #define SPECI_CHECK_BEFORE _IOR('u',3,int)
 #define SPECI_CHECK_AFTER _IOR('u',4,int)
 #define SPECI_GET_LOG_ID _IO('u',5)
@@ -108,6 +109,6 @@ struct set_pin_address_data {
 #define SPECI_WAIT_FOR_REPLAY_GROUP _IOR('u', 19, pid_t)
 #define SPECI_TRY_TO_EXIT _IOR('u', 20, pid_t)
 #define SPECI_GET_REPLAY_PID _IOR('u', 21, struct get_replay_pid_data)
-
+#define SPECI_MAP_CLOCK _IO('u',22)
 
 #endif

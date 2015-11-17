@@ -5,7 +5,7 @@
 #define BUFFER_SIZE_MAX 1024
 
 void print_token(struct token* token) {
-    fprintf(stdout, "%d %lu %lu %d %d %d %lld %d\n",
+    fprintf(stdout, "%d %u %u %zd %d %d %lld %d\n",
         token->type,
         token->token_num,
         token->size,
@@ -17,7 +17,7 @@ void print_token(struct token* token) {
 }
 
 void print_taint_header(struct taint_creation_info* tci) {
-    fprintf(stdout, "%d %lld %d %lu %d %d\n",
+    fprintf(stdout, "%d %lld %d %zu %d %d\n",
 	    tci->type,
 	    tci->rg_id,
 	    tci->record_pid,
@@ -282,7 +282,7 @@ void read_output(char* dataflow_filename, char* merge_filename) {
         }
         df_bytes_read += rc;
         fprintf(stderr, "Output rg: %llu, pid %d, syscall %lu, offset %d\n",
-                tci.rg_id, tci.record_pid, tci.syscall_cnt, tci.offset);
+                tci.rg_id, tci.record_pid, (u_long) tci.syscall_cnt, tci.offset);
 
         // read the address
         rc = read(df_fd, &addr, sizeof(u_long));
@@ -360,9 +360,6 @@ int main(int argc, char** argv) {
 	    snprintf(dataflow_filename, 256, "%s/dataflow.result", group_dir);
     }
 
-//    snprintf(tokens_filename, 256, "%s/tokens", group_dir);
-//    snprintf(filenames_filename, 256, "%s/filenames", group_dir);
-//    snprintf(dataflow_filename, 256, "%s/dataflow.result", group_dir);
     snprintf(merge_filename, 256, "%s/mergeout", group_dir);
 
     fprintf(stdout, "OUTPUT\n");

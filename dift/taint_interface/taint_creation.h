@@ -17,14 +17,14 @@ extern "C" {
 #define FILTER_BYTERANGE    5
 
 struct taint_creation_info {
-    int type;
+    int32_t type;
+    int32_t record_pid;
     uint64_t rg_id;
-    int record_pid;
-    unsigned long syscall_cnt;
-    int offset;
-    int fileno;
+    uint32_t syscall_cnt;
+    int32_t offset;
+    int32_t fileno;
     // extra data
-    void* data;
+    int32_t data;
 };
 
 void init_filters();

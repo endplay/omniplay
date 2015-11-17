@@ -196,14 +196,18 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 		if (tmp) putname (tmp);
 		return rc;
 
-	case SPECI_SET_PIN_ADDR:
+	case SPECI_SET_PIN_ADDR: 
 		if (len != sizeof(struct set_pin_address_data)) {
 			printk ("ioctl SPECI_SET_PIN_ADDR fails, len %d\n", len);
 			return -EINVAL;
 		}
 		if (copy_from_user (&pin_data, (void *) data, sizeof(pin_data)))
 			return -EFAULT;
-		return set_pin_address (pin_data.pin_address, pin_data.pthread_data, pin_data.pcurthread);
+		rc = set_pin_address (pin_data.pin_address, pin_data.pthread_data, pin_data.pcurthread, 
+				      &pin_data.attach_ndx);
+		if (copy_to_user ((void *) data, &pin_data, sizeof(pin_data)))
+			return -EFAULT;
+		return rc;
 	case SPECI_CHECK_BEFORE:
 		if (len != sizeof(int)) {
 			printk ("ioctl SPECI_CHECK_BEFORE fails, len %d\n", len);
@@ -314,6 +318,9 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 
 		return get_replay_pid (replay_pid_data.parent_pid, replay_pid_data.record_pid);
 
+	case SPECI_MAP_CLOCK: {
+		return pthread_shm_path ();
+	}
 	default:
 		return -EINVAL;
 	}

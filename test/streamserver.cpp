@@ -35,6 +35,8 @@ struct epoch_ctl {
     char   inputqname[256];
     pid_t  cpid;
     pid_t  spid;
+    pid_t  tracked_pid;
+    pid_t  waiting_on_rp_group; //ARQUINN -> added
 
     // For timings
     struct timeval tv_start;
@@ -44,6 +46,187 @@ struct epoch_ctl {
 };
 
 int fd; // Persistent descriptor for replay device
+static long ms_diff (struct timeval tv1, struct timeval tv2)
+{
+    return ((tv1.tv_sec - tv2.tv_sec) * 1000 + (tv1.tv_usec - tv2.tv_usec) / 1000);
+}
+int sync_logfiles (int s)
+{
+    u_long fcnt, ccnt;
+    bool* freply = NULL;
+    bool* creply = NULL;
+    vector<struct replay_path> dirs;
+    
+    int rc = safe_read (s, &fcnt, sizeof(fcnt));
+    if (rc != sizeof(fcnt)) {
+	fprintf (stderr, "Cannot recieve file count,rc=%d\n", rc);
+	return -1;
+    }
+    
+    if (fcnt) {
+	freply = (bool *) malloc(sizeof(bool)*fcnt);
+	if (freply == NULL) {
+	    fprintf (stderr, "Cannot allocate file reply array of size %lu\n", fcnt);
+	    return -1;
+	}
+	
+	for (u_long i = 0; i < fcnt; i++) {
+	    replay_path fpath;
+	    rc = safe_read (s, &fpath, sizeof(fpath));
+	    if (rc != sizeof(fpath)) {
+		fprintf (stderr, "Cannot recieve file path,rc=%d\n", rc);
+		return -1;
+	    }
+	    
+	    // Does this file exist?
+	    struct stat st;
+	    rc = stat (fpath.path, &st);
+	    if (rc == 0) {
+		freply[i] = false;
+	    } else {
+		freply[i] = true;
+		
+		// Make sure directory exists
+		for (int i = strlen(fpath.path); i >= 0; i--) {
+		    if (fpath.path[i] == '/') {
+			fpath.path[i] = '\0';
+			rc = mkdir (fpath.path, 0777);
+			if (rc < 0 && errno != EEXIST) {
+			    printf ("mkdir of %s returns %d\n", fpath.path, rc);
+			}
+			break;
+		    }
+		}
+		dirs.push_back(fpath);
+	    }
+	}
+	
+	// Send back response
+	rc = safe_write (s, freply, sizeof(bool)*fcnt);
+	if (rc != (int) (sizeof(bool)*fcnt)) {
+	    fprintf (stderr, "Cannot send file check reply,rc=%d\n", rc);
+	    return -1;
+	}
+    }
+    
+    rc = safe_read (s, &ccnt, sizeof(ccnt));
+    if (rc != sizeof(fcnt)) {
+	fprintf (stderr, "Cannot recieve cache count,rc=%d\n", rc);
+	return -1;
+    }
+    
+    struct cache_info* ci = new cache_info[ccnt];
+    
+    if (ccnt) {
+	creply = (bool *) malloc(sizeof(bool)*ccnt);
+	if (creply == NULL) {
+	    fprintf (stderr, "Cannot allocate cache reply array of size %lu\n", ccnt);
+	    return -1;
+	}
+	
+	rc = safe_read (s, ci, sizeof(struct cache_info)*ccnt);
+	if (rc != (long) (sizeof(struct cache_info)*ccnt)) {
+	    fprintf (stderr, "Cannot recieve cache info,rc=%d\n", rc);
+	    return -1;
+	}
+	
+	for (u_long i = 0; i < ccnt; i++) {
+	    // Does this file exist?
+	    char cname[PATHLEN], cmname[PATHLEN];
+	    struct stat64 st;
+	    
+	    sprintf (cname, "/replay_cache/%x_%x", ci[i].dev, ci[i].ino);
+	    rc = stat64 (cname, &st);
+	    if (rc == 0) {
+		// Is this the right version?
+		if (st.st_mtim.tv_sec == ci[i].mtime.tv_sec && st.st_mtim.tv_nsec == ci[i].mtime.tv_nsec) {
+		    creply[i] = false;
+		} else {
+		    // Nope - but maybe we have it?
+		    sprintf (cmname, "/replay_cache/%x_%x_%lu_%lu", ci[i].dev, ci[i].ino, ci[i].mtime.tv_sec, ci[i].mtime.tv_nsec);
+		    rc = stat64 (cmname, &st);
+		    if (rc == 0) {
+			creply[i] = false;
+		    } else {
+			creply[i] = true;
+		    }
+		}
+	    } else {
+		// No versions at all
+		creply[i] = true;
+	    }
+	}
+	
+	// Send back response
+	rc = safe_write (s, creply, sizeof(bool)*ccnt);
+	if (rc != (int) (sizeof(bool)*ccnt)) {
+	    fprintf (stderr, "Cannot send cache info check reply,rc=%d\n", rc);
+	    return -1;
+	}
+    }
+    
+    // Now receive the files we requested
+    u_long dcnt = 0;
+    for (u_long i = 0; i < fcnt; i++) {
+	if (freply[i]) {
+	    rc = fetch_file (s, dirs[dcnt++].path);
+	    if (rc < 0) return rc;
+	}
+    } 
+    
+    u_long ffcnt = 0;
+    for (u_long i = 0; i < ccnt; i++) {
+	if (creply[i]) {
+	    rc = fetch_file (s, "/replay_cache");
+	    if (rc < 0) return rc;
+	    
+	    // Now rename the file to the correct version - must check to see where to put it
+	    char cname[PATHLEN], crname[PATHLEN], newname[PATHLEN];
+	    struct stat64 st;
+	    sprintf (cname, "/replay_cache/%x_%x", ci[i].dev, ci[i].ino);
+	    rc = stat64 (cname, &st);
+	    if (rc == 0) {
+		if (st.st_mtim.tv_sec > ci[i].mtime.tv_sec || 
+		    (st.st_mtim.tv_sec == ci[i].mtime.tv_sec && st.st_mtim.tv_nsec > ci[i].mtime.tv_nsec)) {
+		    // Exists and new file is past version 
+		    sprintf (newname, "/replay_cache/%x_%x_%lu_%lu", ci[i].dev, ci[i].ino, ci[i].mtime.tv_sec, ci[i].mtime.tv_nsec);
+		    rc = rename ("/replay_cache/rename_me", newname);
+		    if (rc < 0) {
+			fprintf (stderr, "Cannot rename temp cache file to %s, rc=%d\n", newname, rc);
+			return rc;
+		    }
+		} else {
+		    // Exists and new file is more recent version
+		    sprintf (crname, "/replay_cache/%x_%x_%lu_%lu", ci[i].dev, ci[i].ino, st.st_mtim.tv_sec, st.st_mtim.tv_nsec);
+		    rc = rename (cname, crname);
+		    if (rc < 0) {
+			fprintf (stderr, "Cannot rename cache file %s to %s, rc=%d\n", cname, crname, rc);
+			return rc;
+		    }
+		    rc = rename ("/replay_cache/rename_me", cname);
+		    if (rc < 0) {
+			fprintf (stderr, "Cannot rename temp cache file to %s, rc=%d\n", cname, rc);
+			return rc;
+		    }
+		}
+	    } else {
+		// Does not exist
+		rc = rename ("/replay_cache/rename_me", cname);
+		if (rc < 0) {
+		    fprintf (stderr, "Cannot rename temp cache file to %s, rc=%d\n", cname, rc);
+		    return rc;
+		}
+	    }
+	    ffcnt++;
+	}
+    } 
+    
+    free (freply);
+    free (creply);
+    delete [] ci;
+
+    return 0;
+}
 
 // May eventually want to support >1 taint tracking at the same time, but not for now.
 void* do_stream (void* arg) 
@@ -73,165 +256,8 @@ void* do_stream (void* arg)
     }
 
     if (ehdr.flags&SYNC_LOGFILES) {
-	u_long fcnt, ccnt;
-	bool* freply = NULL;
-	bool* creply = NULL;
-	vector<struct replay_path> dirs;
-	vector<struct replay_path> future_filenames;
-
-	rc = safe_read (s, &fcnt, sizeof(fcnt));
-	if (rc != sizeof(fcnt)) {
-	    fprintf (stderr, "Cannot recieve file count,rc=%d\n", rc);
-	    return NULL;
-	}
-	
-	if (fcnt) {
-	    freply = (bool *) malloc(sizeof(bool)*fcnt);
-	    if (freply == NULL) {
-		fprintf (stderr, "Cannot allocate file reply array of size %lu\n", fcnt);
-		return NULL;
-	    }
-
-	    for (u_long i = 0; i < fcnt; i++) {
-		replay_path fpath;
-		rc = safe_read (s, &fpath, sizeof(fpath));
-		if (rc != sizeof(fpath)) {
-		    fprintf (stderr, "Cannot recieve file path,rc=%d\n", rc);
-		    return NULL;
-		}
-		
-		// Does this file exist?
-		struct stat st;
-		rc = stat (fpath.path, &st);
-		if (rc == 0) {
-		    freply[i] = false;
-		} else {
-		    freply[i] = true;
-
-		    // Make sure directory exists
-		    for (int i = strlen(fpath.path); i >= 0; i--) {
-			if (fpath.path[i] == '/') {
-			    fpath.path[i] = '\0';
-			    rc = mkdir (fpath.path, 0777);
-			    if (rc < 0 && errno != EEXIST) {
-				printf ("mkdir of %s returns %d\n", fpath.path, rc);
-			    }
-			    break;
-			}
-		    }
-		    dirs.push_back(fpath);
-		}
-	    }
-	    
-	    // Send back response
-	    rc = safe_write (s, freply, sizeof(bool)*fcnt);
-	    if (rc != (int) (sizeof(bool)*fcnt)) {
-		fprintf (stderr, "Cannot send file check reply,rc=%d\n", rc);
-		return NULL;
-	    }
-	}
-
-	rc = safe_read (s, &ccnt, sizeof(ccnt));
-	if (rc != sizeof(fcnt)) {
-	    fprintf (stderr, "Cannot recieve cache count,rc=%d\n", rc);
-	    return NULL;
-	}
-
-	if (ccnt) {
-	    creply = (bool *) malloc(sizeof(bool)*ccnt);
-	    if (creply == NULL) {
-		fprintf (stderr, "Cannot allocate cache reply array of size %lu\n", ccnt);
-		return NULL;
-	    }
-
-	    for (u_long i = 0; i < ccnt; i++) {
-		struct cache_info ci;
-		rc = safe_read (s, &ci, sizeof(ci));
-		if (rc != sizeof(ci)) {
-		    fprintf (stderr, "Cannot recieve cache info,rc=%d\n", rc);
-		    return NULL;
-		}
-		
-		// Does this file exist?
-		char cname[PATHLEN], cmname[PATHLEN], crname[PATHLEN];
-		struct stat64 st;
-		struct replay_path future_filename;
-
-		sprintf (cname, "/replay_cache/%lx_%lx", ci.dev, ci.ino);
-		rc = stat64 (cname, &st);
-		if (rc == 0) {
-		    // Is this the right version?
-		    if (st.st_mtim.tv_sec == ci.mtime.tv_sec && st.st_mtim.tv_nsec == ci.mtime.tv_nsec) {
-			creply[i] = false;
-		    } else {
-			// Nope - but maybe we have it?
-			sprintf (cmname, "/replay_cache/%lx_%lx_%lu_%lu", ci.dev, ci.ino, ci.mtime.tv_sec, ci.mtime.tv_nsec);
-			rc = stat64 (cmname, &st);
-			if (rc == 0) {
-			    creply[i] = false;
-			} else {
-			    creply[i] = true;
-			    if (st.st_mtim.tv_sec > ci.mtime.tv_sec || 
-				(st.st_mtim.tv_sec == ci.mtime.tv_sec && st.st_mtim.tv_nsec > ci.mtime.tv_nsec)) {
-				// New file is past version 
-				strcpy (future_filename.path, cmname);
-				future_filenames.push_back(future_filename);
-			    } else {
-				// Existing file is past version
-				sprintf (crname, "/replay_cache/%lx_%lx_%lu_%lu", ci.dev, ci.ino, st.st_mtim.tv_sec, st.st_mtim.tv_nsec);
-				rc = rename (cname, crname);
-				if (rc < 0) {
-				    fprintf (stderr, "Cannot rename cache file %s to %s, rc=%d\n", cname, crname, rc);
-				    return NULL;
-				}
-				strcpy (future_filename.path, cname);
-				future_filenames.push_back(future_filename);
-			    }
-			}
-		    }
-		} else {
-		    // No versions at all
-		    creply[i] = true;
-		    strcpy (future_filename.path, cname);
-		    future_filenames.push_back(future_filename);
-		}
-	    }
-	    
-	    // Send back response
-	    rc = safe_write (s, creply, sizeof(bool)*ccnt);
-	    if (rc != (int) (sizeof(bool)*ccnt)) {
-		fprintf (stderr, "Cannot send cache info check reply,rc=%d\n", rc);
-		return NULL;
-	    }
-	}
-
-	// Now receive the files we requested
-	u_long dcnt = 0;
-	for (u_long i = 0; i < fcnt; i++) {
-	    if (freply[i]) {
-		rc = fetch_file (s, dirs[dcnt++].path);
-		if (rc < 0) return NULL;
-	    }
-	} 
-
-	u_long ffcnt = 0;
-	for (u_long i = 0; i < ccnt; i++) {
-	    if (creply[i]) {
-		rc = fetch_file (s, "/replay_cache");
-		if (rc < 0) return NULL;
-
-		// Now rename the file to the correct version
-		rc = rename ("/replay_cache/rename_me", future_filenames[ffcnt].path);
-		if (rc < 0) {
-		    fprintf (stderr, "Cannot rename temp cache file to %s, rc=%d\n", future_filenames[ffcnt].path, rc);
-		    return NULL;
-		}
-		ffcnt++;
-	    }
-	} 
-
-	free (freply);
-	free (creply);
+	rc = sync_logfiles (s);
+	if (rc < 0) return NULL;
     }
 
     // Set up shared memory regions for queues
@@ -259,7 +285,7 @@ void* do_stream (void* arg)
 	if (ectl[i].cpid == 0) {
 	    if (i > 0 || !ehdr.start_flag) {
 		char attach[80];
-		sprintf (attach, "--attach_offset=%d,%lu", edata[i].start_pid, edata[i].start_syscall);
+		sprintf (attach, "--attach_offset=%d,%u", edata[i].start_pid, edata[i].start_syscall);
 		rc = execl("./resume", "resume", "-p", ehdr.dirname, "--pthread", "../eglibc-2.15/prefix/lib", attach, NULL);
 	    } else {
 		rc = execl("./resume", "resume", "-p", ehdr.dirname, "--pthread", "../eglibc-2.15/prefix/lib", NULL);
@@ -278,7 +304,7 @@ void* do_stream (void* arg)
 	for (u_long i = 0; i < epochs; i++) {
 	    if (ectl[i].status == STATUS_STARTING) {
 		rc = get_attach_status (fd, ectl[i].cpid);
-		if (rc == 1) {
+		if (rc > 0) {
 		    pid_t mpid = fork();
 		    if (mpid == 0) {
 			char cpids[80], syscalls[80], output_filter[80];
@@ -287,12 +313,12 @@ void* do_stream (void* arg)
 			
 			args[argcnt++] = "pin";
 			args[argcnt++] = "-pid";
-			sprintf (cpids, "%d", ectl[i].cpid);
+			sprintf (cpids, "%d", rc);
 			args[argcnt++] = cpids;
 			args[argcnt++] = "-t";
 			args[argcnt++] = "../dift/obj-ia32/linkage_data.so";
 			if (i < epochs-1 || !ehdr.finish_flag) {
-			    sprintf (syscalls, "%ld", edata[i].stop_syscall);
+			    sprintf (syscalls, "%d", edata[i].stop_syscall);
 			    args[argcnt++] = "-l";
 			    args[argcnt++] = syscalls;
 			    args[argcnt++] = "-ao"; // Last epoch does not need to trace to final addresses
@@ -301,11 +327,10 @@ void* do_stream (void* arg)
 			    args[argcnt++] = "-so";
 			} 
 			if (edata[i].filter_syscall) {
-			    sprintf (output_filter, "%lu", edata[i].filter_syscall);
+			    sprintf (output_filter, "%u", edata[i].filter_syscall);
 			    args[argcnt++] = "-ofs";
 			    args[argcnt++] = output_filter;
 			}
-			args[argcnt++] = NULL;
 			rc = execv ("../../../pin/pin", (char **) args);
 			fprintf (stderr, "execv of pin tool failed, rc=%d, errno=%d\n", rc, errno);
 			return NULL;
@@ -388,16 +413,6 @@ void* do_stream (void* arg)
 	}
     }
 
-    // Clean up shared memory regions for queues
-    for (u_long i = 0; i < qcnt; i++) {
-	if (i == 0 && ehdr.start_flag) continue; // No queue needed
-	rc = shm_unlink (ectl[i].inputqname);
-	if (rc < 0) {
-	    fprintf (stderr, "Cannot unlink input queue %s,errno=%d\n", ectl[i].inputqname, errno);
-	    return NULL;
-	}
-    }
-
     printf ("Overall:\n");
     printf ("\tStart time: %ld.%06ld\n", tv_start.tv_sec, tv_start.tv_usec);
     printf ("\tEnd time: %ld.%06ld\n", tv_done.tv_sec, tv_done.tv_usec);
@@ -407,9 +422,9 @@ void* do_stream (void* arg)
 	printf ("\tDIFT start time: %ld.%06ld\n", ectl[i].tv_start_dift.tv_sec, ectl[i].tv_start_dift.tv_usec);
 	printf ("\tStream start time: %ld.%06ld\n", ectl[i].tv_start_stream.tv_sec, ectl[i].tv_start_stream.tv_usec);
 	printf ("\tEpoch end time: %ld.%06ld\n", ectl[i].tv_done.tv_sec, ectl[i].tv_done.tv_usec);
-   }
+    }
 
-    // send results if requete
+    // send results if requeted
     if (ehdr.flags&SEND_RESULTS) {
 	for (u_long i = 0; i < epochs; i++) {
 	    char pathname[PATHLEN];
@@ -423,6 +438,257 @@ void* do_stream (void* arg)
 	    send_file (s, pathname, "dataflow.results");
 	}
     }
+
+    close (s);
+    return NULL;
+}
+
+// This is for a 32-bit DIFT sending to a 64-bit taint aggregator
+void* do_fullsend (void* arg) 
+{
+    int s = (int) arg;
+    int rc;
+    struct timeval tv_start, tv_done;
+
+    gettimeofday (&tv_start, NULL);
+
+
+    // Receive control data
+    struct epoch_hdr ehdr;
+    rc = safe_read (s, &ehdr, sizeof(ehdr));
+    if (rc != sizeof(ehdr)) {
+	fprintf (stderr, "Cannot recieve header,rc=%d\n", rc);
+	return NULL;
+    }
+    u_long epochs = ehdr.epochs;
+
+    struct epoch_data edata[epochs];
+    struct epoch_ctl ectl[epochs];
+
+    rc = safe_read (s, edata, sizeof(struct epoch_data)*epochs);
+    if (rc != (int) (sizeof(struct epoch_data)*epochs)) {
+	fprintf (stderr, "Cannot recieve epochs,rc=%d\n", rc);
+	return NULL;
+    }
+
+    if (ehdr.flags&SYNC_LOGFILES) {
+	rc = sync_logfiles (s);
+	if (rc < 0) return NULL;
+    }
+
+    // Start all the epochs at once
+    for (u_long i = 0; i < epochs; i++) {
+
+	ectl[i].cpid = fork ();
+	if (ectl[i].cpid == 0) {
+	    if (i > 0 || !ehdr.start_flag) {
+		char attach[80];
+		sprintf (attach, "--attach_offset=%d,%u", edata[i].start_pid, edata[i].start_syscall);
+		rc = execl("./resume", "resume", "-p", ehdr.dirname, "--pthread", "../eglibc-2.15/prefix/lib", attach, NULL);
+	    } else {
+		rc = execl("./resume", "resume", "-p", ehdr.dirname, "--pthread", "../eglibc-2.15/prefix/lib", NULL);
+	    }
+	    fprintf (stderr, "execl of resume failed, rc=%d, errno=%d\n", rc, errno);
+	    return NULL;
+	} else {
+	    gettimeofday (&ectl[i].tv_start, NULL);
+	    ectl[i].status = STATUS_STARTING;
+	    ectl[i].tracked_pid = -1;
+	}
+    }
+
+    for (u_long i = 0; i < epochs; i++) { 	
+	printf("%lu: cpid %d, epoch %d/%d - %d/%d\n",i, ectl[i].cpid, edata[i].start_pid, edata[i].start_syscall,
+	       edata[i].stop_pid, edata[i].stop_syscall);
+    }
+
+
+    // Now attach pin to all of the epoch processes
+    u_long executing = 0; 
+
+    do {
+	for (u_long i = 0; i < epochs; i++) {
+	    rc = -1;
+	    if (ectl[i].status == STATUS_STARTING) {
+
+		/*
+		 * so we need to wait to attach because pin needs to be waiting for us, 
+		 * but we cannot be certain that this cpid is actually the pid we want to wait
+		 * on... 
+		 */
+
+		//this code is awful. Gotta figure out how to do better
+		if(ectl[i].tracked_pid < 0) {
+		    ectl[i].tracked_pid = get_replay_pid(fd, ectl[i].cpid, edata[i].start_pid); //this isn't working. 
+		    
+
+		    //need to guarentee that this stuff only happens once. 
+		    if(ectl[i].tracked_pid > 0) {
+			printf("%lu: found %d for cpid %d, start_pid %d\n",i,ectl[i].tracked_pid,ectl[i].cpid, edata[i].start_pid);
+			
+			ectl[i].waiting_on_rp_group = fork(); 
+			if(ectl[i].waiting_on_rp_group == 0) { 
+			    //we want to close out of our sockets here... kinda weird but still. 
+			    close(s);
+			    s = -99999;
+			    wait_for_replay_group(fd,ectl[i].tracked_pid);
+			    return 0;
+			}	
+		    }	 
+		}
+		if(ectl[i].tracked_pid > 0) {
+		    rc = get_attach_status (fd, ectl[i].tracked_pid);
+		}
+
+		if (rc > 0) {
+//		    printf("starting pin for cpid %d, tracked_pid %d, rec_pid %d\n",ectl[i].cpid,ectl[i].tracked_pid,edata[i].start_pid);
+
+
+		    pid_t mpid = fork();
+		    if (mpid == 0) {
+			char cpids[80], syscalls[80], output_filter[80], port[80], stop_pid[80], fork_flags[80];
+			const char* args[256];
+			int argcnt = 0;
+			
+			args[argcnt++] = "pin";
+			args[argcnt++] = "-pid";
+
+			sprintf (cpids, "%d", ectl[i].tracked_pid);
+			args[argcnt++] = cpids;
+			args[argcnt++] = "-t";
+			args[argcnt++] = "../dift/obj-ia32/linkage_data.so";
+			if (i < epochs-1 || !ehdr.finish_flag) {
+			    args[argcnt++] = "-ao"; // Last epoch does not need to trace to final addresses
+
+			}
+
+			//we always want the stop_pid to be present
+			sprintf (stop_pid, "%d", edata[i].stop_pid);
+			args[argcnt++] = "-stop_pid";
+			args[argcnt++] = stop_pid;
+			sprintf (syscalls, "%d", edata[i].stop_syscall);
+			args[argcnt++] = "-l";
+			args[argcnt++] = syscalls;
+
+			sprintf (fork_flags, "%d", edata[i].fork_flags);
+			args[argcnt++] = "-fork_flags";
+			args[argcnt++] = fork_flags;
+
+
+			if (i > 0 || !ehdr.start_flag) {
+			    args[argcnt++] = "-so";
+			} 
+			if (edata[i].filter_syscall) {
+			    sprintf (output_filter, "%u", edata[i].filter_syscall);
+			    args[argcnt++] = "-ofs";
+			    args[argcnt++] = output_filter;
+			}
+			args[argcnt++] = "-host";
+			args[argcnt++] = edata[i].hostname;
+			args[argcnt++] = "-port";
+			sprintf (port, "%d", edata[i].port);
+			args[argcnt++] = port;
+			args[argcnt++] = NULL;
+			args[argcnt++] = NULL;
+			rc = execv ("../../../pin/pin", (char **) args);
+			fprintf (stderr, "execv of pin tool failed, rc=%d, errno=%d\n", rc, errno);
+			return NULL;
+		    } else {
+			gettimeofday (&ectl[i].tv_start_dift, NULL);
+			ectl[i].status = STATUS_EXECUTING;
+			executing++;
+#ifdef DETAILS			    
+			printf ("%lu/%lu epochs executing\n", executing, epochs);
+#endif
+		    }
+		}
+	    }
+	}
+    } while (executing < epochs);
+	
+    // Wait for children to complete
+    u_long epochs_done = 0;
+    do {
+	int status;
+	pid_t wpid = waitpid (-1, &status, 0);
+	if (wpid < 0) {
+	    fprintf (stderr, "waitpid returns %d, errno %d\n", rc, errno);
+	    return NULL;
+	} else {
+	    for (u_long i = 0; i < epochs; i++) {
+
+//		if (wpid == ectl[i].cpid) {
+		if (wpid == ectl[i].waiting_on_rp_group) { 
+#ifdef DETAILS
+		    printf ("DIFT of epoch %lu is done\n", i);
+#endif
+		    gettimeofday (&ectl[i].tv_done, NULL);
+		    ectl[i].status = STATUS_DONE;
+		    epochs_done++;
+		}
+	    }
+	}
+    } while (epochs_done < epochs);
+
+    gettimeofday (&tv_done, NULL);
+    if (ehdr.flags&SEND_ACK) {
+	long retval = 0;
+	rc = send (s, &retval, sizeof(retval), 0);
+	if (rc != sizeof(retval)) {
+	    fprintf (stderr, "Cannot send ack,rc=%d\n", rc);
+	}
+    }
+
+    char statsname[256];
+    FILE* statsfile; 
+
+    //first print out all of the time info:                                                                               
+    for (u_long i = 0; i < epochs; i++) {
+	sprintf (statsname, "/tmp/machine-readable-stream-stats%lu.csv", i);
+	statsfile = fopen (statsname, "w");
+	if (statsfile == NULL) {
+	    fprintf (stderr, "Cannot create %s, errno=%d\n", statsname, errno);
+	    return NULL;
+	}
+	fprintf (statsfile,"%lu,%ld,%ld", 
+		 i, 
+		 ms_diff(ectl[i].tv_start_dift, ectl[i].tv_start),
+		 ms_diff(ectl[i].tv_done, ectl[i].tv_start_dift)); 
+	fclose(statsfile);
+    }
+
+
+    printf ("Overall:\n");
+    printf ("\tStart time: %ld.%06ld\n", tv_start.tv_sec, tv_start.tv_usec);
+    printf ("\tEnd time: %ld.%06ld\n", tv_done.tv_sec, tv_done.tv_usec);
+
+    long diff_usec = tv_done.tv_usec - tv_start.tv_usec;  
+    long carryover = 0;
+    if(diff_usec < 0) { 
+	carryover = -1;
+	diff_usec = 1 - diff_usec;
+    }
+    long diff_sec = tv_done.tv_sec - tv_start.tv_sec - carryover; 
+    printf ("Start -> End: %ld.%06ld\n", diff_sec,diff_usec);
+
+    for (u_long i = 0; i < epochs; i++) {
+	printf ("Epoch %lu:\n", i); 
+	printf ("\tEpoch start time: %ld.%06ld\n", ectl[i].tv_start.tv_sec, ectl[i].tv_start.tv_usec);
+	printf ("\tDIFT start time: %ld.%06ld\n", ectl[i].tv_start_dift.tv_sec, ectl[i].tv_start_dift.tv_usec);
+	printf ("\tEpoch end time: %ld.%06ld\n", ectl[i].tv_done.tv_sec, ectl[i].tv_done.tv_usec);
+
+	diff_usec = ectl[i].tv_done.tv_usec - ectl[i].tv_start.tv_usec;  
+	carryover = 0;
+	if(diff_usec < 0) { 
+	    carryover = -1;
+	    diff_usec = 1 - diff_usec;
+	}
+	diff_sec = ectl[i].tv_done.tv_sec - ectl[i].tv_start.tv_sec - carryover; 
+
+	printf ("\tStart -> End: %ld.%06ld\n", diff_sec,diff_usec);
+   }
+    
+    fflush(stdout);
 
     close (s);
     return NULL;
@@ -478,7 +744,7 @@ int main (int argc, char* argv[])
 	
 	// Spawn a thread to handle this request
 	pthread_t tid;
- 	rc = pthread_create (&tid, NULL, do_stream, (void *) s);
+ 	rc = pthread_create (&tid, NULL, do_fullsend, (void *) s);
 	if (rc < 0) {
 	    fprintf (stderr, "Cannot spawn stream thread,rc=%d\n", rc);
 	}

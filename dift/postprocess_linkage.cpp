@@ -979,12 +979,8 @@ void print_forward_options(struct taint_creation_info* tci,
             if (g_hash_table_contains(filename_table, GINT_TO_POINTER(tci->fileno))) {
                 out_filename = (char *) g_hash_table_lookup(filename_table, GINT_TO_POINTER(tci->fileno));
             }
-            fprintf(stdout, "%llu %d %lu %d %s\n",
-                                tci->rg_id,
-                                tci->record_pid,
-                                tci->syscall_cnt,
-                                i,
-                                out_filename);
+            fprintf(stdout, "%llu %d %u %d %s\n", tci->rg_id, tci->record_pid, (u_int) tci->syscall_cnt,
+		    i, out_filename);
         }
     }
 }
@@ -1283,11 +1279,8 @@ void print_merge_number_options(struct taint_creation_info* tci,
 			tok->byte_offset,
 			filename);
 #else
-		fprintf(stdout, "%llu %d %lu %d ",    
-			tci->rg_id,
-			tci->record_pid,
-			tci->syscall_cnt,
-			output_byte_offset);
+		fprintf(stdout, "%llu %d %u %d ", tci->rg_id, tci->record_pid, 
+			(u_int) tci->syscall_cnt, output_byte_offset);
 		fprintf(stdout, "%llu %d %d %d",
 			tok->rg_id,
 			tok->record_pid,

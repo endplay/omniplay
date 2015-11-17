@@ -1,5 +1,7 @@
 #include "../linkage_common.h"
+#include "../taint_nw.h"
 #include "taint_interface.h"
+#include "taint_creation.h"
 #include <string.h>
 #include <assert.h>
 #include <glib-2.0/glib.h>
@@ -10,6 +12,7 @@
 #include <sys/types.h>
 #include <sys/mman.h>
 
+#define USE_SHMEM
 #define USE_MERGE_HASH
 #define TAINT_STATS
 //#define TRACE_TAINT
@@ -110,6 +113,11 @@ static struct taint_number* merge_buffer;
 
 static struct merge_buffer_control * merge_control_shm;
 //static bool merge_buf_overflow = false;
+
+#ifdef USE_NW
+extern int s;
+#endif
+
 static char node_num_filename[256];
 
 
@@ -138,23 +146,71 @@ int is_in_trace_set(u_long val)
 }
 #endif
 
+#ifdef USE_NW
 static void 
 flush_merge_buffer ()
 {
-    long rc;
+    struct taint_data_header hdr;
+
     long bytes_written = 0;
-    long size = num_merge_entries*sizeof(struct taint_number);
+    long size = merge_control_shm->merge_buffer_count*sizeof(struct taint_number);
+
+    if(s == -99999) { 
+	fprintf(stderr, "skipping flush_merge_buffer... must not be following proc\n");
+	return;
+    }
     
+    hdr.type = TAINT_DATA_MERGE;
+    hdr.datasize = size;
+    long rc = write (s, &hdr, sizeof(hdr));
+    if (rc != sizeof(hdr)) {
+	fprintf (stderr, "Cannot write nw header for merge data, rc=%ld\n", rc);
+	assert (0);
+    }
     while (bytes_written < size) {
-	rc = write (node_num_fd, (char *) merge_buffer+bytes_written, size-bytes_written);	
+	rc = write (s, (char *) merge_buffer+bytes_written, size-bytes_written);	
 	if (rc <= 0) {
-	    fprintf (stderr, "Canot write to merge log, rc=%ld\n", rc);
+	    fprintf (stderr, "Canot write to merge log, rc=%ld, errno=%d\n", rc, errno);
 	    assert (0);
 	}
 	bytes_written += rc;
     }
 }
+#else
+static void 
+flush_merge_buffer ()
+{
+    long bytes_written = 0;
+    long size = merge_control_shm->merge_buffer_count*sizeof(struct taint_number);
+    
+    while (bytes_written < size) {
+	long rc = write (node_num_fd, (char *) merge_buffer+bytes_written, size-bytes_written);	
+	if (rc <= 0) {
+	    fprintf (stderr, "Canot write to merge log, rc=%ld, errno=%d\n", rc, errno);
+	    assert (0);
+	}
+	bytes_written += rc;
+    }
+}
+#endif
 
+#ifndef USE_SHMEM
+static taint_t 
+add_merge_number(taint_t p1, taint_t p2)
+{
+    if (merge_control_shm->merge_buffer_count == MERGE_FILE_ENTRIES) {
+	flush_merge_buffer();
+	merge_control_shm->merge_buffer_count = 0;
+    } 
+
+    merge_buffer[merge_control_shm->merge_buffer_count].p1 = p1;
+    merge_buffer[merge_control_shm->merge_buffer_count].p2 = p2;
+    TPRINT ("merge: %lx, %lx -> %lx\n", p1, p2, merge_control_shm->merge_total_count);
+
+    merge_control_shm->merge_buffer_count++;
+    return merge_control_shm->merge_total_count++;
+}
+#else
 static taint_t 
 add_merge_number(taint_t p1, taint_t p2)
 {
@@ -195,10 +251,11 @@ add_merge_number(taint_t p1, taint_t p2)
 
     merge_buffer[merge_control_shm->merge_buffer_count].p1 = p1;
     merge_buffer[merge_control_shm->merge_buffer_count].p2 = p2;
-    TPRINT ("merge: %lx, %lx -> %lx\n", p1, p2, merge_total_count);
+    TPRINT ("merge: %lx, %lx -> %lx\n", p1, p2, merge_control_shm->merge_total_count);
     merge_control_shm->merge_buffer_count++;
     return merge_control_shm->merge_total_count++;
 }
+#endif
 
 struct taint_node {
     struct taint_node* parent1;
@@ -330,6 +387,7 @@ static inline void init_taint_index(char* group_dir)
 #endif
     init_slab_allocs();
     {
+#ifdef USE_SHMEM
         char node_num_shmemname[256];
 	int rc;
 	u_int i;
@@ -358,6 +416,21 @@ static inline void init_taint_index(char* group_dir)
 	    fprintf (stderr, "could not map merge buffer, errno=%d\n", errno);
 	    assert (0);
 	}
+#else
+        snprintf(node_num_filename, 256, "%s/node_nums", group_dir);
+	node_num_fd = open(node_num_filename, O_CREAT | O_TRUNC | O_RDWR | O_LARGEFILE, 0644);
+	if (node_num_fd < 0) {
+	    fprintf(stderr, "could not open node num file %s, errno %d\n",
+		    node_num_filename, errno);
+	    assert(0);
+	}
+	
+	merge_buffer = (struct taint_number *) malloc(MERGE_FILE_CHUNK);
+	if (merge_buffer == NULL) {
+	    fprintf (stderr, "Cannnot allocate file write buffer\n");
+	    assert (0);
+	}
+#endif
     }
 
 
@@ -563,10 +636,19 @@ taintvalue_t get_taint_value (taint_t t, option_t option)
     return 0;
 }
 
+extern void flush_tokenbuf (int s);
 
 void finish_and_print_taint_stats(FILE* fp)
 {
+#ifdef USE_SHMEM
     if (merge_control_shm->merge_buf_overflow) flush_merge_buffer ();
+#else
+    flush_merge_buffer ();
+    printf ("Completed last merge flush, merge_buffer_cnt is %ld\n", merge_control_shm->merge_buffer_count);
+#endif
+#ifdef USE_NW
+    flush_tokenbuf (s);
+#endif
 
 #ifdef TAINT_STATS
     fprintf(fp, "Taint statistics:\n");
@@ -653,6 +735,31 @@ taint_t* get_mem_taints(u_long mem_loc, uint32_t size)
 static taint_t dumpbuf[DUMPBUFSIZE];
 static u_long dumpindex = 0;
 
+#ifdef USE_NW
+static void flush_dumpbuf(int dumpfd)
+{
+    struct taint_data_header hdr;
+    long bytes_written = 0;
+    long size = dumpindex*sizeof(taint_t);
+    
+    hdr.type = TAINT_DATA_ADDR;
+    hdr.datasize = size;
+    long rc = write (s, &hdr, sizeof(hdr));
+    if (rc != sizeof(hdr)) {
+	fprintf (stderr, "Cannot write nw header for merge data, rc=%ld\n", rc);
+	assert (0);
+    }
+    while (bytes_written < size) {
+	rc = write (s, (char *) dumpbuf+bytes_written, size-bytes_written);	
+	if (rc <= 0) {
+	    fprintf (stderr, "Canot write to addr log, rc=%ld, errno=%d\n", rc, errno);
+	    assert (0);
+	}
+	bytes_written += rc;
+    }
+    dumpindex = 0;
+}
+#else
 static void flush_dumpbuf(int dumpfd)
 {
     long rc = write (dumpfd, dumpbuf, dumpindex*sizeof(taint_t));
@@ -661,6 +768,7 @@ static void flush_dumpbuf(int dumpfd)
     }
     dumpindex = 0;
 }
+#endif
 
 static inline void print_value (int dumpfd, taint_t value) 
 {

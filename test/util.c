@@ -2,6 +2,7 @@
 #include <sys/stat.h>  // open
 #include <sys/types.h> // fork, wait
 #include <sys/wait.h>  // wait
+#include <sys/mman.h>
 #include <time.h>
 #include <stdio.h>
 #include <stdlib.h>   // malloc
@@ -10,6 +11,7 @@
 #include <fcntl.h>     // open
 #include <unistd.h>   // write, close
 #include <stdarg.h>
+#include <errno.h>
 #include "util.h"
 #define __user 
 #include "dev/devspec.h" 
@@ -127,13 +129,17 @@ int resume_proc_after_ckpt (int fd_spec, char* logdir, char* filename)
     return ioctl (fd_spec, SPECI_CKPT_PROC_RESUME, &data);    
 }
 
-
-
-
-
-int set_pin_addr (int fd_spec, u_long app_syscall_addr, void* pthread_data, void** pcurthread)
+int set_pin_addr (int fd_spec, u_long app_syscall_addr, void* pthread_data, void** pcurthread, int* pattach_ndx)
 {
-    return ioctl (fd_spec, SPECI_SET_PIN_ADDR, &app_syscall_addr, (u_long) pthread_data, (u_long *) pcurthread);
+    struct set_pin_address_data data;
+    long rc;
+
+    data.pin_address = app_syscall_addr;
+    data.pthread_data = (u_long) pthread_data;
+    data.pcurthread = (u_long *) pcurthread;
+    rc = ioctl (fd_spec, SPECI_SET_PIN_ADDR, &data);
+    *pattach_ndx = data.attach_ndx;
+    return rc;
 }
 
 int check_clock_before_syscall (int fd_spec, int syscall)
@@ -231,6 +237,7 @@ long try_to_exit(int fd_spec, pid_t pid)
     return ioctl (fd_spec, SPECI_TRY_TO_EXIT, &pid);
 }
 
+
 pid_t get_replay_pid(int fd_spec, pid_t parent_pid, pid_t record_pid)
 {
     struct get_replay_pid_data data;
@@ -240,3 +247,22 @@ pid_t get_replay_pid(int fd_spec, pid_t parent_pid, pid_t record_pid)
     return ioctl (fd_spec, SPECI_GET_REPLAY_PID, &data);
 }
 
+u_long* map_shared_clock (int fd_spec)
+{
+    u_long* clock;
+
+    int fd = ioctl (fd_spec, SPECI_MAP_CLOCK);
+    if (fd < 0) {
+	fprintf (stderr, "map_shared_clock: iotcl returned %d, errno=%d\n", fd, errno);
+	return NULL;
+    }
+
+    clock = mmap (0, 4096, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+    if (clock == MAP_FAILED) {
+	fprintf (stderr, "Cannot setup shared page for clock\n");
+	return NULL;
+    }
+
+    close (fd);
+    return clock;
+}

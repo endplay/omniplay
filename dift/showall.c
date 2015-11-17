@@ -82,15 +82,15 @@ int main (int argc, char* argv[])
 	    do {
 		if (*mptr) {
 		    u_long tokval = *mptr;
-		    
-		    printf ("output syscall %d,%lu offset %lu (%lx) <- (%lx)", record_pid,syscall, i, ocnt, *mptr);
+		    printf ("output pid/syscall %u/%lu offset %lu (%lx) <- (%lx)", record_pid, syscall, i, ocnt, *mptr);
+
 		    struct token* ptok = (struct token *) tbuf;
 		    while (tokval > ptok->size) {
 			tokval -= ptok->size;
 			ptok++;
 		    } 
-		    printf ("input syscall %d,%d offset %lu\n", ptok->record_pid,ptok->syscall_cnt, tokval);
-		    
+
+		    printf ("input pid/syscall %d/%d offset %lu\n", ptok->record_pid, ptok->syscall_cnt, tokval);
 		    mptr++;
 		} else {
 		    mptr++;

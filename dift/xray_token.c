@@ -87,7 +87,6 @@ void write_token_to_file(int outfd, struct token* token)
     if (flock(outfd, LOCK_EX) == -1) {
         fprintf(stderr, "Could not grab lock for tokens file %d\n", errno);
     }
-
     rc = write(outfd, token, sizeof(struct token));
     if (rc != sizeof(struct token)) {
         fprintf(stderr, "[ERROR] Could not write token to file, got %d, expected %d\n", rc, sizeof(struct token));

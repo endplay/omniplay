@@ -1,4 +1,3 @@
-#include "parseklib.h"
 #include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,9 +8,9 @@
 #include <assert.h>
 #include <dirent.h>
 
+#include "parseklib.h"
 #include <map>
 #include <vector>
-
 using namespace std;
 
 struct replay_timing {
@@ -24,6 +23,7 @@ struct replay_timing {
 struct extra_data {
     double   dtiming;
     u_long   aindex;
+    u_long   start_clock;
 };
 
 struct ckpt_data {
@@ -106,18 +106,16 @@ long read_ckpts (char* dirname)
     return 0;
 }
 
-void print_timing (struct replay_timing* timings, int start, int end, int process_index)
+
+
+void print_timing (struct replay_timing* timings, struct extra_data* edata, int start, int end, int process_index)
 { 
-    //printf ("--- %5d %6lu (%6u) %6lu (%6u) ---\n", timings[start].pid, timings[start].index, start, timings[end].index, end);
-//    int global_end = global_timings_index[end]; 
-//    int global_start = global_timings_index[start];
-    
+    //printf ("%d %5d %6lu %5d %6d ", process_index, timings[start].pid, timings[start].index, timings[end].pid, end-start);
+    printf ("%d %5d %6lu %5d %6lu ", process_index, timings[start].pid, timings[start].index, timings[end].pid, edata[end].start_clock);
 
-
-    printf ("%d %5d %6lu %5d %6d ", process_index, timings[start].pid, timings[start].index, timings[end].pid, end-start);
 
     if (filter_syscall > 0) {
-	if (filter_syscall > timings[start].index && filter_syscall <= timings[end].index) {
+	if ((long) filter_syscall > timings[start].index && (long) filter_syscall <= timings[end].index) {
 	    printf (" %6lu", filter_syscall-timings[start].index+1);
 	} else {
 	    printf (" 999999");
@@ -167,7 +165,7 @@ int gen_timings (struct replay_timing* timings,
     assert (partitions <= cnt_interval(edata, start, end));
 
     if (partitions == 1) {
-	print_timing (timings, start, end, process_index);
+	print_timing (timings, edata, start, end, process_index);
 	return 0;
     }
 
@@ -198,7 +196,8 @@ int gen_timings (struct replay_timing* timings,
 	total_time -= (edata[gap_end].dtiming - edata[gap_start].dtiming);
 	partitions--;
 	if (gap_start == start) {
-	    print_timing (timings, gap_start, gap_end, process_index);
+
+	    print_timing (timings, edata, gap_start, gap_end, process_index);
 	    return gen_timings (timings, edata, gap_end, end, partitions, process_index);
 	}
 
@@ -216,8 +215,9 @@ int gen_timings (struct replay_timing* timings,
 	if (details) {
 	    printf ("gap - new part %d\n", new_part);
 	}
+
 	gen_timings (timings, edata, start, gap_start, new_part, process_index);
-	print_timing (timings, gap_start, gap_end, process_index);
+	print_timing (timings, edata,  gap_start, gap_end, process_index);
 	return gen_timings (timings, edata, gap_end, end, partitions - new_part, process_index);
     } else {
 	// Allocate first interval
@@ -228,7 +228,7 @@ int gen_timings (struct replay_timing* timings,
 	for (i = start+1; i < end; i++) {
 	    if (can_attach(timings[i].syscall)) {
 		if (edata[i].dtiming-edata[start].dtiming > goal || cnt_interval(edata, i, end) == partitions-1) {
-		    print_timing (timings, start, i, process_index);
+		    print_timing (timings, edata,  start, i, process_index);
 		    return gen_timings(timings, edata, i, end, partitions-1, process_index);
 		}
 	    }
@@ -248,7 +248,7 @@ int find_processes(map<u_int,u_int> &pid_to_index,
     int timings_map_index = 0; 
     map<u_int,bool> pid_found;
 
-    for (int i = 0; i < num; i++) {
+    for (u_int i = 0; i < num; i++) {
 	pid_found[timings[i].pid] = false; 
     }
     
@@ -306,7 +306,7 @@ int get_num_per_process(vector<u_int> &num_el,
 			const int num) { 
 
     //first initialize the num_el to 0
-    int max = 0;
+    u_int max = 0;
     double sum_of_times = 0;
     vector<u_int> total_time_proc;
     map<u_int,u_int> last_time;        
@@ -316,7 +316,7 @@ int get_num_per_process(vector<u_int> &num_el,
 	    max = pid_iter->second;
     }
 
-    for(int i = 0; i <= max; i++){ 
+    for(u_int i = 0; i <= max; i++){ 
 	num_el.push_back(0);
 	total_time_proc.push_back(0);
     }
@@ -450,7 +450,6 @@ int split_timings(vector<struct replay_timing *> &timings_vect,
 //		   i, curr_pid, curr_pid_index, timings_pid, curr_offset, timings_index);
 		   
 	
-
 	    /*
 	     * there are two times that things need to be considered as part of the replay:
 	     * 1. if the index of the current pid in the index_inclusion is the same as the index of
@@ -481,7 +480,7 @@ int build_intervals(map<u_int, u_int> &fork_process,
     {
 	map<u_int,u_int> intervals;
 	
-	u_int curr_pid = fork_process[proc_iter->first];
+	int curr_pid = fork_process[proc_iter->first];
 	u_int curr_offset = fork_offset[proc_iter->first];
 	while(curr_pid != -1) 
 	{
@@ -499,11 +498,6 @@ int build_intervals(map<u_int, u_int> &fork_process,
 	for(auto it = fork_process.begin(); it != fork_process.end(); it++) 
 	    printf("(%d,%d)\n",it->first,it->second);
 
-	printf("fork_offset\n");
-	for(auto it = fork_offset.begin(); it != fork_offset.end(); it++) 
-	    printf("(%d,%d)\n",it->first,it->second);
-
-
 	for(auto it = index_inclusions.begin(); it != index_inclusions.end(); it++) 
 	{
 	    printf("intervals for %d\n",it->first);
@@ -517,7 +511,104 @@ int build_intervals(map<u_int, u_int> &fork_process,
    
     return 0;
 } 
+int populate_start_clock(vector<struct replay_timing *> &timings_vect,
+			 vector<struct extra_data *> &edata_vect,
+			 vector<u_int> &num_el,
+			 const struct replay_timing* timings, 
+			 const u_int num, 
+			 const char* dir){
 
+    // Fill in start clock time from klogs - start with parent process
+
+    char path[256];
+    sprintf (path, "%sklog.id.%d", dir, timings[0].pid);
+
+    struct klogfile* log = parseklog_open(path);
+    if (!log) {
+	fprintf(stderr, "%s doesn't appear to be a valid klog file!\n", path);
+	return -1;
+    }
+
+    struct klog_result* res = parseklog_get_next_psr(log); // exec
+    u_int lindex = 0;
+    vector<pid_t> children;
+    vector<u_int> timings_index; 
+    for(auto i : timings_vect) { 
+	(void)i;
+	timings_index.push_back(0);
+    }
+
+    while ((res = parseklog_get_next_psr(log)) != NULL) {
+	while (timings[lindex].pid != timings[0].pid) {
+	    if (timings[lindex].index == 0) children.push_back(timings[lindex].pid);
+	    lindex++;
+	    if (lindex >= num) break;
+	}
+
+	if (lindex >= num) break;
+	for(u_int i = 0; i < timings_index.size(); i++) { 
+
+	    if(timings_index[i] == num_el[i]) continue;
+	    struct replay_timing* curr_timings = timings_vect[i];
+	    struct extra_data* curr_edata = edata_vect[i];
+	    
+	    curr_edata[timings_index[i]].start_clock = res->start_clock;
+	    //advance the timings_index forward until we get to the next record with this pid
+	    do{ 
+		timings_index[i]++;
+	    }while(curr_timings[timings_index[i]].pid != timings[0].pid && 
+		   timings_index[i] != num_el[i]);
+	}
+	lindex++;
+	if (lindex >= num) break;
+    }
+    parseklog_close(log);
+
+    // Now do children
+    for (auto iter = children.begin(); iter != children.end(); iter++) {
+	sprintf (path, "%sklog.id.%d", dir, *iter);	
+	struct klogfile* log = parseklog_open(path);
+	if (!log) {
+	    fprintf(stderr, "%s doesn't appear to be a valid klog file!\n", path);
+	    return -1;
+	}
+
+	lindex = 0;
+	//fixup the values in timings_index
+	for(u_int i = 0; i < timings_index.size(); i++) { 
+	    struct replay_timing* curr_timings = timings_vect[i];
+	    timings_index[i] = 0;
+	    do{ 
+		timings_index[i]++;
+	    }while(curr_timings[timings_index[i]].pid != *iter && 
+		   timings_index[i] != num_el[i]);
+	}
+
+	while ((res = parseklog_get_next_psr(log)) != NULL) {
+	    while (timings[lindex].pid != *iter) {
+		lindex++;
+		if (lindex >= num) break;
+	    }
+	    if (lindex >= num) break;
+	    for(u_int i = 0; i < timings_index.size(); i++) { 
+
+		if(timings_index[i] == num_el[i]) continue;
+		struct replay_timing* curr_timings = timings_vect[i];
+		struct extra_data* curr_edata = edata_vect[i];
+	    
+		curr_edata[timings_index[i]].start_clock = res->start_clock;
+		//advance the timings_index forward until we get to the next record with this pid
+		do{ 
+		    timings_index[i]++;
+		}while(curr_timings[timings_index[i]].pid != *iter && 
+		       timings_index[i] != num_el[i]);
+	    }
+	    if (lindex >= num) break;
+	}
+	parseklog_close(log);
+    }
+    return 0;
+}
 //right now we have three parallel vectors... these could conceivably be structs. (probably should)
 int create_multiprocess_ds(vector<u_int> &num_el,
 			   vector<struct replay_timing *> &timings_vect,
@@ -564,10 +655,19 @@ int create_multiprocess_ds(vector<u_int> &num_el,
 	printf("could not split_timings, rc %d\n", rc);
 	return rc;
     }
+
+    rc = populate_start_clock(timings_vect, edata_vect, num_el,timings, num, dir);
+    if(rc) { 
+	printf("could not split_timings, rc %d\n", rc);
+	return rc;
+    }
+
+
+
     return 0; // on success
 }
 
-int generate_timings_for_process( struct replay_timing *timings,
+void generate_timings_for_process( struct replay_timing *timings,
 				  struct extra_data* edata,
 				  const u_int num_partitions,
 				  const u_int num,
@@ -575,7 +675,8 @@ int generate_timings_for_process( struct replay_timing *timings,
 				  int process_index)
 {
     // First, need to sum times for all threads to get totals for this group
-    int total_time = 0, i,j,k;
+    int total_time = 0;
+    u_int i, j, k; 
     map<u_int,u_int> last_time;    
 
     for (i = 0; i < num; i++) {
@@ -617,8 +718,6 @@ int generate_timings_for_process( struct replay_timing *timings,
 	}
 	printf ("----------------------------------------\n");
     }
-
-
     gen_timings (timings, edata, 0, num-1, num_partitions, process_index);
 }
 
@@ -628,7 +727,7 @@ int main (int argc, char* argv[])
     struct replay_timing* timings;
     struct extra_data* edata;
     struct stat st;
-    int fd, rc, num, i, j, k, parts;
+    int fd, rc, num, i, parts;
 
     if (argc < 3) {
 	format ();
@@ -636,10 +735,10 @@ int main (int argc, char* argv[])
 
     sprintf (filename, "%s/timings", argv[1]);
     parts = atoi(argv[2]);
-    if (parts < 2) {
-	fprintf (stderr, "Number of partitions must be greater than 1\n");
-	return -1;
-    }
+//    if (parts < 2) {
+//	fprintf (stderr, "Number of partitions must be greater than 1\n");
+//	return -1;
+//    }
     for (i = 3; i < argc; i++) {
 	if (!strcmp(argv[i], "-g")) {
 	    i++;
@@ -697,6 +796,7 @@ int main (int argc, char* argv[])
 	return -1;
     }
 
+
     /*
      * all of the datastructures for the multiprocess case. Each of these vectors are 
      * made in parallel, where there are entries for each of separate processes in the 
@@ -713,7 +813,7 @@ int main (int argc, char* argv[])
     create_multiprocess_ds(num_el, timings_vect, edata_vect, num_parts, timings, argv[1], parts, num);
   
     if(details) { 
-	for(int i = 0; i < num_el.size(); i++ ) 
+	for(u_int i = 0; i < num_el.size(); i++ ) 
 	{	
 	    struct replay_timing* curr_timings = timings_vect[i];
 	    struct extra_data* curr_edata = edata_vect[i];
@@ -721,9 +821,9 @@ int main (int argc, char* argv[])
 	    printf("num_parts %d\n", num_parts[i]);
 	    printf("num_el %d\n", num_el[i]);
 	    printf("timing info (edata has not yet been determined)\n");
-//	    printf("total_time %d\n",curr_timings[num_el[i] -1].ut); //this actualy doesn't work
+
 	    if(details) {
-		for (int j = 0; j < num_el[i]; j++) {
+		for (u_int j = 0; j < num_el[i]; j++) {
 		    printf ("%d: pid %d syscall %lu type %d ut %u %.3f\n",j,
 			    curr_timings[j].pid, curr_timings[j].index, curr_timings[j].syscall, 
 			    curr_timings[j].ut, curr_edata[j].dtiming);
@@ -736,15 +836,12 @@ int main (int argc, char* argv[])
     printf ("%s\n", argv[1]);
     if (group_by > 0) printf ("group by %d\n", group_by);
 
-    for(int i = 0; i < num_el.size(); i++ ) {
+    for(u_int i = 0; i < num_el.size(); i++ ) {
 	generate_timings_for_process(timings_vect[i], edata_vect[i], num_parts[i], num_el[i], argv[1], i);
     }
     
     
-//    printf("old version of generate_timings\n");
-//    generate_timings_for_process(timings, edata, parts, num, timing_index, argv[1]);
-
-    //cleanup_memory(); 
+    //cleanup_memory();  not implemented... muahaha, just deal with it kernel. 
     return 0;
 }
 

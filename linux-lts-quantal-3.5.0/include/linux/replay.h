@@ -7,6 +7,11 @@
 #define ATTACH_PIN 1
 #define ATTACH_GDB 2
 
+/* These are return values from set_pin_address */
+#define PIN_NORMAL         0
+#define PIN_ATTACH_RUNNING 1
+#define PIN_ATTACH_BLOCKED 2
+
 #include <linux/signal.h>
 #include <linux/mm_types.h>
 
@@ -32,7 +37,7 @@ struct used_address {
     u_long end;
 };
 
-int set_pin_address (u_long pin_address, u_long thread_data, u_long __user* curthread_ptr);
+int set_pin_address (u_long pin_address, u_long thread_data, u_long __user* curthread_ptr, int* attach_ndx);
 long get_log_id (void);
 unsigned long get_clock_value (void);
 long check_clock_before_syscall (int syscall);
@@ -141,5 +146,8 @@ void replay_unlink_gdb(struct task_struct* tsk);
 
 /* Set to force a replay to exit on fatal signal */
 long try_to_exit (u_long pid);
+
+/* Let's the PIN tool read the clock value too */
+long pthread_shm_path (void);
 
 #endif
