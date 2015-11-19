@@ -30,11 +30,11 @@ using namespace std;
 const u_long MERGE_SIZE  = 0x400000000; // 16GB max
 const u_long OUTPUT_SIZE = 0x100000000; // 4GB max	//const u_long OUTPUT_SIZE = 0x800000000; // 32GB max
 #else
-const u_long MERGE_SIZE  = 0x40000000; // 1GB max
-const u_long OUTPUT_SIZE = 0x40000000; // 1GB max
+const u_long MERGE_SIZE  = 0x10000000; // 1GB max
+const u_long OUTPUT_SIZE = 0x10000000; // 1GB max
 #endif
 const u_long TOKEN_SIZE =   0x10000000; // 256MB max
-const u_long TS_SIZE =      0x40000000; // 1GB max
+const u_long TS_SIZE =      0x10000000; // 1GB max
 const u_long OUTBUFSIZE =   0x10000000; // 1GB size
 #endif
 #ifdef USE_SHMEM
@@ -168,6 +168,7 @@ taint_t stack[STACK_SIZE];
 static int
 init_socket (int port)
 {
+    printf("stream: init_socket(%d)\n",port);
    int c = socket (AF_INET, SOCK_STREAM, 0);
     if (c < 0) {
 	fprintf (stderr, "Cannot create socket, errno=%d\n", errno);
@@ -810,7 +811,7 @@ long stream_epoch (const char* dirname, int port)
     else { 
 	fprintf (statsfile, "0,"); 
     }
-    fprintf (statsfile, "%ld", resolved.size());
+    fprintf (statsfile, "%u\n", resolved.size());
     fclose (statsfile);
 
 

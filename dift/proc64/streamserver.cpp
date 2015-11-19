@@ -45,6 +45,11 @@ struct epoch_ctl {
     struct timeval tv_start_dift;
     struct timeval tv_done;
 };
+static long ms_diff (struct timeval tv1, struct timeval tv2)
+{
+    return ((tv1.tv_sec - tv2.tv_sec) * 1000 + (tv1.tv_usec - tv2.tv_usec) / 1000);
+}
+
 
 int sync_logfiles (int s)
 {
@@ -231,6 +236,7 @@ void do_dift (int s, struct epoch_hdr& ehdr)
     struct timeval tv_start, tv_done;
     gettimeofday (&tv_start, NULL);
 
+    fprintf(stderr, "do_dift started \n");
     int fd = open ("/dev/spec0", O_RDWR);
     if (fd < 0) {
 	perror("open /dev/spec0");
@@ -256,6 +262,7 @@ void do_dift (int s, struct epoch_hdr& ehdr)
     // Start all the epochs at once
     for (u_long i = 0; i < epochs; i++) {
 	ectl[i].cpid = fork ();
+	ectl[i].tracked_pid = -1; //needs to start off as some value? 
 	if (ectl[i].cpid == 0) {
 	    if (i > 0 || !ehdr.start_flag) {
 		char attach[80];
@@ -300,7 +307,7 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 			    close(s);
 			    s = -99999;
 			    wait_for_replay_group(fd,ectl[i].tracked_pid);
-			    return 0;
+			    return;
 			}	
 		    }	 
 		}
@@ -312,7 +319,7 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 		if (rc > 0) {
 		    pid_t mpid = fork();
 		    if (mpid == 0) {
-			char cpids[80], syscalls[80], output_filter[80], port[80];
+			char cpids[80], syscalls[80], output_filter[80], port[80], fork_flags[80];
 			const char* args[256];
 			int argcnt = 0;
 			
@@ -324,9 +331,6 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 			args[argcnt++] = "../obj-ia32/linkage_data.so";
 
 			//we always want the stop_pid to be present
-			sprintf (stop_pid, "%d", edata[i].stop_pid);
-			args[argcnt++] = "-stop_pid";
-			args[argcnt++] = stop_pid;
 			sprintf (syscalls, "%d", edata[i].stop_syscall);
 			args[argcnt++] = "-l";
 			args[argcnt++] = syscalls;
@@ -381,7 +385,7 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 	pid_t wpid = waitpid (-1, &status, 0);
 	if (wpid < 0) {
 	    fprintf (stderr, "waitpid returns %d, errno %d\n", rc, errno);
-	    return NULL;
+	    return;
 	} else {
 	    for (u_long i = 0; i < epochs; i++) {
 
@@ -406,15 +410,16 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 	    fprintf (stderr, "Cannot send ack,rc=%d\n", rc);
 	}
     }
+    char statsname[256];
     //write all of the stats out to files
     for (u_long i = 0; i < epochs; i++) {
 	sprintf (statsname, "/tmp/dift-stats%lu", i);
-	statsfile = fopen (statsname, "w");
+	FILE* statsfile = fopen (statsname, "w");
 	if (statsfile == NULL) {
 	    fprintf (stderr, "Cannot create %s, errno=%d\n", statsname, errno);
-	    return NULL;
+	    return;
 	}
-	fprintf (statsfile,"%start time ld\ndift time %ld", 
+	fprintf (statsfile,"start time %ld\ndift time %ld\n", 
 		 ms_diff(ectl[i].tv_start_dift, ectl[i].tv_start),
 		 ms_diff(ectl[i].tv_done, ectl[i].tv_start_dift)); 
 	fclose(statsfile);
@@ -432,6 +437,7 @@ void do_stream (int s, struct epoch_hdr& ehdr)
     struct timeval tv_start, tv_done;
     gettimeofday (&tv_start, NULL);
 
+    fprintf(stderr,"do_stream started \n");
     u_long epochs = ehdr.epochs;
     struct epoch_ctl ectl[epochs];
 
@@ -591,10 +597,12 @@ void* do_request (void* arg)
 	fprintf (stderr, "Cannot recieve header,rc=%d\n", rc);
 	return NULL;
     }
-    printf ("Recevied command %d\n", ehdr.cmd_type);
+
     if (ehdr.cmd_type == DO_DIFT) {
+	printf ("Recevied command %d, is dift\n", ehdr.cmd_type);
 	do_dift (s, ehdr);
     } else {
+	printf ("Recevied command %d, is stream\n", ehdr.cmd_type);
 	do_stream (s, ehdr);
     }
     return NULL;
