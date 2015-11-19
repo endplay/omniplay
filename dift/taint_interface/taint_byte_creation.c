@@ -239,8 +239,10 @@ int filter_byte_range(int syscall, int byteoffset)
 }
 
 #define TOKENBUFSIZE 0x2000
+#ifndef USE_FILE
 static struct token* tokenbuf;
 static u_long tokenindex = 0;
+#endif
 #ifdef USE_SHMEM
 static u_long token_total_count = 0;
 #endif
@@ -651,12 +653,12 @@ void output_buffer_result (void* buf, int size,
 	    // Now copy last bytes to new shmem
 	    memcpy (outputbuf, outbuf + (OUTBUFSIZE-outputindex), datasize - (OUTBUFSIZE-outputindex));
 	    outputindex = datasize - (OUTBUFSIZE-outputindex);
+	    free(outbuf);
 	} else {
 	    fill_outbuf (outputbuf+outputindex, tci, buf, size);
 	    outputindex += datasize;
 	}
 	output_total_count += datasize;
-	free(outbuf);
 #endif
 #ifdef USE_FILE
         write_output_header(outfd, tci, buf, size); 

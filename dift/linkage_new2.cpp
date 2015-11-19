@@ -55,7 +55,7 @@ int s = -1;
 // #define ALT_PATH_EXPLORATION         // indirect control flow
 // #define CONFAID
 
-#define NO_FILE_OUTPUT
+//#define NO_FILE_OUTPUT
 //#define LOGGING_ON
 #define LOG_F log_f
 //#define ERROR_PRINT fprintf
@@ -143,7 +143,6 @@ const char* splice_input = NULL;
 u_long num_merge_entries = 0x40000000/(sizeof(taint_t)*2);
 u_long inst_cnt = 0;
 
-int stop_pid = 0;
 map<pid_t,struct thread_data*> active_threads;
 u_long* ppthread_log_clock = NULL;
 const char* fork_flags = NULL;
@@ -205,9 +204,6 @@ KNOB<string> KnobNWHostname(KNOB_MODE_WRITEONCE,
 KNOB<int> KnobNWPort(KNOB_MODE_WRITEONCE,
     "pintool", "port", "",
     "port for nw output");
-KNOB<int> KnobStopPid(KNOB_MODE_WRITEONCE,
-    "pintool", "stop_pid", "",
-    "the pid of the process that we should stop on");
 KNOB<string> KnobForkFlags(KNOB_MODE_WRITEONCE,
     "pintool", "fork_flags", "",
     "flags for which way to go on each fork");
@@ -1280,23 +1276,20 @@ void instrument_syscall(ADDRINT syscall_num,
 	sysnum == 174 || sysnum == 175 || sysnum == 190 || sysnum == 192) {
 	check_clock_before_syscall (dev_fd, (int) syscall_num);
     }
-    if (sysnum == 252) {
-	//ARQUINN: I'm not certain this will work for my stuff...? here
-	if((!stop_pid || stop_pid == get_record_pid())) {
-	    printf ("pid %d, rec_pid %d: calling group exit - cleanup time\n",  PIN_GetPid() , get_record_pid());	
-	    dift_done();
+    /*
+     * ARQUINN: I'm not 100% positive what this code was doing here, it seems like we shouldn't have 
+     * been having the issue that this fixes... but, I know that we need some other check besides just
+     * system exit, because with multiple processes we can get a system exit that shouldn't end the 
+     * epoch... 
+     */
 
-	    //if we have multple threads, we don't have many procs, so we can exit
-	    if(active_threads.size() > 1) 
-		try_to_exit(dev_fd, PIN_GetPid()); // tell all the other processes to bail
-
-	}
+    if (sysnum == 252 && !segment_length) {
+	    dift_done(); //doesn't call try_to_exit... so any reason to not call dift_done always? not sure...
     }
-    if ((!stop_pid || stop_pid == get_record_pid()) &&
-	(segment_length && *ppthread_log_clock >= segment_length)) {
+    if (segment_length && *ppthread_log_clock >= segment_length) {
 	// Done with this replay - do exit stuff now because we may not get clean unwind
-	printf("Pin terminating at Pid %d/%d, entry to syscall %ld, term. clock %d/%ld cur. clock %ld\n", 
-	       PIN_GetPid(), get_record_pid(),global_syscall_cnt, stop_pid, segment_length, *ppthread_log_clock);
+	printf("Pin terminating at Pid %d/%d, entry to syscall %ld, term. clock %ld cur. clock %ld\n", 
+	       PIN_GetPid(), get_record_pid(),global_syscall_cnt, segment_length, *ppthread_log_clock);
 
 	dift_done ();
 	try_to_exit(dev_fd, PIN_GetPid());
@@ -14424,15 +14417,7 @@ void init_logs(void)
 
 void fini(INT32 code, void* v)
 {
-    //ignore finishes from tracked, but unimportant processes
-    if((!stop_pid || stop_pid == get_record_pid())) {
-	printf ("pid %d, rec_pid %d: calling fini\n",  PIN_GetPid() , get_record_pid());	
 	dift_done();
-
-	//if we have multple threads, we don't have many procs, so we can exit
-	if(active_threads.size() > 1) 
-	    try_to_exit(dev_fd, PIN_GetPid()); // tell all the other processes to bail
-    }
 }
 
 #if 0
@@ -14473,6 +14458,7 @@ int main(int argc, char** argv)
 
     /* Create a directory for logs etc for this replay group*/
     snprintf(group_directory, 256, "/tmp/%d", PIN_GetPid());
+    fprintf(stderr, "making group_directory, %s\n",group_directory);
 #ifndef NO_FILE_OUTPUT
     if (mkdir(group_directory, 0755)) {
         if (errno == EEXIST) {
@@ -14491,7 +14477,6 @@ int main(int argc, char** argv)
     segment_length = KnobSegmentLength.Value();
     splice_output = KnobSpliceOutput.Value();
     all_output = KnobAllOutput.Value();
-    stop_pid = KnobStopPid.Value();
     fork_flags = KnobForkFlags.Value().c_str();
     fork_flags_index = 0;
 

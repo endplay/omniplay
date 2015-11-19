@@ -1558,6 +1558,9 @@ int parse_merge (char* results_filename, GHashTable* merge_node_table)
     u_long buf_size;
 
     rc = map_file (results_filename, &fd, &outsize, &mapsize, &buf);
+
+
+
     if (rc < 0) return rc;
 
     pout = buf;
@@ -1624,14 +1627,15 @@ int read_merge (char* group_dir, char* pid)
     {
 	snprintf(results_filename, 256, "%s/dataflow.result", group_dir);
 	snprintf (out_filename, 256, "%s/mergeout", group_dir);
+	snprintf(taint_structures_filename, 256, "%s/node_nums", group_dir);
     }
     else 
     {
 	snprintf(results_filename, 256, "%s/dataflow.result.%s", group_dir, pid);
 	snprintf (out_filename, 256, "%s/mergeout.%s", group_dir, pid);
+	snprintf(taint_structures_filename, 256, "%s/node_nums", group_dir); //I don't know how this works w/ multiproc?
     }
 
-    snprintf(taint_structures_filename, 256, "%s/node_nums", group_dir);
     outfd = open (out_filename, O_CREAT|O_WRONLY|O_TRUNC, 0644);
     if (outfd < 0) {
         fprintf(stderr, "couldn't open: %s\n", out_filename);
@@ -1640,8 +1644,9 @@ int read_merge (char* group_dir, char* pid)
 	
     // merge_node_table is a mapping of taint number to struct taint number
     merge_node_table = g_hash_table_new(g_direct_hash, g_direct_equal);
-
-    rc = map_shmem (taint_structures_filename, &mfd, &moutsize, &mmapsize, (char **) &merge_log);
+    //HERE: probably need to convert this to a read and mmap?  (as above) 
+    rc =  map_file (taint_structures_filename, &mfd, &moutsize, &mmapsize, (char **) &merge_log);
+    
     if (rc < 0) return rc;
 
     parse_merge(results_filename, merge_node_table);

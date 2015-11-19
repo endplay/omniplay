@@ -412,7 +412,7 @@ static inline void init_taint_index(char* group_dir)
 	}
 #else
 #ifdef USE_FILE
-	char node_num_filenam[2e56];
+	char node_num_filename[256];
         snprintf(node_num_filename, 256, "%s/node_nums", group_dir);
 	node_num_fd = open(node_num_filename, O_CREAT | O_TRUNC | O_RDWR | O_LARGEFILE, 0644);
 	if (node_num_fd < 0) {

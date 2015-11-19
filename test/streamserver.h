@@ -1,3 +1,4 @@
+
 #ifndef __STREAMSERVER_H__
 #define __STREAMSERVER_H__
 
@@ -42,15 +43,12 @@ struct epoch_hdr {
 
 
 struct epoch_data {
-    uint32_t process_index;  //added for multi-process parallel TT
     pid_t    start_pid;
     uint32_t start_syscall;
-    pid_t    stop_pid;       //added for multi-process parallel TT    
     uint32_t stop_syscall;
     uint32_t filter_syscall;
     uint32_t ckpt;
-    uint32_t fork_flags;
-
+    uint32_t fork_flags; //definitely needed
     uint32_t port;              // Aggregation port
     char     hostname[NAMELEN]; // Aggregation hostname
 };
