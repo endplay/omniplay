@@ -184,11 +184,11 @@ int main (int argc, char* argv[])
 	char line[256];
 	if (fgets (line, 255, file)) {
 	    struct epoch e;
-	    rc = sscanf (line, "%d %u %u %u %u %u \n", &e.data.start_pid, 
+	    rc = sscanf (line, "%d %u %u %u %u %u\n", &e.data.start_pid, 
 			 &e.data.start_syscall, &e.data.stop_syscall, &e.data.filter_syscall, 
 			 &e.data.ckpt,  &e.data.fork_flags);
 
-	    if (rc != 7) {
+	    if (rc != 6) {
 		fprintf (stderr, "Unable to parse line of epoch descrtion file: %s\n", line);
 		return -1;
 	    }
