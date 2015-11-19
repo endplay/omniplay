@@ -21,6 +21,8 @@ int main (int argc, char* argv[])
     char* lscmd_output;
     char* dirname;
 //    char shmemname[256];
+    char cache_dir[BUFFER_SIZE] = "";
+
     pid_t cpid, mpid, ppid;
     int fd, rc, status, filter_syscall = 0;
     int next_child = 0, i;
@@ -30,14 +32,26 @@ int main (int argc, char* argv[])
     int post_process_pids[MAX_PROCESSES];
 
     if (argc < 2) {
-	fprintf (stderr, "format: seqtt <replay dir> [filter syscall]\n");
+	fprintf (stderr, "format: seqtt <replay dir> [filter syscall] [--cache_dir cache_dir]\n");
 	return -1;
     }
 
     dirname = argv[1];
-    if (argc == 3) {
-	filter_syscall = atoi(argv[2]);
+    if (argc > 2) {
+	int index = 2;
+	while (index < argc) { 
+	    //if the current argument is cache_dir, then save the cache_dir
+	    if(!strncmp(argv[index],"--cache_dir",BUFFER_SIZE)) {
+		strncpy(cache_dir,argv[index + 1],BUFFER_SIZE); 
+		index++;
+	    }	   
+	    else { 
+		filter_syscall = atoi(argv[index]);
+	    }
+	    index++;
+	}
     }
+
 
     fd = open ("/dev/spec0", O_RDWR);
     if (fd < 0) {
@@ -48,7 +62,12 @@ int main (int argc, char* argv[])
     gettimeofday (&tv_start, NULL);
     cpid = fork ();
     if (cpid == 0) {
-	rc = execl("./resume", "resume", "-p", dirname, "--pthread", "../eglibc-2.15/prefix/lib", NULL);
+	if(strncmp(cache_dir,"",BUFFER_SIZE)) { 
+	    rc = execl("./resume", "resume", "-p", dirname, "--pthread", "../eglibc-2.15/prefix/lib", "--cache_dir",cache_dir,NULL);
+	}
+	else {
+	    rc = execl("./resume", "resume", "-p", dirname, "--pthread", "../eglibc-2.15/prefix/lib", NULL);
+	}
 	fprintf (stderr, "execl of resume failed, rc=%d, errno=%d\n", rc, errno);
 	return -1;
     } 

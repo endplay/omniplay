@@ -27,6 +27,7 @@ using namespace std;
 /* An aggregation server */
 struct aggregator {
     char  hostname[256];  /* hostname for this aggregator */
+    uint32_t port;
     u_int num_epochs;     /* how many epochs it will handle */
     int   s;              /* socket used for communication */
 };
@@ -118,14 +119,6 @@ int main (int argc, char* argv[])
 {
     int rc;
     char dirname[80];
-
-    struct epoch_data epoch;
-    vector<struct epoch_data> epochs;
-    struct aggregator agg;
-    vector<struct aggregator> aggregators;
- 
-    vector<struct epoch_ctl> epochctls;
-    unordered_set<int> conns;
     int wait_for_response = 0, validate = 0, sync_files = 0;
     char* dest_dir, *cmp_dir;
     struct vector<struct replay_path> log_files;
@@ -191,36 +184,15 @@ int main (int argc, char* argv[])
 	char line[256];
 	if (fgets (line, 255, file)) {
 	    struct epoch e;
-	    rc = sscanf (line, "%d %u %u %u %u\n", &e.data.start_pid, &e.data.start_syscall, 
-			 &e.data.stop_syscall, &e.data.filter_syscall, &e.data.ckpt);
-	    if (rc != 5) {
+	    rc = sscanf (line, "%d %u %u %u %u %u \n", &e.data.start_pid, 
+			 &e.data.start_syscall, &e.data.stop_syscall, &e.data.filter_syscall, 
+			 &e.data.ckpt,  &e.data.fork_flags);
+
+	    if (rc != 6) {
 		fprintf (stderr, "Unable to parse line of epoch descrtion file: %s\n", line);
 		return -1;
 	    }
 	    conf.epochs.push_back(e);
-	}
-    }
-    fclose(file);
-
-    //get all of the aggregators from the config file
-    file = fopen(config_filename, "r");
-    if (file == NULL) {
-	fprintf (stderr, "Unable to open config description file %s, errno=%d\n", config_filename, errno);
-	return -1;
-    }
-    while (!feof(file)) {
-	char line[256];
-	if (fgets (line, 255, file)) {
-	    rc = sscanf (line, "%s %u\n", agg.hostname, &agg.port);	    
-	    if (rc != 2) {
-		fprintf (stderr, "Unable to parse line of config file, rc=%d, %s\n", rc, line);
-		return -1;
-	    }
-	    agg.wait_pid = -1;
-	    agg.socket_fd = -1;
-	    agg.start_flag = true;
-	    agg.epochno = 1; //start wiht an offset of 1.
-	    aggregators.push_back(agg);       
 	}
     }
     fclose(file);
@@ -250,7 +222,8 @@ int main (int argc, char* argv[])
 	    }
 	    if (epoch_cnt + num_epochs > conf.epochs.size()) {
 		// Will not use all the epochs in this row
-		num_epochs -= conf.epochs.size() - epoch_cnt;
+		
+		num_epochs = conf.epochs.size() - epoch_cnt;
 		printf ("Truncated num_epochs to %d\n", num_epochs);
 	    }
 	    struct dift* d;
@@ -271,6 +244,7 @@ int main (int argc, char* argv[])
 		a = new aggregator;
 		strcpy (a->hostname, agg_host);
 		a->num_epochs = num_epochs;
+		a->port = STREAMSERVER_PORT; //needs to be changed
 		a->s = -1;
 		conf.aggregators.push_back(a);
 		prev_agg = a;
@@ -370,7 +344,7 @@ int main (int argc, char* argv[])
 	}
 	ehdr.cmd_type = agg_type;
 
-	conf.aggregators[i]->s = connect_to_server (conf.aggregators[i]->hostname, STREAMSERVER_PORT);
+	conf.aggregators[i]->s = connect_to_server (conf.aggregators[i]->hostname, conf.aggregators[i]->port);
 	if (conf.aggregators[i]->s < 0) return conf.aggregators[i]->s;
 
 	rc = safe_write (conf.aggregators[i]->s, &ehdr, sizeof(ehdr));
@@ -433,13 +407,13 @@ int main (int argc, char* argv[])
 	
 	if (sync_files) {
 	    // First send count of log files
-	    u_long cnt = log_files.size();
+	    uint32_t cnt = log_files.size();
 	    rc = safe_write (conf.difts[i]->s, &cnt, sizeof(cnt));
 	    if (rc != sizeof(cnt)) {
 		fprintf (stderr, "Cannot send log file count to streamserver, rc=%d\n", rc);
 		return rc;
 	    }
-	    
+
 	    // Next send log files
 	    for (auto iter = log_files.begin(); iter != log_files.end(); iter++) {
 		struct replay_path p = *iter;
@@ -477,29 +451,30 @@ int main (int argc, char* argv[])
 	    }
 	    
 	    // Send requested files
-	    u_long i, j;
-	    for (i = 0; i < log_files.size(); i++) {
-		if (response[i]) {
+	    u_long l, j;
+	    for (l = 0; l < log_files.size(); l++) {
+		if (response[l]) {
+		    printf ("%ld of %d log files requested\n", l, log_files.size());
 		    char* filename = NULL;
-		    for (int j = strlen(log_files[i].path); j >= 0; j--) {
+		    for (int j = strlen(log_files[l].path); j >= 0; j--) {
 			if (log_files[i].path[j] == '/') {
-			    filename = &log_files[i].path[j+1];
+			    filename = &log_files[l].path[j+1];
 			    break;
 			} 
 		    }
 		    if (filename == NULL) {
-			fprintf (stderr, "Bad path name: %s\n", log_files[i].path);
-			    return -1;
+			fprintf (stderr, "Bad path name: %s\n", log_files[l].path);
+			return -1;
 		    }
-		    rc = send_file (conf.difts[i]->s, log_files[i].path, filename);
+		    rc = send_file (conf.difts[i]->s, log_files[l].path, filename);
 		    if (rc < 0) {
-			fprintf (stderr, "Unable to send log file %s\n", log_files[i].path);
+			fprintf (stderr, "Unable to send log file %s\n", log_files[l].path);
 			return rc;
 		    }
 		}
 	    }
 	    for (j = 0; j < cache_files.size(); j++) {
-		if (response[i+j]) {
+		if (response[l+j]) {
 		    char cname[PATHLEN];
 		    struct stat64 st;
 		    
@@ -547,10 +522,7 @@ int main (int argc, char* argv[])
 	    }
 	    // Fetch 4 files: results, addresses, input and output tokens
 	    for (int j = 0; j < 4; j++) {
-		struct aggregator agg = aggregators[epochs[i].process_index];				
-		printf("%lu fetch_file on fd %d\n",i,agg.socket_fd);
-		if (fetch_file(agg.socket_fd, rdir) < 0) return -1;
-
+		if (fetch_file(conf.epochs[i].pagg->s, rdir) < 0) return -1;
 	    }
 	}
 

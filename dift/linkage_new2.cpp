@@ -1,4 +1,4 @@
-#include "pin.H"
+<#include "pin.H"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,6 +55,7 @@ int s = -1;
 // #define ALT_PATH_EXPLORATION         // indirect control flow
 // #define CONFAID
 
+//#define NO_FILE_OUTPUT
 //#define LOGGING_ON
 #define LOG_F log_f
 #define ERROR_PRINT fprintf
@@ -140,12 +141,14 @@ const char* splice_input = NULL;
 u_long num_merge_entries = 0x40000000/(sizeof(taint_t)*2);
 u_long inst_cnt = 0;
 
-int stop_pid = 0;
 map<pid_t,struct thread_data*> active_threads;
 u_long* ppthread_log_clock = NULL;
 const char* fork_flags = NULL;
 int fork_flags_index = 0;
 
+#ifdef OUTPUT_FILENAMES
+FILE* filenames_f = NULL; // Mapping of all opened filenames
+#endif
 
 
 struct slab_alloc open_info_alloc;
@@ -199,9 +202,6 @@ KNOB<string> KnobNWHostname(KNOB_MODE_WRITEONCE,
 KNOB<int> KnobNWPort(KNOB_MODE_WRITEONCE,
     "pintool", "port", "",
     "port for nw output");
-KNOB<int> KnobStopPid(KNOB_MODE_WRITEONCE,
-    "pintool", "stop_pid", "",
-    "the pid of the process that we should stop on");
 KNOB<string> KnobForkFlags(KNOB_MODE_WRITEONCE,
     "pintool", "fork_flags", "",
     "flags for which way to go on each fork");
@@ -246,7 +246,7 @@ static void copy_file(int src, int dest) {
 	fprintf(stderr, "There was an error reading file (int) rc %d, errno %d\n",read_bytes,errno);
     }
 }
-
+#ifdef OUTPUT_FILENAME
 static void copy_file(FILE* src, FILE* dest) { 
     char buff[COPY_BUFFER_SIZE]; 
     int read_chars,written_chars, rc;
@@ -268,6 +268,7 @@ static void copy_file(FILE* src, FILE* dest) {
 	fprintf(stderr, "There was an error reading file (FILE*) rc %d, errno %d\n",read_chars,errno);
     }
 }
+#endif
 #endif
 
 static int terminated = 0;
@@ -448,11 +449,10 @@ char* get_file_ext(char* filename){
 static inline void sys_open_stop(int rc)
 {
     if (rc > 0) {
-        struct open_info* oi = (struct open_info *) current_thread->save_syscall_info;
         monitor_add_fd(open_fds, rc, 0, current_thread->save_syscall_info);
-
 	SYSCALL_DEBUG(stderr, "open: added fd %d\n", rc);
-
+#ifdef OUTPUT_FILENAMES
+        struct open_info* oi = (struct open_info *) current_thread->save_syscall_info;
         write_filename_mapping(filenames_f, oi->fileno, oi->name);
 
 
@@ -1254,24 +1254,21 @@ void instrument_syscall(ADDRINT syscall_num,
 	sysnum == 174 || sysnum == 175 || sysnum == 190 || sysnum == 192) {
 	check_clock_before_syscall (dev_fd, (int) syscall_num);
     }
-    if (sysnum == 252) {
-	//ARQUINN: I'm not certain this will work for my stuff...? 
-	if((!stop_pid || stop_pid == get_record_pid())) {
-	    printf ("pid %d, rec_pid %d: calling group exit - cleanup time\n",  PIN_GetPid() , get_record_pid());	
-	    dift_done();
-
-	    //if we have multple threads, we don't have many procs, so we can exit
-	    if(active_threads.size() > 1) 
-		try_to_exit(dev_fd, PIN_GetPid()); // tell all the other processes to bail
-
-	}
+    /*
+     * ARQUINN: I'm not 100% positive what this code was doing here, it seems like we shouldn't have 
+     * been having the issue that this fixes... but, I know that we need some other check besides just
+     * system exit, because with multiple processes we can get a system exit that shouldn't end the 
+     * epoch... 
+     */
+    if (sysnum == 252 && !segment_length) {
+	    dift_done(); //doesn't call try_to_exit... so any reason to not call dift_done always? not sure...
     }
 
-    if ((!stop_pid || stop_pid == get_record_pid()) &&
-	(segment_length && *ppthread_log_clock >= segment_length)) {
+
+    if (segment_length && *ppthread_log_clock >= segment_length) {
 	// Done with this replay - do exit stuff now because we may not get clean unwind
-	printf("Pin terminating at Pid %d/%d, entry to syscall %ld, term. clock %d/%ld cur. clock %ld\n", 
-	       PIN_GetPid(), get_record_pid(),global_syscall_cnt, stop_pid, segment_length, *ppthread_log_clock);
+	printf("Pin terminating at Pid %d/%d, entry to syscall %ld, term. clock %ld cur. clock %ld\n", 
+	       PIN_GetPid(), get_record_pid(),global_syscall_cnt, segment_length, *ppthread_log_clock);
 
 	dift_done ();
 	try_to_exit(dev_fd, PIN_GetPid());
@@ -14053,9 +14050,11 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
 {
     PRINTX(stderr, "%d,%d:AfterForkInChild\n", PIN_GetPid(),get_record_pid());
 
+#ifndef NO_FILE_OUTPUT
     fclose(log_f); 
     log_f = NULL;
     init_logs();
+#endif
 
     //for now there is no change for not using the network
 #ifdef USE_NW 
@@ -14093,10 +14092,13 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
      * are there any log files and things that need to be cleaned? 
      */
     int record_pid = get_record_pid();
-    FILE* filenames_f_old = filenames_f; 
     int tokens_fd_old = tokens_fd;
 
+
     //open new filenames
+
+#ifdef OUTPUT_FILENAME
+    FILE* filenames_f_old = filenames_f; 
     char filename_mapping[256];
     snprintf(filename_mapping, 256, "%s/filenames.%d", group_directory, record_pid);
     filenames_f = fopen(filename_mapping, "w");
@@ -14105,6 +14107,9 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
       exit(-1);
     }
     init_filename_mapping(filenames_f);
+    copy_file(filenames_f_old, filenames_f); 
+    fclose(filenames_f_old);
+#endif
 
     char name[256];
     snprintf(name, 256, "%s/tokens.%d", group_directory, record_pid);
@@ -14113,6 +14118,8 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
       fprintf(stderr, "Could not open tokens file %s\n", name);
       exit(-1);
     }
+    copy_file(tokens_fd_old, tokens_fd);    
+    close(tokens_fd_old);
 
     char output_file_name[256];
     snprintf(output_file_name, 256, "%s/dataflow.result.%d", group_directory, record_pid);
@@ -14125,11 +14132,6 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
     //copy the files and close the old ones 
     PRINTX(stderr, "\t- record_pid %d\n", record_pid);
 
-    copy_file(tokens_fd_old, tokens_fd); 
-    copy_file(filenames_f_old, filenames_f); 
-    
-    close(tokens_fd_old);
-    fclose(filenames_f_old);
 #endif
 
     current_thread->record_pid = get_record_pid();
@@ -14222,6 +14224,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
             ptdata->syscall_cnt = 1;
         }
 
+#ifdef OUTPUT_FILENAME
         if (!filenames_f) {
             // setup initial maps
             char filename_mapping[256];
@@ -14242,7 +14245,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
             snprintf(name, 256, "%s/tokens", group_directory);
 	    //ARQUINN: changed so that we can read this file if forking
             tokens_fd = open(name, O_RDWR | O_CREAT | O_TRUNC, 0644);
-            if (tokens_fd == -1) {
+            if (tokens_fd < 0) {
                 fprintf(stderr, "Could not open tokens file %s\n", name);
                 exit(-1);
             }
@@ -14368,15 +14371,7 @@ void init_logs(void)
 
 void fini(INT32 code, void* v)
 {
-    //ignore finishes from tracked, but unimportant processes
-    if((!stop_pid || stop_pid == get_record_pid())) {
-	printf ("pid %d, rec_pid %d: calling fini\n",  PIN_GetPid() , get_record_pid());	
 	dift_done();
-
-	//if we have multple threads, we don't have many procs, so we can exit
-	if(active_threads.size() > 1) 
-	    try_to_exit(dev_fd, PIN_GetPid()); // tell all the other processes to bail
-    }
 }
 
 #if 0
@@ -14416,7 +14411,9 @@ int main(int argc, char** argv)
     global_syscall_cnt = 0;
 
     /* Create a directory for logs etc for this replay group*/
-    snprintf(group_directory, 256, "/tmp/%d", PIN_GetPid());  
+    snprintf(group_directory, 256, "/tmp/%d", PIN_GetPid());
+    fprintf(stderr, "making group_directory, %s\n",group_directory);
+#ifndef NO_FILE_OUTPUT
     if (mkdir(group_directory, 0755)) {
         if (errno == EEXIST) {
             fprintf(stderr, "directory already exists, using it: %s\n", group_directory);
@@ -14433,7 +14430,6 @@ int main(int argc, char** argv)
     segment_length = KnobSegmentLength.Value();
     splice_output = KnobSpliceOutput.Value();
     all_output = KnobAllOutput.Value();
-    stop_pid = KnobStopPid.Value();
     fork_flags = KnobForkFlags.Value().c_str();
     fork_flags_index = 0;
 
@@ -14463,7 +14459,14 @@ int main(int argc, char** argv)
     addr.sin_port = htons(port);
     memcpy (&addr.sin_addr, hp->h_addr, hp->h_length);
 
-    rc = connect (s, (struct sockaddr *) &addr, sizeof(addr));
+    int tries = 0;
+    do {
+	rc = connect (s, (struct sockaddr *) &addr, sizeof(addr));
+	if (rc < 0) {
+	    tries++;
+	    usleep(1000);
+	}
+    } while (rc < 0 && tries <=10);
 
     if (rc < 0) {
 	fprintf (stderr, "Cannot connect to socket (host %s, port %d), errno=%d\n", hostname, port, errno);
@@ -14471,7 +14474,7 @@ int main(int argc, char** argv)
     }
 #endif
 
-
+#ifndef NO_FILE_OUTPUT
     init_logs();
     init_taint_structures(group_directory);
     if (!open_fds) {

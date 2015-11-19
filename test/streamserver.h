@@ -1,3 +1,4 @@
+
 #ifndef __STREAMSERVER_H__
 #define __STREAMSERVER_H__
 
@@ -44,17 +45,14 @@ struct epoch_hdr {
 
 
 struct epoch_data {
-    uint32_t process_index;  //added for multi-process parallel TT
     pid_t    start_pid;
     uint32_t start_syscall;
-    pid_t    stop_pid;       //added for multi-process parallel TT    
     uint32_t stop_syscall;
     uint32_t filter_syscall;
     uint32_t ckpt;
-    uint32_t port;
-    uint32_t fork_flags;
-    char     hostname[NAMELEN];
-    
+    uint32_t fork_flags; //definitely needed
+    uint32_t port;              // Aggregation port
+    char     hostname[NAMELEN]; // Aggregation hostname
 };
 
 struct epoch_ack {
@@ -68,16 +66,6 @@ struct taintq {
     atomic_ulong    read_index;
     atomic_ulong    write_index;
     uint32_t        buffer[TAINTENTRIES];
-};
-
-
-struct aggregator{ 
-    char     hostname[NAMELEN];
-    uint32_t port;
-    uint32_t socket_fd;
-    pid_t    wait_pid;
-    bool     start_flag;    
-    uint32_t epochno;
 };
 
 #endif

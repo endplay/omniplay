@@ -77,7 +77,7 @@ int replay_fork (int fd_spec, const char** args, const char** env,
 
 int resume_with_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int save_mmap, 
 		      char* logdir, char* linker, loff_t attach_index, int attach_pid, int ckpt_at,
-		      int record_timing)
+		      int record_timing, char* cache_dir)
 {
     struct wakeup_data data;
     data.pin = pin;
@@ -91,18 +91,19 @@ int resume_with_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int save
     data.attach_pid = attach_pid;
     data.ckpt_at = ckpt_at;
     data.record_timing = record_timing;
+    data.cache_dir = cache_dir;
     return ioctl (fd_spec, SPECI_RESUME, &data);    
 }
 
 int resume (int fd_spec, int pin, int gdb, int follow_splits, int save_mmap, 
-	    char* logdir, char* linker, loff_t attach_index, int attach_pid, int record_timing)
+	    char* logdir, char* linker, loff_t attach_index, int attach_pid, int record_timing, char *cache_dir)
 {
     return resume_with_ckpt (fd_spec, pin, gdb, follow_splits, save_mmap,
-			     logdir, linker, attach_index, attach_pid, 0, record_timing);
+			     logdir, linker, attach_index, attach_pid, 0, record_timing, cache_dir);
 }
 
 int resume_after_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int save_mmap, 
-		       char* logdir, char* linker, char* filename, loff_t attach_index, int attach_pid)
+		       char* logdir, char* linker, char* filename, loff_t attach_index, int attach_pid, char *cache_dir)
 {
     fprintf(stderr, "calling resume_after_ckpt\n");
     struct wakeup_ckpt_data data;
@@ -116,6 +117,7 @@ int resume_after_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int sav
     data.save_mmap = save_mmap;
     data.attach_index = attach_index;
     data.attach_pid = attach_pid;
+    data.cache_dir = cache_dir;
     return ioctl (fd_spec, SPECI_CKPT_RESUME, &data);    
 
 }

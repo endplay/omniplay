@@ -239,8 +239,10 @@ int filter_byte_range(int syscall, int byteoffset)
 }
 
 #define TOKENBUFSIZE 0x2000
+#ifndef USE_FILE
 static struct token* tokenbuf;
 static u_long tokenindex = 0;
+#endif
 #ifdef USE_SHMEM
 static u_long token_total_count = 0;
 #endif
@@ -595,6 +597,7 @@ void output_buffer_result (void* buf, int size,
 	    fprintf (stderr, "Cannot write nw header for output data, rc=%ld, errno=%d\n", rc, errno);
 	    assert (0);
 	}
+
 	u_long bytes_written = 0;
 	while (bytes_written < hdr.datasize) {
 	    rc = write (outfd, (char *) outbuf+bytes_written, hdr.datasize-bytes_written);	
@@ -649,6 +652,7 @@ void output_buffer_result (void* buf, int size,
 	    // Now copy last bytes to new shmem
 	    memcpy (outputbuf, outbuf + (OUTBUFSIZE-outputindex), datasize - (OUTBUFSIZE-outputindex));
 	    outputindex = datasize - (OUTBUFSIZE-outputindex);
+	    free(outbuf);
 	} else {
 	    fill_outbuf (outputbuf+outputindex, tci, buf, size);
 	    outputindex += datasize;

@@ -23,9 +23,11 @@ int fork_replay (char __user * logdir, const char __user *const __user *args,
 /* Restore ckpt from disk - replaces AS of current process (like exec) */
 /* Linker may be NULL - otherwise points to special libc linker */
 long replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
-			 int follow_splits, int save_mmap, loff_t syscall_index, int attach_pid, int ckpt_at, int record_timing);
+			 int follow_splits, int save_mmap, loff_t syscall_index, int attach_pid, int ckpt_at, int record_timing,
+			 char* cache_dir);
 long replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* linker, int fd, 
-			      int follow_splits, int save_mmap, loff_t syscall_index, int attach_pid);
+			      int follow_splits, int save_mmap, loff_t syscall_index, int attach_pid,
+			      char* cache_dir);
 long replay_full_ckpt_proc_wakeup (char* logdir, char* filename, int fd);
 
 /* Returns linker for exec to use */
@@ -85,6 +87,11 @@ void replay_execval(int* uid, int* euid, int* gid, int* egid, int* secureexec);
 
 /* For replaying exec from a cache file */
 const char* replay_get_exec_filename (void);
+
+//so that we can replay with different replay_cache
+const char* get_current_replay_cache_dir(void);
+
+
 
 /* In replay_logdb.c */
 __u64 get_replay_id (void);
