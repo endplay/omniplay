@@ -13,6 +13,8 @@
 #define NAMELEN 256
 #define PATHLEN 512
 
+
+
 struct replay_path {
     char path[PATHLEN];
 };
@@ -23,8 +25,9 @@ struct cache_info {
     struct timespec mtime;
 };
 
-#define AGG_TYPE_STREAM 0
-#define AGG_TYPE_SEQ    1
+#define DO_DIFT         0
+#define AGG_TYPE_STREAM 1
+#define AGG_TYPE_SEQ    2
 
 // Info from description file
 struct epoch_hdr {
