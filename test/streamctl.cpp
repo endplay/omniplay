@@ -408,13 +408,13 @@ int main (int argc, char* argv[])
 	
 	if (sync_files) {
 	    // First send count of log files
-	    u_long cnt = log_files.size();
+	    uint32_t cnt = log_files.size();
 	    rc = safe_write (conf.difts[i]->s, &cnt, sizeof(cnt));
 	    if (rc != sizeof(cnt)) {
 		fprintf (stderr, "Cannot send log file count to streamserver, rc=%d\n", rc);
 		return rc;
 	    }
-	    
+
 	    // Next send log files
 	    for (auto iter = log_files.begin(); iter != log_files.end(); iter++) {
 		struct replay_path p = *iter;
@@ -452,29 +452,30 @@ int main (int argc, char* argv[])
 	    }
 	    
 	    // Send requested files
-	    u_long i, j;
-	    for (i = 0; i < log_files.size(); i++) {
-		if (response[i]) {
+	    u_long l, j;
+	    for (l = 0; l < log_files.size(); l++) {
+		if (response[l]) {
+		    printf ("%ld of %d log files requested\n", l, log_files.size());
 		    char* filename = NULL;
-		    for (int j = strlen(log_files[i].path); j >= 0; j--) {
+		    for (int j = strlen(log_files[l].path); j >= 0; j--) {
 			if (log_files[i].path[j] == '/') {
-			    filename = &log_files[i].path[j+1];
+			    filename = &log_files[l].path[j+1];
 			    break;
 			} 
 		    }
 		    if (filename == NULL) {
-			fprintf (stderr, "Bad path name: %s\n", log_files[i].path);
-			    return -1;
+			fprintf (stderr, "Bad path name: %s\n", log_files[l].path);
+			return -1;
 		    }
-		    rc = send_file (conf.difts[i]->s, log_files[i].path, filename);
+		    rc = send_file (conf.difts[i]->s, log_files[l].path, filename);
 		    if (rc < 0) {
-			fprintf (stderr, "Unable to send log file %s\n", log_files[i].path);
+			fprintf (stderr, "Unable to send log file %s\n", log_files[l].path);
 			return rc;
 		    }
 		}
 	    }
 	    for (j = 0; j < cache_files.size(); j++) {
-		if (response[i+j]) {
+		if (response[l+j]) {
 		    char cname[PATHLEN];
 		    struct stat64 st;
 		    

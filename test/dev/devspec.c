@@ -55,6 +55,7 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 	int syscall;
 	char logdir[MAX_LOGDIR_STRLEN+1];
 	char filename[MAX_LOGDIR_STRLEN+1];
+	char cache_dir[MAX_LOGDIR_STRLEN+1];
 	char* tmp = NULL;
 	long rc;
 	int device;
@@ -106,6 +107,13 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 			printk ("ioctl SPECI_RESUME fails, strcpy returns %d\n", retval);
 			return -EINVAL;
 		}
+
+		retval = strncpy_from_user(cache_dir, wdata.cache_dir, MAX_LOGDIR_STRLEN);
+		if (retval < 0 || retval >= MAX_LOGDIR_STRLEN) {
+			printk ("ioctl SPECI_RESUME fails, strcpy returns %d\n", retval);
+			return -EINVAL;
+		}
+		
 		if (wdata.linker) {
 			tmp = getname(wdata.linker);
 			if (tmp == NULL) {
@@ -126,7 +134,7 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 
 		rc = replay_ckpt_wakeup(device, logdir, tmp, wdata.fd,
 					wdata.follow_splits, wdata.save_mmap, wdata.attach_index,
-					wdata.attach_pid, wdata.ckpt_at, wdata.record_timing);
+					wdata.attach_pid, wdata.ckpt_at, wdata.record_timing, cache_dir);
 
 		if (tmp) putname (tmp);
 		return rc;
@@ -141,6 +149,12 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 		retval = strncpy_from_user(logdir, wcdata.logdir, MAX_LOGDIR_STRLEN);
 		if (retval < 0 || retval >= MAX_LOGDIR_STRLEN) {
 			printk ("ioctl SPECI_CKPT_RESUME fails, strcpy returns %d\n", retval);
+			return -EINVAL;
+		}
+
+		retval = strncpy_from_user(cache_dir, wcdata.cache_dir, MAX_LOGDIR_STRLEN);
+		if (retval < 0 || retval >= MAX_LOGDIR_STRLEN) {
+			printk ("ioctl SPECI_RESUME fails, strcpy returns %d\n", retval);
 			return -EINVAL;
 		}
 		retval = strncpy_from_user(filename, wcdata.filename, MAX_LOGDIR_STRLEN);
@@ -168,7 +182,7 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 
 		rc = replay_full_ckpt_wakeup(device, logdir, filename, tmp, wcdata.fd,
 					     wcdata.follow_splits, wcdata.save_mmap, wcdata.attach_index,
-					     wcdata.attach_pid);
+					     wcdata.attach_pid, cache_dir);
 
 		if (tmp) putname (tmp);
 		return rc;

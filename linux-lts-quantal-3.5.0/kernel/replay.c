@@ -61,6 +61,7 @@
 
 #include <linux/replay_configs.h>
 
+
 //xdou
 #include <linux/xcomp.h>
 #include <linux/encodebuffer.h>
@@ -720,6 +721,8 @@ struct replay_group {
 	u_long rg_timecnt;          // Number of entries in the buffer
 	loff_t rg_timepos;          // Write postition in timings file
 	u_long rg_pin_attach_clock; // This is the clock value when we did the reattach (if applicable) 
+
+        char rg_cache_dir[MAX_LOGDIR_STRLEN+1]; // added so that we can have multiple cache directories
 };
 
 struct argsalloc_node {
@@ -977,7 +980,8 @@ struct replay_thread {
 	long rp_ckpt_save_args_head;     // Really hard to get this info on restore, so save it
 	long rp_ckpt_save_expected_clock; // Really hard to get this info on restore, so save it
 	struct semaphore* rp_ckpt_restart_sem; // Really hard to get this info on restore, so save it
-	struct replay_cache_files* rp_cache_files; // Info about open cache files
+        struct replay_cache_files* rp_cache_files; // Info about open cache files
+
 };
 
 /* Prototypes */
@@ -1790,6 +1794,7 @@ new_replay_group (struct record_group* prec_group, int follow_splits)
 	prg->rg_timecnt = 0;
 	prg->rg_timepos = 0;
 	prg->rg_try_to_exit = 0;
+	strncpy(prg->rg_cache_dir,"",MAX_LOGDIR_STRLEN);
 
 	// Record group should not be destroyed before replay group
 	get_record_group (prec_group);
@@ -2811,6 +2816,26 @@ static void delete_sysv_mappings (struct replay_thread* prt) {
 	}
 }
 
+
+const char* get_current_replay_cache_dir() { 
+	struct replay_group *prg;
+	struct replay_thread* prt = current->replay_thrd;
+	printk("Pid %d starting current_replay_cache_dir \n", current->pid);
+	if(prt) { 
+		prg = prt->rp_group;
+		if(prg) { 
+
+			printk("Pid %d cache_dir %s \n",current->pid, prg->rg_cache_dir);
+			return prg->rg_cache_dir;
+		}
+	}
+	printk("Pid %d finished current_replay_cache_dir \n",current->pid);
+
+	return NULL;
+}
+
+
+
 /* A pintool uses this for specifying the start of the thread specific data structure.  The function returns the pid on success */
 int set_pin_address (u_long pin_address, u_long thread_data, u_long __user* curthread_ptr, int* attach_ndx)
 {
@@ -3428,7 +3453,8 @@ get_linker (void)
 
 long
 replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
-		    int follow_splits, int save_mmap, loff_t attach_index, int attach_pid, int ckpt_at, int record_timing)
+		    int follow_splits, int save_mmap, loff_t attach_index, int attach_pid, int ckpt_at, int record_timing,
+		    char* cache_dir)
 {
 	struct record_group* precg; 
 	struct record_thread* prect;
@@ -3484,6 +3510,12 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 	// Since there is no recording going on, we need to dec record_thread's refcnt
 	atomic_dec(&prect->rp_refcnt);
 	
+	//Change the replay_cache dir: if its NULL we leave it the default value
+	if(cache_dir) {
+		strncpy (prepg->rg_cache_dir, cache_dir, MAX_LOGDIR_STRLEN);
+	}
+
+
 	// Restore the checkpoint
 	strcpy (ckpt, logdir);
 	strcat (ckpt, "/ckpt");
@@ -3682,7 +3714,7 @@ __init_ckpt_waiters (void) // Requires ckpt_lock be locked
 
 long
 replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* linker, int fd, 
-			 int follow_splits, int save_mmap, loff_t attach_index, int attach_pid)
+			 int follow_splits, int save_mmap, loff_t attach_index, int attach_pid, char* cache_dir)
 {
 	struct ckpt_waiter* pckpt_waiter = NULL;
 	struct record_group* precg; 
@@ -3730,6 +3762,12 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* 
 	// Since there is no recording going on, we need to dec record_thread's refcnt
 	atomic_dec(&prect->rp_refcnt);
 	
+	//Change the replay_cache dir: if its NULL or empty than we leave it the defalt value
+	if(cache_dir){
+		strncpy (prepg->rg_cache_dir, cache_dir, MAX_LOGDIR_STRLEN);
+	}
+	
+
 	// Restore the checkpoint
 	strcpy (ckpt, logdir);
 	strcat (ckpt, "/");
@@ -8338,7 +8376,7 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 				get_logdir_for_replay_id(logid, logdir);
 				return replay_ckpt_wakeup(app_syscall_addr, logdir, linker, -1,
 							  follow_splits, prg->rg_rec_group->rg_save_mmap_flag, -1, -1, 0,
-							  (prg->rg_timebuf != NULL));
+							  (prg->rg_timebuf != NULL), NULL);
 			} else {
 				DPRINT("Don't follow splits - so just exit\n");
 				sys_exit_group(0);
