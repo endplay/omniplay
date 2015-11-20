@@ -249,9 +249,11 @@ void do_dift (int s, struct epoch_hdr& ehdr)
     struct epoch_data edata[epochs];
     struct epoch_ctl ectl[epochs];
 
+
     rc = safe_read (s, edata, sizeof(struct epoch_data)*epochs);
     if (rc != (int) (sizeof(struct epoch_data)*epochs)) {
 	fprintf (stderr, "Cannot recieve epochs,rc=%d\n", rc);
+	fprintf(stderr, "expecting %lu epochs, size %lu\n",epochs,sizeof(struct epoch_data)*epochs);
 	return;
     }
 
@@ -485,7 +487,7 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	    int argcnt = 0;
 			    
 	    args[argcnt++] = "stream";
-	    sprintf (dirname, "/tmp/%d.%ld", agg_port,i);
+	    sprintf (dirname, "/tmp/%ld",i);
 	    args[argcnt++] = dirname;
 	    sprintf (port, "%ld", AGG_BASE_PORT+(i)); 
 	    args[argcnt++] = port;
