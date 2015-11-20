@@ -45,11 +45,12 @@ struct epoch_ctl {
     struct timeval tv_start_dift;
     struct timeval tv_done;
 };
+#ifndef BUILD_64
 static long ms_diff (struct timeval tv1, struct timeval tv2)
 {
     return ((tv1.tv_sec - tv2.tv_sec) * 1000 + (tv1.tv_usec - tv2.tv_usec) / 1000);
 }
-
+#endif
 
 int sync_logfiles (int s)
 {
