@@ -658,7 +658,6 @@ void output_buffer_result (void* buf, int size,
 	    outputindex += datasize;
 	}
 	output_total_count += datasize;
-	free(outbuf);
 #endif
 #ifdef USE_FILE
         write_output_header(outfd, tci, buf, size); 

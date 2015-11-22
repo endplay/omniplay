@@ -1,4 +1,4 @@
-<#include "pin.H"
+#include "pin.H"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -454,7 +454,7 @@ static inline void sys_open_stop(int rc)
 #ifdef OUTPUT_FILENAMES
         struct open_info* oi = (struct open_info *) current_thread->save_syscall_info;
         write_filename_mapping(filenames_f, oi->fileno, oi->name);
-
+#endif
 
 
 #ifdef LINKAGE_FDTRACK
@@ -14236,7 +14236,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
             }
             init_filename_mapping(filenames_f);
         }
-
+#endif
         if (tokens_fd == -1) {
 #ifdef USE_NW
 	    tokens_fd = s;
@@ -14412,8 +14412,10 @@ int main(int argc, char** argv)
 
     /* Create a directory for logs etc for this replay group*/
     snprintf(group_directory, 256, "/tmp/%d", PIN_GetPid());
-    fprintf(stderr, "making group_directory, %s\n",group_directory);
+
+
 #ifndef NO_FILE_OUTPUT
+    fprintf(stderr, "making group_directory, %s\n",group_directory);
     if (mkdir(group_directory, 0755)) {
         if (errno == EEXIST) {
             fprintf(stderr, "directory already exists, using it: %s\n", group_directory);
@@ -14422,7 +14424,7 @@ int main(int argc, char** argv)
             exit(-1);
         }
     }
-
+#endif
     // Read in command line args
     trace_x = KnobTraceX.Value();
     print_all_opened_files = KnobRecordOpenedFiles.Value();
@@ -14477,6 +14479,8 @@ int main(int argc, char** argv)
 #ifndef NO_FILE_OUTPUT
     init_logs();
     init_taint_structures(group_directory);
+#endif
+
     if (!open_fds) {
         open_fds = new_xray_monitor(sizeof(struct open_info));
     }
@@ -14575,6 +14579,7 @@ int main(int argc, char** argv)
     }
 #endif
 
+    fprintf(stderr, "starting program\n");
     PIN_StartProgram();
 
     return 0;
