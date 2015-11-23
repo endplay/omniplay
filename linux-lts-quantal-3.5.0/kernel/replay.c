@@ -2820,16 +2820,16 @@ static void delete_sysv_mappings (struct replay_thread* prt) {
 const char* get_current_replay_cache_dir() { 
 	struct replay_group *prg;
 	struct replay_thread* prt = current->replay_thrd;
-	printk("Pid %d starting current_replay_cache_dir \n", current->pid);
+//	printk("Pid %d starting current_replay_cache_dir \n", current->pid);
 	if(prt) { 
 		prg = prt->rp_group;
 		if(prg) { 
 
-			printk("Pid %d cache_dir %s \n",current->pid, prg->rg_cache_dir);
+//			printk("Pid %d cache_dir %s \n",current->pid, prg->rg_cache_dir);
 			return prg->rg_cache_dir;
 		}
 	}
-	printk("Pid %d finished current_replay_cache_dir \n",current->pid);
+//	printk("Pid %d finished current_replay_cache_dir \n",current->pid);
 
 	return NULL;
 }

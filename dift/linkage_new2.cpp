@@ -332,7 +332,10 @@ static void dift_done ()
 #ifndef USE_NW
     close(taint_fd);
 #endif
+
+#ifndef NO_FILE_OUTPUT 
     fclose (log_f);
+#endif
 
     finish_and_print_taint_stats(stdout);
     printf("DIFT done at %ld\n", global_syscall_cnt);
@@ -1261,9 +1264,9 @@ void instrument_syscall(ADDRINT syscall_num,
      * epoch... 
      */
     if (sysnum == 252 && !segment_length) {
+	printf("Pin calling dift_done b/c sysnum 252\n");
 	    dift_done(); //doesn't call try_to_exit... so any reason to not call dift_done always? not sure...
     }
-
 
     if (segment_length && *ppthread_log_clock >= segment_length) {
 	// Done with this replay - do exit stuff now because we may not get clean unwind
@@ -14371,6 +14374,7 @@ void init_logs(void)
 
 void fini(INT32 code, void* v)
 {
+    printf("pin calling dift_done b/c of fini \n");
 	dift_done();
 }
 
