@@ -151,10 +151,10 @@ int get_cache_file_name (char* cname, dev_t dev, u_long ino, struct timespec mti
 	const char* this_cache_dir = get_current_replay_cache_dir();
 	if(!strncmp(this_cache_dir,"",MAX_LOGDIR_STRLEN)){
 		this_cache_dir = cache_dir;
-		printk("pid %d, get_cache_file_name: null cache_dir, seting this_cache_dir as %s\n",current->pid, this_cache_dir);
+//		printk("pid %d, get_cache_file_name: null cache_dir, seting this_cache_dir as %s\n",current->pid, this_cache_dir);
 	}
 
-	printk("pid %d, get_cache_file_name: cache_dir %s\n", current->pid,this_cache_dir);
+//	printk("pid %d, get_cache_file_name: cache_dir %s\n", current->pid,this_cache_dir);
 
 
 	       
@@ -191,10 +191,10 @@ int open_cache_file (dev_t dev, u_long ino, struct timespec mtime, int flags)
 	const char* this_cache_dir = get_current_replay_cache_dir();
 	if(!strncmp(this_cache_dir,"",MAX_LOGDIR_STRLEN)){
 		this_cache_dir = cache_dir;
-		printk("pid %d, open_cache_file: null cache_dir, seting this_cache_dir as %s\n",current->pid, this_cache_dir);
+//		printk("pid %d, open_cache_file: null cache_dir, seting this_cache_dir as %s\n",current->pid, this_cache_dir);
 	}
 
-	printk("pid %d, open_file_name: cache_dir %s\n", current->pid, this_cache_dir);
+//	printk("pid %d, open_file_name: cache_dir %s\n", current->pid, this_cache_dir);
 
 
         // check if most recent cache file is still valid
@@ -241,10 +241,10 @@ int open_mmap_cache_file (dev_t dev, u_long ino, struct timespec mtime, int is_w
 	const char* this_cache_dir = get_current_replay_cache_dir();
 	if(!strncmp(this_cache_dir,"",MAX_LOGDIR_STRLEN)){
 		this_cache_dir = cache_dir;
-		printk("pid %d, open_mmap_cache_file_name: null cache_dir, seting this_cache_dir as %s\n", current->pid, this_cache_dir);
+//		printk("pid %d, open_mmap_cache_file_name: null cache_dir, seting this_cache_dir as %s\n", current->pid, this_cache_dir);
 	}
 
-	printk("pid %d, open_mmap_cache_file_name: cache_dir %s\n", current->pid, this_cache_dir);
+//	printk("pid %d, open_mmap_cache_file_name: cache_dir %s\n", current->pid, this_cache_dir);
 
 
 

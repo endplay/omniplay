@@ -811,6 +811,12 @@ int dump_mem_taints(int fd)
     u_long addr;
     int high_index, mid_index, low_index;
 
+    if(fd == -99999) { 
+	fprintf(stderr, "skipping dump_mem_taints... must not be following proc\n");
+	return -1;
+    }
+
+
     for (high_index = 0; high_index < FIRST_TABLE_SIZE; high_index++) {
 	taint_t** first = (taint_t **) mem_loc_high[high_index];
 	if (first) {
@@ -852,6 +858,12 @@ int dump_mem_taints_start(int fd)
     u_long addr;
     int high_index, mid_index, low_index;
 
+    if(fd == -99999) { 
+	fprintf(stderr, "skipping dump_mem_taints_start... must not be following proc\n");
+	return -1;
+    }
+
+
     for (high_index = 0; high_index < FIRST_TABLE_SIZE; high_index++) {
 	taint_t** first = (taint_t **) mem_loc_high[high_index];
 	if (first) {
@@ -892,6 +904,13 @@ int dump_reg_taints (int fd, taint_t* pregs)
 {
     u_long i;
 
+    if(fd == -99999) { 
+	fprintf(stderr, "skipping dump_reg_taints... must not be following proc\n");
+	return -1;
+    }
+
+
+
     if (dumpbuf == NULL) {
 #ifdef USE_SHMEM
 	dumpbuf = (taint_t *) mmap (0, DUMPBUFSIZE*sizeof(taint_t), PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
@@ -927,6 +946,12 @@ int dump_reg_taints (int fd, taint_t* pregs)
 int dump_reg_taints_start (int fd, taint_t* pregs)
 {
     u_long i;
+
+    if(fd == -99999) { 
+	fprintf(stderr, "skipping dump_reg_taints_start... must not be following proc\n");
+	return -1;
+    }
+
 
     if (dumpbuf == NULL) {
 #ifdef USE_SHMEM

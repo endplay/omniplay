@@ -1,4 +1,4 @@
-<#include "pin.H"
+#include "pin.H"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -332,7 +332,10 @@ static void dift_done ()
 #ifndef USE_NW
     close(taint_fd);
 #endif
+
+#ifndef NO_FILE_OUTPUT 
     fclose (log_f);
+#endif
 
     finish_and_print_taint_stats(stdout);
     printf("DIFT done at %ld\n", global_syscall_cnt);
@@ -454,7 +457,7 @@ static inline void sys_open_stop(int rc)
 #ifdef OUTPUT_FILENAMES
         struct open_info* oi = (struct open_info *) current_thread->save_syscall_info;
         write_filename_mapping(filenames_f, oi->fileno, oi->name);
-
+#endif
 
 
 #ifdef LINKAGE_FDTRACK
@@ -1261,9 +1264,9 @@ void instrument_syscall(ADDRINT syscall_num,
      * epoch... 
      */
     if (sysnum == 252 && !segment_length) {
+	printf("Pin calling dift_done b/c sysnum 252\n");
 	    dift_done(); //doesn't call try_to_exit... so any reason to not call dift_done always? not sure...
     }
-
 
     if (segment_length && *ppthread_log_clock >= segment_length) {
 	// Done with this replay - do exit stuff now because we may not get clean unwind
@@ -14236,7 +14239,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
             }
             init_filename_mapping(filenames_f);
         }
-
+#endif
         if (tokens_fd == -1) {
 #ifdef USE_NW
 	    tokens_fd = s;
@@ -14371,6 +14374,7 @@ void init_logs(void)
 
 void fini(INT32 code, void* v)
 {
+    printf("pin calling dift_done b/c of fini \n");
 	dift_done();
 }
 
@@ -14412,8 +14416,10 @@ int main(int argc, char** argv)
 
     /* Create a directory for logs etc for this replay group*/
     snprintf(group_directory, 256, "/tmp/%d", PIN_GetPid());
-    fprintf(stderr, "making group_directory, %s\n",group_directory);
+
+
 #ifndef NO_FILE_OUTPUT
+    fprintf(stderr, "making group_directory, %s\n",group_directory);
     if (mkdir(group_directory, 0755)) {
         if (errno == EEXIST) {
             fprintf(stderr, "directory already exists, using it: %s\n", group_directory);
@@ -14422,7 +14428,7 @@ int main(int argc, char** argv)
             exit(-1);
         }
     }
-
+#endif
     // Read in command line args
     trace_x = KnobTraceX.Value();
     print_all_opened_files = KnobRecordOpenedFiles.Value();
@@ -14477,6 +14483,8 @@ int main(int argc, char** argv)
 #ifndef NO_FILE_OUTPUT
     init_logs();
     init_taint_structures(group_directory);
+#endif
+
     if (!open_fds) {
         open_fds = new_xray_monitor(sizeof(struct open_info));
     }
@@ -14575,6 +14583,7 @@ int main(int argc, char** argv)
     }
 #endif
 
+    fprintf(stderr, "starting program\n");
     PIN_StartProgram();
 
     return 0;
