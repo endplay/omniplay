@@ -1468,7 +1468,6 @@ void* send_output_queue (void* arg)
 
    if (data->do_sequential) {
        recv_stream (s, outputq); // First we read data from upstream
-       printf ("Received upstream data\n");
        DOWN_QSEM(outputq);
    }
 
@@ -1486,7 +1485,6 @@ void* recv_input_queue (void* arg)
 
     if (data->do_sequential) {
 	send_stream (s, inputq); // First we send filters downstream	
-	printf ("Sent downstream data\n");
 	UP_QSEM(inputq);
     }
 
