@@ -1400,7 +1400,7 @@ int connect_input_queue (struct recvdata* data)
     return s;
 }
 
-void send_stream (int s)
+void send_stream (int s, struct taintq* q)
 {
     // Listen on output queue and send over network
     while (1) {
@@ -1408,50 +1408,50 @@ void send_stream (int s)
 
 	while (can_send == 0) {
 	    usleep (100);
-	    if (outputq->read_index > outputq->write_index) {			
-		can_send = TAINTENTRIES - outputq->read_index;
+	    if (q->read_index > q->write_index) {			
+		can_send = TAINTENTRIES - q->read_index;
 	    } else {								
-		can_send = outputq->write_index - outputq->read_index;		
+		can_send = q->write_index - q->read_index;		
 	    }		
 	}
 
-	long rc = safe_write (s, outputq->buffer + outputq->read_index, can_send*sizeof(uint32_t));
+	long rc = safe_write (s, q->buffer + q->read_index, can_send*sizeof(uint32_t));
 	if (rc != (long)(can_send*sizeof(u_int32_t))) return; // Error sending the data
 
-	outputq->read_index += can_send;
-	if (outputq->buffer[(outputq->read_index-1)%TAINTENTRIES] == TERM_VAL) return; // No more data to send
+	q->read_index += can_send;
+	if (q->buffer[(q->read_index-1)%TAINTENTRIES] == TERM_VAL) return; // No more data to send
     }
 }
 
-void recv_stream (int s)
+void recv_stream (int s, struct taintq* q)
 {
     // Get data and put on the inputq
     while (1) {
 	u_long can_recv;
 	u_long partial_bytes = 0;
-	if (inputq->write_index >= inputq->read_index) {			
-	    can_recv = TAINTENTRIES - inputq->write_index;
+	if (q->write_index >= q->read_index) {			
+	    can_recv = TAINTENTRIES - q->write_index;
 	} else {								
-	    can_recv = inputq->write_index - inputq->read_index;		
+	    can_recv = q->write_index - q->read_index;		
 	}									
 	if (can_recv) {
 	    can_recv = can_recv*sizeof(u_long)-partial_bytes; // Convert to bytes
-	    long rc = recv (s, inputq->buffer + inputq->write_index, can_recv, 0);
+	    long rc = recv (s, q->buffer + q->write_index, can_recv, 0);
 	    if (rc < 0) {
 		fprintf (stderr, "recv returns %ld,errno=%d\n", rc, errno);
 		break;
 	    } else if (rc == 0) {
 		break; // Sender closed connection
 	    }
-	    inputq->write_index += rc/sizeof(u_long);					       
+	    q->write_index += rc/sizeof(u_long);					       
 	    if (rc%sizeof(u_long)) {
 		partial_bytes += rc%sizeof(u_long);
 		if (partial_bytes > sizeof(u_long)) {
-		    inputq->write_index++;
+		    q->write_index++;
 		    partial_bytes -= sizeof(u_long);
 		}
 	    }
-	    if (partial_bytes == 0 && inputq->buffer[(inputq->write_index-1)%TAINTENTRIES] == TERM_VAL) break; // Sender is done
+	    if (partial_bytes == 0 && q->buffer[(q->write_index-1)%TAINTENTRIES] == TERM_VAL) break; // Sender is done
 	} else {
 	    usleep(100);
 	}
@@ -1467,11 +1467,12 @@ void* send_output_queue (void* arg)
    if (s < 0) return NULL;
 
    if (data->do_sequential) {
-       recv_stream (s); // First we read data from upstream
+       recv_stream (s, outputq); // First we read data from upstream
+       printf ("Received upstream data\n");
        DOWN_QSEM(outputq);
    }
 
-   send_stream (s);
+   send_stream (s, outputq);
    close (s);
    return NULL;
 }
@@ -1484,11 +1485,12 @@ void* recv_input_queue (void* arg)
     if (s < 0) return NULL;
 
     if (data->do_sequential) {
-	send_stream (s); // First we send filters downstream
+	send_stream (s, inputq); // First we send filters downstream	
+	printf ("Sent downstream data\n");
 	UP_QSEM(inputq);
     }
 
-    recv_stream (s);
+    recv_stream (s, inputq);
     close (s);
     return NULL;
 }
