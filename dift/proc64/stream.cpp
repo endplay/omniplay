@@ -1286,7 +1286,7 @@ long seq_epoch (const char* dirname, int port)
     } else {
 	fprintf (statsfile, "Finish time:             %6ld ms\n", ms_diff (end_tv, output_done_tv));
     }
-    fprintf (statsfile, "Idle                     %6lu ms\n", idle/10);
+    fprintf (statsfile, "Idle                     %6lu ms\n", idle/1000);
     fprintf (statsfile, "\n");
     fprintf (statsfile, "Received %ld bytes of merge data\n", mdatasize);
     fprintf (statsfile, "Received %ld bytes of output data\n", odatasize);
