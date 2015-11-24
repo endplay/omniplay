@@ -15,6 +15,7 @@
 #include <atomic>
 using namespace std;
 
+#include "streamnw.h"
 #include "../taint_interface/taint.h"
 #include "../linkage_common.h"
 #include "../taint_interface/taint_creation.h"
@@ -46,10 +47,12 @@ const u_long OUTBUFSIZE =   0x2000000; // 128MB size
 struct senddata {
     char*  host;
     short  port;
+    bool   do_sequential;
 };
 
 struct recvdata {
     short  port;
+    bool   do_sequential;
 };
 
 struct taint_entry {
@@ -106,17 +109,17 @@ static long ms_diff (struct timeval tv1, struct timeval tv2)
 #define PUT_QVALUE(val,q)						\
     {									\
 	while (can_write == 0) {					\
-	    IDLE							\
+	    IDLE;							\
 	    if ((q)->write_index >= (q)->read_index) {			\
 		can_write = TAINTENTRIES - ((q)->write_index - (q)->read_index); \
 	    } else {							\
-		can_write = (q)->read_index - (q)->write_index; \
+		can_write = (q)->read_index - (q)->write_index;		\
 	    }								\
 	}								\
-	(q)->buffer[(q)->write_index] = (val);			\
+	(q)->buffer[(q)->write_index] = (val);				\
 	(q)->write_index++;						\
-	if ((q)->write_index == TAINTENTRIES) (q)->write_index = 0; \
-	can_write--;						\
+	if ((q)->write_index == TAINTENTRIES) (q)->write_index = 0;	\
+	can_write--;							\
     } 
 
 
@@ -124,16 +127,16 @@ static long ms_diff (struct timeval tv1, struct timeval tv2)
 #define GET_QVALUE(val,q)						\
     {									\
 	while (can_read == 0) {						\
-	    IDLE							\
-	    if ((q)->read_index > (q)->write_index) {		\
+	    IDLE;							\
+	    if ((q)->read_index > (q)->write_index) {			\
 		can_read = TAINTENTRIES - ((q)->read_index - (q)->write_index); \
 	    } else {							\
-		can_read = (q)->write_index - (q)->read_index;	\
+		can_read = (q)->write_index - (q)->read_index;		\
 	    }								\
 	}								\
-	(val) = (q)->buffer[(q)->read_index];			\
+	(val) = (q)->buffer[(q)->read_index];				\
 	(q)->read_index++;						\
-	if ((q)->read_index == TAINTENTRIES) (q)->read_index = 0; \
+	if ((q)->read_index == TAINTENTRIES) (q)->read_index = 0;	\
 	can_read--;							\
     }
 
@@ -1316,10 +1319,8 @@ long seq_epoch (const char* dirname, int port)
     return 0;
 }
 
-// Sending to another computer is implemented as separate thread to add asyncrhony
-void* send_output_queue (void* arg)
+int connect_output_queue (struct senddata* data) 
 {
-    struct senddata* data = (struct senddata *) arg;
     struct sockaddr_in addr;
     struct hostent* hp;
     long rc;
@@ -1329,13 +1330,13 @@ void* send_output_queue (void* arg)
     hp = gethostbyname (data->host);
     if (hp == NULL) {
 	fprintf (stderr, "Invalid host %s, errno=%d\n", data->host, h_errno);
-	return NULL;
+	return -1;
     }
 
     s = socket (AF_INET, SOCK_STREAM, 0);
     if (s < 0) {
 	fprintf (stderr, "Cannot create socket, errno=%d\n", errno);
-	return NULL;
+	return s;
     }
 
     addr.sin_family = AF_INET;
@@ -1350,43 +1351,11 @@ void* send_output_queue (void* arg)
 	}
     } while (rc < 0);
 
-    // Listen on output queue and send over network
-    while (1) {
-	u_long can_send;
-	u_long partial_bytes = 0;
-	if (outputq->read_index > outputq->write_index) {			
-	    can_send = TAINTENTRIES - outputq->read_index;
-	} else {								
-	    can_send = outputq->write_index - outputq->read_index;		
-	}		
-	if (can_send) {
-	    can_send = can_send*sizeof(u_long)-partial_bytes; // Convert to bytes
-	    rc = send (s, outputq->buffer + outputq->read_index, can_send, 0);
-	    if (rc <= 0) {
-		fprintf (stderr, "send returns %ld,errno=%d\n", rc, errno);
-		break;
-	    }
-	    outputq->read_index += rc/sizeof(u_long);					       
-	    if (rc%sizeof(u_long)) {
-		partial_bytes += rc%sizeof(u_long);
-		if (partial_bytes > sizeof(u_long)) {
-		    outputq->read_index++;
-		    partial_bytes -= sizeof(u_long);
-		}
-	    }
-	    if (outputq->buffer[outputq->read_index-1] == TERM_VAL) break; // No more data to send
-	} else {
-	    usleep(100);
-	}
-    }
-
-    close (s);
-    return NULL;
+    return s;
 }
 
-void* recv_input_queue (void* arg)
+int connect_input_queue (struct recvdata* data)
 {
-    struct recvdata* data = (struct recvdata *) arg;
     struct sockaddr_in addr;
     long rc;
     int c, s;
@@ -1395,14 +1364,14 @@ void* recv_input_queue (void* arg)
     c = socket (AF_INET, SOCK_STREAM, 0);
     if (c < 0) {
 	fprintf (stderr, "Cannot create socket, errno=%d\n", errno);
-	return NULL;
+	return c;
     }
 
     int on = 1;
     rc = setsockopt (c, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
     if (rc < 0) {
 	fprintf (stderr, "Cannot set socket option, errno=%d\n", errno);
-	return NULL;
+	return rc;
     }
 
     addr.sin_family = AF_INET;
@@ -1412,23 +1381,50 @@ void* recv_input_queue (void* arg)
     rc = bind (c, (struct sockaddr *) &addr, sizeof(addr));
     if (rc < 0) {
 	fprintf (stderr, "Cannot bind socket, errno=%d\n", errno);
-	return NULL;
+	return rc;
     }
 
     rc = listen (c, 5);
     if (rc < 0) {
 	fprintf (stderr, "Cannot listen on socket, errno=%d\n", errno);
-	return NULL;
+	return rc;
     }
     
     s = accept (c, NULL, NULL);
     if (s < 0) {
 	fprintf (stderr, "Cannot accept connection, errno=%d\n", errno);
-	return NULL;
+	return s;
     }
 
     close (c);
+    return s;
+}
 
+void send_stream (int s)
+{
+    // Listen on output queue and send over network
+    while (1) {
+	u_long can_send = 0;
+
+	while (can_send == 0) {
+	    usleep (100);
+	    if (outputq->read_index > outputq->write_index) {			
+		can_send = TAINTENTRIES - outputq->read_index;
+	    } else {								
+		can_send = outputq->write_index - outputq->read_index;		
+	    }		
+	}
+
+	long rc = safe_write (s, outputq->buffer + outputq->read_index, can_send*sizeof(uint32_t));
+	if (rc != (long)(can_send*sizeof(u_int32_t))) return; // Error sending the data
+
+	outputq->read_index += can_send;
+	if (outputq->buffer[(outputq->read_index-1)%TAINTENTRIES] == TERM_VAL) return; // No more data to send
+    }
+}
+
+void recv_stream (int s)
+{
     // Get data and put on the inputq
     while (1) {
 	u_long can_recv;
@@ -1440,7 +1436,7 @@ void* recv_input_queue (void* arg)
 	}									
 	if (can_recv) {
 	    can_recv = can_recv*sizeof(u_long)-partial_bytes; // Convert to bytes
-	    rc = recv (s, inputq->buffer + inputq->write_index, can_recv, 0);
+	    long rc = recv (s, inputq->buffer + inputq->write_index, can_recv, 0);
 	    if (rc < 0) {
 		fprintf (stderr, "recv returns %ld,errno=%d\n", rc, errno);
 		break;
@@ -1455,11 +1451,44 @@ void* recv_input_queue (void* arg)
 		    partial_bytes -= sizeof(u_long);
 		}
 	    }
+	    if (partial_bytes == 0 && inputq->buffer[(inputq->write_index-1)%TAINTENTRIES] == TERM_VAL) break; // Sender is done
 	} else {
 	    usleep(100);
 	}
     }
+}
 
+// Sending to another computer is implemented as separate thread to add asyncrhony
+void* send_output_queue (void* arg)
+{
+   struct senddata* data = (struct senddata *) arg;
+
+   int s = connect_output_queue (data);
+   if (s < 0) return NULL;
+
+   if (data->do_sequential) {
+       recv_stream (s); // First we read data from upstream
+       DOWN_QSEM(outputq);
+   }
+
+   send_stream (s);
+   close (s);
+   return NULL;
+}
+
+void* recv_input_queue (void* arg)
+{
+    struct recvdata* data = (struct recvdata *) arg;
+
+    int s = connect_input_queue (data);
+    if (s < 0) return NULL;
+
+    if (data->do_sequential) {
+	send_stream (s); // First we send filters downstream
+	UP_QSEM(inputq);
+    }
+
+    recv_stream (s);
     close (s);
     return NULL;
 }
@@ -1554,6 +1583,7 @@ int main (int argc, char* argv[])
     if (output_host) {
 	sd.host = output_host;
 	sd.port = STREAM_PORT;
+	sd.do_sequential = do_sequential;
 	rc = pthread_create (&oh_tid, NULL, send_output_queue, &sd);
 	if (rc < 0) {
 	    fprintf (stderr, "Cannot create outputq thread\n");
@@ -1563,6 +1593,7 @@ int main (int argc, char* argv[])
 
     if (input_host) {
 	rd.port = STREAM_PORT;
+	rd.do_sequential = do_sequential;
 	rc = pthread_create (&ih_tid, NULL, recv_input_queue, &rd);
 	if (rc < 0) {
 	    fprintf (stderr, "Cannot create inputq thread\n");
