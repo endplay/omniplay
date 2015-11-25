@@ -9,6 +9,7 @@
 #define SEND_ACK      0x1
 #define SEND_RESULTS  0x2
 #define SYNC_LOGFILES 0x4
+#define SEND_STATS    0x8
 
 #define NAMELEN 256
 #define PATHLEN 512
