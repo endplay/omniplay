@@ -252,7 +252,8 @@ static void dift_done ()
 #ifdef USE_NW
     int taint_fd = s;
 #endif
-    
+
+#ifndef USE_NULL    
     if (all_output) {
 	if (splice_output) {
 	    // Dump out the active registers in order of the record thread id
@@ -271,6 +272,7 @@ static void dift_done ()
 	    dump_mem_taints_start(taint_fd);
 	}
     }
+#endif
 
     // Finish up output of other files
 #ifdef USE_NW

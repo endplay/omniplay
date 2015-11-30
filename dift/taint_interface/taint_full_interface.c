@@ -209,6 +209,7 @@ flush_merge_buffer ()
 }
 #endif
 #ifdef USE_NULL
+static void
 flush_merge_buffer ()
 {
 }
