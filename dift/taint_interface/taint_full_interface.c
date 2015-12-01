@@ -167,12 +167,16 @@ flush_merge_buffer ()
 }
 #endif
 #ifdef USE_SHMEM
+extern unsigned long global_syscall_cnt;
+extern u_long* ppthread_log_clock;
+
 static void 
 flush_merge_buffer ()
 {
     // Check for overflow
     if ((merge_total_count-0xe0000001) >= MAX_MERGES) {
 	fprintf (stderr, "Cannot allocate any more merges than %ld\n", (u_long) (merge_total_count-0xe0000001));
+	printf("sycall_cnt %ld clock %ld\n", global_syscall_cnt, *ppthread_log_clock);
 	assert (0);
     }
 
