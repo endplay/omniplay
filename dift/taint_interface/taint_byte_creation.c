@@ -354,6 +354,7 @@ void write_tokens_info(int outfd, taint_t start,
     struct token tok;
     set_new_token (&tok, tci->type, start, size, tci->syscall_cnt,
 		   tci->offset, tci->rg_id, tci->record_pid, tci->fileno);
+
 #ifdef USE_NW
     write_token_to_nw(outfd, &tok);
 #endif

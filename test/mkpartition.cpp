@@ -398,10 +398,18 @@ int get_num_per_process(vector<u_int> &num_el,
 
 int allocate_multiprocess_ds(vector<struct replay_timing *> &timings_vect,
 			     vector<struct extra_data *> &edata_vect,
+			     vector<char *> &fork_flags,
 			     const vector<u_int> &num_el){
 
     
     for(auto index_iter = num_el.begin(); index_iter != num_el.end(); index_iter++) { 
+
+	//add in a spot for the fork_flags!
+	char* fork_flag = (char *) malloc(sizeof(char) * 128);
+	fork_flag = strdup("");
+	fork_flags.push_back(fork_flag);
+	
+
 	timings_vect.push_back((struct replay_timing *) malloc(sizeof(replay_timing) * (*index_iter)));
 	if (timings_vect.back() == NULL) {
 	    fprintf (stderr, "Unable to allocate timings buffer of size %u\n", sizeof(replay_timing) * (*index_iter));
@@ -492,7 +500,6 @@ int build_intervals(map<u_int, u_int> &fork_process,
     }
 
     if(details) { 
-
 	printf("fork_process\n");
 	for(auto it = fork_process.begin(); it != fork_process.end(); it++) 
 	    printf("(%d,%d)\n",it->first,it->second);
@@ -608,11 +615,62 @@ int populate_start_clock(vector<struct replay_timing *> &timings_vect,
     }
     return 0;
 }
+
+int build_fork_flags(vector<char*> &fork_flags,
+		     map<u_int,u_int> &pid_to_index,
+		     map<u_int,map<u_int,u_int>> &index_interval_inclusions,
+		     const struct replay_timing *timings,
+		     const int num){ 
+    
+    for(int i = 0; i < num; i++) { 
+	struct replay_timing curr_timing = timings[i];
+	if (curr_timing.syscall == 120) { 
+	    //we might have a fork, so iterate through all indexes and see if any
+	    //procs stop including this proc at exactly this point in time
+	    for(auto proc_gp : index_interval_inclusions) {
+		if(proc_gp.first == (u_int)curr_timing.pid) { 
+		    int index = pid_to_index[proc_gp.first];
+		    strcat(fork_flags[index],"0");		    
+		}
+		for(auto interval : proc_gp.second){
+		    if(interval.first == (u_int)curr_timing.pid &&
+		       interval.second == curr_timing.index) { 
+			int index = pid_to_index[proc_gp.first];
+			strcat(fork_flags[index],"1");
+		    }
+		    else if (interval.first == (u_int) curr_timing.pid &&
+			     interval.second > curr_timing.index) { 
+			int index = pid_to_index[proc_gp.first];
+			strcat(fork_flags[index],"0");
+		    }
+		}		
+	    }	    
+	}
+    }	
+
+    for(auto it :index_interval_inclusions)
+    {
+	printf("intervals for %d\n",it.first);
+	for(auto it2 : it.second)
+	{
+	    printf("(%d,%d),",it2.first,it2.second);
+	}
+	printf("\n");
+    }
+    for(auto fork: fork_flags){ 
+	printf("fork flag %s\n", fork);
+	
+    }
+
+    return 0;
+
+}
 //right now we have three parallel vectors... these could conceivably be structs. (probably should)
 int create_multiprocess_ds(vector<u_int> &num_el,
 			   vector<struct replay_timing *> &timings_vect,
 			   vector<struct extra_data *> &edata_vect,			      
 			   vector<u_int> &num_parts,
+			   vector<char*> &fork_flags,
 			   const struct replay_timing *timings,
 			   const char* dir,
 			   const int parts,
@@ -643,9 +701,16 @@ int create_multiprocess_ds(vector<u_int> &num_el,
 	return rc;
     }
 
-    rc = allocate_multiprocess_ds(timings_vect, edata_vect, num_el);
+    rc = allocate_multiprocess_ds(timings_vect, edata_vect, fork_flags, num_el);
     if(rc) { 
 	printf("could not allocate_multiprocess_ds, rc %d\n", rc);
+	return rc;
+    }
+
+
+    rc = build_fork_flags(fork_flags, pid_to_index, index_interval_inclusions, timings, num);
+    if(rc) { 
+	printf("could not build fork_flags, rc %d\n",rc);
 	return rc;
     }
 
@@ -806,9 +871,11 @@ int main (int argc, char* argv[])
     vector<u_int> num_parts;
     vector<struct replay_timing *> timings_vect;
     vector<struct extra_data *> edata_vect;
+    vector<char*> fork_flags;
+
 
     num = st.st_size/sizeof(struct replay_timing); 
-    create_multiprocess_ds(num_el, timings_vect, edata_vect, num_parts, timings, argv[1], parts, num);
+    create_multiprocess_ds(num_el, timings_vect, edata_vect, num_parts, fork_flags,timings, argv[1], parts, num);
   
     if(details) { 
 	for(u_int i = 0; i < num_el.size(); i++ ) 
