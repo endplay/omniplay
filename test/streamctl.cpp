@@ -431,6 +431,7 @@ int main (int argc, char* argv[])
 		fprintf (stderr, "Cannot send cache file count to streamserver, rc=%d\n", rc);
 		return rc;
 	    }
+	    fprintf(stderr, "we have %u cache files to send\n", cnt);
 	    
 	    // And finally the cache files
 	    for (auto iter = cache_files.begin(); iter != cache_files.end(); iter++) {

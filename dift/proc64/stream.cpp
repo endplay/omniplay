@@ -839,9 +839,9 @@ long stream_epoch (const char* dirname, int port)
     fprintf (statsfile, "Received %ld bytes of input data\n", idatasize);
     fprintf (statsfile, "Received %ld bytes of addr data\n", adatasize);
     fprintf (statsfile, "\n");
-    fprintf (statsfile, "Output directs %lu indirects %lu values %lu, merges %lu\n", directs, indirects, values, output_merges);
+    fprintf (statsfile, "Output directs %lu output indirects %lu output values %lu output merges %lu\n", directs, indirects, values, output_merges);
     if (!finish_flag) {
-	fprintf (statsfile, "Address tokens %lu passthrus %lu resolved %lu, indirects %lu values %lu unmodified %lu, merges %lu\n", 
+	fprintf (statsfile, "Address tokens %lu passthrus %lu resolved %lu indirects %lu values %lu unmodified %lu merges %lu\n", 
 		 atokens, passthrus, aresolved, aindirects, avalues, unmodified, merges);
     }
     if (!start_flag) {
