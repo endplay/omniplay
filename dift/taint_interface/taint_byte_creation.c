@@ -8,9 +8,12 @@
 #include "../xray_token.h"
 #include "../taint_nw.h"
 
-#ifdef DEBUGTRACE
-u_long output_cnt = 0;
-extern int is_in_trace_set(u_long val);
+#ifdef TAINT_DEBUG
+extern FILE* debug_f;
+extern u_long* ppthread_log_clock;
+extern u_long taint_debug_inst;
+extern FILE* debug_f;
+u_long debug_taint_cnt = 0;
 #endif
 
 extern taint_t taint_num;
@@ -238,8 +241,9 @@ int filter_byte_range(int syscall, int byteoffset)
     return 0;
 }
 
+//#if defined(USE_NULL) || defined(USE_SHMEM)
+#ifndef USE_NULL
 #define TOKENBUFSIZE 0x2000
-#ifndef USE_FILE
 static struct token* tokenbuf;
 static u_long tokenindex = 0;
 #endif
@@ -479,7 +483,7 @@ void write_output_header(int outfd, struct taint_creation_info* tci,
 
 void write_output_taints (int outfd, void* buf, int size)
 {
-    int i = 0;
+    int i;
     for (i = 0; i < size; i++) {
         taint_t* mem_taints;
         u_long addr = ((u_long) buf) + i;
@@ -492,11 +496,12 @@ void write_output_taints (int outfd, void* buf, int size)
             if (rc != sizeof(u_long)) {
                 fprintf(stderr, "Could not write taint addr\n");
             }
-#ifdef DEBUGTRACE
-	    if (is_in_trace_set(value)) {
-		printf ("output %lx at offset %d of %d buf %p otoken %lx\n", value, i, size, buf, output_cnt);
+#ifdef TAINT_DEBUG
+	    if (TAINT_DEBUG(value)) {
+	      fprintf (debug_f, "output %lx has taint value %x buf %p addr %lx %d out of %d clock %lx\n", 
+		       debug_taint_cnt, value, buf, addr, i, size, *ppthread_log_clock);
 	    }
-	    output_cnt++;
+	    debug_taint_cnt++;
 #endif
             rc = write(outfd, &value, sizeof(taint_t));
             if (rc != sizeof(taint_t)) {
@@ -509,11 +514,8 @@ void write_output_taints (int outfd, void* buf, int size)
             if (rc != sizeof(u_long)) {
                 fprintf(stderr, "Could not write taint addr\n");
             }
-#ifdef DEBUGTRACE
-	    output_cnt++;
-	    if (output_cnt == 0xcc1f) {
-		printf ("output 0 at offset %d of %d buf %p otoken %lx\n", i, size, buf, output_cnt);
-	    }
+#ifdef TAINT_DEBUG
+	    debug_taint_cnt++;
 #endif
             rc = write(outfd, &value, sizeof(taint_t));
             if (rc != sizeof(taint_t)) {
@@ -564,6 +566,13 @@ static inline void fill_outbuf (char* pout, struct taint_creation_info* tci, voi
 	} else {
 	    value = 0;
 	}
+#ifdef TAINT_DEBUG
+	if (TAINT_DEBUG(value)) {
+	    fprintf (debug_f, "output %lx has taint value %x buf %p addr %lx %d out of %d clock %lx\n", 
+		     debug_taint_cnt, value, buf, addr, i, size, *ppthread_log_clock);
+	}
+	debug_taint_cnt++;
+#endif
 	memcpy (pout, &value, sizeof(taint_t));
 	pout += sizeof(taint_t);
     }

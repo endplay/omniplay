@@ -15,6 +15,11 @@
 #include "xray_token.h"
 #include "maputil.h"
 
+//#define DEBUGTRACE_OUTPUT 0x47df9c 
+#ifdef DEBUGTRACE_OUTPUT 
+int debug_me = 0;
+#endif
+
 #include <unordered_set>
 using namespace std;
 
@@ -1481,6 +1486,9 @@ static void print_merge (taint_t value)
     pentry = &merge_log[value-0xe0000001];
     stack[stack_depth++] = pentry->p1;
     stack[stack_depth++] = pentry->p2;
+#ifdef DEBUGTRACE_OUTPUT
+    if (debug_me) printf ("<%x,%x> -> %x\n", pentry->p1, pentry->p2, value);
+#endif
 
     do {
 	value = stack[--stack_depth];
@@ -1503,26 +1511,19 @@ static void print_merge (taint_t value)
 
 int map_shmem (char* filename, int* pfd, u_long* pdatasize, u_long* pmapsize, char** pbuf)
 {
-    char shmemname[256];
     struct stat st;
     u_long size;
     int fd, rc;
-    u_long i;
     char* buf;
 
-    snprintf(shmemname, 256, "/node_nums_shm%s", filename);
-    for (i = 1; i < strlen(shmemname); i++) {
-	if (shmemname[i] == '/') shmemname[i] = '.';
-    }
-    shmemname[strlen(shmemname)-10] = '\0';
-    fd = shm_open (shmemname, O_RDONLY, 0);
+    fd = open (filename, O_RDONLY, 0);
     if (fd < 0) {
-	fprintf (stderr, "Unable to open %s, rc=%d, errno=%d\n", shmemname, fd, errno);
+	fprintf (stderr, "Unable to open %s, rc=%d, errno=%d\n", filename, fd, errno);
 	return fd;
     }
     rc = fstat(fd, &st);
     if (rc < 0) {
-	fprintf (stderr, "Unable to stat %s, rc=%d, errno=%d\n", shmemname, rc, errno);
+	fprintf (stderr, "Unable to stat %s, rc=%d, errno=%d\n", filename, rc, errno);
 	return rc;
     }
     if (st.st_size%4096) {
@@ -1532,9 +1533,10 @@ int map_shmem (char* filename, int* pfd, u_long* pdatasize, u_long* pmapsize, ch
     }
     buf = (char *) mmap (NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
     if (buf == MAP_FAILED) {
-	fprintf (stderr, "Cannot map file %s, errno=%d\n", shmemname, errno);
+	fprintf (stderr, "Cannot map file %s, errno=%d\n", filename, errno);
 	return -1;
     }
+
 
     // This is the last process to use the merge region
     // This will deallocate it  after we exit
@@ -1563,6 +1565,10 @@ int parse_merge (char* results_filename, GHashTable* merge_node_table)
 
     if (rc < 0) return rc;
 
+#ifdef DEBUGTRACE_OUTPUT
+    u_long output_cnt = 0;
+#endif
+
     pout = buf;
     while (pout < buf + outsize) {
 
@@ -1578,7 +1584,10 @@ int parse_merge (char* results_filename, GHashTable* merge_node_table)
 	    value = *((u_long *) pout);
 #ifdef DEBUGTRACE_OUTPUT
 	    if (output_cnt == DEBUGTRACE_OUTPUT) {
-		printf ("output token %lx value %lx\n", output_cnt, value);
+		printf ("output token %lx value %x\n", output_cnt, value);
+		debug_me = 1;
+	    } else {
+		debug_me = 0;
 	    }
 #endif	    
             if (value) {

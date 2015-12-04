@@ -22,7 +22,7 @@ using namespace std;
 #include "../taint_nw.h"
 #include "../../test/streamserver.h"
 
-//#define DEBUG(x) ((x)==0x1cec000 || (x)==0x0)
+#define DEBUG(x) (x==0x7e55f3 || x==0x7e5751)
 #define STATS
 
 #ifdef USE_NW
@@ -168,13 +168,13 @@ taint_t stack[STACK_SIZE];
 static int
 init_socket (int port)
 {
-
+    printf("stream: init_socket(%d)\n",port);
    int c = socket (AF_INET, SOCK_STREAM, 0);
     if (c < 0) {
 	fprintf (stderr, "Cannot create socket, errno=%d\n", errno);
 	return c;
     }
-//    printf("stream: init_socket(%d)\n",port);
+
     int on = 1;
     long rc = setsockopt (c, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
     if (rc < 0) {
@@ -772,6 +772,49 @@ long stream_epoch (const char* dirname, int port)
 
 
     char statsname[256];
+    sprintf (statsname, "%s/machine-readable-stream-stats.csv", dirname);
+    statsfile = fopen (statsname, "w");
+    if (statsfile == NULL) {
+	fprintf (stderr, "Cannot create %s, errno=%d\n", statsname, errno);
+	return -1;
+    }
+    
+    //first print out all of the time info: 
+    fprintf (statsfile,"%ld,%ld,%ld,", 
+	    ms_diff (end_tv, start_tv),
+	    ms_diff (recv_done_tv, start_tv), 
+	    ms_diff (output_done_tv, recv_done_tv));
+
+    if(!finish_flag) {
+	fprintf(statsfile,"%ld,%ld,%ld,",
+		ms_diff (index_created_tv, output_done_tv),
+		ms_diff (address_done_tv, index_created_tv),
+		ms_diff (end_tv, address_done_tv));
+    }
+    else {
+	fprintf(statsfile,"0,0,%ld,", ms_diff (end_tv, output_done_tv));       
+    }
+    fprintf(statsfile,"%lu,", idle/10);
+    fprintf (statsfile, "%ld, %ld, %ld, %ld,", mdatasize, odatasize,idatasize, adatasize);
+    fprintf (statsfile, "%lu, %lu, %lu, %lu,", directs, indirects, values, output_merges);
+    if (!finish_flag) {
+	fprintf (statsfile, "%lu,%lu,%lu,%lu,%lu,%lu,%lu,", 
+		 atokens, passthrus, aresolved, aindirects, avalues, unmodified, merges);
+    }
+    else {
+	fprintf (statsfile, "0,0,0,0,0,0,0,");
+    }
+    if (!start_flag){
+	written = outputq->write_index;
+	fprintf (statsfile, "%lu,", written*sizeof(u_long)); 
+    }
+    else { 
+	fprintf (statsfile, "0,"); 
+    }
+    fprintf (statsfile, "%lu\n", resolved.size());
+    fclose (statsfile);
+
+
     sprintf (statsname, "%s/stream-stats", dirname);
     statsfile = fopen (statsname, "w");
     if (statsfile == NULL) {
@@ -796,9 +839,9 @@ long stream_epoch (const char* dirname, int port)
     fprintf (statsfile, "Received %ld bytes of input data\n", idatasize);
     fprintf (statsfile, "Received %ld bytes of addr data\n", adatasize);
     fprintf (statsfile, "\n");
-    fprintf (statsfile, "Output directs %lu output indirects %lu output values %lu output merges %lu\n", directs, indirects, values, output_merges);
+    fprintf (statsfile, "Output directs %lu indirects %lu values %lu, merges %lu\n", directs, indirects, values, output_merges);
     if (!finish_flag) {
-	fprintf (statsfile, "Address tokens %lu passthrus %lu resolved %lu indirects %lu values %lu unmodified %lu merges %lu\n", 
+	fprintf (statsfile, "Address tokens %lu passthrus %lu resolved %lu, indirects %lu values %lu unmodified %lu, merges %lu\n", 
 		 atokens, passthrus, aresolved, aindirects, avalues, unmodified, merges);
     }
     if (!start_flag) {

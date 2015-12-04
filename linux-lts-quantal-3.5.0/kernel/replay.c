@@ -5527,7 +5527,7 @@ get_next_syscall (int syscall, char** ppretparams)
 
 	retval = get_next_syscall_enter (prt, prg, syscall, ppretparams, &psr);
 	if (retval < 0 && prt->rp_pin_attaching == PIN_ATTACHING) {
-		printk ("Pid %d attaching so do not wait for syscall exit\n", current->pid);
+		MPRINT ("Pid %d attaching so do not wait for syscall exit\n", current->pid);
 		return retval;
 	}
 
@@ -5542,6 +5542,10 @@ get_next_syscall (int syscall, char** ppretparams)
 	}
 
 	exit_retval = get_next_syscall_exit (prt, prg, psr);
+	if (exit_retval < 0 && prt->rp_pin_attaching == PIN_ATTACHING) {
+		MPRINT ("Pid %d attaching on exit so do not wait for syscall exit\n", current->pid);
+		return exit_retval;
+	}
 
 	// Reset Pin syscall address value to 0 at the end of the system call
 	// This is required to differentiate between syscalls when
@@ -7596,20 +7600,29 @@ replay_read (unsigned int fd, char __user * buf, size_t count)
 		int consume_size = 0;
 
 		if (is_cache_file & READ_NEW_CACHE_FILE) {
-			/* FIXME: Do proper cast */
-			file_cache_update_replay_file(fd, (struct open_retvals *)(retparams + sizeof(u_int) +
-						sizeof(loff_t)));
+			if (current->replay_thrd->rp_pin_attaching != PIN_ATTACHING_FF) {
+				/* FIXME: Do proper cast */
+				file_cache_update_replay_file(fd, (struct open_retvals *)(retparams + sizeof(u_int) +
+											  sizeof(loff_t)));
+			} else {
+				DPRINT ("Skip file cache update on restart\n");
+			}
+
 			consume_size += sizeof(struct open_retvals);
 		}
 
 		if (is_replay_cache_file(current->replay_thrd->rp_cache_files, fd, &cache_fd)) {
-			// read from the open cache file
-			loff_t off = *((loff_t *) (retparams+sizeof(u_int)));
-			DPRINT ("read from cache file %d files %p bytes %ld off %ld\n", cache_fd, current->replay_thrd->rp_cache_files, rc, (u_long) off);
-			retval = sys_pread64 (cache_fd, buf, rc, off);
-			if (retval != rc) {
-				printk ("pid %d read from cache file %d files %p orig fd %u off %ld returns %ld not expected %ld\n", current->pid, cache_fd, current->replay_thrd->rp_cache_files, fd, (long) off, retval, rc);
-				return syscall_mismatch();
+			if (current->replay_thrd->rp_pin_attaching != PIN_ATTACHING_FF) {
+				// read from the open cache file
+				loff_t off = *((loff_t *) (retparams+sizeof(u_int)));
+				DPRINT ("read from cache file %d files %p bytes %ld off %ld\n", cache_fd, current->replay_thrd->rp_cache_files, rc, (u_long) off);
+				retval = sys_pread64 (cache_fd, buf, rc, off);
+				if (retval != rc) {
+					printk ("pid %d read from cache file %d files %p orig fd %u off %ld returns %ld not expected %ld\n", current->pid, cache_fd, current->replay_thrd->rp_cache_files, fd, (long) off, retval, rc);
+					return syscall_mismatch();
+				}
+			} else {
+				DPRINT ("Skip read from cache on restart\n");
 			}
 			consume_size += sizeof(u_int) + sizeof(loff_t);
 			argsconsume (current->replay_thrd->rp_record_thread, consume_size);

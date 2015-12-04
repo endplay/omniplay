@@ -585,6 +585,15 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 */
 	}
     }
+    
+    // send stats if requested
+    if (ehdr.flags&SEND_STATS) {
+	for (u_long i = 0; i < epochs; i++) {
+	    char pathname[PATHLEN];
+	    sprintf (pathname, "/tmp/%ld/stream-stats", i);
+	    send_file (s, pathname, "stream-stats");
+	}
+    }
 
     close (s);
 }
