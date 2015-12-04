@@ -248,7 +248,7 @@ static void dift_done ()
 	assert(0);
     }
     if (all_output) {
-	int rc = ftruncate (taint_fd, MAX_DUMP_SIZE);
+	int rc = ftruncate64 (taint_fd, MAX_DUMP_SIZE);
 	if (rc < 0) {
 	    fprintf(stderr, "could not truncate shmem %s, errno %d\n", taint_structures_file, errno);
 	    assert(0);
@@ -290,6 +290,9 @@ static void dift_done ()
 #endif
 
     finish_and_print_taint_stats(stdout);
+#ifdef TAINT_DEBUG
+    fclose (debug_f);
+#endif
     printf("DIFT done at %ld\n", global_syscall_cnt);
 
 #ifdef USE_SHMEM
@@ -341,8 +344,9 @@ static inline void increment_syscall_cnt (int syscall_num)
             current_thread->syscall_cnt++;
         }
 #ifdef TAINT_DEBUG
-	fprintf (debug_f, "pid %d syscall %d global syscall cnt %lu num %d clock %ld\n", current_thread->record_pid, 
-		 current_thread->syscall_cnt, global_syscall_cnt, syscall_num, *ppthread_log_clock);
+	extern taint_t merge_total_count;
+	fprintf (debug_f, "pid %d syscall %d global syscall cnt %lu num %d clock %ld mtc %x\n", current_thread->record_pid, 
+		 current_thread->syscall_cnt, global_syscall_cnt, syscall_num, *ppthread_log_clock, merge_total_count);
 #endif
     }
 }
@@ -14060,7 +14064,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 		fprintf(stderr, "could not open tokens shmem %s, errno %d\n", token_file, errno);
 		assert(0);
 	    }
-	    int rc = ftruncate (tokens_fd, MAX_TOKENS_SIZE);
+	    int rc = ftruncate64 (tokens_fd, MAX_TOKENS_SIZE);
 	    if (rc < 0) {
 		fprintf(stderr, "could not truncate tokens %s, errno %d\n", token_file, errno);
 		assert(0);
@@ -14091,7 +14095,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 		fprintf(stderr, "could not open tokens shmem %s, errno %d\n", output_file, errno);
 		assert(0);
 	    }
-	    int rc = ftruncate (outfd, MAX_OUT_SIZE);
+	    int rc = ftruncate64 (outfd, MAX_OUT_SIZE);
 	    if (rc < 0) {
 		fprintf(stderr, "could not truncate tokens %s, errno %d\n", output_file, errno);
 		assert(0);

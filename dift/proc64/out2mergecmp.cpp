@@ -16,7 +16,7 @@ using namespace std;
 #include "../taint_interface/taint.h"
 #include "../taint_interface/taint_creation.h"
 
-//#define TARGET(x) (x==0x47dfa0 || x == 0x47df9c)
+#define TARGET(x) (x==0xd80ed9)
 //#define ITARGET 0x56c67
 
 #define ALLOW_DUPS

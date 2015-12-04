@@ -514,7 +514,6 @@ void* do_request (void* arg)
 	fprintf (stderr, "Cannot recieve header,rc=%d\n", rc);
 	return NULL;
     }
-    printf ("Recevied command %d\n", ehdr.cmd_type);
     if (ehdr.cmd_type == DO_DIFT) {
 	do_dift (s, ehdr);
     } else {
@@ -559,9 +558,7 @@ int main (int argc, char* argv[])
 
     while (1) {
       
-	printf ("About to accept\n");
 	long s = accept (c, NULL, NULL);
-	printf ("Accept returns %ld\n", s);
 	if (s < 0) {
 	    fprintf (stderr, "Cannot accept connection, errno=%d\n", errno);
 	    return s;

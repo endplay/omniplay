@@ -179,8 +179,8 @@ flush_merge_buffer ()
 {
     // Check for overflow
     if ((merge_total_count-0xe0000001) >= MAX_MERGES) {
-	fprintf (stderr, "Cannot allocate any more merges than %ld\n", (u_long) (merge_total_count-0xe0000001));
-	printf("sycall_cnt %ld clock %ld\n", global_syscall_cnt, *ppthread_log_clock);
+	fprintf (stderr, "Cannot allocate any more merges than %lx\n", (u_long) (merge_total_count-0xe0000001));
+	fprintf(stderr, "sycall_cnt %ld clock %ld\n", global_syscall_cnt, *ppthread_log_clock);
 	assert (0);
     }
 
@@ -500,6 +500,7 @@ void finish_and_print_taint_stats(FILE* fp)
     }
     close (node_num_fd);
 #else
+    fprintf (debug_f, "merge_total_count is %x\n", merge_total_count);
     flush_merge_buffer ();
 #endif
 
@@ -604,8 +605,7 @@ taint_t* get_mem_taints(u_long mem_loc, uint32_t size)
 #ifdef TAINT_DEBUG
     u_long i;
     for (i = 0; i < size; i++) {
-	//if (TAINT_DEBUG(*(second + low_index + i))) {
-	if (taint_debug_inst == 0xb76df419) {
+	if (TAINT_DEBUG(*(second + low_index + i))) {
 	    fprintf (debug_f, "Address %lx get taint %x at instr %lx clock %ld\n", mem_loc+i, *(second + low_index + i), taint_debug_inst, *ppthread_log_clock);
 	}
     }
