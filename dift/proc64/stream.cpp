@@ -15,6 +15,7 @@
 #include <atomic>
 using namespace std;
 
+#include "streamnw.h"
 #include "../taint_interface/taint.h"
 #include "../linkage_common.h"
 #include "../taint_interface/taint_creation.h"
@@ -22,9 +23,10 @@ using namespace std;
 #include "../taint_nw.h"
 #include "../../test/streamserver.h"
 
-//#define DEBUG(x) ((x)==0x1cec000 || (x)==0x0)
+//#define DEBUG(x) ((x)==0x47df9c || (x)==0x47dfa0 || (x)==(0x47df9c-0x4676eb) || (x)==(0x47dfa0-0x4676eb) || (x)==(0x47df9c-0x3ebc29) || (x)==(0x47df9c-0x3b1611) || (x)==(0x47df9c-0x37e321) || (x)==(0x47df9c-0x376641) || (x)==(0x47df9c-0x192dc3) || (x)==(0x47df9c-0x16db75))
 #define STATS
 
+// Set up limits here - need to be less generate with 32-bit address space
 #ifdef USE_NW
 #ifdef BUILD_64
 const u_long MERGE_SIZE  = 0x400000000; // 16GB max
@@ -37,19 +39,30 @@ const u_long TOKEN_SIZE =   0x10000000; // 256MB max
 const u_long TS_SIZE =      0x10000000; // 1GB max
 const u_long OUTBUFSIZE =   0x10000000; // 1GB size
 #endif
-#ifdef USE_SHMEM
-const u_long OUTBUFSIZE =   0x2000000; // 128MB size
+
+//this isn't used in *just* the SHMEM case....
+#ifdef BUILD_64
+const u_long MAX_ADDRESS_MAP = 0; // No limit
+#else
+const u_long MAX_ADDRESS_MAP = 0x100000; // 16 MB
+int afd;
 #endif
 
+
+#ifdef USE_SHMEM 
+const u_long OUTBUFSIZE =   0x2000000; // 128MB size
+#endif
 #define TERM_VAL 0xffffffff // Sentinel for queue transmission
 
 struct senddata {
     char*  host;
     short  port;
+    bool   do_sequential;
 };
 
 struct recvdata {
     short  port;
+    bool   do_sequential;
 };
 
 struct taint_entry {
@@ -80,6 +93,7 @@ u_long merges = 0, directs = 0, indirects = 0, values = 0, idle = 0, output_merg
 u_long atokens = 0, passthrus = 0, aresolved = 0, aindirects = 0, avalues = 0, unmodified = 0, written = 0;
 u_long prune_cnt = 0, simplify_cnt = 0;
 u_long new_live_zeros = 0, new_live_inputs = 0, new_live_merges = 0, new_live_merge_zeros = 0, new_live_notlive = 0;
+u_long live_set_size = 0, new_live_set_size = 0;
 struct timeval start_tv, recv_done_tv, output_done_tv, index_created_tv, address_done_tv, end_tv;
 struct timeval live_receive_done_tv, new_live_start_tv, live_done_tv, new_live_send_tv;
 
@@ -106,17 +120,17 @@ static long ms_diff (struct timeval tv1, struct timeval tv2)
 #define PUT_QVALUE(val,q)						\
     {									\
 	while (can_write == 0) {					\
-	    IDLE							\
+	    IDLE;							\
 	    if ((q)->write_index >= (q)->read_index) {			\
 		can_write = TAINTENTRIES - ((q)->write_index - (q)->read_index); \
 	    } else {							\
-		can_write = (q)->read_index - (q)->write_index; \
+		can_write = (q)->read_index - (q)->write_index;		\
 	    }								\
 	}								\
-	(q)->buffer[(q)->write_index] = (val);			\
+	(q)->buffer[(q)->write_index] = (val);				\
 	(q)->write_index++;						\
-	if ((q)->write_index == TAINTENTRIES) (q)->write_index = 0; \
-	can_write--;						\
+	if ((q)->write_index == TAINTENTRIES) (q)->write_index = 0;	\
+	can_write--;							\
     } 
 
 
@@ -124,16 +138,16 @@ static long ms_diff (struct timeval tv1, struct timeval tv2)
 #define GET_QVALUE(val,q)						\
     {									\
 	while (can_read == 0) {						\
-	    IDLE							\
-	    if ((q)->read_index > (q)->write_index) {		\
+	    IDLE;							\
+	    if ((q)->read_index > (q)->write_index) {			\
 		can_read = TAINTENTRIES - ((q)->read_index - (q)->write_index); \
 	    } else {							\
-		can_read = (q)->write_index - (q)->read_index;	\
+		can_read = (q)->write_index - (q)->read_index;		\
 	    }								\
 	}								\
-	(val) = (q)->buffer[(q)->read_index];			\
+	(val) = (q)->buffer[(q)->read_index];				\
 	(q)->read_index++;						\
-	if ((q)->read_index == TAINTENTRIES) (q)->read_index = 0; \
+	if ((q)->read_index == TAINTENTRIES) (q)->read_index = 0;	\
 	can_read--;							\
     }
 
@@ -315,7 +329,7 @@ read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, ta
 #ifdef USE_SHMEM
 
 static void*
-map_buffer (const char* prefix, const char* group_directory, u_long& datasize)
+map_buffer (const char* prefix, const char* group_directory, u_long& datasize, u_long maxsize, int& fd)
 {
     char filename[256];
     snprintf(filename, 256, "/%s_shm%s", prefix, group_directory);
@@ -323,7 +337,7 @@ map_buffer (const char* prefix, const char* group_directory, u_long& datasize)
 	if (filename[i] == '/') filename[i] = '.';
     }
 
-    int fd = shm_open(filename, O_RDWR, 0644);
+    fd = shm_open(filename, O_RDWR, 0644);
     if (fd < 0) {
 	fprintf(stderr, "could not open shmem %s, errno %d\n", filename, errno);
 	return NULL;
@@ -339,6 +353,7 @@ map_buffer (const char* prefix, const char* group_directory, u_long& datasize)
     if (datasize == 0) return NULL;  // Some inputs may actually have no data
 
     int mapsize = datasize;
+    if (maxsize) mapsize = maxsize;
     if (mapsize%4096) mapsize += (4096-mapsize%4096);
     void* ptr = mmap (NULL, mapsize, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
     if (ptr == MAP_FAILED) {
@@ -368,10 +383,16 @@ read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, ta
 	return -1;
     }
 
-    token_log = (char *) map_buffer ("tokens", group_directory, idatasize);
-    output_log = (char *) map_buffer ("dataflow.results", group_directory, odatasize);
-    ts_log = (taint_t *) map_buffer ("taint_structures", group_directory, adatasize);
-    merge_log = (taint_entry *) map_buffer ("node_nums", group_directory, mdatasize);
+    int token_fd, output_fd, ts_fd, merge_fd;
+    token_log = (char *) map_buffer ("tokens", group_directory, idatasize, 0, token_fd);
+    output_log = (char *) map_buffer ("dataflow.results", group_directory, odatasize, 0, output_fd);
+    ts_log = (taint_t *) map_buffer ("taint_structures", group_directory, adatasize, MAX_ADDRESS_MAP, ts_fd);
+    merge_log = (taint_entry *) map_buffer ("node_nums", group_directory, mdatasize, 0, merge_fd);
+#ifndef BUILD_64
+    afd = ts_fd;
+#endif
+    printf ("%s: i %ld o %ld a %ld m %ld\n", group_directory, idatasize,
+	    odatasize, adatasize, mdatasize);
     return 0;
 }
 #endif
@@ -458,6 +479,45 @@ static void map_iter (taint_t value, uint32_t output_token, bool& unresolved_val
     }
 
     delete pset;
+}
+
+static long
+build_address_map (unordered_map<taint_t,taint_t>& address_map, taint_t* ts_log, u_long adatasize)
+{
+#ifdef BUILD_64
+    for (uint32_t i = 0; i < adatasize/(sizeof(taint_t)*2); i++) {
+	address_map[ts_log[2*i]] = ts_log[2*i+1];
+    }
+#else
+    // To conserve memory, only map a portion at a time since we are streaming this
+    taint_t* p = (taint_t *) ts_log;
+    long rc;
+    for (uint32_t i = 0; i < adatasize/(sizeof(taint_t)*2); i++) {
+	address_map[*p] = *(p+1);
+	p += 2;
+
+	if (i%(MAX_ADDRESS_MAP/(sizeof(taint_t)*2)) == MAX_ADDRESS_MAP/(sizeof(taint_t)*2)-1) {
+	    rc = munmap (ts_log, MAX_ADDRESS_MAP);
+	    if (rc < 0) {
+		fprintf (stderr, "Cannot unmap address chunk\n");
+	    }
+	    
+	    p = (taint_t *) mmap (ts_log, MAX_ADDRESS_MAP, PROT_READ|PROT_WRITE, MAP_SHARED, afd, (i+1)*(sizeof(taint_t)*2));
+	    if (p == MAP_FAILED) {
+		fprintf (stderr, "Cannot map address input chunk, errno=%d\n", errno);
+		return -1;
+	    }
+	    ts_log = p;
+	}
+    }
+    rc = munmap (ts_log, MAX_ADDRESS_MAP); // No longer needed
+    if (rc < 0) {
+	fprintf (stderr, "Cannot unmap last address chunk\n");
+    }	    
+    ts_log = NULL;
+#endif
+
+    return 0;
 }
 
 // Process one epoch 
@@ -601,11 +661,8 @@ long stream_epoch (const char* dirname, int port)
     if (!finish_flag) {
 	// Next, build index of output addresses
 	unordered_map<taint_t,taint_t> address_map;
-	
-	for (uint32_t i = 0; i < adatasize/(sizeof(taint_t)*2); i++) {
-	    address_map[ts_log[2*i]] = ts_log[2*i+1];
-	    //fprintf (debugfile, "address %x goes to %x\n", ts_log[2*i], ts_log[2*i+1]);
-	}
+	rc = build_address_map (address_map, ts_log, adatasize);
+	if (rc < 0) return rc;
 
 #ifdef STATS
 	gettimeofday(&index_created_tv, NULL);
@@ -940,6 +997,7 @@ long seq_epoch (const char* dirname, int port)
 	}  while (1);
 
 #ifdef STATS
+	live_set_size = live_set.size();
 	gettimeofday(&live_receive_done_tv, NULL);
 #endif
 	// Wait on sender
@@ -978,7 +1036,6 @@ long seq_epoch (const char* dirname, int port)
 #endif
 	    mptr++;
 	}
-
     }
 
     // Construct and send out new live set
@@ -988,9 +1045,10 @@ long seq_epoch (const char* dirname, int port)
 #endif
 
 	// Add live addresses
+	taint_t* p = ts_log;
 	for (uint32_t i = 0; i < adatasize/(sizeof(taint_t)*2); i++) {
-	    taint_t addr = ts_log[2*i];
-	    taint_t val = ts_log[2*i+1];
+	    taint_t addr = *p++;
+	    taint_t val = *p++;
 	    if (val == 0) {
 		new_live_set.erase(addr);
 #ifdef STATS
@@ -1026,8 +1084,40 @@ long seq_epoch (const char* dirname, int port)
 #endif
 		}
 	    }
+#ifndef BUILD_64
+	    // To conserve memory, only map a portion at a time since we are streaming this
+	    if (i%(MAX_ADDRESS_MAP/(sizeof(taint_t)*2)) == MAX_ADDRESS_MAP/(sizeof(taint_t)*2)-1) {
+		rc = munmap (ts_log, MAX_ADDRESS_MAP);
+		if (rc < 0) {
+		    fprintf (stderr, "Cannot unmap address chunk\n");
+		}
+
+		p = (taint_t *) mmap (ts_log, MAX_ADDRESS_MAP, PROT_READ|PROT_WRITE, MAP_SHARED, afd, (i+1)*(sizeof(taint_t)*2));
+		if (p == MAP_FAILED) {
+		    fprintf (stderr, "Cannot map address input chunk, errno=%d\n", errno);
+		    return -1;
+		}
+		ts_log = p;
+	    }
+#endif
 	}
+#ifndef BUILD_64
+	if (adatasize >= MAX_ADDRESS_MAP) {
+	    rc = munmap (ts_log, MAX_ADDRESS_MAP);
+	    if (rc < 0) {
+		fprintf (stderr, "Cannot unmap last address chunk\n");
+	    }
+	    
+	    taint_t* ts_log = (taint_t *) mmap (NULL, MAX_ADDRESS_MAP, PROT_READ|PROT_WRITE, MAP_SHARED, afd, 0);
+	    if (ts_log == MAP_FAILED) {
+		fprintf (stderr, "Cannot map address input chunk, errno=%d\n", errno);
+		return -1;
+	    }
+	}
+#endif
+
 #ifdef STATS
+	new_live_set_size = new_live_set.size();
 	gettimeofday(&new_live_send_tv, NULL);
 #endif
 	for (auto iter = new_live_set.begin(); iter != new_live_set.end(); iter++) {
@@ -1036,6 +1126,9 @@ long seq_epoch (const char* dirname, int port)
 	PUT_QVALUE(TERM_VAL,inputq);
 
     }
+    
+    live_set.clear();
+    new_live_set.clear();
 
 #ifdef STATS
     gettimeofday(&live_done_tv, NULL);
@@ -1122,10 +1215,8 @@ long seq_epoch (const char* dirname, int port)
     if (!finish_flag) {
 	// Next, build index of output addresses
 	unordered_map<taint_t,taint_t> address_map;
-	
-	for (uint32_t i = 0; i < adatasize/(sizeof(taint_t)*2); i++) {
-	    address_map[ts_log[2*i]] = ts_log[2*i+1];
-	}
+	rc = build_address_map (address_map, ts_log, adatasize);
+	if (rc < 0) return rc;
 
 #ifdef STATS
 	gettimeofday(&index_created_tv, NULL);
@@ -1146,7 +1237,7 @@ long seq_epoch (const char* dirname, int port)
 	    GET_QVALUE(value, inputq);
 #ifdef DEBUG
 	    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-		fprintf (debugfile, "otoken %x to value %lx\n", otoken+output_token, (long) value);
+		fprintf (debugfile, "otoken %x(%x/%x) to value %lx\n", otoken+output_token, otoken, output_token, (long) value);
 	    }
 #endif
 	    while (value) {
@@ -1155,6 +1246,11 @@ long seq_epoch (const char* dirname, int port)
 #endif
 		auto iter = address_map.find(value);
 		if (iter == address_map.end()) {
+#ifdef DEBUG
+		    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+			fprintf (debugfile, "otoken %x(%x/%x) not found in map\n", otoken+output_token, otoken, output_token);
+		    }
+#endif
 		    if (!start_flag) {
 #ifdef STATS
 			passthrus++;
@@ -1172,6 +1268,12 @@ long seq_epoch (const char* dirname, int port)
 			PUT_QVALUE(value,outputq);
 		    }
 		} else {
+#ifdef DEBUG
+		    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+			fprintf (debugfile, "otoken %x(%x/%x) found in map: %x\n", otoken+output_token, otoken, output_token,
+				 iter->second);
+		    }
+#endif
 		    if (iter->second < 0xc0000000 && !start_flag) {
 			if (iter->second) {
 #ifdef STATS
@@ -1188,7 +1290,13 @@ long seq_epoch (const char* dirname, int port)
 			    }
 #endif
 			    PUT_QVALUE(iter->second,outputq);
-			} // Else taint was cleared in this epoch
+			} else {
+#ifdef DEBUG
+			    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+				fprintf (debugfile, "output %x to cleared value\n", otoken+output_token);
+			    }
+#endif
+			}
 		    } else if (iter->second < 0xe0000001) {
 			// Maps to input
 #ifdef STATS
@@ -1332,7 +1440,7 @@ long seq_epoch (const char* dirname, int port)
     } else {
 	fprintf (statsfile, "Finish time:             %6ld ms\n", ms_diff (end_tv, output_done_tv));
     }
-    fprintf (statsfile, "Idle                     %6lu ms\n", idle/10);
+    fprintf (statsfile, "Idle                     %6lu ms\n", idle/1000);
     fprintf (statsfile, "\n");
     fprintf (statsfile, "Received %ld bytes of merge data\n", mdatasize);
     fprintf (statsfile, "Received %ld bytes of output data\n", odatasize);
@@ -1365,10 +1473,8 @@ long seq_epoch (const char* dirname, int port)
     return 0;
 }
 
-// Sending to another computer is implemented as separate thread to add asyncrhony
-void* send_output_queue (void* arg)
+int connect_output_queue (struct senddata* data) 
 {
-    struct senddata* data = (struct senddata *) arg;
     struct sockaddr_in addr;
     struct hostent* hp;
     long rc;
@@ -1378,13 +1484,13 @@ void* send_output_queue (void* arg)
     hp = gethostbyname (data->host);
     if (hp == NULL) {
 	fprintf (stderr, "Invalid host %s, errno=%d\n", data->host, h_errno);
-	return NULL;
+	return -1;
     }
 
     s = socket (AF_INET, SOCK_STREAM, 0);
     if (s < 0) {
 	fprintf (stderr, "Cannot create socket, errno=%d\n", errno);
-	return NULL;
+	return s;
     }
 
     addr.sin_family = AF_INET;
@@ -1399,43 +1505,11 @@ void* send_output_queue (void* arg)
 	}
     } while (rc < 0);
 
-    // Listen on output queue and send over network
-    while (1) {
-	u_long can_send;
-	u_long partial_bytes = 0;
-	if (outputq->read_index > outputq->write_index) {			
-	    can_send = TAINTENTRIES - outputq->read_index;
-	} else {								
-	    can_send = outputq->write_index - outputq->read_index;		
-	}		
-	if (can_send) {
-	    can_send = can_send*sizeof(u_long)-partial_bytes; // Convert to bytes
-	    rc = send (s, outputq->buffer + outputq->read_index, can_send, 0);
-	    if (rc <= 0) {
-		fprintf (stderr, "send returns %ld,errno=%d\n", rc, errno);
-		break;
-	    }
-	    outputq->read_index += rc/sizeof(u_long);					       
-	    if (rc%sizeof(u_long)) {
-		partial_bytes += rc%sizeof(u_long);
-		if (partial_bytes > sizeof(u_long)) {
-		    outputq->read_index++;
-		    partial_bytes -= sizeof(u_long);
-		}
-	    }
-	    if (outputq->buffer[outputq->read_index-1] == TERM_VAL) break; // No more data to send
-	} else {
-	    usleep(100);
-	}
-    }
-
-    close (s);
-    return NULL;
+    return s;
 }
 
-void* recv_input_queue (void* arg)
+int connect_input_queue (struct recvdata* data)
 {
-    struct recvdata* data = (struct recvdata *) arg;
     struct sockaddr_in addr;
     long rc;
     int c, s;
@@ -1444,14 +1518,14 @@ void* recv_input_queue (void* arg)
     c = socket (AF_INET, SOCK_STREAM, 0);
     if (c < 0) {
 	fprintf (stderr, "Cannot create socket, errno=%d\n", errno);
-	return NULL;
+	return c;
     }
 
     int on = 1;
     rc = setsockopt (c, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
     if (rc < 0) {
 	fprintf (stderr, "Cannot set socket option, errno=%d\n", errno);
-	return NULL;
+	return rc;
     }
 
     addr.sin_family = AF_INET;
@@ -1461,54 +1535,114 @@ void* recv_input_queue (void* arg)
     rc = bind (c, (struct sockaddr *) &addr, sizeof(addr));
     if (rc < 0) {
 	fprintf (stderr, "Cannot bind socket, errno=%d\n", errno);
-	return NULL;
+	return rc;
     }
 
     rc = listen (c, 5);
     if (rc < 0) {
 	fprintf (stderr, "Cannot listen on socket, errno=%d\n", errno);
-	return NULL;
+	return rc;
     }
     
     s = accept (c, NULL, NULL);
     if (s < 0) {
 	fprintf (stderr, "Cannot accept connection, errno=%d\n", errno);
-	return NULL;
+	return s;
     }
 
     close (c);
+    return s;
+}
 
+void send_stream (int s, struct taintq* q)
+{
+    // Listen on output queue and send over network
+    while (1) {
+	u_long can_send = 0;
+
+	while (can_send == 0) {
+	    usleep (100);
+	    if (q->read_index > q->write_index) {			
+		can_send = TAINTENTRIES - q->read_index;
+	    } else {								
+		can_send = q->write_index - q->read_index;		
+	    }		
+	}
+
+	long rc = safe_write (s, q->buffer + q->read_index, can_send*sizeof(uint32_t));
+	if (rc != (long)(can_send*sizeof(u_int32_t))) return; // Error sending the data
+
+	q->read_index += can_send;
+	if (q->buffer[(q->read_index-1)%TAINTENTRIES] == TERM_VAL) return; // No more data to send
+    }
+}
+
+void recv_stream (int s, struct taintq* q)
+{
     // Get data and put on the inputq
     while (1) {
 	u_long can_recv;
 	u_long partial_bytes = 0;
-	if (inputq->write_index >= inputq->read_index) {			
-	    can_recv = TAINTENTRIES - inputq->write_index;
+	if (q->write_index >= q->read_index) {			
+	    can_recv = TAINTENTRIES - q->write_index;
 	} else {								
-	    can_recv = inputq->write_index - inputq->read_index;		
+	    can_recv = q->write_index - q->read_index;		
 	}									
 	if (can_recv) {
 	    can_recv = can_recv*sizeof(u_long)-partial_bytes; // Convert to bytes
-	    rc = recv (s, inputq->buffer + inputq->write_index, can_recv, 0);
+	    long rc = recv (s, q->buffer + q->write_index, can_recv, 0);
 	    if (rc < 0) {
 		fprintf (stderr, "recv returns %ld,errno=%d\n", rc, errno);
 		break;
 	    } else if (rc == 0) {
 		break; // Sender closed connection
 	    }
-	    inputq->write_index += rc/sizeof(u_long);					       
+	    q->write_index += rc/sizeof(u_long);					       
 	    if (rc%sizeof(u_long)) {
 		partial_bytes += rc%sizeof(u_long);
 		if (partial_bytes > sizeof(u_long)) {
-		    inputq->write_index++;
+		    q->write_index++;
 		    partial_bytes -= sizeof(u_long);
 		}
 	    }
+	    if (partial_bytes == 0 && q->buffer[(q->write_index-1)%TAINTENTRIES] == TERM_VAL) break; // Sender is done
 	} else {
 	    usleep(100);
 	}
     }
+}
 
+// Sending to another computer is implemented as separate thread to add asyncrhony
+void* send_output_queue (void* arg)
+{
+   struct senddata* data = (struct senddata *) arg;
+
+   int s = connect_output_queue (data);
+   if (s < 0) return NULL;
+
+   if (data->do_sequential) {
+       recv_stream (s, outputq); // First we read data from upstream
+       DOWN_QSEM(outputq);
+   }
+
+   send_stream (s, outputq);
+   close (s);
+   return NULL;
+}
+
+void* recv_input_queue (void* arg)
+{
+    struct recvdata* data = (struct recvdata *) arg;
+
+    int s = connect_input_queue (data);
+    if (s < 0) return NULL;
+
+    if (data->do_sequential) {
+	send_stream (s, inputq); // First we send filters downstream	
+	UP_QSEM(inputq);
+    }
+
+    recv_stream (s, inputq);
     close (s);
     return NULL;
 }
@@ -1603,6 +1737,7 @@ int main (int argc, char* argv[])
     if (output_host) {
 	sd.host = output_host;
 	sd.port = STREAM_PORT;
+	sd.do_sequential = do_sequential;
 	rc = pthread_create (&oh_tid, NULL, send_output_queue, &sd);
 	if (rc < 0) {
 	    fprintf (stderr, "Cannot create outputq thread\n");
@@ -1612,6 +1747,7 @@ int main (int argc, char* argv[])
 
     if (input_host) {
 	rd.port = STREAM_PORT;
+	rd.do_sequential = do_sequential;
 	rc = pthread_create (&ih_tid, NULL, recv_input_queue, &rd);
 	if (rc < 0) {
 	    fprintf (stderr, "Cannot create inputq thread\n");

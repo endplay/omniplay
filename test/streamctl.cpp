@@ -111,7 +111,7 @@ int fetch_results (char* top_dir, struct epoch_ctl ectl)
 
 void format ()
 {
-    fprintf (stderr, "format: streamctl <epoch description file> <host config file> [-w] [-s] [-v dest_dir cmp_dir] [-seq]\n");
+    fprintf (stderr, "format: streamctl <epoch description file> <host config file> [-w] [-s] [-v dest_dir cmp_dir] [-stats] [-seq]\n");
     exit (0);
 }
 
@@ -119,7 +119,7 @@ int main (int argc, char* argv[])
 {
     int rc;
     char dirname[80];
-    int wait_for_response = 0, validate = 0, sync_files = 0;
+    int wait_for_response = 0, validate = 0, get_stats = 0, sync_files = 0;
     char* dest_dir, *cmp_dir;
     struct vector<struct replay_path> log_files;
     struct vector<struct cache_info> cache_files;
@@ -138,6 +138,8 @@ int main (int argc, char* argv[])
 	    wait_for_response = 1;
 	} else if (!strcmp (argv[i], "-s")) {
 	    sync_files = 1;
+	} else if (!strcmp (argv[i], "-stats")) {
+	    get_stats = 1;
 	} else if (!strcmp (argv[i], "-v")) {
 	    i++;
 	    if (i < argc) {
@@ -328,6 +330,7 @@ int main (int argc, char* argv[])
 	ehdr.flags = 0;
 	if (wait_for_response) ehdr.flags |= SEND_ACK;
 	if (validate) ehdr.flags |= SEND_RESULTS;
+	if (get_stats) ehdr.flags |= SEND_STATS;
 	strcpy (ehdr.dirname, dirname);
 	ehdr.epochs = conf.aggregators[i]->num_epochs;
 	if (i == 0) {
@@ -536,7 +539,18 @@ int main (int argc, char* argv[])
 	    strcat (cmd, add);
 	}
 	system (cmd);
-     }
+    }
+
+    if (get_stats) {
+	// Fetch the files into the tmp directory
+	for (u_long i = 0; i < conf.epochs.size(); i++) {
+	    char statfile[256];
+	    sprintf (statfile, "/tmp/stream-stats-%lu", i);
+	    if (fetch_file(conf.epochs[i].pagg->s, "/tmp") < 0) return -1;
+	    rc = rename ("/tmp/stream-stats", statfile);
+	    if (rc < 0) printf ("Unable to rename stat file, rc=%d, errno=%d\n", rc, errno);
+	}
+    }
 
     return 0;
 }

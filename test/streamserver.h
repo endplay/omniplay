@@ -10,6 +10,7 @@
 #define SEND_ACK      0x1
 #define SEND_RESULTS  0x2
 #define SYNC_LOGFILES 0x4
+#define SEND_STATS    0x8
 
 #define NAMELEN 256
 #define PATHLEN 512
@@ -59,12 +60,19 @@ struct epoch_ack {
     uint32_t retval;
 };
 
+#ifdef BUILD_64
 #define TAINTQSIZE (512*1024*1024)
-#define TAINTENTRIES ((TAINTQSIZE-sizeof(atomic_ulong)*2)/sizeof(uint32_t))
+#else
+#define TAINTQSIZE (16*1024*1024)
+#endif
+#define TAINTENTRIES ((TAINTQSIZE-(sizeof(sem_t)+sizeof(atomic_ulong)*2+64*3))/sizeof(uint32_t))
 struct taintq {
     sem_t           epoch_sem;
+    char            pad1[64];
     atomic_ulong    read_index;
+    char            pad2[64];
     atomic_ulong    write_index;
+    char            pad3[64];
     uint32_t        buffer[TAINTENTRIES];
 };
 
