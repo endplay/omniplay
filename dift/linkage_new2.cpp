@@ -1254,7 +1254,11 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
 
     // reset the syscall number after returning from system call
     increment_syscall_cnt (current_thread->sysnum);
-    current_thread->sysnum = 0;
+
+    // The first syscall returns twice 
+    if (global_syscall_cnt > 1) { 
+	current_thread->sysnum = 0;
+    }
 }
 
 void track_inst(INS ins, void* data) 
