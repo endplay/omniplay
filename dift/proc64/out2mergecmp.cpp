@@ -16,10 +16,11 @@ using namespace std;
 #include "../taint_interface/taint.h"
 #include "../taint_interface/taint_creation.h"
 
-//#define TARGET(x) (x==0xd7bab5 || x == 0xd7babd)
-//#define ITARGET 0x201e42
+//#define TARGET(x) (x==0xfed1bf || x==0xdaa885 || x==0x109)
+//#define ITARGET(x) (x==0x7a08)
 
 #define ALLOW_DUPS
+//#define OUTPUT_CMP
 
 #define BUFSIZE 100000
 
@@ -106,7 +107,7 @@ int main (int argc, char* argv[])
     buf_size = *((uint32_t *) dptr);
 
 #ifdef OUTPUT_CMP
-    printf ("outputs %x-%x: record pid %d syscall %d size %d\n", tokval, tokval+buf_size, tci->record_pid, tci->syscall_cnt, buf_size);
+//    printf ("outputs %x-%x: record pid %d syscall %d size %d\n", tokval, tokval+buf_size, tci->record_pid, tci->syscall_cnt, buf_size);
     oi.tokval = tokval;
     oi.record_pid = tci->record_pid;
     oi.syscall = tci->syscall_cnt;
@@ -143,7 +144,7 @@ int main (int argc, char* argv[])
 	    dptr += sizeof(struct taint_creation_info) + sizeof(uint32_t);
 	    buf_size = *((uint32_t *) dptr);
 #ifdef OUTPUT_CMP
-	    printf ("outputs %x-%x: record pid %d syscall %d size %d\n", tokval, tokval+buf_size, tci->record_pid, tci->syscall_cnt, buf_size);
+//	    printf ("outputs %x-%x: record pid %d syscall %d size %d\n", tokval, tokval+buf_size, tci->record_pid, tci->syscall_cnt, buf_size);
 	    oi.tokval = tokval;
 	    oi.record_pid = tci->record_pid;
 	    oi.syscall = tci->syscall_cnt;
@@ -181,7 +182,7 @@ int main (int argc, char* argv[])
 	    dfptr += sizeof(taint_creation_info);
 	    uint32_t* psize = (uint32_t *) dfptr;
 	    dfptr += sizeof(uint32_t);
-	    printf ("outputs %x-%x: record pid %d syscall %d size %d\n", tokval, tokval+*psize, tci->record_pid, tci->syscall_cnt, *psize);
+//	    printf ("outputs %x-%x: record pid %d syscall %d size %d\n", tokval, tokval+*psize, tci->record_pid, tci->syscall_cnt, *psize);
 	    oi = outputs[ocnt];
 	    if (tokval != oi.tokval || tci->record_pid != oi.record_pid || *psize != oi.buf_size) {
 		printf ("!!! was %x-%x: record pid %d syscall %d size %d\n", oi.tokval, oi.tokval+oi.buf_size, oi.record_pid, oi.syscall, oi.buf_size);
@@ -212,7 +213,7 @@ int main (int argc, char* argv[])
 			    otoken+output_tokens, otoken, output_tokens, *optr+input_tokens, *optr, input_tokens, argv[i]);
 		}
 #endif
-		omapping.insert(make_pair(otoken+output_tokens,*optr+input_tokens));
+		omapping.insert(make_pair(otoken+output_tokens,*optr+input_tokens)); 
 		optr++;
 	    }
 	    optr++;
@@ -238,19 +239,34 @@ int main (int argc, char* argv[])
 	    return rc;
 	}
 	if (i > out_start) input_tokens -= 0xc0000000;
-	output_tokens += output_token;
+	output_tokens += output_token; 
 	input_tokens += input_token;
 #ifdef TARGET
-	printf ("epoch %d, output tokens %x input tokens %x\n", i-1, output_tokens, input_tokens);
+	printf ("epoch %s, output tokens %x input tokens %x\n", argv[i], output_tokens, input_tokens);
 #endif
 	close (afd);
     }
+
+
+    miter = mapping.begin();
+    oiter = omapping.begin();
+    while (miter != mapping.end() && oiter != omapping.end()) {
+#ifdef TARGET
+	if (TARGET(miter->first) || TARGET(oiter->first)) {
+	    printf ("mergeout <%x,%x>, outputs <%x,%x>\n", 
+		    miter->first, miter->second, oiter->first, oiter->second);
+	    }
+#endif
+	miter++;
+	oiter++;
+    }
+
 
     miter = mapping.begin();
     oiter = omapping.begin();
     int cnt = 0;
     while (miter != mapping.end() && oiter != omapping.end()) {
-	cnt++;
+	cnt++;	
 	if (miter->first != oiter->first || miter->second != oiter->second) {
 	    printf ("Entry in mapping %d differs\n", cnt);
 	    printf ("mergeout <%x,%x>, outputs <%x,%x>\n", 

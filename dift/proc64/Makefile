@@ -16,7 +16,7 @@ mkmerge: mkmerge.cpp ../maputil.c ../maputil.h
 	$(CXX) -std=c++0x -Wall -Werror -O8 -o mkmerge mkmerge.cpp ../maputil.c -lrt
 
 stream: stream.cpp ../maputil.c ../maputil.h ../taint_nw.h
-	$(CXX) -std=c++0x -Wall -Werror -O8 -o stream stream.cpp ../maputil.c -lrt -lpthread
+	$(CXX) -std=c++0x $(SSFLAGS) -Wall -Werror -O8 -o stream stream.cpp ../maputil.c -lrt -lpthread
 
 merge3: merge3.cpp ../maputil.c ../maputil.h
 	$(CXX) -std=c++0x -Wall -Werror -O8 -o merge3 merge3.cpp ../maputil.c -lrt -lpthread
