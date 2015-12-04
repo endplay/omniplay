@@ -14,7 +14,7 @@ all: out2mergecmp stream streamserver # streamctl mkmerge merge3
 mkmerge: mkmerge.cpp ../maputil.c ../maputil.h
 	$(CXX) -std=c++0x -Wall -Werror -O8 -o mkmerge mkmerge.cpp ../maputil.c -lrt
 
-stream: stream.cpp streamnw.cpp streamnw.h ../maputil.c ../maputil.h ../taint_nw.h
+stream: stream.cpp streamnw.cpp streamnw.h ../maputil.c ../maputil.h ../taint_nw.h ../../test/streamserver.h
 	$(CXX) -std=c++0x -Wall -Werror -O8 -o stream stream.cpp streamnw.cpp ../maputil.c -lrt -lpthread
 
 merge3: merge3.cpp ../maputil.c ../maputil.h

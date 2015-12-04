@@ -55,7 +55,11 @@ struct epoch_ack {
     uint32_t retval;
 };
 
+#ifdef BUILD_64
 #define TAINTQSIZE (512*1024*1024)
+#else
+#define TAINTQSIZE (16*1024*1024)
+#endif
 #define TAINTENTRIES ((TAINTQSIZE-(sizeof(sem_t)+sizeof(atomic_ulong)*2+64*3))/sizeof(uint32_t))
 struct taintq {
     sem_t           epoch_sem;

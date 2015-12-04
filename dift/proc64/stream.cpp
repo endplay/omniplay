@@ -26,6 +26,7 @@ using namespace std;
 //#define DEBUG(x) ((x)==0x1cec000 || (x)==0x0)
 #define STATS
 
+// Set up limits here - need to be less generate with 32-bit address space
 #ifdef USE_NW
 #ifdef BUILD_64
 const u_long MERGE_SIZE  = 0x400000000; // 16GB max
@@ -38,8 +39,15 @@ const u_long TOKEN_SIZE =   0x10000000; // 256MB max
 const u_long TS_SIZE =      0x40000000; // 1GB max
 const u_long OUTBUFSIZE =   0x10000000; // 1GB size
 #endif
+
 #ifdef USE_SHMEM
 const u_long OUTBUFSIZE =   0x2000000; // 128MB size
+#ifdef BUILD_64
+const u_long MAX_ADDRESS_MAP = 0; // No limit
+#else
+const u_long MAX_ADDRESS_MAP = 0x100000; // 16 MB
+int afd;
+#endif
 #endif
 
 #define TERM_VAL 0xffffffff // Sentinel for queue transmission
@@ -83,6 +91,7 @@ u_long merges = 0, directs = 0, indirects = 0, values = 0, idle = 0, output_merg
 u_long atokens = 0, passthrus = 0, aresolved = 0, aindirects = 0, avalues = 0, unmodified = 0, written = 0;
 u_long prune_cnt = 0, simplify_cnt = 0;
 u_long new_live_zeros = 0, new_live_inputs = 0, new_live_merges = 0, new_live_merge_zeros = 0, new_live_notlive = 0;
+u_long live_set_size = 0, new_live_set_size = 0;
 struct timeval start_tv, recv_done_tv, output_done_tv, index_created_tv, address_done_tv, end_tv;
 struct timeval live_receive_done_tv, new_live_start_tv, live_done_tv, new_live_send_tv;
 
@@ -316,7 +325,7 @@ read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, ta
 #ifdef USE_SHMEM
 
 static void*
-map_buffer (const char* prefix, const char* group_directory, u_long& datasize)
+map_buffer (const char* prefix, const char* group_directory, u_long& datasize, u_long maxsize, int& fd)
 {
     char filename[256];
     snprintf(filename, 256, "/%s_shm%s", prefix, group_directory);
@@ -324,7 +333,7 @@ map_buffer (const char* prefix, const char* group_directory, u_long& datasize)
 	if (filename[i] == '/') filename[i] = '.';
     }
 
-    int fd = shm_open(filename, O_RDWR, 0644);
+    fd = shm_open(filename, O_RDWR, 0644);
     if (fd < 0) {
 	fprintf(stderr, "could not open shmem %s, errno %d\n", filename, errno);
 	return NULL;
@@ -340,6 +349,7 @@ map_buffer (const char* prefix, const char* group_directory, u_long& datasize)
     if (datasize == 0) return NULL;  // Some inputs may actually have no data
 
     int mapsize = datasize;
+    if (maxsize) mapsize = maxsize;
     if (mapsize%4096) mapsize += (4096-mapsize%4096);
     void* ptr = mmap (NULL, mapsize, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
     if (ptr == MAP_FAILED) {
@@ -369,10 +379,16 @@ read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, ta
 	return -1;
     }
 
-    token_log = (char *) map_buffer ("tokens", group_directory, idatasize);
-    output_log = (char *) map_buffer ("dataflow.results", group_directory, odatasize);
-    ts_log = (taint_t *) map_buffer ("taint_structures", group_directory, adatasize);
-    merge_log = (taint_entry *) map_buffer ("node_nums", group_directory, mdatasize);
+    int token_fd, output_fd, ts_fd, merge_fd;
+    token_log = (char *) map_buffer ("tokens", group_directory, idatasize, 0, token_fd);
+    output_log = (char *) map_buffer ("dataflow.results", group_directory, odatasize, 0, output_fd);
+    ts_log = (taint_t *) map_buffer ("taint_structures", group_directory, adatasize, MAX_ADDRESS_MAP, ts_fd);
+    merge_log = (taint_entry *) map_buffer ("node_nums", group_directory, mdatasize, 0, merge_fd);
+#ifndef BUILD_64
+    afd = ts_fd;
+#endif
+    printf ("%s: i %ld o %ld a %ld m %ld\n", group_directory, idatasize,
+	    odatasize, adatasize, mdatasize);
     return 0;
 }
 #endif
@@ -458,6 +474,45 @@ static void map_iter (taint_t value, uint32_t output_token, bool& unresolved_val
     }
 
     delete pset;
+}
+
+static long
+build_address_map (unordered_map<taint_t,taint_t>& address_map, taint_t* ts_log, u_long adatasize)
+{
+#ifdef BUILD_64
+    for (uint32_t i = 0; i < adatasize/(sizeof(taint_t)*2); i++) {
+	address_map[ts_log[2*i]] = ts_log[2*i+1];
+    }
+#else
+    // To conserve memory, only map a portion at a time since we are streaming this
+    taint_t* p = (taint_t *) ts_log;
+    long rc;
+    for (uint32_t i = 0; i < adatasize/(sizeof(taint_t)*2); i++) {
+	address_map[*p] = *(p+1);
+	p += 2;
+
+	if (i%(MAX_ADDRESS_MAP/(sizeof(taint_t)*2)) == MAX_ADDRESS_MAP/(sizeof(taint_t)*2)-1) {
+	    rc = munmap (ts_log, MAX_ADDRESS_MAP);
+	    if (rc < 0) {
+		fprintf (stderr, "Cannot unmap address chunk\n");
+	    }
+	    
+	    p = (taint_t *) mmap (ts_log, MAX_ADDRESS_MAP, PROT_READ|PROT_WRITE, MAP_SHARED, afd, (i+1)*(sizeof(taint_t)*2));
+	    if (p == MAP_FAILED) {
+		fprintf (stderr, "Cannot map address input chunk, errno=%d\n", errno);
+		return -1;
+	    }
+	    ts_log = p;
+	}
+    }
+    rc = munmap (ts_log, MAX_ADDRESS_MAP); // No longer needed
+    if (rc < 0) {
+	fprintf (stderr, "Cannot unmap last address chunk\n");
+    }	    
+    ts_log = NULL;
+#endif
+
+    return 0;
 }
 
 // Process one epoch 
@@ -601,11 +656,8 @@ long stream_epoch (const char* dirname, int port)
     if (!finish_flag) {
 	// Next, build index of output addresses
 	unordered_map<taint_t,taint_t> address_map;
-	
-	for (uint32_t i = 0; i < adatasize/(sizeof(taint_t)*2); i++) {
-	    address_map[ts_log[2*i]] = ts_log[2*i+1];
-	    //fprintf (debugfile, "address %x goes to %x\n", ts_log[2*i], ts_log[2*i+1]);
-	}
+	rc = build_address_map (address_map, ts_log, adatasize);
+	if (rc < 0) return rc;
 
 #ifdef STATS
 	gettimeofday(&index_created_tv, NULL);
@@ -894,6 +946,7 @@ long seq_epoch (const char* dirname, int port)
 	}  while (1);
 
 #ifdef STATS
+	live_set_size = live_set.size();
 	gettimeofday(&live_receive_done_tv, NULL);
 #endif
 	// Wait on sender
@@ -932,7 +985,6 @@ long seq_epoch (const char* dirname, int port)
 #endif
 	    mptr++;
 	}
-
     }
 
     // Construct and send out new live set
@@ -942,9 +994,10 @@ long seq_epoch (const char* dirname, int port)
 #endif
 
 	// Add live addresses
+	taint_t* p = ts_log;
 	for (uint32_t i = 0; i < adatasize/(sizeof(taint_t)*2); i++) {
-	    taint_t addr = ts_log[2*i];
-	    taint_t val = ts_log[2*i+1];
+	    taint_t addr = *p++;
+	    taint_t val = *p++;
 	    if (val == 0) {
 		new_live_set.erase(addr);
 #ifdef STATS
@@ -980,8 +1033,40 @@ long seq_epoch (const char* dirname, int port)
 #endif
 		}
 	    }
+#ifndef BUILD_64
+	    // To conserve memory, only map a portion at a time since we are streaming this
+	    if (i%(MAX_ADDRESS_MAP/(sizeof(taint_t)*2)) == MAX_ADDRESS_MAP/(sizeof(taint_t)*2)-1) {
+		rc = munmap (ts_log, MAX_ADDRESS_MAP);
+		if (rc < 0) {
+		    fprintf (stderr, "Cannot unmap address chunk\n");
+		}
+
+		p = (taint_t *) mmap (ts_log, MAX_ADDRESS_MAP, PROT_READ|PROT_WRITE, MAP_SHARED, afd, (i+1)*(sizeof(taint_t)*2));
+		if (p == MAP_FAILED) {
+		    fprintf (stderr, "Cannot map address input chunk, errno=%d\n", errno);
+		    return -1;
+		}
+		ts_log = p;
+	    }
+#endif
 	}
+#ifndef BUILD_64
+	if (adatasize >= MAX_ADDRESS_MAP) {
+	    rc = munmap (ts_log, MAX_ADDRESS_MAP);
+	    if (rc < 0) {
+		fprintf (stderr, "Cannot unmap last address chunk\n");
+	    }
+	    
+	    taint_t* ts_log = (taint_t *) mmap (NULL, MAX_ADDRESS_MAP, PROT_READ|PROT_WRITE, MAP_SHARED, afd, 0);
+	    if (ts_log == MAP_FAILED) {
+		fprintf (stderr, "Cannot map address input chunk, errno=%d\n", errno);
+		return -1;
+	    }
+	}
+#endif
+
 #ifdef STATS
+	new_live_set_size = new_live_set.size();
 	gettimeofday(&new_live_send_tv, NULL);
 #endif
 	for (auto iter = new_live_set.begin(); iter != new_live_set.end(); iter++) {
@@ -990,6 +1075,9 @@ long seq_epoch (const char* dirname, int port)
 	PUT_QVALUE(TERM_VAL,inputq);
 
     }
+    
+    live_set.clear();
+    new_live_set.clear();
 
 #ifdef STATS
     gettimeofday(&live_done_tv, NULL);
@@ -1076,10 +1164,8 @@ long seq_epoch (const char* dirname, int port)
     if (!finish_flag) {
 	// Next, build index of output addresses
 	unordered_map<taint_t,taint_t> address_map;
-	
-	for (uint32_t i = 0; i < adatasize/(sizeof(taint_t)*2); i++) {
-	    address_map[ts_log[2*i]] = ts_log[2*i+1];
-	}
+	rc = build_address_map (address_map, ts_log, adatasize);
+	if (rc < 0) return rc;
 
 #ifdef STATS
 	gettimeofday(&index_created_tv, NULL);
