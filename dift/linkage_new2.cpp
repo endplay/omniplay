@@ -55,7 +55,6 @@ int s = -1;
 // #define ALT_PATH_EXPLORATION         // indirect control flow
 // #define CONFAID
 
-#define NO_FILE_OUTPUT
 //#define LOGGING_ON
 #define LOG_F log_f
 //#define ERROR_PRINT fprintf
@@ -214,6 +213,13 @@ extern int dump_mem_taints (int fd);
 extern int dump_reg_taints (int fd, taint_t* pregs);
 extern int dump_mem_taints_start (int fd);
 extern int dump_reg_taints_start (int fd, taint_t* pregs);
+#ifdef TAINT_DEBUG
+extern void print_taint_debug_reg (int tid, taint_t* pregs);
+extern void print_taint_debug_mem ();
+extern u_long debug_taint_cnt;
+FILE* debug_f;
+u_long taint_debug_inst = 0;
+#endif
 extern void write_token_finish (int fd);
 extern void output_finish (int fd);
 
@@ -334,8 +340,8 @@ static inline void increment_syscall_cnt (int syscall_num)
             global_syscall_cnt++;
             current_thread->syscall_cnt++;
         }
-#if 0
-	fprintf (log_f, "pid %d syscall %d global syscall cnt %lu num %d clock %ld\n", current_thread->record_pid, 
+#ifdef TAINT_DEBUG
+	fprintf (debug_f, "pid %d syscall %d global syscall cnt %lu num %d clock %ld\n", current_thread->record_pid, 
 		 current_thread->syscall_cnt, global_syscall_cnt, syscall_num, *ppthread_log_clock);
 #endif
     }
@@ -13327,18 +13333,10 @@ void instrument_pmovmskb(INS ins)
 #endif
 }
 
-#if 0
+#ifdef TAINT_DEBUG
 void trace_inst(ADDRINT ptr)
 {
-    if (detailed_debugging) {
-	PIN_LockClient();
-	fprintf (log_f, "[INST] Pid %d (tid: %d) (record %d) syscall %ld - %#x\n", PIN_GetPid(), PIN_GetTid(), get_record_pid(), global_syscall_cnt, ptr);
-	if (IMG_Valid(IMG_FindByAddress(ptr))) {
-	    fprintf(log_f, "%s -- img %s static %#x\n", RTN_FindNameByAddress(ptr).c_str(), IMG_Name(IMG_FindByAddress(ptr)).c_str(), find_static_address(ptr));
-	}
-	PIN_UnlockClient();
-	fflush (log_f);
-    }
+    taint_debug_inst = ptr;
 }
 #endif
 
@@ -13363,7 +13361,7 @@ void instruction_instrumentation(INS ins, void *v)
     opcode = INS_Opcode(ins);
     category = INS_Category(ins);
 
-#if 0
+#ifdef TAINT_DEBUG
     INS_InsertCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_inst),
                     IARG_INST_PTR,
@@ -14193,15 +14191,14 @@ void init_logs(void)
         log_f = fopen(log_name, "w");
     }
 
-#ifdef TRACE_TAINT_OPS
+#ifdef TAINT_DEBUG
     {
-        char trace_log_name[256];
-        if (trace_taint_outfd <= 0) {
-            snprintf(trace_log_name, 256, "%s/trace_taint_ops",
-                    group_directory);
-            trace_taint_outfd = open(trace_log_name, O_WRONLY | O_CREAT | O_TRUNC | O_LARGEFILE, 0644);
-            if (trace_taint_outfd < 0) {
-                fprintf(stderr, "could not create trace taint ops log file, errno %d\n", errno);
+        char debug_log_name[256];
+        if (!debug_f) {
+            snprintf(debug_log_name, 256, "%s/debug_taint", group_directory);
+	    debug_f = fopen(debug_log_name, "w");
+            if (!debug_f) {
+                fprintf(stderr, "could not create debug taint log file, errno %d\n", errno);
                 exit(0);
             }
         }

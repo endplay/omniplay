@@ -16,8 +16,8 @@ using namespace std;
 #include "../taint_interface/taint.h"
 #include "../taint_interface/taint_creation.h"
 
-//#define TARGET(x) (x==0xd7bab5 || x == 0xd7babd)
-//#define ITARGET 0x201e42
+//#define TARGET(x) (x==0x47dfa0 || x == 0x47df9c)
+//#define ITARGET 0x56c67
 
 #define ALLOW_DUPS
 
@@ -229,7 +229,7 @@ int main (int argc, char* argv[])
 	output_tokens += output_token;
 	input_tokens += input_token;
 #ifdef TARGET
-	printf ("epoch %d, output tokens %x input tokens %x\n", i-1, output_tokens, input_tokens);
+	printf ("epoch %d, output tokens %x input tokens %x\n", i-out_start, output_tokens, input_tokens);
 #endif
 	close (afd);
     }
