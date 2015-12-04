@@ -23,7 +23,7 @@ using namespace std;
 #include "../taint_nw.h"
 #include "../../test/streamserver.h"
 
-//#define DEBUG(x) ((x)==0x1cec000 || (x)==0x0)
+//#define DEBUG(x) ((x)==0x47df9c || (x)==0x47dfa0 || (x)==(0x47df9c-0x4676eb) || (x)==(0x47dfa0-0x4676eb) || (x)==(0x47df9c-0x3ebc29) || (x)==(0x47df9c-0x3b1611) || (x)==(0x47df9c-0x37e321) || (x)==(0x47df9c-0x376641) || (x)==(0x47df9c-0x192dc3) || (x)==(0x47df9c-0x16db75))
 #define STATS
 
 #ifdef USE_NW
@@ -1100,7 +1100,7 @@ long seq_epoch (const char* dirname, int port)
 	    GET_QVALUE(value, inputq);
 #ifdef DEBUG
 	    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-		fprintf (debugfile, "otoken %x to value %lx\n", otoken+output_token, (long) value);
+		fprintf (debugfile, "otoken %x(%x/%x) to value %lx\n", otoken+output_token, otoken, output_token, (long) value);
 	    }
 #endif
 	    while (value) {
@@ -1109,6 +1109,11 @@ long seq_epoch (const char* dirname, int port)
 #endif
 		auto iter = address_map.find(value);
 		if (iter == address_map.end()) {
+#ifdef DEBUG
+		    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+			fprintf (debugfile, "otoken %x(%x/%x) not found in map\n", otoken+output_token, otoken, output_token);
+		    }
+#endif
 		    if (!start_flag) {
 #ifdef STATS
 			passthrus++;
@@ -1126,6 +1131,12 @@ long seq_epoch (const char* dirname, int port)
 			PUT_QVALUE(value,outputq);
 		    }
 		} else {
+#ifdef DEBUG
+		    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+			fprintf (debugfile, "otoken %x(%x/%x) found in map: %x\n", otoken+output_token, otoken, output_token,
+				 iter->second);
+		    }
+#endif
 		    if (iter->second < 0xc0000000 && !start_flag) {
 			if (iter->second) {
 #ifdef STATS
@@ -1142,7 +1153,13 @@ long seq_epoch (const char* dirname, int port)
 			    }
 #endif
 			    PUT_QVALUE(iter->second,outputq);
-			} // Else taint was cleared in this epoch
+			} else {
+#ifdef DEBUG
+			    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+				fprintf (debugfile, "output %x to cleared value\n", otoken+output_token);
+			    }
+#endif
+			}
 		    } else if (iter->second < 0xe0000001) {
 			// Maps to input
 #ifdef STATS
