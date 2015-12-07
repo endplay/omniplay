@@ -148,6 +148,7 @@ u_long* ppthread_log_clock = NULL;
 //added for multi-process replay
 const char* fork_flags = NULL;
 int fork_flags_index = 0;
+int epoch_index = -1;
 
 #ifdef OUTPUT_FILENAMES
 FILE* filenames_f = NULL; // Mapping of all opened filenames
@@ -208,6 +209,12 @@ KNOB<int> KnobNWPort(KNOB_MODE_WRITEONCE,
 KNOB<string> KnobForkFlags(KNOB_MODE_WRITEONCE,
     "pintool", "fork_flags", "",
     "flags for which way to go on each fork");
+
+KNOB<int> KnobEpochIndex(KNOB_MODE_WRITEONCE,
+    "pintool", "epoch_index", "",
+    "epoch index, helps with printing stats");
+
+
 
 //FIXME: take into consideration offset of being attached later. Remember, this is to specify where to kill application.
 
@@ -354,7 +361,7 @@ static void dift_done ()
     output_finish (outfd);
 #endif
 
-    finish_and_print_taint_stats(stdout);
+    finish_and_print_taint_stats(stdout, epoch_index);
     printf("DIFT done at %ld\n", global_syscall_cnt);
 
 #ifdef USE_SHMEM
@@ -14453,6 +14460,9 @@ int main(int argc, char** argv)
     all_output = KnobAllOutput.Value();
     fork_flags = KnobForkFlags.Value().c_str();
     fork_flags_index = 0;
+    
+    epoch_index = KnobEpochIndex.Value();
+    
 
     if (KnobMergeEntries.Value() > 0) {
 	num_merge_entries = KnobMergeEntries.Value();
@@ -14487,7 +14497,7 @@ int main(int argc, char** argv)
 	    tries++;
 	    usleep(1000);
 	}
-    } while (rc < 0 && tries <=20); //whats the punishment for increasing tries here? 
+    } while (rc < 0 && tries <=100); //whats the punishment for increasing tries here? 
 
     if (rc < 0) {
 	fprintf (stderr, "Cannot connect to socket (host %s, port %d), errno=%d\n", hostname, port, errno);

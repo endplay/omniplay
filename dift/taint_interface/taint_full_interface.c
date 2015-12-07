@@ -13,7 +13,7 @@
 #include <sys/mman.h>
 
 #define USE_MERGE_HASH
-//#define TAINT_STATS
+#define TAINT_STATS
 //#define TRACE_TAINT
 
 #ifdef TRACE_TAINT
@@ -472,7 +472,7 @@ taint_t merge_taints(taint_t dst, taint_t src)
     if (bucket.p1 == src && bucket.p2 == dst) {
 #ifdef TAINT_STATS
 	tsp.merges_saved++;
-#endif
+#endif       
 	return bucket.n;
     } else {
 	taint_t n = add_merge_number (dst, src);
@@ -559,7 +559,7 @@ taintvalue_t get_taint_value (taint_t t, option_t option)
     return 0;
 }
 
-void finish_and_print_taint_stats(FILE* fp)
+void finish_and_print_taint_stats(FILE* fp, int epoch_index)
 {
 #ifdef USE_SHMEM
     int rc = ftruncate64 (node_num_fd, (merge_control_shm->merge_total_count-0xe0000001)*sizeof(struct taint_number));
@@ -572,12 +572,12 @@ void finish_and_print_taint_stats(FILE* fp)
 #endif
 
 #ifdef TAINT_STATS
-    fprintf(fp, "Taint statistics:\n");
-    fprintf(fp, "Second tables allocated: %lu\n", tsp.num_second_tables);
-    fprintf(fp, "Third tables allocated: %lu\n", tsp.num_third_tables);
-    fprintf(fp, "Num taint options: %lu\n", tsp.options);
-    fprintf(fp, "Num merges: %lu\n", tsp.merges);
-    fprintf(fp, "Num merges saved: %lu\n", tsp.merges_saved);
+    fprintf(fp, "%d, Taint statistics:\n", epoch_index);
+    fprintf(fp, "%d, Second tables allocated: %lu\n", epoch_index, tsp.num_second_tables);
+    fprintf(fp, "%d, Third tables allocated:  %lu\n", epoch_index, tsp.num_third_tables);
+    fprintf(fp, "%d, Num taint options:       %lu\n", epoch_index, tsp.options);
+    fprintf(fp, "%d, Num merges:              %lu\n", epoch_index, tsp.merges);
+    fprintf(fp, "%d, Num merges saved:        %lu\n", epoch_index, tsp.merges_saved);
     fflush(fp);
 #endif
 }

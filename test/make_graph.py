@@ -2,10 +2,17 @@ import matplotlib.pyplot as plt
 import numpy as np
 import sys
 
-colors = ["","","","#fc8d59","#d73027","#fee090","#4575b4","#ffffbf","#e0f3f8","#91bfdb"]
+time_colors = ["","","","#fc8d59","#d73027","#fee090","#4575b4","#ffffbf","#e0f3f8","#91bfdb"]
+data_colors = ["","","","#9e0142","#d53e4f","#f46d43","#fdae61","#fee08b","#ffffbf","#e6f598","#abdda4","#66c2a5","#3288bd","#5e4fa2"]
 
 #epoch_list: a list of each of each epoch and its results
 def make_stacked_chart(epoch_list, labels,arange, filename, legend_loc, fig_number):
+
+    if len(epoch_list[0]) == len(time_colors):
+        colors = time_colors
+    else:
+        colors = data_colors
+    
 
     adjusted_input = []
     for i in range(len(epoch_list[0])): 
@@ -21,6 +28,9 @@ def make_stacked_chart(epoch_list, labels,arange, filename, legend_loc, fig_numb
 
 
     for i in range(4,len(adjusted_input)):
+        if labels[i] == "Address Tokens":
+            continue
+
         print labels[i],
         print adjusted_input[i]
         plt.bar(arange, adjusted_input[i], width, color=colors[i], label=labels[i], bottom=curr_level)

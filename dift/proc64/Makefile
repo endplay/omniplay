@@ -1,4 +1,4 @@
-TARGETS=out2mergecmp stream streamserver 
+TARGETS=out2mergecmp streamserver 
 LBITS:= $(shell getconf LONG_BIT)
 ifeq ($(LBITS),64)
 	LIBUTIL:=

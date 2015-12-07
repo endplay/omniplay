@@ -48,6 +48,10 @@ const u_long MAX_ADDRESS_MAP = 0x100000; // 16 MB
 int afd;
 #endif
 
+//this doesn't matter... but it won't make and I'm too lazy to actually fix it
+#ifdef USE_NULL
+const u_long OUTBUFSIZE =   0x2000000; // 128MB size
+#endif
 
 #ifdef USE_SHMEM 
 const u_long OUTBUFSIZE =   0x2000000; // 128MB size

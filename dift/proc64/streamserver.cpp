@@ -321,7 +321,7 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 		if (rc > 0) {
 		    pid_t mpid = fork();
 		    if (mpid == 0) {
-			char cpids[80], syscalls[80], output_filter[80], port[80], fork_flags[80];
+			char cpids[80], syscalls[80], output_filter[80], port[80], fork_flags[80], epoch_index[80];
 			const char* args[256];
 			int argcnt = 0;
 			
@@ -332,7 +332,6 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 			args[argcnt++] = "-t";
 			args[argcnt++] = "../obj-ia32/linkage_data.so";
 
-			//we always want the stop_pid to be present
 			sprintf (syscalls, "%d", edata[i].stop_syscall);
 			args[argcnt++] = "-l";
 			args[argcnt++] = syscalls;
@@ -340,6 +339,12 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 			sprintf (fork_flags, "%d", edata[i].fork_flags);
 			args[argcnt++] = "-fork_flags";
 			args[argcnt++] = fork_flags;
+			
+			sprintf (epoch_index, "%lu",i);
+			args[argcnt++] = "-epoch_index";
+			args[argcnt++] = epoch_index;
+			     
+			  
 
 			if (i < epochs-1 || !ehdr.finish_flag) {
 			    args[argcnt++] = "-ao"; // Last epoch does not need to trace to final addresses

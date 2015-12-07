@@ -11,7 +11,7 @@ import test_results
 STREAMSERVER_PORT = 19764 #Streamserver port as defined by the 
 ERRORS_DIR = "stream_outputs/"
 
-class Agg_Server:
+class Server:
     def __init__(self, host, port, num_epochs):
         self.host = host
         self.port = port
@@ -24,13 +24,6 @@ class Agg_Server:
     #agg_servers are not equal if they differ in host or port
     def __ne__(self,other):
         return (self.host != other.host) or (self.port != other.port)
-
-
-class Dift_Server:
-    def __init__(self, host, port, num_epochs):
-        self.host = host
-        self.port = port
-        self.num_epochs = num_epochs
 
 class Test_Configuration: 
     def __init__(self): 
@@ -71,20 +64,11 @@ def read_sftp_file(host, user, password, filename):
     sess.close()
     return rtn_string
 
-def start_aggregator(host, port, user, password):
-    agg_stdout = open(ERRORS_DIR + "agg_stdout_" + host + ":" + str(port),"wr")
-    agg_stderr = open(ERRORS_DIR + "agg_stderr_" + host + ":" + str(port),"wr")
 
-    shell = open_ssh_session(host, user, password)
-    if port != STREAMSERVER_PORT:
-        spawn = shell.spawn(["./streamserver"], cwd="/home/arquinn/Documents/omniplay/dift/proc64", stdout = agg_stdout, stderr = agg_stderr, store_pid = True)
-    else:
-        spawn = shell.spawn(["./streamserver"], cwd="/home/arquinn/Documents/omniplay/dift/proc64", stdout = agg_stdout, stderr = agg_stderr, store_pid = True)
-    return shell, spawn
+def start_server(host, port, user, password, path): 
 
-def start_dift(host, port, user, password): 
-    stdout_file = open(ERRORS_DIR + "dift_stdout_" + host, "wr")
-    stderr_file = open(ERRORS_DIR + "dift_stderr_" + host, "wr")
+    stdout_file = open(path + ".stdout","wr")
+    stderr_file = open(path + ".stderr","wr")
 
     shell = open_ssh_session(host, user, password)
     if port != STREAMSERVER_PORT:
@@ -103,10 +87,10 @@ def get_servers(test, filename):
     server_file = open(filename,"r")
     for line in server_file: 
         words = line.split()
-        dift = Dift_Server(words[1], STREAMSERVER_PORT, int(words[0]))
-        agg = Agg_Server(words[2],STREAMSERVER_PORT, int(words[0]))
+        dift = Server(words[1], STREAMSERVER_PORT, int(words[0]))
+        agg = Server(words[2],STREAMSERVER_PORT, int(words[0]))
         if len(words) > 3:
-            agg = Agg_Server(words[2],words[3],words[0])
+            agg = Server(words[2],words[3],words[0])
 
         if test.dift_hosts.count(dift) <= 0:
             test.add_dift(dift)
@@ -146,6 +130,10 @@ def get_tests(filename):
     config_file.close()
     return tests
 
+def output_file(list_to_output, filename): 
+    with open(filename, "w") as ofile:
+        for line in list_to_output:
+            ofile.write(line)
 
 def main(): 
     if (len(sys.argv) < 2):
@@ -156,25 +144,51 @@ def main():
         return -1
 
     config_file = sys.argv[1]
+    parser = optparse.OptionParser()
+    parser.add_option("-s", "--stream-stats-dir", dest="stream_stats",
+                      help="where to save the stream-stats", metavar="STREAM-STATS-DIR")
+    parser.add_option("-t", "--time-outputs", dest="time_outputs",
+                      help="where to save the parsed time info", metavar="TIME-OUTPUTS")
+    parser.add_option("-d", "--data-outputs", dest="data_outputs",
+                      help="where to save the parsed data outputs", metavar="DATA-OUTPUTS")
+
+    (options, args) = parser.parse_args()
+    if options.time_outputs == None: 
+        sys.stderr.write("You must supply a time-outputs file path!\n")
+        return -1
+    if options.data_outputs == None: 
+        sys.stderr.write("You must supply a data-outputs file path!\n")
+        return -1
+
+    stream_stats_dir = options.stream_stats
+
+    if stream_stats_dir == None:
+        stream_stats_dir = ""
+    
+    elif not os.path.isdir(stream_stats_dir):
+        os.makedirs(stream_stats_dir)
+        
+    if not os.path.isdir(stream_stats_dir + "/pin_output"):
+        os.makedirs(stream_stats_dir +"/pin_output")
+
     test_configurations = get_tests(config_file)
-    password = getpass.getpass()
+    password = getpass.getpass()        
 
-    file_time = open("time_outputs.csv", "w")
-    file_data = open("data_outputs.csv", "w")
-
-
+    file_time = open(options.time_outputs, "w")
+    file_data = open(options.data_outputs, "w")
 
     file_time.write(",".join(test_results.Test_Results.get_titles()))
     file_data.write(",".join(test_results.Test_Results.get_data_titles()))
     file_time.write("\n")
     file_data.write("\n")
-    for test in test_configurations:    
 
+    for test in test_configurations:    
         #startup all aggregators in this test configuration:
         agg_shells = []
         agg_results = []
         for agg_server in test.agg_hosts:
-            agg_shell, agg_result = start_aggregator(agg_server.host, agg_server.port, None, password)
+            agg_output_path = stream_stats_dir + "/pin_output/" + str(test.num_partitions) + "." + agg_server.host + "." + str(agg_server.num_epochs)
+            agg_shell, agg_result = start_server(agg_server.host, agg_server.port, None, password, agg_output_path)
             agg_shells.append(agg_shell)
             agg_results.append(agg_result)
 
@@ -184,14 +198,17 @@ def main():
         dift_shells = []
         dift_results = []
         for dift_server in test.dift_hosts:
-            dift_shell, dift_result = start_dift(dift_server.host, dift_server.port, None, password)
+            dift_output_path = stream_stats_dir + "/pin_output/" + str(test.num_partitions) + "." + dift_server.host + "." + str(dift_server.num_epochs)
+            dift_shell, dift_result = start_server(dift_server.host, dift_server.port, None, password, dift_output_path)
             dift_shells.append(dift_shell)
             dift_results.append(dift_result)
             sys.stderr.write(str(dift_result.pid) + " started on dift\n")
 
         sys.stderr.write(start_ctl(test.partition_filename, test.server_filename)[1])
         stream_server_index = 0
-        stream_epoch_offset = 0
+        stream_offset = 0
+        agg_offset = 0
+        agg_server_index = 0
         results = []
         
         sys.stderr.write("finished with control for" + test.partition_filename+ "\n")
@@ -207,21 +224,32 @@ def main():
 
         for i in range(test.num_partitions):
                         
-            if i >= stream_epoch_offset + test.dift_hosts[stream_server_index].num_epochs:
-                stream_epoch_offset += test.dift_hosts[stream_server_index].num_epochs
+            if i >= stream_offset + test.dift_hosts[stream_server_index].num_epochs:
+                stream_offset += test.dift_hosts[stream_server_index].num_epochs
                 stream_server_index += 1
+
+            if i >= agg_offset + test.agg_hosts[agg_server_index].num_epochs:
+                agg_offset += test.agg_hosts[agg_server_index].num_epochs
+                agg_server_index += 1
+                
             
             stream_server_host = test.dift_hosts[stream_server_index].host
-            agg_server = test.agg_hosts[0] #only supporting a single aggregator here... 
+            agg_server_host = test.agg_hosts[agg_server_index].host
             
-            dift_file = read_sftp_file(stream_server_host, None, password, "/tmp/dift-stats" + str(i - stream_epoch_offset))
-            stream_file = read_sftp_file(agg_server.host, None, password, "/tmp/" + str(i)+ "/stream-stats")
-            results = test_results.Test_Results()
+            dift_file = read_sftp_file(stream_server_host, None, password, "/tmp/dift-stats" + str(i - stream_offset))
+            agg_file = read_sftp_file(agg_server_host, None, password, "/tmp/" + str(i)+ "/stream-stats")
+            #dump the files to local file system
+            dift_filename = stream_stats_dir + "/" + str(test.num_partitions) + "." + stream_server_host +".dift-stats" + str(i-stream_offset)
+            agg_filename = stream_stats_dir + "/" + str(test.num_partitions) + "." + agg_server_host + ".stream-stats" + str(i-agg_offset)
+            output_file(dift_file, dift_filename)
+            output_file(agg_file, agg_filename)
 
+
+            results = test_results.Test_Results()
             results.epoch_number = i
             results.number_of_epochs = test.num_partitions
             results.parse_lines(dift_file)
-            results.parse_lines(stream_file)
+            results.parse_lines(agg_file)
             results.compute_other_values() ##we need to do this to account for some odd values from our streamserver
             results.compute_other_data_values()
 

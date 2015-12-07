@@ -52,8 +52,7 @@ void print_options(FILE* fp, taint_t t);
 /* Any sort of cleanup goes here */
 void taint_fini(void);
 
-void finish_and_print_taint_stats(FILE* fp);
-
+void finish_and_print_taint_stats(FILE* fp, int epoch_index); //overloaded
 taint_t* get_reg_taints(int reg);
 
 /* Clear size bytes of the register. (starts from the LSB) */
