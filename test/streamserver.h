@@ -3,6 +3,8 @@
 
 #include <semaphore.h>
 
+//#define USE_LF
+
 #define STREAMSERVER_PORT 19764
 #define AGG_BASE_PORT     10000
 
@@ -56,11 +58,15 @@ struct epoch_ack {
 };
 
 #ifdef BUILD_64
-#define TAINTQSIZE (512*1024*1024)
+#define TAINTQSIZE ((512*1024*1024)+4096)
 #else
-#define TAINTQSIZE (16*1024*1024)
+#define TAINTQSIZE ((16*1024*1024)+4096)
 #endif
-#define TAINTENTRIES ((TAINTQSIZE-(sizeof(sem_t)+sizeof(atomic_ulong)*2+64*3))/sizeof(uint32_t))
+
+// extra page is for header
+#define TAINTENTRIES ((TAINTQSIZE-4096)/sizeof(uint32_t))
+
+#ifdef USE_LF
 struct taintq {
     sem_t           epoch_sem;
     char            pad1[64];
@@ -70,5 +76,24 @@ struct taintq {
     char            pad3[64];
     uint32_t        buffer[TAINTENTRIES];
 };
+#else
+
+#define TAINTBUCKETSIZE    (4096)
+#define TAINTBUCKETENTRIES (TAINTBUCKETSIZE/sizeof(uint32_t))
+#define TAINTBUCKETS       (TAINTENTRIES/TAINTBUCKETENTRIES)
+
+struct taintq {
+    sem_t           epoch_sem;
+    pthread_mutex_t lock;
+    pthread_cond_t  full;
+    pthread_cond_t  empty;
+    char            pad1[64];
+    ulong           read_index;
+    char            pad2[64];
+    ulong           write_index;
+    char            pad3[64];
+    uint32_t        buffer[TAINTENTRIES];
+};
+#endif
 
 #endif

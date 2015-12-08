@@ -389,6 +389,29 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	    fprintf (stderr, "sem_init returns %d, errno=%d\n", rc, errno);
 	    return;
 	}
+#ifndef USE_LF
+	pthread_mutexattr_t sharedm;
+	pthread_mutexattr_init(&sharedm);
+	pthread_mutexattr_setpshared(&sharedm, PTHREAD_PROCESS_SHARED);
+	rc = pthread_mutex_init (&(q->lock), &sharedm);
+	if (rc < 0) {
+	    fprintf (stderr, "pthread_mutex_init returns %d, errno=%d\n", rc, errno);
+	    return;
+	}
+	pthread_condattr_t sharedc;
+	pthread_condattr_init(&sharedc);
+	pthread_condattr_setpshared(&sharedc, PTHREAD_PROCESS_SHARED);
+	rc = pthread_cond_init (&(q->full), &sharedc);
+	if (rc < 0) {
+	    fprintf (stderr, "pthread_mutex_init returns %d, errno=%d\n", rc, errno);
+	    return;
+	}
+	rc = pthread_cond_init (&(q->empty), &sharedc);
+	if (rc < 0) {
+	    fprintf (stderr, "pthread_mutex_init returns %d, errno=%d\n", rc, errno);
+	    return;
+	}
+#endif
 	munmap(q,TAINTQSIZE);
 	close (iqfd);
     }

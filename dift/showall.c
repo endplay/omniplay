@@ -19,14 +19,14 @@ int main (int argc, char* argv[])
     u_long ocnt = 0;
 
     if (argc != 2) {
-	fprintf (stderr, "format: showall <dirno>\n");
+	fprintf (stderr, "format: showall <dir>\n");
 	return -1;
     }
 
     dir = argv[1];
-    sprintf (tokfile, "/tmp/%s/tokens", dir);
-    sprintf (outfile, "/tmp/%s/dataflow.result", dir);
-    sprintf (mergefile, "/tmp/%s/mergeout", dir);
+    sprintf (tokfile, "%s/tokens", dir);
+    sprintf (outfile, "%s/dataflow.result", dir);
+    sprintf (mergefile, "%s/mergeout", dir);
 
     rc = map_file (tokfile, &tfd, &tdatasize, &tmapsize, &tbuf);
     if (rc < 0) return rc;

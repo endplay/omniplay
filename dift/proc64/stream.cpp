@@ -23,7 +23,7 @@ using namespace std;
 #include "../taint_nw.h"
 #include "../../test/streamserver.h"
 
-//#define DEBUG(x) ((x)==0x47df9c || (x)==0x47dfa0 || (x)==(0x47df9c-0x4676eb) || (x)==(0x47dfa0-0x4676eb) || (x)==(0x47df9c-0x3ebc29) || (x)==(0x47df9c-0x3b1611) || (x)==(0x47df9c-0x37e321) || (x)==(0x47df9c-0x376641) || (x)==(0x47df9c-0x192dc3) || (x)==(0x47df9c-0x16db75))
+//#define DEBUG(x) ((x)==0x175ae21 || (x)==(0x175ae21-0x16db75)|| (x)==(0x175ae21-0x192dce) || (x)==(0x175ae21-0x376641) || (x)==(0x175ae21-0x37e321) || (x)==(0x175ae21-0x3b1611) || (x)==(0x175ae21-0x3ebc29) || (x)==(0x175ae21-0x4676eb) || (x)==(0x175ae21-0x4fba98))
 #define STATS
 
 // Set up limits here - need to be less generate with 32-bit address space
@@ -92,6 +92,7 @@ u_long atokens = 0, passthrus = 0, aresolved = 0, aindirects = 0, avalues = 0, u
 u_long prune_cnt = 0, simplify_cnt = 0;
 u_long new_live_zeros = 0, new_live_inputs = 0, new_live_merges = 0, new_live_merge_zeros = 0, new_live_notlive = 0;
 u_long live_set_size = 0, new_live_set_size = 0;
+u_long values_sent = 0, values_rcvd = 0;
 struct timeval start_tv, recv_done_tv, output_done_tv, index_created_tv, address_done_tv, end_tv;
 struct timeval live_receive_done_tv, new_live_start_tv, live_done_tv, new_live_send_tv;
 
@@ -100,6 +101,8 @@ static long ms_diff (struct timeval tv1, struct timeval tv2)
     return ((tv1.tv_sec - tv2.tv_sec) * 1000 + (tv1.tv_usec - tv2.tv_usec) / 1000);
 }
 #endif
+
+#ifdef USE_LF
 
 #ifdef STATS
 #define IDLE					\
@@ -148,6 +151,66 @@ static long ms_diff (struct timeval tv1, struct timeval tv2)
 	if ((q)->read_index == TAINTENTRIES) (q)->read_index = 0;	\
 	can_read--;							\
     }
+
+#else
+
+static u_long wb_index = 0, wb_stop = 0, rb_index = 0, rb_stop = 0;
+
+static void taintq_push (uint32_t val, struct taintq* q)
+{
+    if (wb_index == wb_stop) {
+	// Get space for next bucket 
+	pthread_mutex_lock(&(q->lock));
+	while ((q->write_index+1)%TAINTBUCKETS == q->read_index) {
+	    pthread_cond_wait(&(q->full), &(q->lock));
+	}
+	wb_index = wb_index % TAINTENTRIES;
+	wb_stop = wb_index + TAINTBUCKETENTRIES;
+	pthread_mutex_unlock(&(q->lock));
+    } 
+
+    q->buffer[wb_index++] = val;
+
+    if (wb_index == wb_stop || val == TERM_VAL) {
+	// This bucket is done
+	if (val == TERM_VAL) {
+	    q->buffer[(wb_stop-1)%TAINTENTRIES] = TERM_VAL; // Mark last bucket
+	}
+	pthread_mutex_lock(&(q->lock));
+	q->write_index = (q->write_index+1)%TAINTBUCKETS;
+	pthread_cond_signal(&(q->empty));
+	pthread_mutex_unlock(&(q->lock));
+    }
+}
+
+static void taintq_pull (uint32_t& val, struct taintq* q)
+{
+    if (rb_index == rb_stop) {
+	// Get space for next bucket 
+	pthread_mutex_lock(&(q->lock));
+	while (q->write_index == q->read_index) {
+	    pthread_cond_wait(&(q->empty), &(q->lock));
+	}
+	rb_index = rb_index % TAINTENTRIES;
+	rb_stop = rb_index + TAINTBUCKETENTRIES;
+	pthread_mutex_unlock(&(q->lock));
+    } 
+
+    val = q->buffer[rb_index++];
+
+    if (rb_index == rb_stop || val == TERM_VAL) {
+	// This bucket is done
+	pthread_mutex_lock(&(q->lock));
+	q->read_index = (q->read_index+1)%TAINTBUCKETS;
+	pthread_cond_signal(&(q->full));
+	pthread_mutex_unlock(&(q->lock));
+    }
+}
+
+#define PUT_QVALUE(val,q) taintq_push (val,q);
+#define GET_QVALUE(val,q) taintq_pull (val,q);
+
+#endif
 
 #define DOWN_QSEM(q) sem_wait(&(q)->epoch_sem);
 #define UP_QSEM(q) sem_post(&(q)->epoch_sem);
@@ -442,9 +505,15 @@ static void map_iter (taint_t value, uint32_t output_token, bool& unresolved_val
 	if (*iter2 < 0xc0000000 && !start_flag) {
 	    if (!unresolved_vals) {
 		PUT_QVALUE(output_token,outputq);
+#ifdef STATS
+		values_sent++;
+#endif
 		unresolved_vals = true;
 	    }
 	    PUT_QVALUE (*iter2,outputq);
+#ifdef STATS
+	    values_sent++;
+#endif
 #ifdef DEBUG
 	    if (DEBUG(output_token)) {
 		fprintf (debugfile, "cached: output %x to unresolved value %x (merge)\n", output_token, *iter2);
@@ -949,7 +1018,9 @@ long seq_epoch (const char* dirname, int port)
 	live_set_size = live_set.size();
 	gettimeofday(&live_receive_done_tv, NULL);
 #endif
-	// Wait on sender
+	// Reset queue and wait on sender
+	outputq->read_index = outputq->write_index = 0;
+	rb_index = rb_stop = 0;
 	UP_QSEM (outputq);
 
 	// Prune the merge log
@@ -1073,7 +1144,7 @@ long seq_epoch (const char* dirname, int port)
 	    PUT_QVALUE(*iter,inputq);
 	}
 	PUT_QVALUE(TERM_VAL,inputq);
-
+	wb_index = wb_stop = 0;
     }
     
     live_set.clear();
@@ -1101,6 +1172,9 @@ long seq_epoch (const char* dirname, int port)
 			PUT_QVALUE (output_token,outputq);
 			PUT_QVALUE (value,outputq);
 			PUT_QVALUE (0,outputq);
+#ifdef STATS
+			values_sent += 3;
+#endif
 #ifdef DEBUG
 			if (DEBUG(output_token)) {
 			    fprintf (debugfile, "output %x to unresolved addr %lx\n", output_token, (long) value);
@@ -1139,7 +1213,15 @@ long seq_epoch (const char* dirname, int port)
 		    if (pentry->p1 || pentry->p2) {
 			bool unresolved_vals = false, resolved_vals = false;
 			map_iter (value, output_token, unresolved_vals, resolved_vals);
-			if (unresolved_vals) PUT_QVALUE(0,outputq);
+			if (unresolved_vals) {
+			    PUT_QVALUE(0,outputq);
+#ifdef STATS
+			    values_sent++;
+#endif
+			}
+#ifdef STATS
+			values_sent++;
+#endif
 			if (resolved_vals) PRINT_RVALUE(0);
 #ifdef DEBUG
 		    } else if (DEBUG(output_token)) {
@@ -1177,6 +1259,9 @@ long seq_epoch (const char* dirname, int port)
 	// Now, process input queue of later epoch outputs
 	while (1) {
 	    GET_QVALUE(otoken, inputq);
+#ifdef STATS
+	    values_rcvd++;
+#endif
 	    if (otoken == TERM_VAL) break;
 #ifdef STATS
 	    atokens++;
@@ -1184,8 +1269,11 @@ long seq_epoch (const char* dirname, int port)
 	    bool unresolved_vals = false, resolved_vals = false;
 
 	    GET_QVALUE(value, inputq);
+#ifdef STATS
+	    values_rcvd++;
+#endif
 #ifdef DEBUG
-	    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+	    if (DEBUG(otoken+output_token)||DEBUG(otoken)||DEBUG(value)) {
 		fprintf (debugfile, "otoken %x(%x/%x) to value %lx\n", otoken+output_token, otoken, output_token, (long) value);
 	    }
 #endif
@@ -1207,6 +1295,9 @@ long seq_epoch (const char* dirname, int port)
 			// Not in this epoch - so pass through to next
 			if (!unresolved_vals) {
 			    PUT_QVALUE(otoken+output_token,outputq);
+#ifdef STATS
+			    values_sent++;
+#endif
 			    unresolved_vals = 1;
 			}
 #ifdef DEBUG
@@ -1215,6 +1306,9 @@ long seq_epoch (const char* dirname, int port)
 			}
 #endif
 			PUT_QVALUE(value,outputq);
+#ifdef STATS
+			values_sent++;
+#endif
 		    }
 		} else {
 #ifdef DEBUG
@@ -1231,6 +1325,9 @@ long seq_epoch (const char* dirname, int port)
 			    // Not in this epoch - so pass through to next
 			    if (!unresolved_vals) {
 				PUT_QVALUE(otoken+output_token,outputq);
+#ifdef STATS
+				values_sent++;
+#endif
 				unresolved_vals = true;
 			    }
 #ifdef DEBUG
@@ -1239,6 +1336,9 @@ long seq_epoch (const char* dirname, int port)
 			    }
 #endif
 			    PUT_QVALUE(iter->second,outputq);
+#ifdef STATS
+			    values_sent++;
+#endif
 			} else {
 #ifdef DEBUG
 			    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
@@ -1289,15 +1389,28 @@ long seq_epoch (const char* dirname, int port)
 		    }
 		}
 		GET_QVALUE(value, inputq);
+#ifdef STATS
+		values_rcvd++;
+#endif
 	    }
-	    if (unresolved_vals) PUT_QVALUE(0,outputq);
+	    if (unresolved_vals) {
+		PUT_QVALUE(0,outputq);
+#ifdef STATS
+		values_sent++;
+#endif
+	    }
 	    if (resolved_vals) PRINT_RVALUE(0);
 	}
 #ifdef STATS
 	gettimeofday(&address_done_tv, NULL);
 #endif
     }
-    if (!start_flag) PUT_QVALUE(TERM_VAL,outputq)
+    if (!start_flag) {
+	PUT_QVALUE(TERM_VAL,outputq);
+#ifdef STATS
+	values_sent++;
+#endif
+    }
 
     flush_outrbuf ();
     close (outrfd);
@@ -1397,7 +1510,7 @@ long seq_epoch (const char* dirname, int port)
     fprintf (statsfile, "Received %ld bytes of addr data\n", adatasize);
     fprintf (statsfile, "\n");
     if (!start_flag) {
-	fprintf (statsfile, "Received %ld values in live set\n", (long) live_set.size());
+	fprintf (statsfile, "Received %ld values in live set\n", (long) live_set_size);
     }
     fprintf (statsfile, "Output directs %lu indirects %lu values %lu, merges %lu\n", directs, indirects, values, output_merges);
     if (!finish_flag) {
@@ -1408,7 +1521,7 @@ long seq_epoch (const char* dirname, int port)
 		 atokens, passthrus, aresolved, aindirects, avalues, unmodified, merges);
     }
     if (!start_flag) {
-	fprintf (statsfile, "New live set has size %ld\n", (long) new_live_set.size());
+	fprintf (statsfile, "New live set has size %ld\n", (long) new_live_set_size);
 	fprintf (statsfile, "zeros %lu, inputs %lu, merges %lu, merge_zeros %lu, not live %lu\n", new_live_zeros, 
 		 new_live_inputs, new_live_merges, new_live_merge_zeros, new_live_notlive);
     }
@@ -1417,6 +1530,7 @@ long seq_epoch (const char* dirname, int port)
 	fprintf (statsfile, "Wrote %lu entries (%lu bytes)\n", written, written*sizeof(u_long)); 
     }
     fprintf (statsfile, "Unique indirects %ld\n", (long) resolved.size());
+    fprintf (statsfile, "Values rcvd %lu sent %lu\n", values_rcvd, values_sent);
 #endif
 
     return 0;
@@ -1503,6 +1617,8 @@ int connect_input_queue (struct recvdata* data)
     return s;
 }
 
+#ifdef USE_LF
+
 void send_stream (int s, struct taintq* q)
 {
     // Listen on output queue and send over network
@@ -1561,6 +1677,65 @@ void recv_stream (int s, struct taintq* q)
     }
 }
 
+#else
+
+void send_stream (int s, struct taintq* q)
+{
+    // Listen on output queue and send over network
+    bool done = false;
+    u_long bytes_sent = 0;
+    while (!done) {
+
+	pthread_mutex_lock(&(q->lock));
+	while (q->read_index == q->write_index) {
+	    pthread_cond_wait(&(q->empty), &(q->lock));
+	}
+	pthread_mutex_unlock(&(q->lock));
+
+	long rc = safe_write (s, q->buffer + (q->read_index*TAINTBUCKETENTRIES), TAINTBUCKETSIZE);
+	if (rc != (long)TAINTBUCKETSIZE) return; // Error sending the data
+
+	bytes_sent += TAINTBUCKETENTRIES;
+
+	if (q->buffer[q->read_index*TAINTBUCKETENTRIES+TAINTBUCKETENTRIES-1] == TERM_VAL) done = true;
+
+	pthread_mutex_lock(&(q->lock));
+	q->read_index = (q->read_index+1)%TAINTBUCKETS;
+	pthread_cond_signal(&(q->full));
+	pthread_mutex_unlock(&(q->lock));
+    }
+}
+
+void recv_stream (int s, struct taintq* q)
+{
+    // Get data and put on the inputq
+    bool done = false;
+    u_long bytes_rcvd = 0;
+    while (!done) {
+
+	// Receive a block at a time
+	pthread_mutex_lock(&(q->lock));
+	while ((q->write_index+1)%TAINTBUCKETS == q->read_index) {
+	    pthread_cond_wait(&(q->full), &(q->lock));
+	}
+	pthread_mutex_unlock(&(q->lock));
+
+	long rc = safe_read (s, q->buffer + (q->write_index*TAINTBUCKETENTRIES), TAINTBUCKETSIZE);
+	if (rc != (long)TAINTBUCKETSIZE) return; // Error sending the data
+
+	bytes_rcvd += TAINTBUCKETENTRIES;
+
+	if (q->buffer[q->write_index*TAINTBUCKETENTRIES+TAINTBUCKETENTRIES-1] == TERM_VAL) done = true;
+
+	pthread_mutex_lock(&(q->lock));
+	q->write_index = (q->write_index+1)%TAINTBUCKETS;
+	pthread_cond_signal(&(q->empty));
+	pthread_mutex_unlock(&(q->lock));
+    }
+}
+
+#endif
+
 // Sending to another computer is implemented as separate thread to add asyncrhony
 void* send_output_queue (void* arg)
 {
@@ -1588,6 +1763,8 @@ void* recv_input_queue (void* arg)
 
     if (data->do_sequential) {
 	send_stream (s, inputq); // First we send filters downstream	
+	fprintf (stderr, "sent data downstream\n");
+	inputq->read_index = inputq->write_index = 0;
 	UP_QSEM(inputq);
     }
 

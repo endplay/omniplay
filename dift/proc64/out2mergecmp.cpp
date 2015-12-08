@@ -16,8 +16,8 @@ using namespace std;
 #include "../taint_interface/taint.h"
 #include "../taint_interface/taint_creation.h"
 
-#define TARGET(x) (x==0xd80ed9)
-//#define ITARGET 0x56c67
+
+//#define TARGET(x) (x==0x175ae21)
 
 #define ALLOW_DUPS
 
@@ -57,6 +57,7 @@ int main (int argc, char* argv[])
     long rc;
     int out_start;
     const char* out_dir;
+    int show_all = 0;
 #ifdef OUTPUT_CMP
     struct output_info oi;
 #endif
@@ -243,10 +244,16 @@ int main (int argc, char* argv[])
 	    printf ("Entry in mapping %d differs\n", cnt);
 	    printf ("mergeout <%x,%x>, outputs <%x,%x>\n", 
 		    miter->first, miter->second, oiter->first, oiter->second);
-	    exit (0);
+	    if (!show_all) exit (0);
+	    if (*miter < *oiter) {
+		miter++;
+	    } else {
+		oiter++;
+	    }
+	} else {
+	    miter++;
+	    oiter++;
 	}
-	miter++;
-	oiter++;
     }
     if (miter != mapping.end()) {
 	printf ("mergeout has entries remaining but output files do not\n");

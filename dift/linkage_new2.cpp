@@ -663,7 +663,6 @@ static inline void sys_write_stop(int rc)
 {
     struct write_info* wi = (struct write_info *) &current_thread->write_info_cache;
     int channel_fileno = -1;
-    // If syscall cnt = 0, then write handled in previous epoch
     if (rc > 0) {
         struct taint_creation_info tci;
         SYSCALL_DEBUG (stderr, "write_stop: sucess write of size %d\n", rc);
@@ -686,13 +685,16 @@ static inline void sys_write_stop(int rc)
         tci.rg_id = current_thread->rg_id;
         tci.record_pid = current_thread->record_pid;
         tci.syscall_cnt = current_thread->syscall_cnt;
+	if (!current_thread->syscall_in_progress) {
+	    tci.syscall_cnt--; // Weird restart issue
+	}
         tci.offset = 0;
         tci.fileno = channel_fileno;
 
         LOG_PRINT ("Output buffer result syscall %ld, %#lx\n", tci.syscall_cnt, (u_long) wi->buf);
         output_buffer_result (wi->buf, rc, &tci, outfd);
     }
-    memset(&current_thread->write_info_cache, 0, sizeof(struct write_info));
+    //memset(&current_thread->write_info_cache, 0, sizeof(struct write_info));
 }
 
 static inline void sys_writev_start(int fd, struct iovec* iov, int count)
@@ -1203,15 +1205,8 @@ void instrument_syscall(ADDRINT syscall_num,
     // Because of Pin restart issues, this function alone has to use PIN thread-specific data
     struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
     tdata->sysnum = sysnum;
+    tdata->syscall_in_progress = true;
 
-#ifdef TRACE_TAINT_OPS
-    trace_syscall_op(tdata,
-		     trace_taint_outfd,
-		     0, // TODO Fill in ip later
-		     PIN_ThreadId(),
-		     TAINTOP_SYSCALL,
-		     sysnum, global_syscall_cnt);
-#endif
     if (sysnum == 31) {
 	tdata->ignore_flag = (u_long) syscallarg1;
     }
@@ -1223,7 +1218,7 @@ void instrument_syscall(ADDRINT syscall_num,
 
     if (segment_length && *ppthread_log_clock >= segment_length) {
 	// Done with this replay - do exit stuff now because we may not get clean unwind
-	printf("Pin terminating at Pid %d, entry to syscall %ld, term. clock %ld cur. clock %ld\n", PIN_GetPid(), global_syscall_cnt, segment_length, *ppthread_log_clock);
+	//printf("Pin terminating at Pid %d, entry to syscall %ld, term. clock %ld cur. clock %ld\n", PIN_GetPid(), global_syscall_cnt, segment_length, *ppthread_log_clock);
 	dift_done ();
 	try_to_exit(dev_fd, PIN_GetPid());
         PIN_ExitApplication(0);
@@ -1252,8 +1247,25 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
     ADDRINT ret_value = PIN_GetSyscallReturn(ctxt, std);
     syscall_end(current_thread->sysnum, ret_value);
 
-    // reset the syscall number after returning from system call
-    increment_syscall_cnt (current_thread->sysnum);
+    if (!current_thread->syscall_in_progress) {
+	/* Pin restart oddity: initial write will nondeterministically return twice (once with rc=0).
+	   Just don't increment the global syscall cnt when this happens. */
+	if (global_syscall_cnt == 0) {
+	    if (current_thread->sysnum != SYS_write) {
+#ifdef TAINT_DEBUG
+		fprintf (debug_f, "First syscall %d not in progress and not write\n", current_thread->sysnum);
+#endif
+	    }
+	} else {
+#ifdef TAINT_DEBUG
+	    fprintf (debug_f, "Syscall not in progress for global_syscall_cnt %ld sysnum %d\n", global_syscall_cnt, current_thread->sysnum);
+#endif
+	}
+    } else {
+	// reset the syscall number after returning from system call
+	increment_syscall_cnt (current_thread->sysnum);
+	current_thread->syscall_in_progress = false;
+    }
 
     // The first syscall returns twice 
     if (global_syscall_cnt > 1) { 
