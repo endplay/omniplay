@@ -1428,7 +1428,6 @@ long seq_epoch (const char* dirname, int port)
 	}
 #ifdef STATS
 	gettimeofday(&address_done_tv, NULL);
-	idle = 0;
 #endif
     }
     if (!start_flag) {
@@ -1523,7 +1522,7 @@ long seq_epoch (const char* dirname, int port)
 	fprintf (statsfile, "Send live set idle:      %6lu ms\n", new_live_set_idle/1000);
     }
     fprintf (statsfile, "Output processing time:  %6ld ms\n", ms_diff (output_done_tv, live_done_tv));
-    fprintf (statsfile, "Output processing idle  %6lu ms\n", output_idle/1000);
+    fprintf (statsfile, "Output processing idle:  %6lu ms\n", output_idle/1000);
     if (!finish_flag) {
 	fprintf (statsfile, "Index generation time:   %6ld ms\n", ms_diff (index_created_tv, output_done_tv));
 	fprintf (statsfile, "Address processing time: %6ld ms\n", ms_diff (address_done_tv, index_created_tv));
