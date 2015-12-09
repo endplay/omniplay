@@ -239,7 +239,7 @@ int filter_byte_range(int syscall, int byteoffset)
     return 0;
 }
 
-#if defined(USE_NULL) || defined(USE_SHMEM)
+#if defined(USE_SHMEM)
 #define TOKENBUFSIZE 0x2000
 static struct token* tokenbuf;
 static u_long tokenindex = 0;

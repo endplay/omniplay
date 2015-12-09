@@ -500,7 +500,6 @@ void finish_and_print_taint_stats(FILE* fp)
     }
     close (node_num_fd);
 #else
-    fprintf (debug_f, "merge_total_count is %x\n", merge_total_count);
     flush_merge_buffer ();
 #endif
 
