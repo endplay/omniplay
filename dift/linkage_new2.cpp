@@ -300,8 +300,8 @@ static void dift_done ()
 #ifdef TAINT_STATS
     gettimeofday(&end_tv, NULL);
     fprintf (stats_f, "Instructions instrumented: %ld\n", inst_instrumented);
-    fprintf (stats_f, "DIFT began at %ld.06%ld\n", begin_tv.tv_sec, begin_tv.tv_usec);
-    fprintf (stats_f, "DIFT eneded at %ld.06%ld\n", end_tv.tv_sec, end_tv.tv_usec);
+    fprintf (stats_f, "DIFT began at %ld.%06ld\n", begin_tv.tv_sec, begin_tv.tv_usec);
+    fprintf (stats_f, "DIFT ended at %ld.%06ld\n", end_tv.tv_sec, end_tv.tv_usec);
     finish_and_print_taint_stats(stats_f);
     fclose (stats_f);
 #else
