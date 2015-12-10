@@ -1198,7 +1198,9 @@ void instrument_syscall(ADDRINT syscall_num,
 
     if (segment_length && *ppthread_log_clock >= segment_length) {
 	// Done with this replay - do exit stuff now because we may not get clean unwind
-	//printf("Pin terminating at Pid %d, entry to syscall %ld, term. clock %ld cur. clock %ld\n", PIN_GetPid(), global_syscall_cnt, segment_length, *ppthread_log_clock);
+#ifdef TAINT_DEBUG
+	fprintf (debug_f, "Pin terminating at Pid %d, entry to syscall %ld, term. clock %ld cur. clock %ld\n", PIN_GetPid(), global_syscall_cnt, segment_length, *ppthread_log_clock);
+#endif
 	dift_done ();
 	try_to_exit(dev_fd, PIN_GetPid());
         PIN_ExitApplication(0);
@@ -1225,7 +1227,14 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
     if (current_thread->app_syscall != 999) current_thread->app_syscall = 0;
 
     ADDRINT ret_value = PIN_GetSyscallReturn(ctxt, std);
-    syscall_end(current_thread->sysnum, ret_value);
+
+    if (segment_length && *ppthread_log_clock >= segment_length) {
+#ifdef TAINT_DEBUG
+	fprintf (debug_f, "Skip Pid %d, exit from syscall %ld due to termination, term. clock %ld cur. clock %ld\n", PIN_GetPid(), global_syscall_cnt, segment_length, *ppthread_log_clock);
+#endif
+    } else {
+	syscall_end(current_thread->sysnum, ret_value);
+    }
 
     if (!current_thread->syscall_in_progress) {
 	/* Pin restart oddity: initial write will nondeterministically return twice (once with rc=0).
