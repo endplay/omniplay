@@ -213,6 +213,7 @@ extern int dump_mem_taints (int fd);
 extern int dump_reg_taints (int fd, taint_t* pregs);
 extern int dump_mem_taints_start (int fd);
 extern int dump_reg_taints_start (int fd, taint_t* pregs);
+
 #ifdef TAINT_DEBUG
 extern void print_taint_debug_reg (int tid, taint_t* pregs);
 extern void print_taint_debug_mem ();
@@ -220,6 +221,13 @@ extern u_long debug_taint_cnt;
 FILE* debug_f;
 u_long taint_debug_inst = 0;
 #endif
+
+#ifdef TAINT_STATS
+struct timeval begin_tv, end_tv;
+u_long inst_instrumented = 0;
+FILE* stats_f;
+#endif
+
 extern void write_token_finish (int fd);
 extern void output_finish (int fd);
 
@@ -289,10 +297,21 @@ static void dift_done ()
     output_finish (outfd);
 #endif
 
+#ifdef TAINT_STATS
+    gettimeofday(&end_tv, NULL);
+    fprintf (stats_f, "Instructions instrumented: %ld\n", inst_instrumented);
+    fprintf (stats_f, "DIFT began at %ld.06%ld\n", begin_tv.tv_sec, begin_tv.tv_usec);
+    fprintf (stats_f, "DIFT eneded at %ld.06%ld\n", end_tv.tv_sec, end_tv.tv_usec);
+    finish_and_print_taint_stats(stats_f);
+    fclose (stats_f);
+#else
     finish_and_print_taint_stats(stdout);
+#endif
+
 #ifdef TAINT_DEBUG
     fclose (debug_f);
 #endif
+
     printf("DIFT done at %ld\n", global_syscall_cnt);
 
 #ifdef USE_SHMEM
@@ -11636,9 +11655,6 @@ void instrument_mov (INS ins)
  * */
 void instrument_movx (INS ins)
 {
-#ifdef TAINT_STATS
-    instrument_inst_count();
-#endif
     int op1mem, op2mem, op1reg, op2reg;
     op1mem = INS_OperandIsMemory(ins, 0);
     op2mem = INS_OperandIsMemory(ins, 1);
@@ -13355,6 +13371,9 @@ void instruction_instrumentation(INS ins, void *v)
     UINT32 category;
     int instrumented = 0;
 
+#ifdef TAINT_STATS
+    inst_instrumented++;
+#endif
     if(INS_IsSyscall(ins)) {
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(instrument_syscall),
                 IARG_SYSCALL_NUMBER, 
@@ -14211,6 +14230,20 @@ void init_logs(void)
                 exit(0);
             }
         }
+    }
+#endif
+#ifdef TAINT_STATS
+    {
+        char stats_log_name[256];
+        if (!stats_f) {
+            snprintf(stats_log_name, 256, "%s/taint_stats", group_directory);
+	    stats_f = fopen(stats_log_name, "w");
+            if (!stats_f) {
+                fprintf(stderr, "could not create taint stats file, errno %d\n", errno);
+                exit(0);
+            }
+        }
+	gettimeofday(&begin_tv, NULL);
     }
 #endif
 }

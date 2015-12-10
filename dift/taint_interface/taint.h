@@ -7,4 +7,6 @@ typedef uint32_t taint_t;
 //#define TAINT_DEBUG(x) (0)
 //#define TAINT_DEBUG(x) ((x)==0xc008c806)
 
+#define TAINT_STATS
+
 #endif

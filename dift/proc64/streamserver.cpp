@@ -348,6 +348,15 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 	printf ("Dift time: %ld.%06ld second\n", tv_done.tv_sec-tv_start.tv_sec-1, tv_done.tv_usec+1000000-tv_start.tv_usec);
     }
 
+    // send stats if requested
+    if (ehdr.flags&SEND_STATS) {
+	for (u_long i = 0; i < epochs; i++) {
+	    char pathname[PATHLEN];
+	    sprintf (pathname, "/tmp/%d/taint_stats", ectl[i].cpid);
+	    send_file (s, pathname, "taint-stats");
+	}
+    }
+
     close (s);
     close (fd);
 #endif

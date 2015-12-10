@@ -363,6 +363,7 @@ int main (int argc, char* argv[])
 	ehdr.cmd_type = DO_DIFT;
 	ehdr.flags = 0;
 	if (sync_files) ehdr.flags |= SYNC_LOGFILES;
+	if (get_stats) ehdr.flags |= SEND_STATS;
 	strcpy (ehdr.dirname, dirname);
 	ehdr.epochs = conf.difts[i]->num_epochs;
 	if (i == 0) {
@@ -534,13 +535,18 @@ int main (int argc, char* argv[])
     }
 
     if (get_stats) {
-	// Fetch the files into the tmp directory
+	// Fetch the stats files into the tmp directory
 	for (u_long i = 0; i < conf.epochs.size(); i++) {
 	    char statfile[256];
 	    sprintf (statfile, "/tmp/stream-stats-%lu", i);
 	    if (fetch_file(conf.epochs[i].pagg->s, "/tmp") < 0) return -1;
 	    rc = rename ("/tmp/stream-stats", statfile);
-	    if (rc < 0) printf ("Unable to rename stat file, rc=%d, errno=%d\n", rc, errno);
+	    if (rc < 0) printf ("Unable to rename affregator stats file, rc=%d, errno=%d\n", rc, errno);
+
+	    sprintf (statfile, "/tmp/taint-stats-%lu", i);
+	    if (fetch_file(conf.epochs[i].pdift->s, "/tmp") < 0) return -1;
+	    rc = rename ("/tmp/taint-stats", statfile);
+	    if (rc < 0) printf ("Unable to rename dift stats file, rc=%d, errno=%d\n", rc, errno);
 	}
     }
 
