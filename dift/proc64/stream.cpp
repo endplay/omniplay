@@ -644,19 +644,11 @@ build_address_map (unordered_map<taint_t,taint_t>& address_map, taint_t* ts_log,
     return 0;
 }
 
-// Process one epoch 
-long stream_epoch (const char* dirname, int port)
+long setup_aggregation (const char* dirname, int& outputfd, int& inputfd, int& addrsfd)
 {
-    long rc;
-    char* output_log, *token_log, *plog;
-    taint_t *ts_log, value;
-    u_long idatasize = 0, odatasize = 0, mdatasize = 0, adatasize = 0;
-    uint32_t buf_size, tokens, otoken, output_token = 0;
     char outrfile[256], outputfile[256], inputfile[256], addrsfile[256];
-    int outputfd, inputfd, addrsfd;
-
-    // First, resolve all outputs for this epoch
-    rc = mkdir(dirname, 0755);
+    
+    long rc = mkdir(dirname, 0755);
     if (rc < 0 && errno != EEXIST) {
 	fprintf (stderr, "Cannot create output dir %s, errno=%d\n", dirname, errno);
 	return rc;
@@ -726,6 +718,22 @@ long stream_epoch (const char* dirname, int port)
 #ifdef STATS
     gettimeofday(&start_tv, NULL);
 #endif
+
+    return 0;
+}
+
+// Process one epoch 
+long stream_epoch (const char* dirname, int port)
+{
+    long rc;
+    char* output_log, *token_log, *plog;
+    taint_t *ts_log, value;
+    u_long idatasize = 0, odatasize = 0, mdatasize = 0, adatasize = 0;
+    uint32_t buf_size, tokens, otoken, output_token = 0;
+    int outputfd, inputfd, addrsfd;
+
+    rc = setup_aggregation (dirname, outputfd, inputfd, addrsfd);
+    if (rc < 0) return rc;
 
     // Read inputs from DIFT engine
     rc = read_inputs (port, token_log, output_log, ts_log, merge_log,
@@ -1026,57 +1034,10 @@ long seq_epoch (const char* dirname, int port)
     taint_t *ts_log, value;
     u_long idatasize = 0, odatasize = 0, mdatasize = 0, adatasize = 0;
     uint32_t buf_size, tokens, otoken, output_token = 0;
-    char outrfile[256], outputfile[256], inputfile[256], addrsfile[256];
     int outputfd, inputfd, addrsfd;
 
-    // Set up output files
-    rc = mkdir(dirname, 0755);
-    if (rc < 0 && errno != EEXIST) {
-	fprintf (stderr, "Cannot create output dir %s, errno=%d\n", dirname, errno);
-	return rc;
-    }
-
-    sprintf (outrfile, "%s/merge-outputs-resolved", dirname);
-    outrfd = open (outrfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
-    if (outrfd < 0) {
-	fprintf (stderr, "Cannot create %s, errno=%d\n", outrfile, errno);
-	return -1;
-    }
-
-    sprintf (outputfile, "%s/dataflow.results", dirname);
-    outputfd = open (outputfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
-    if (outputfd < 0) {
-	fprintf (stderr, "Cannot create dataflow.results file, errno=%d\n", errno);
-	return -1;
-    }
-
-    sprintf (addrsfile, "%s/merge-addrs", dirname);
-    addrsfd = open (addrsfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
-    if (addrsfd < 0) {
-	fprintf (stderr, "Cannot create merge-addrs file, errno=%d\n", errno);
-	return -1;
-    }
-
-    sprintf (inputfile, "%s/tokens", dirname);
-    inputfd = open (inputfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
-    if (inputfd < 0) {
-	fprintf (stderr, "Cannot create tokens file, errno=%d\n", errno);
-	return -1;
-    }
-
-#ifdef DEBUG
-    char debugname[256];
-    sprintf (debugname, "%s/stream-debug", dirname);
-    debugfile = fopen (debugname, "w");
-    if (debugfile == NULL) {
-	fprintf (stderr, "Cannot create %s, errno=%d\n", debugname, errno);
-	return -1;
-    }
-#endif
-
-#ifdef STATS
-    gettimeofday(&start_tv, NULL);
-#endif
+    rc = setup_aggregation (dirname, outputfd, inputfd, addrsfd);
+    if (rc < 0) return rc;
 
     // Read inputs from DIFT engine
     rc = read_inputs (port, token_log, output_log, ts_log, merge_log,
