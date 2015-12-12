@@ -219,7 +219,7 @@ int main (int argc, char* argv[])
 	    }
 	    if (epoch_cnt + num_epochs > conf.epochs.size()) {
 		// Will not use all the epochs in this row
-		num_epochs -= conf.epochs.size() - epoch_cnt;
+		num_epochs -= (epoch_cnt + num_epochs) - conf.epochs.size();
 		printf ("Truncated num_epochs to %d\n", num_epochs);
 	    }
 	    struct dift* d;

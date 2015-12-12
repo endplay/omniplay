@@ -515,7 +515,11 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	    sprintf (pathname, "/tmp/%ld/merge-addrs", i);
 	    send_file (s, pathname, "merge-addrs");
 	    sprintf (pathname, "/tmp/%ld/merge-outputs-resolved", i);
+#ifdef BUILD_64
 	    send_file (s, pathname, "merge-outputs-resolved");
+#else
+	    send_shmem (s, pathname, "merge-outputs-resolved");
+#endif
 	    sprintf (pathname, "/tmp/%ld/tokens", i);
 	    send_file (s, pathname, "tokens");
 	    sprintf (pathname, "/tmp/%ld/dataflow.results", i);

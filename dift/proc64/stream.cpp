@@ -74,13 +74,18 @@ struct taint_entry {
 unordered_map<taint_t,unordered_set<uint32_t>*> resolved;
 int                 outrfd;
 uint32_t            outrindex = 0;
-uint32_t            outrbuf[OUTBUFSIZE];
 struct taint_entry* merge_log;
 struct taintq*      inputq;
 uint32_t            can_read, can_write;
 struct taintq*      outputq;
 bool                start_flag = false;
 bool                finish_flag = false;
+#ifdef BUILD_64
+uint32_t            outrbuf[OUTBUFSIZE];
+#else
+uint64_t            out_total_count = 0;
+uint32_t*           outrbuf;
+#endif
 
 #ifdef DEBUG
 FILE* debugfile;
@@ -234,6 +239,7 @@ static void taintq_pull (uint32_t& val, struct taintq* q)
 #define DOWN_QSEM(q) sem_wait(&(q)->epoch_sem);
 #define UP_QSEM(q) sem_post(&(q)->epoch_sem);
 
+#ifdef BUILD_64
 static void flush_outrbuf()
 {
     long bytes_written = 0;
@@ -249,6 +255,41 @@ static void flush_outrbuf()
     }
     outrindex = 0;
 }
+#else
+static void flush_outrbuf()
+{
+    long rc;
+
+    out_total_count += outrindex*sizeof(uint32_t);
+    
+    if (outrindex == OUTBUFSIZE) {
+
+	if (munmap (outrbuf, OUTBUFSIZE*sizeof(uint32_t)) < 0) {
+	    fprintf (stderr, "could not munmap out buffer, errno=%d\n", errno);
+	    assert (0);
+	}
+
+	rc = ftruncate64 (outrfd, out_total_count+OUTBUFSIZE*sizeof(uint32_t));
+	if (rc < 0) {
+	    fprintf (stderr, "Truncation of output buffer returns %ld\n", rc);
+	}
+	
+	outrbuf = (taint_t *) mmap64 (0, OUTBUFSIZE*sizeof(uint32_t), PROT_READ|PROT_WRITE, MAP_SHARED, 
+				      outrfd, out_total_count);
+	if (outrbuf == MAP_FAILED) {
+	    fprintf (stderr, "could not map dump buffer, errno=%d\n", errno);
+	    assert (0);
+	}
+    } else {
+	rc = ftruncate64 (outrfd, out_total_count);
+	if (rc < 0) {
+	    fprintf (stderr, "Truncation of output buffer returns %ld\n", rc);
+	}
+    }
+
+    outrindex = 0;
+}
+#endif
 
 #define PRINT_RVALUE(value)					\
     {								\
@@ -621,12 +662,35 @@ long stream_epoch (const char* dirname, int port)
 	return rc;
     }
 
+#ifdef BUILD_64
     sprintf (outrfile, "%s/merge-outputs-resolved", dirname);
     outrfd = open (outrfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
     if (outrfd < 0) {
 	fprintf (stderr, "Cannot create %s, errno=%d\n", outrfile, errno);
 	return -1;
     }
+#else
+    sprintf (outrfile, "%s/merge-outputs-resolved", dirname);
+    for (u_int i = 1; i < strlen(outrfile); i++) {
+	if (outrfile[i] == '/') outrfile[i] = '.';
+    }
+    outrfd = shm_open (outrfile, O_CREAT | O_TRUNC | O_RDWR, 0644);
+    if (outrfd < 0) {
+	fprintf (stderr, "Cannot create %s, errno=%d\n", outrfile, errno);
+	return -1;
+    }
+    rc = ftruncate64 (outrfd, OUTBUFSIZE*sizeof(uint32_t));
+    if (rc < 0) {
+	fprintf(stderr, "could not truncate ouput shmem %s, errno %d\n", outrfile, errno);
+	assert(0);
+    }
+    outrbuf = (uint32_t *) mmap (0, OUTBUFSIZE*sizeof(uint32_t), PROT_READ|PROT_WRITE, 
+				 MAP_SHARED, outrfd, 0);
+    if (outrbuf == MAP_FAILED) {
+	fprintf (stderr, "could not map merge buffer, errno=%d\n", errno);
+	assert (0);
+    }
+#endif
 
     sprintf (outputfile, "%s/dataflow.results", dirname);
     outputfd = open (outputfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
@@ -735,6 +799,8 @@ long stream_epoch (const char* dirname, int port)
 #ifdef STATS
     gettimeofday(&output_done_tv, NULL);
     output_merges = merges;
+    output_idle = idle;
+    idle = 0;
     merges = 0;
 #endif
 #ifdef DEBUG
@@ -921,9 +987,11 @@ long stream_epoch (const char* dirname, int port)
     fprintf (statsfile, "Total time:              %6ld ms\n", ms_diff (end_tv, start_tv));
     fprintf (statsfile, "Receive time:            %6ld ms\n", ms_diff (recv_done_tv, start_tv));
     fprintf (statsfile, "Output processing time:  %6ld ms\n", ms_diff (output_done_tv, recv_done_tv));
+    fprintf (statsfile, "Output processing idle:  %6lu ms\n", output_idle/1000);
     if (!finish_flag) {
 	fprintf (statsfile, "Index generation time:   %6ld ms\n", ms_diff (index_created_tv, output_done_tv));
 	fprintf (statsfile, "Address processing time: %6ld ms\n", ms_diff (address_done_tv, index_created_tv));
+	fprintf (statsfile, "Address processing idle: %6lu ms\n", idle/1000);
 	fprintf (statsfile, "Finish time:             %6ld ms\n", ms_diff (end_tv, address_done_tv));
     } else {
 	fprintf (statsfile, "Finish time:             %6ld ms\n", ms_diff (end_tv, output_done_tv));

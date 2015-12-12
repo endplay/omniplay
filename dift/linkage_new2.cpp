@@ -1247,7 +1247,7 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
 
     ADDRINT ret_value = PIN_GetSyscallReturn(ctxt, std);
 
-    if (segment_length && *ppthread_log_clock >= segment_length) {
+    if (segment_length && *ppthread_log_clock > segment_length) {
 #ifdef TAINT_DEBUG
 	fprintf (debug_f, "Skip Pid %d, exit from syscall %ld due to termination, term. clock %ld cur. clock %ld\n", PIN_GetPid(), global_syscall_cnt, segment_length, *ppthread_log_clock);
 #endif

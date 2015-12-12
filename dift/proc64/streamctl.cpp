@@ -75,7 +75,7 @@ int main (int argc, char* argv[])
     for (int i = 2; i < argc; i++) {
 	if (!strcmp (argv[i], "-w")) {
 	    wait_for_response = 1;
-#if 0
+#if 1
 	} else if (!strcmp (argv[i], "-s")) {
 	    sync_files = 1;
 #endif
