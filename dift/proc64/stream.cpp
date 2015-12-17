@@ -25,7 +25,6 @@ using namespace std;
 
 //#define DEBUG(x) ((x)==0x175ae21 || (x)==(0x175ae21-0x16db75)|| (x)==(0x175ae21-0x192dce) || (x)==(0x175ae21-0x376641) || (x)==(0x175ae21-0x37e321) || (x)==(0x175ae21-0x3b1611) || (x)==(0x175ae21-0x3ebc29) || (x)==(0x175ae21-0x4676eb) || (x)==(0x175ae21-0x4fba98))
 #define STATS
-#define METHOD2
 
 // Set up limits here - need to be less generate with 32-bit address space
 #ifdef USE_NW
@@ -94,7 +93,7 @@ FILE* debugfile;
 #ifdef STATS
 FILE* statsfile;
 u_long merges = 0, directs = 0, indirects = 0, values = 0, output_merges;
-u_long idle = 0, live_set_idle = 0, new_live_set_idle = 0, output_idle = 0;
+u_long send_idle = 0, recv_idle = 0, live_set_send_idle = 0, live_set_recv_idle = 0, new_live_set_send_idle = 0, new_live_set_recv_idle = 0, output_send_idle = 0, output_recv_idle = 0;
 u_long atokens = 0, passthrus = 0, aresolved = 0, aindirects = 0, avalues = 0, unmodified = 0, written = 0;
 u_long prune_cnt = 0, simplify_cnt = 0;
 u_long new_live_no_changes = 0, new_live_zeros = 0, new_live_inputs = 0, new_live_merges = 0, new_live_merge_zeros = 0, new_live_notlive = 0;
@@ -176,8 +175,8 @@ static void taintq_push (uint32_t val, struct taintq* q)
 	    pthread_cond_wait(&(q->full), &(q->lock));
 #ifdef STATS
 	    gettimeofday(&tv2, NULL);		
-	    idle += tv2.tv_usec - tv1.tv_usec;	
-	    idle += (tv2.tv_sec - tv1.tv_sec)*1000000;	
+	    send_idle += tv2.tv_usec - tv1.tv_usec;	
+	    send_idle += (tv2.tv_sec - tv1.tv_sec)*1000000;	
 #endif
 	}
 	wb_index = wb_index % TAINTENTRIES;
@@ -212,8 +211,8 @@ static void taintq_pull (uint32_t& val, struct taintq* q)
 	    pthread_cond_wait(&(q->empty), &(q->lock));
 #ifdef STATS
 	    gettimeofday(&tv2, NULL);		
-	    idle += tv2.tv_usec - tv1.tv_usec;	
-	    idle += (tv2.tv_sec - tv1.tv_sec)*1000000;	
+	    recv_idle += tv2.tv_usec - tv1.tv_usec;	
+	    recv_idle += (tv2.tv_sec - tv1.tv_sec)*1000000;	
 #endif
 	}
 	rb_index = rb_index % TAINTENTRIES;
@@ -808,8 +807,9 @@ long stream_epoch (const char* dirname, int port)
 #ifdef STATS
     gettimeofday(&output_done_tv, NULL);
     output_merges = merges;
-    output_idle = idle;
-    idle = 0;
+    output_send_idle = send_idle;
+    output_recv_idle = recv_idle;
+    send_idle = recv_idle = 0;
     merges = 0;
 #endif
 #ifdef DEBUG
@@ -996,16 +996,17 @@ long stream_epoch (const char* dirname, int port)
     fprintf (statsfile, "Total time:              %6ld ms\n", ms_diff (end_tv, start_tv));
     fprintf (statsfile, "Receive time:            %6ld ms\n", ms_diff (recv_done_tv, start_tv));
     fprintf (statsfile, "Output processing time:  %6ld ms\n", ms_diff (output_done_tv, recv_done_tv));
-    fprintf (statsfile, "Output processing idle:  %6lu ms\n", output_idle/1000);
+    fprintf (statsfile, "Output proc. send idle:  %6lu ms\n", output_send_idle/1000);
+    fprintf (statsfile, "Output proc. recv idle:  %6lu ms\n", output_recv_idle/1000);
     if (!finish_flag) {
 	fprintf (statsfile, "Index generation time:   %6ld ms\n", ms_diff (index_created_tv, output_done_tv));
 	fprintf (statsfile, "Address processing time: %6ld ms\n", ms_diff (address_done_tv, index_created_tv));
-	fprintf (statsfile, "Address processing idle: %6lu ms\n", idle/1000);
+	fprintf (statsfile, "Address proc. send idle: %6lu ms\n", send_idle/1000);
+	fprintf (statsfile, "Address proc. recv idle: %6lu ms\n", recv_idle/1000);
 	fprintf (statsfile, "Finish time:             %6ld ms\n", ms_diff (end_tv, address_done_tv));
     } else {
 	fprintf (statsfile, "Finish time:             %6ld ms\n", ms_diff (end_tv, output_done_tv));
     }
-    fprintf (statsfile, "Idle                     %6lu ms\n", idle/1000);
     fprintf (statsfile, "\n");
     fprintf (statsfile, "Received %ld bytes of merge data\n", mdatasize);
     fprintf (statsfile, "Received %ld bytes of output data\n", odatasize);
@@ -1050,9 +1051,6 @@ long seq_epoch (const char* dirname, int port)
 #endif
 
     unordered_set<uint32_t> live_set;
-#ifndef METHOD2    
-    unordered_set<uint32_t> new_live_set;
-#endif
 
     if (!start_flag) {
 
@@ -1061,16 +1059,14 @@ long seq_epoch (const char* dirname, int port)
 	GET_QVALUE(val, outputq);
 	while (val != TERM_VAL) {
 	    live_set.insert(val);
-#ifndef METHOD2
-	    if (!finish_flag) new_live_set.insert(val);
-#endif
 	    GET_QVALUE(val, outputq);
 	} 
 
 #ifdef STATS
 	live_set_size = live_set.size();
-	live_set_idle = idle;
-	idle = 0;
+	live_set_send_idle = send_idle;
+	live_set_recv_idle = recv_idle;
+	send_idle = recv_idle = 0;
 	gettimeofday(&live_receive_done_tv, NULL);
 #endif
 	// Reset queue and wait on sender
@@ -1119,10 +1115,12 @@ long seq_epoch (const char* dirname, int port)
 	gettimeofday(&new_live_start_tv, NULL);
 #endif
 
-#ifdef METHOD2
 	uint32_t* pls = outputq->buffer;
 	uint32_t* plsend = outputq->buffer + live_set.size();
-	if (live_set.size() > TAINTENTRIES) fprintf (stderr, "Oops: live set is %x\n", live_set.size());
+	if (live_set.size() > TAINTENTRIES) {
+	    fprintf (stderr, "Oops: live set is %x\n", live_set.size());
+	    return -1;
+	}
 	taint_t* p = ts_log;
 	u_long ts_offset = 0;
 	while (ts_offset + (u_long) p < (u_long) ts_log + adatasize && pls < plsend) {
@@ -1255,66 +1253,6 @@ long seq_epoch (const char* dirname, int port)
 		pls++;
 	    }
 	}
-#else
-
-	// Add live addresses
-	taint_t* p = ts_log;
-	for (uint32_t i = 0; i < adatasize/(sizeof(taint_t)*2); i++) {
-	    taint_t addr = *p++;
-	    taint_t val = *p++;
-	    if (val == 0) {
-		new_live_set.erase(addr);
-#ifdef STATS
-		new_live_zeros++;
-#endif
-	    } else if (val < 0xc0000000) {
-		if (start_flag || live_set.count(val)) {
-		    new_live_set.insert(addr);
-#ifdef STATS
-		    new_live_inputs++;
-#endif
-		} else {
-#ifdef STATS
-		    new_live_notlive++;
-#endif
-		}
-	    } else if (val <= 0xe0000000) {
-		new_live_set.insert(addr);
-#ifdef STATS
-		new_live_inputs++;
-#endif
-	    } else {
-		taint_entry* pentry = &merge_log[val-0xe0000001];
-		if (pentry->p1 || pentry->p2) {
-		    new_live_set.insert(addr);
-#ifdef STATS
-		    new_live_merges++;
-#endif
-		} else {
-		    new_live_set.erase(addr);
-#ifdef STATS
-		    new_live_merge_zeros++;
-#endif
-		}
-	    }
-#ifndef BUILD_64
-	    // To conserve memory, only map a portion at a time since we are streaming this
-	    if (i%(MAX_ADDRESS_MAP/(sizeof(taint_t)*2)) == MAX_ADDRESS_MAP/(sizeof(taint_t)*2)-1) {
-		rc = munmap (ts_log, MAX_ADDRESS_MAP);
-		if (rc < 0) {
-		    fprintf (stderr, "Cannot unmap address chunk\n");
-		}
-
-		p = (taint_t *) mmap (ts_log, MAX_ADDRESS_MAP, PROT_READ|PROT_WRITE, MAP_SHARED, afd, (i+1)*(sizeof(taint_t)*2));
-		if (p == MAP_FAILED) {
-		    fprintf (stderr, "Cannot map address input chunk, errno=%d\n", errno);
-		    return -1;
-		}
-		ts_log = p;
-	    }
-#endif
-	}
-#endif
 
 #ifndef BUILD_64
 	if (adatasize >= MAX_ADDRESS_MAP) {
@@ -1332,27 +1270,17 @@ long seq_epoch (const char* dirname, int port)
 #endif
 
 #ifdef STATS
-#ifndef METHOD2
-	new_live_set_size = new_live_set.size();
-#endif
 	gettimeofday(&new_live_send_tv, NULL);
-	new_live_set_idle = idle;
-	idle = 0;
+	new_live_set_send_idle = send_idle;
+	new_live_set_recv_idle = recv_idle;
+	send_idle = recv_idle = 0;
 #endif
 
-#ifndef METHOD2
-	for (auto iter = new_live_set.begin(); iter != new_live_set.end(); iter++) {
-	    PUT_QVALUE(*iter,inputq);
-	}
-#endif
 	PUT_QVALUE(TERM_VAL,inputq);
 	wb_index = wb_stop = 0;
     }
     
     live_set.clear();
-#ifndef METHOD2
-    new_live_set.clear();
-#endif
 
 #ifdef STATS
     gettimeofday(&live_done_tv, NULL);
@@ -1443,8 +1371,9 @@ long seq_epoch (const char* dirname, int port)
 
 #ifdef STATS
     gettimeofday(&output_done_tv, NULL);
-    output_idle = idle;
-    idle = 0;
+    output_send_idle = send_idle;
+    output_recv_idle = recv_idle;
+    send_idle = recv_idle = 0;
     output_merges = merges;
     merges = 0;
 #endif
@@ -1690,7 +1619,8 @@ long seq_epoch (const char* dirname, int port)
     fprintf (statsfile, "Receive time:            %6ld ms\n", ms_diff (recv_done_tv, start_tv));
     if (!start_flag) {
 	fprintf (statsfile, "Receive live set time:   %6ld ms\n", ms_diff (live_receive_done_tv, recv_done_tv));
-	fprintf (statsfile, "Receive live set idle:   %6lu ms\n", live_set_idle/1000);
+	fprintf (statsfile, "Receive live snd idle:   %6lu ms\n", live_set_send_idle/1000);
+	fprintf (statsfile, "Receive live rcv idle:   %6lu ms\n", live_set_recv_idle/1000);
 	if (!finish_flag) {
 	    fprintf (statsfile, "Prune live set time:     %6ld ms\n", ms_diff (new_live_start_tv, live_receive_done_tv));
 	} else {
@@ -1700,14 +1630,17 @@ long seq_epoch (const char* dirname, int port)
     if (!finish_flag) {
 	fprintf (statsfile, "Make live set time:      %6ld ms\n", ms_diff (new_live_send_tv, new_live_start_tv));
 	fprintf (statsfile, "Send live set time:      %6ld ms\n", ms_diff (live_done_tv, new_live_send_tv));
-	fprintf (statsfile, "Send live set idle:      %6lu ms\n", new_live_set_idle/1000);
+	fprintf (statsfile, "Send live snd idle:      %6lu ms\n", new_live_set_send_idle/1000);
+	fprintf (statsfile, "Send live rcv idle:      %6lu ms\n", new_live_set_recv_idle/1000);
     }
     fprintf (statsfile, "Output processing time:  %6ld ms\n", ms_diff (output_done_tv, live_done_tv));
-    fprintf (statsfile, "Output processing idle:  %6lu ms\n", output_idle/1000);
+    fprintf (statsfile, "Output proc. send idle:  %6lu ms\n", output_send_idle/1000);
+    fprintf (statsfile, "Output proc. recv idle:  %6lu ms\n", output_recv_idle/1000);
     if (!finish_flag) {
 	fprintf (statsfile, "Index generation time:   %6ld ms\n", ms_diff (index_created_tv, output_done_tv));
 	fprintf (statsfile, "Address processing time: %6ld ms\n", ms_diff (address_done_tv, index_created_tv));
-	fprintf (statsfile, "Address processing idle: %6lu ms\n", idle/1000);
+	fprintf (statsfile, "Address proc. send idle: %6lu ms\n", send_idle/1000);
+	fprintf (statsfile, "Address proc. recv idle: %6lu ms\n", recv_idle/1000);
 	fprintf (statsfile, "Finish time:             %6ld ms\n", ms_diff (end_tv, address_done_tv));
     } else {
 	fprintf (statsfile, "Finish time:             %6ld ms\n", ms_diff (end_tv, output_done_tv));
