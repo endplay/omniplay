@@ -25,6 +25,7 @@ using namespace std;
 
 //#define DEBUG(x) ((x)==0x175ae21 || (x)==(0x175ae21-0x16db75)|| (x)==(0x175ae21-0x192dce) || (x)==(0x175ae21-0x376641) || (x)==(0x175ae21-0x37e321) || (x)==(0x175ae21-0x3b1611) || (x)==(0x175ae21-0x3ebc29) || (x)==(0x175ae21-0x4676eb) || (x)==(0x175ae21-0x4fba98))
 #define STATS
+#define METHOD2
 
 // Set up limits here - need to be less generate with 32-bit address space
 #ifdef USE_NW
@@ -96,7 +97,7 @@ u_long merges = 0, directs = 0, indirects = 0, values = 0, output_merges;
 u_long idle = 0, live_set_idle = 0, new_live_set_idle = 0, output_idle = 0;
 u_long atokens = 0, passthrus = 0, aresolved = 0, aindirects = 0, avalues = 0, unmodified = 0, written = 0;
 u_long prune_cnt = 0, simplify_cnt = 0;
-u_long new_live_zeros = 0, new_live_inputs = 0, new_live_merges = 0, new_live_merge_zeros = 0, new_live_notlive = 0;
+u_long new_live_no_changes = 0, new_live_zeros = 0, new_live_inputs = 0, new_live_merges = 0, new_live_merge_zeros = 0, new_live_notlive = 0;
 u_long live_set_size = 0, new_live_set_size = 0;
 u_long values_sent = 0, values_rcvd = 0;
 struct timeval start_tv, recv_done_tv, output_done_tv, index_created_tv, address_done_tv, end_tv;
@@ -1049,18 +1050,22 @@ long seq_epoch (const char* dirname, int port)
 #endif
 
     unordered_set<uint32_t> live_set;
+#ifndef METHOD2    
     unordered_set<uint32_t> new_live_set;
+#endif
 
     if (!start_flag) {
 
 	// Wait for preceding epoch to send list of live addresses
 	uint32_t val;
-	do {
-	    GET_QVALUE(val, outputq);
-	    if (val == TERM_VAL) break;
+	GET_QVALUE(val, outputq);
+	while (val != TERM_VAL) {
 	    live_set.insert(val);
+#ifndef METHOD2
 	    if (!finish_flag) new_live_set.insert(val);
-	}  while (1);
+#endif
+	    GET_QVALUE(val, outputq);
+	} 
 
 #ifdef STATS
 	live_set_size = live_set.size();
@@ -1113,6 +1118,144 @@ long seq_epoch (const char* dirname, int port)
 #ifdef STATS
 	gettimeofday(&new_live_start_tv, NULL);
 #endif
+
+#ifdef METHOD2
+	uint32_t* pls = outputq->buffer;
+	uint32_t* plsend = outputq->buffer + live_set.size();
+	if (live_set.size() > TAINTENTRIES) fprintf (stderr, "Oops: live set is %x\n", live_set.size());
+	taint_t* p = ts_log;
+	u_long ts_offset = 0;
+	while (ts_offset + (u_long) p < (u_long) ts_log + adatasize && pls < plsend) {
+	    taint_t addr = *p;
+	    if (*pls < addr) {
+		// No change - so still in live set
+		PUT_QVALUE(*pls,inputq);
+#ifdef STATS
+		new_live_no_changes++;
+#endif
+		pls++;
+	    } else {
+		taint_t val = *(p+1);
+		if (val == 0) {
+		    // Do nothing
+#ifdef STATS
+		    new_live_zeros++;
+#endif
+		} else if (val < 0xc0000000) {
+		    if (start_flag || live_set.count(val)) {
+			PUT_QVALUE(addr,inputq);
+#ifdef STATS
+			new_live_inputs++;
+#endif
+		    } else {
+#ifdef STATS
+			new_live_notlive++;
+#endif
+		    }
+		} else if (val <= 0xe0000000) {
+		    PUT_QVALUE(addr,inputq);
+#ifdef STATS
+		    new_live_inputs++;
+#endif
+		} else {
+		    taint_entry* pentry = &merge_log[val-0xe0000001];
+		    if (pentry->p1 || pentry->p2) {
+			PUT_QVALUE(addr,inputq);
+#ifdef STATS
+			new_live_merges++;
+#endif
+		    } else {
+#ifdef STATS
+			new_live_merge_zeros++;
+#endif
+		    }
+		}
+		p += 2;
+		if (addr == *pls) pls++;
+	    }
+#ifndef BUILD_64
+	    // To conserve memory, only map a portion at a time since we are streaming this
+	    if ((u_long) p - (u_long) ts_log >= MAX_ADDRESS_MAP) {
+		rc = munmap (ts_log, MAX_ADDRESS_MAP);
+		if (rc < 0) {
+		    fprintf (stderr, "Cannot unmap address chunk\n");
+		}
+		
+		ts_offset += MAX_ADDRESS_MAP;
+		p = (taint_t *) mmap (ts_log, MAX_ADDRESS_MAP, PROT_READ|PROT_WRITE, MAP_SHARED, afd, ts_offset);
+		if (p == MAP_FAILED) {
+		    fprintf (stderr, "Cannot map address input chunk, errno=%d\n", errno);
+		    return -1;
+		}
+		ts_log = p;
+	    }
+#endif
+	}
+	if (pls == plsend) {
+	    while (ts_offset + (u_long) p < (u_long) ts_log + adatasize) {
+		taint_t addr = *p;
+		taint_t val = *(p+1);
+		if (val == 0) {
+		    // Do nothing
+#ifdef STATS
+		    new_live_zeros++;
+#endif
+		} else if (val < 0xc0000000) {
+		    if (start_flag || live_set.count(val)) {
+			PUT_QVALUE(addr,inputq);
+#ifdef STATS
+			new_live_inputs++;
+#endif
+		    } else {
+#ifdef STATS
+			new_live_notlive++;
+#endif
+		    }
+		} else if (val <= 0xe0000000) {
+		    PUT_QVALUE(addr,inputq);
+#ifdef STATS
+		    new_live_inputs++;
+#endif
+		} else {
+		    taint_entry* pentry = &merge_log[val-0xe0000001];
+		    if (pentry->p1 || pentry->p2) {
+			PUT_QVALUE(addr,inputq);
+#ifdef STATS
+			    new_live_merges++;
+#endif
+		    } else {
+#ifdef STATS
+			new_live_merge_zeros++;
+#endif
+		    }
+		}
+		p += 2;
+#ifndef BUILD_64
+		// To conserve memory, only map a portion at a time since we are streaming this
+		if ((u_long) p - (u_long) ts_log >= MAX_ADDRESS_MAP) {
+		    rc = munmap (ts_log, MAX_ADDRESS_MAP);
+		    if (rc < 0) {
+			fprintf (stderr, "Cannot unmap address chunk\n");
+		    }
+		    
+		    ts_offset += MAX_ADDRESS_MAP;
+		    p = (taint_t *) mmap (ts_log, MAX_ADDRESS_MAP, PROT_READ|PROT_WRITE, MAP_SHARED, afd, ts_offset);
+		    if (p == MAP_FAILED) {
+			fprintf (stderr, "Cannot map address input chunk, errno=%d\n", errno);
+			return -1;
+		    }
+		    ts_log = p;
+		}
+#endif
+	    }
+	}
+	if (ts_offset + (u_long) p == (u_long) ts_log + adatasize) {
+	    while (pls < plsend) {
+		PUT_QVALUE(*pls,inputq);
+		pls++;
+	    }
+	}
+#else
 
 	// Add live addresses
 	taint_t* p = ts_log;
@@ -1171,6 +1314,8 @@ long seq_epoch (const char* dirname, int port)
 	    }
 #endif
 	}
+#endif
+
 #ifndef BUILD_64
 	if (adatasize >= MAX_ADDRESS_MAP) {
 	    rc = munmap (ts_log, MAX_ADDRESS_MAP);
@@ -1187,20 +1332,27 @@ long seq_epoch (const char* dirname, int port)
 #endif
 
 #ifdef STATS
+#ifndef METHOD2
 	new_live_set_size = new_live_set.size();
+#endif
 	gettimeofday(&new_live_send_tv, NULL);
 	new_live_set_idle = idle;
 	idle = 0;
 #endif
+
+#ifndef METHOD2
 	for (auto iter = new_live_set.begin(); iter != new_live_set.end(); iter++) {
 	    PUT_QVALUE(*iter,inputq);
 	}
+#endif
 	PUT_QVALUE(TERM_VAL,inputq);
 	wb_index = wb_stop = 0;
     }
     
     live_set.clear();
+#ifndef METHOD2
     new_live_set.clear();
+#endif
 
 #ifdef STATS
     gettimeofday(&live_done_tv, NULL);
@@ -1577,9 +1729,10 @@ long seq_epoch (const char* dirname, int port)
 	fprintf (statsfile, "Address tokens %lu passthrus %lu resolved %lu, indirects %lu values %lu unmodified %lu, merges %lu\n", 
 		 atokens, passthrus, aresolved, aindirects, avalues, unmodified, merges);
     }
-    if (!start_flag) {
+    if (!finish_flag) {
 	fprintf (statsfile, "New live set has size %ld\n", (long) new_live_set_size);
-	fprintf (statsfile, "zeros %lu, inputs %lu, merges %lu, merge_zeros %lu, not live %lu\n", new_live_zeros, 
+	fprintf (statsfile, "no changes %lu, zeros %lu, inputs %lu, merges %lu, merge_zeros %lu, not live %lu\n", 
+		 new_live_no_changes, new_live_zeros, 
 		 new_live_inputs, new_live_merges, new_live_merge_zeros, new_live_notlive);
     }
     if (!start_flag) {

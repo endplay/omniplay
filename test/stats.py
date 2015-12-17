@@ -14,6 +14,7 @@ address = []
 idle = []
 finish = []
 prune = []
+make = []
 send = []
 
 # For address processing
@@ -70,6 +71,8 @@ for i in range(epochs):
             receive.append(int(line.split()[4]))
         if line[:19] == "Prune live set time":
             prune.append(int(line.split()[4]))
+        if line[:18] == "Make live set time":
+            make.append(int(line.split()[4]))
         if line[:18] == "Send live set time":
             send.append(int(line.split()[4]))
 
@@ -77,6 +80,7 @@ for i in range(epochs):
 index.append(0)
 address.append(0)
 idle.append(0)
+make.append(0)
 send.append(0)
 
 values.append(0)
@@ -96,12 +100,12 @@ while len(prune) < epochs:
     send.append(0)
 
 if (seq):
-    print "Epoch   DIFT     FF  Recv.  Prune   Send Output  Index Address   Idle Finish"
+    print "Epoch    DIFT     FF   Recv.  Prune   Make   Send Output  Index Address   Idle Finish"
     for i in range(epochs):
-        print "%5s %6s %6s %6s %6s %6s %6s %6d %7d %6d %6d"%(i,dift[i],recv[i],receive[i],prune[i],send[i],output[i],index[i], address[i], idle[i], finish[i])
-    print "  Max %6d %6d %6d %6d %6d %6d %6d %7d %6d %6d"%(max(dift),max(recv),max(receive),max(prune),max(send),max(output),max(index),max(address), max(idle), max(finish))
-    print "Total %6d %6d %6d %6d %6d %6d %6d %7d %6d %6d"%(sum(dift),sum(recv),sum(receive),sum(prune),sum(send),sum(output),sum(index),sum(address), sum(idle), sum(finish))
-    print " Core %6d %6d %6d %6d %6d %6d %6d %7d %6d %6d"%(sum(dift)/epochs,sum(recv)/epochs,sum(receive)/epochs,sum(prune)/epochs,sum(send)/epochs,sum(output)/epochs,sum(index)/epochs,sum(address)/epochs, sum(idle)/epochs,sum(finish)/epochs)
+        print "%5s %7s %6s %7s %6s %6s %6s %6s %6d %7d %6d %6d"%(i,dift[i],recv[i],receive[i],prune[i],make[i],send[i],output[i],index[i], address[i], idle[i], finish[i])
+    print "  Max %7d %6d %7d %6d %6d %6d %6d %6d %7d %6d %6d"%(max(dift),max(recv),max(receive),max(prune),max(make),max(send),max(output),max(index),max(address), max(idle), max(finish))
+    print "Total %7d %6d %7d %6d %6d %6d %6d %6d %7d %6d %6d"%(sum(dift),sum(recv),sum(receive),sum(prune),sum(make),sum(send),sum(output),sum(index),sum(address), sum(idle), sum(finish))
+    print " Core %7d %6d %7d %6d %6d %6d %6d %6d %7d %6d %6d"%(sum(dift)/epochs,sum(recv)/epochs,sum(receive)/epochs,sum(prune)/epochs,sum(make)/epochs,sum(send)/epochs,sum(output)/epochs,sum(index)/epochs,sum(address)/epochs, sum(idle)/epochs,sum(finish)/epochs)
 else:
     print "Epoch   DIFT Output  Index Address   Idle Finish"
     for i in range(epochs):
