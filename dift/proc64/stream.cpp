@@ -75,9 +75,15 @@ unordered_map<taint_t,unordered_set<uint32_t>*> resolved;
 int                 outrfd;
 uint32_t            outrindex = 0;
 struct taint_entry* merge_log;
-struct taintq*      inputq;
 uint32_t            can_read, can_write;
-struct taintq*      outputq;
+
+struct taintq_hdr*  outputq_hdr;
+struct taintq_hdr*  inputq_hdr;
+uint32_t*           outputq_buf;
+uint32_t*           inputq_buf;
+int                 oqfd = -1;
+int                 iqfd = -1;
+
 bool                start_flag = false;
 bool                finish_flag = false;
 #ifdef BUILD_64
@@ -108,136 +114,102 @@ static long ms_diff (struct timeval tv1, struct timeval tv2)
 }
 #endif
 
-#ifdef USE_LF
-
-#ifdef STATS
-#define IDLE					\
-    {						\
-	struct timeval tv1, tv2;		\
-	gettimeofday(&tv1, NULL);		\
-	usleep (100);				\
-	gettimeofday(&tv2, NULL);		\
-	idle += tv2.tv_usec - tv1.tv_usec;	\
-	idle += (tv2.tv_sec - tv1.tv_sec)*1000000;	\
-    }
-#else
-#define IDLE usleep (100);
-#endif
-
-#define PUT_QVALUE(val,q)						\
-    {									\
-	while (can_write == 0) {					\
-	    IDLE;							\
-	    if ((q)->write_index >= (q)->read_index) {			\
-		can_write = TAINTENTRIES - ((q)->write_index - (q)->read_index); \
-	    } else {							\
-		can_write = (q)->read_index - (q)->write_index;		\
-	    }								\
-	}								\
-	(q)->buffer[(q)->write_index] = (val);				\
-	(q)->write_index++;						\
-	if ((q)->write_index == TAINTENTRIES) (q)->write_index = 0;	\
-	can_write--;							\
-    } 
-
-
-// This will return a bogus value when the done flag is set and all entries are read
-#define GET_QVALUE(val,q)						\
-    {									\
-	while (can_read == 0) {						\
-	    IDLE;							\
-	    if ((q)->read_index > (q)->write_index) {			\
-		can_read = TAINTENTRIES - ((q)->read_index - (q)->write_index); \
-	    } else {							\
-		can_read = (q)->write_index - (q)->read_index;		\
-	    }								\
-	}								\
-	(val) = (q)->buffer[(q)->read_index];				\
-	(q)->read_index++;						\
-	if ((q)->read_index == TAINTENTRIES) (q)->read_index = 0;	\
-	can_read--;							\
-    }
-
-#else
-
 static u_long wb_index = 0, wb_stop = 0, rb_index = 0, rb_stop = 0;
 
-static void taintq_push (uint32_t val, struct taintq* q)
+static void taintq_push (uint32_t val, struct taintq_hdr* qh, uint32_t*& qb, int qfd)
 {
     if (wb_index == wb_stop) {
 	// Get space for next bucket 
-	pthread_mutex_lock(&(q->lock));
-	while ((q->write_index+1)%TAINTBUCKETS == q->read_index) {
+	pthread_mutex_lock(&(qh->lock));
+	while ((qh->write_index+1)%TAINTBUCKETS == qh->read_index) {
 #ifdef STATS
 	    struct timeval tv1, tv2;	       
 	    gettimeofday(&tv1, NULL);	       
 #endif
-	    pthread_cond_wait(&(q->full), &(q->lock));
+	    pthread_cond_wait(&(qh->full), &(qh->lock));
 #ifdef STATS
 	    gettimeofday(&tv2, NULL);		
 	    send_idle += tv2.tv_usec - tv1.tv_usec;	
 	    send_idle += (tv2.tv_sec - tv1.tv_sec)*1000000;	
 #endif
 	}
-	wb_index = wb_index % TAINTENTRIES;
+	if (wb_index == TAINTQMAPENTRIES) {
+	    if (munmap (qb, TAINTQMAPSIZE) < 0) {
+		fprintf (stderr, "Cannot unmap taintq segment, errno=%d\n", errno);
+	    }
+	    qb = (uint32_t *) mmap (0, TAINTQMAPSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, qfd, qh->write_index*TAINTBUCKETSIZE);
+	    if (qb == MAP_FAILED) {
+		fprintf (stderr, "Cannot map taintq segment, errno=%d\n", errno);
+		exit (0);
+	    }
+	    wb_index = 0;
+	}
 	wb_stop = wb_index + TAINTBUCKETENTRIES;
-	pthread_mutex_unlock(&(q->lock));
+	pthread_mutex_unlock(&(qh->lock));
     } 
 
-    q->buffer[wb_index++] = val;
+    qb[wb_index++] = val;
 
     if (wb_index == wb_stop || val == TERM_VAL) {
 	// This bucket is done
 	if (val == TERM_VAL) {
-	    q->buffer[(wb_stop-1)%TAINTENTRIES] = TERM_VAL; // Mark last bucket
+	    qb[(wb_stop-1)%TAINTENTRIES] = TERM_VAL; // Mark last bucket
 	}
-	pthread_mutex_lock(&(q->lock));
-	q->write_index = (q->write_index+1)%TAINTBUCKETS;
-	pthread_cond_signal(&(q->empty));
-	pthread_mutex_unlock(&(q->lock));
+	pthread_mutex_lock(&(qh->lock));
+	qh->write_index = (qh->write_index+1)%TAINTBUCKETS;
+	pthread_cond_signal(&(qh->empty));
+	pthread_mutex_unlock(&(qh->lock));
     }
 }
 
-static void taintq_pull (uint32_t& val, struct taintq* q)
+static void taintq_pull (uint32_t& val, struct taintq_hdr* qh, uint32_t*& qb, int qfd)
 {
     if (rb_index == rb_stop) {
 	// Get space for next bucket 
-	pthread_mutex_lock(&(q->lock));
-	while (q->write_index == q->read_index) {
+	pthread_mutex_lock(&(qh->lock));
+	while (qh->write_index == qh->read_index) {
 #ifdef STATS
 	    struct timeval tv1, tv2;	       
 	    gettimeofday(&tv1, NULL);	       
 #endif
-	    pthread_cond_wait(&(q->empty), &(q->lock));
+	    pthread_cond_wait(&(qh->empty), &(qh->lock));
 #ifdef STATS
 	    gettimeofday(&tv2, NULL);		
 	    recv_idle += tv2.tv_usec - tv1.tv_usec;	
 	    recv_idle += (tv2.tv_sec - tv1.tv_sec)*1000000;	
 #endif
 	}
-	rb_index = rb_index % TAINTENTRIES;
+	if (rb_index == TAINTQMAPENTRIES) {
+	    if (munmap (qb, TAINTQMAPSIZE) < 0) {
+		fprintf (stderr, "Cannot unmap taintq segment, errno=%d\n", errno);
+	    }
+	    qb = (uint32_t *) mmap (0, TAINTQMAPSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, qfd, qh->read_index*TAINTBUCKETSIZE);
+	    if (qb == MAP_FAILED) {
+		fprintf (stderr, "Cannot map taintq segment, errno=%d\n", errno);
+		exit (0);
+	    }
+	    rb_index = 0;
+	}
 	rb_stop = rb_index + TAINTBUCKETENTRIES;
-	pthread_mutex_unlock(&(q->lock));
+	pthread_mutex_unlock(&(qh->lock));
     } 
 
-    val = q->buffer[rb_index++];
+    val = qb[rb_index++];
 
     if (rb_index == rb_stop || val == TERM_VAL) {
 	// This bucket is done
-	pthread_mutex_lock(&(q->lock));
-	q->read_index = (q->read_index+1)%TAINTBUCKETS;
-	pthread_cond_signal(&(q->full));
-	pthread_mutex_unlock(&(q->lock));
+	pthread_mutex_lock(&(qh->lock));
+	qh->read_index = (qh->read_index+1)%TAINTBUCKETS;
+	pthread_cond_signal(&(qh->full));
+	pthread_mutex_unlock(&(qh->lock));
     }
 }
 
-#define PUT_QVALUE(val,q) taintq_push (val,q);
-#define GET_QVALUE(val,q) taintq_pull (val,q);
+#define PUT_QVALUE(val,q,qb,qfd) taintq_push (val,q,qb,qfd);
+#define GET_QVALUE(val,q,qb,qfd) taintq_pull (val,q,qb,qfd);
 
-#endif
-
-#define DOWN_QSEM(q) sem_wait(&(q)->epoch_sem);
-#define UP_QSEM(q) sem_post(&(q)->epoch_sem);
+#define DOWN_QSEM(qh) sem_wait(&(qh)->epoch_sem);
+#define UP_QSEM(qh) sem_post(&(qh)->epoch_sem);
 
 #ifdef BUILD_64
 static void flush_outrbuf()
@@ -564,13 +536,13 @@ static void map_iter (taint_t value, uint32_t output_token, bool& unresolved_val
     for (auto iter2 = pset->begin(); iter2 != pset->end(); iter2++) {
 	if (*iter2 < 0xc0000000 && !start_flag) {
 	    if (!unresolved_vals) {
-		PUT_QVALUE(output_token,outputq);
+		PUT_QVALUE(output_token,outputq_hdr,outputq_buf,oqfd);
 #ifdef STATS
 		values_sent++;
 #endif
 		unresolved_vals = true;
 	    }
-	    PUT_QVALUE (*iter2,outputq);
+	    PUT_QVALUE (*iter2,outputq_hdr,outputq_buf,oqfd);
 #ifdef STATS
 	    values_sent++;
 #endif
@@ -759,9 +731,9 @@ long stream_epoch (const char* dirname, int port)
 		    directs++;
 #endif
 		    if (value < 0xc0000000 && !start_flag) {
-			PUT_QVALUE (output_token,outputq);
-			PUT_QVALUE (value,outputq);
-			PUT_QVALUE (0,outputq);
+			PUT_QVALUE (output_token,outputq_hdr,outputq_buf,oqfd);
+			PUT_QVALUE (value,outputq_hdr,outputq_buf,oqfd);
+			PUT_QVALUE (0,outputq_hdr,outputq_buf,oqfd);
 #ifdef DEBUG
 			if (DEBUG(output_token)) {
 			    fprintf (debugfile, "output %x to unresolved addr %lx\n", output_token, (long) value);
@@ -793,7 +765,7 @@ long stream_epoch (const char* dirname, int port)
 #endif
 		    bool unresolved_vals = false, resolved_vals = false;
 		    map_iter (value, output_token, unresolved_vals, resolved_vals);
-		    if (unresolved_vals) PUT_QVALUE(0,outputq);
+		    if (unresolved_vals) PUT_QVALUE(0,outputq_hdr,outputq_buf,oqfd);
 		    if (resolved_vals) PRINT_RVALUE(0);
 		}
 	    }
@@ -828,14 +800,14 @@ long stream_epoch (const char* dirname, int port)
 	
 	// Now, process input queue of later epoch outputs
 	while (1) {
-	    GET_QVALUE(otoken, inputq);
+	    GET_QVALUE(otoken, inputq_hdr, inputq_buf, iqfd);
 	    if (otoken == TERM_VAL) break;
 #ifdef STATS
 	    atokens++;
 #endif
 	    bool unresolved_vals = false, resolved_vals = false;
 
-	    GET_QVALUE(value, inputq);
+	    GET_QVALUE(value, inputq_hdr, inputq_buf, iqfd);
 	    while (value) {
 #ifdef STATS
 		avalues++;
@@ -848,7 +820,7 @@ long stream_epoch (const char* dirname, int port)
 #endif
 			// Not in this epoch - so pass through to next
 			if (!unresolved_vals) {
-			    PUT_QVALUE(otoken+output_token,outputq);
+			    PUT_QVALUE(otoken+output_token,outputq_hdr,outputq_buf,oqfd);
 			    unresolved_vals = 1;
 			}
 #ifdef DEBUG
@@ -856,7 +828,7 @@ long stream_epoch (const char* dirname, int port)
 			    fprintf (debugfile, "output %x(%x/%x) pass through value %lx\n", otoken+output_token, otoken, output_token, (long) value);
 			}
 #endif
-			PUT_QVALUE(value,outputq);
+			PUT_QVALUE(value,outputq_hdr,outputq_buf,oqfd);
 		    }
 		} else {
 		    if (iter->second < 0xc0000000 && !start_flag) {
@@ -866,7 +838,7 @@ long stream_epoch (const char* dirname, int port)
 #endif
 			    // Not in this epoch - so pass through to next
 			    if (!unresolved_vals) {
-				PUT_QVALUE(otoken+output_token,outputq);
+				PUT_QVALUE(otoken+output_token,outputq_hdr,outputq_buf,oqfd);
 				unresolved_vals = true;
 			    }
 #ifdef DEBUG
@@ -874,7 +846,7 @@ long stream_epoch (const char* dirname, int port)
 				fprintf (debugfile, "output %x to unresolved value %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
 			    }
 #endif
-			    PUT_QVALUE(iter->second,outputq);
+			    PUT_QVALUE(iter->second,outputq_hdr,outputq_buf,oqfd);
 			} // Else taint was cleared in this epoch
 		    } else if (iter->second < 0xe0000001) {
 			// Maps to input
@@ -914,16 +886,16 @@ long stream_epoch (const char* dirname, int port)
 			map_iter (iter->second, otoken+output_token, unresolved_vals, resolved_vals);
 		    }
 		}
-		GET_QVALUE(value, inputq);
+		GET_QVALUE(value, inputq_hdr, inputq_buf, iqfd);
 	    }
-	    if (unresolved_vals) PUT_QVALUE(0,outputq);
+	    if (unresolved_vals) PUT_QVALUE(0,outputq_hdr,outputq_buf,oqfd);
 	    if (resolved_vals) PRINT_RVALUE(0);
 	}
 #ifdef STATS
 	gettimeofday(&address_done_tv, NULL);
 #endif
     }
-    if (!start_flag) PUT_QVALUE(TERM_VAL,outputq);
+    if (!start_flag) PUT_QVALUE(TERM_VAL,outputq_hdr,outputq_buf,oqfd);
 
     flush_outrbuf ();
     close (outrfd);
@@ -1018,10 +990,6 @@ long stream_epoch (const char* dirname, int port)
 	fprintf (statsfile, "Address tokens %lu passthrus %lu resolved %lu, indirects %lu values %lu unmodified %lu, merges %lu\n", 
 		 atokens, passthrus, aresolved, aindirects, avalues, unmodified, merges);
     }
-    if (!start_flag) {
-	written = outputq->write_index;
-	fprintf (statsfile, "Wrote %lu entries (%lu bytes)\n", written, written*sizeof(u_long)); 
-    }
     fprintf (statsfile, "Unique indirects %ld\n", (long) resolved.size());
 #endif
 
@@ -1056,10 +1024,10 @@ long seq_epoch (const char* dirname, int port)
 
 	// Wait for preceding epoch to send list of live addresses
 	uint32_t val;
-	GET_QVALUE(val, outputq);
+	GET_QVALUE(val, outputq_hdr, outputq_buf, oqfd);
 	while (val != TERM_VAL) {
 	    live_set.insert(val);
-	    GET_QVALUE(val, outputq);
+	    GET_QVALUE(val, outputq_hdr, outputq_buf, oqfd);
 	} 
 
 #ifdef STATS
@@ -1070,9 +1038,20 @@ long seq_epoch (const char* dirname, int port)
 	gettimeofday(&live_receive_done_tv, NULL);
 #endif
 	// Reset queue and wait on sender
-	outputq->read_index = outputq->write_index = 0;
+	outputq_hdr->read_index = outputq_hdr->write_index = 0;
 	rb_index = rb_stop = 0;
-	UP_QSEM (outputq);
+	if (outputq_hdr->write_index*TAINTBUCKETSIZE >= TAINTQMAPSIZE) {
+	    if (munmap (outputq_buf, TAINTQMAPSIZE) < 0) {
+		fprintf (stderr, "Cannot unmap taintq segment, errno=%d\n", errno);
+	    }
+	    outputq_buf = (uint32_t *) mmap (0, TAINTQMAPSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, oqfd, 0);
+	    if (outputq_buf == MAP_FAILED) {
+		fprintf (stderr, "Cannot map taintq segment, errno=%d\n", errno);
+		exit (0);
+	    }
+	    wb_index = 0;
+	}
+	UP_QSEM (outputq_hdr);
 
 	// Prune the merge log
 	taint_entry* mptr = merge_log;
@@ -1115,9 +1094,9 @@ long seq_epoch (const char* dirname, int port)
 	gettimeofday(&new_live_start_tv, NULL);
 #endif
 
-	uint32_t* pls = outputq->buffer;
-	uint32_t* plsend = outputq->buffer + live_set.size();
-	if (live_set.size() > TAINTENTRIES) {
+	uint32_t* pls = outputq_buf;
+	uint32_t* plsend = outputq_buf + live_set.size();
+	if (live_set.size() > TAINTQMAPENTRIES) {
 	    fprintf (stderr, "Oops: live set is %x\n", live_set.size());
 	    return -1;
 	}
@@ -1127,7 +1106,7 @@ long seq_epoch (const char* dirname, int port)
 	    taint_t addr = *p;
 	    if (*pls < addr) {
 		// No change - so still in live set
-		PUT_QVALUE(*pls,inputq);
+		PUT_QVALUE(*pls,inputq_hdr,inputq_buf,iqfd);
 #ifdef STATS
 		new_live_no_changes++;
 #endif
@@ -1141,7 +1120,7 @@ long seq_epoch (const char* dirname, int port)
 #endif
 		} else if (val < 0xc0000000) {
 		    if (start_flag || live_set.count(val)) {
-			PUT_QVALUE(addr,inputq);
+			PUT_QVALUE(addr,inputq_hdr,inputq_buf,iqfd);
 #ifdef STATS
 			new_live_inputs++;
 #endif
@@ -1151,14 +1130,14 @@ long seq_epoch (const char* dirname, int port)
 #endif
 		    }
 		} else if (val <= 0xe0000000) {
-		    PUT_QVALUE(addr,inputq);
+		    PUT_QVALUE(addr,inputq_hdr,inputq_buf,iqfd);
 #ifdef STATS
 		    new_live_inputs++;
 #endif
 		} else {
 		    taint_entry* pentry = &merge_log[val-0xe0000001];
 		    if (pentry->p1 || pentry->p2) {
-			PUT_QVALUE(addr,inputq);
+			PUT_QVALUE(addr,inputq_hdr,inputq_buf,iqfd);
 #ifdef STATS
 			new_live_merges++;
 #endif
@@ -1200,7 +1179,7 @@ long seq_epoch (const char* dirname, int port)
 #endif
 		} else if (val < 0xc0000000) {
 		    if (start_flag || live_set.count(val)) {
-			PUT_QVALUE(addr,inputq);
+			PUT_QVALUE(addr,inputq_hdr,inputq_buf,iqfd);
 #ifdef STATS
 			new_live_inputs++;
 #endif
@@ -1210,14 +1189,14 @@ long seq_epoch (const char* dirname, int port)
 #endif
 		    }
 		} else if (val <= 0xe0000000) {
-		    PUT_QVALUE(addr,inputq);
+		    PUT_QVALUE(addr,inputq_hdr,inputq_buf,iqfd);
 #ifdef STATS
 		    new_live_inputs++;
 #endif
 		} else {
 		    taint_entry* pentry = &merge_log[val-0xe0000001];
 		    if (pentry->p1 || pentry->p2) {
-			PUT_QVALUE(addr,inputq);
+			PUT_QVALUE(addr,inputq_hdr,inputq_buf,iqfd);
 #ifdef STATS
 			    new_live_merges++;
 #endif
@@ -1249,7 +1228,7 @@ long seq_epoch (const char* dirname, int port)
 	}
 	if (ts_offset + (u_long) p == (u_long) ts_log + adatasize) {
 	    while (pls < plsend) {
-		PUT_QVALUE(*pls,inputq);
+		PUT_QVALUE(*pls,inputq_hdr,inputq_buf,iqfd);
 		pls++;
 	    }
 	}
@@ -1276,7 +1255,7 @@ long seq_epoch (const char* dirname, int port)
 	send_idle = recv_idle = 0;
 #endif
 
-	PUT_QVALUE(TERM_VAL,inputq);
+	PUT_QVALUE(TERM_VAL,inputq_hdr,inputq_buf,iqfd);
 	wb_index = wb_stop = 0;
     }
     
@@ -1301,9 +1280,9 @@ long seq_epoch (const char* dirname, int port)
 		    directs++;
 #endif
 		    if (value < 0xc0000000 && !start_flag) {
-			PUT_QVALUE (output_token,outputq);
-			PUT_QVALUE (value,outputq);
-			PUT_QVALUE (0,outputq);
+			PUT_QVALUE (output_token,outputq_hdr,outputq_buf,oqfd);
+			PUT_QVALUE (value,outputq_hdr,outputq_buf,oqfd);
+			PUT_QVALUE (0,outputq_hdr,outputq_buf,oqfd);
 #ifdef STATS
 			values_sent += 3;
 #endif
@@ -1346,7 +1325,7 @@ long seq_epoch (const char* dirname, int port)
 			bool unresolved_vals = false, resolved_vals = false;
 			map_iter (value, output_token, unresolved_vals, resolved_vals);
 			if (unresolved_vals) {
-			    PUT_QVALUE(0,outputq);
+			    PUT_QVALUE(0,outputq_hdr,outputq_buf,oqfd);
 #ifdef STATS
 			    values_sent++;
 #endif
@@ -1389,11 +1368,11 @@ long seq_epoch (const char* dirname, int port)
 #endif
 
 	// Wait on sender
-	DOWN_QSEM(inputq);
+	DOWN_QSEM(inputq_hdr);
 
 	// Now, process input queue of later epoch outputs
 	while (1) {
-	    GET_QVALUE(otoken, inputq);
+	    GET_QVALUE(otoken, inputq_hdr, inputq_buf, iqfd);
 #ifdef STATS
 	    values_rcvd++;
 #endif
@@ -1403,7 +1382,7 @@ long seq_epoch (const char* dirname, int port)
 #endif
 	    bool unresolved_vals = false, resolved_vals = false;
 
-	    GET_QVALUE(value, inputq);
+	    GET_QVALUE(value, inputq_hdr, inputq_buf, iqfd);
 #ifdef STATS
 	    values_rcvd++;
 #endif
@@ -1429,7 +1408,7 @@ long seq_epoch (const char* dirname, int port)
 #endif
 			// Not in this epoch - so pass through to next
 			if (!unresolved_vals) {
-			    PUT_QVALUE(otoken+output_token,outputq);
+			    PUT_QVALUE(otoken+output_token,outputq_hdr,outputq_buf,oqfd);
 #ifdef STATS
 			    values_sent++;
 #endif
@@ -1440,7 +1419,7 @@ long seq_epoch (const char* dirname, int port)
 			    fprintf (debugfile, "output %x(%x/%x) pass through value %lx\n", otoken+output_token, otoken, output_token, (long) value);
 			}
 #endif
-			PUT_QVALUE(value,outputq);
+			PUT_QVALUE(value,outputq_hdr,outputq_buf,oqfd);
 #ifdef STATS
 			values_sent++;
 #endif
@@ -1459,7 +1438,7 @@ long seq_epoch (const char* dirname, int port)
 #endif
 			    // Not in this epoch - so pass through to next
 			    if (!unresolved_vals) {
-				PUT_QVALUE(otoken+output_token,outputq);
+				PUT_QVALUE(otoken+output_token,outputq_hdr,outputq_buf,oqfd);
 #ifdef STATS
 				values_sent++;
 #endif
@@ -1470,7 +1449,7 @@ long seq_epoch (const char* dirname, int port)
 				fprintf (debugfile, "output %x to unresolved value %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
 			    }
 #endif
-			    PUT_QVALUE(iter->second,outputq);
+			    PUT_QVALUE(iter->second,outputq_hdr,outputq_buf,oqfd);
 #ifdef STATS
 			    values_sent++;
 #endif
@@ -1523,13 +1502,13 @@ long seq_epoch (const char* dirname, int port)
 			}
 		    }
 		}
-		GET_QVALUE(value, inputq);
+		GET_QVALUE(value, inputq_hdr, inputq_buf, iqfd);
 #ifdef STATS
 		values_rcvd++;
 #endif
 	    }
 	    if (unresolved_vals) {
-		PUT_QVALUE(0,outputq);
+		PUT_QVALUE(0,outputq_hdr,outputq_buf,oqfd);
 #ifdef STATS
 		values_sent++;
 #endif
@@ -1541,7 +1520,7 @@ long seq_epoch (const char* dirname, int port)
 #endif
     }
     if (!start_flag) {
-	PUT_QVALUE(TERM_VAL,outputq);
+	PUT_QVALUE(TERM_VAL,outputq_hdr,outputq_buf,oqfd);
 #ifdef STATS
 	values_sent++;
 #endif
@@ -1668,10 +1647,6 @@ long seq_epoch (const char* dirname, int port)
 		 new_live_no_changes, new_live_zeros, 
 		 new_live_inputs, new_live_merges, new_live_merge_zeros, new_live_notlive);
     }
-    if (!start_flag) {
-	written = outputq->write_index;
-	fprintf (statsfile, "Wrote %lu entries (%lu bytes)\n", written, written*sizeof(u_long)); 
-    }
     fprintf (statsfile, "Unique indirects %ld\n", (long) resolved.size());
     fprintf (statsfile, "Values rcvd %lu sent %lu\n", values_rcvd, values_sent);
 #endif
@@ -1760,96 +1735,34 @@ int connect_input_queue (struct recvdata* data)
     return s;
 }
 
-#ifdef USE_LF
-
-void send_stream (int s, struct taintq* q)
-{
-    // Listen on output queue and send over network
-    while (1) {
-	u_long can_send = 0;
-
-	while (can_send == 0) {
-	    usleep (100);
-	    if (q->read_index > q->write_index) {			
-		can_send = TAINTENTRIES - q->read_index;
-	    } else {								
-		can_send = q->write_index - q->read_index;		
-	    }		
-	}
-
-	long rc = safe_write (s, q->buffer + q->read_index, can_send*sizeof(uint32_t));
-	if (rc != (long)(can_send*sizeof(u_int32_t))) return; // Error sending the data
-
-	q->read_index += can_send;
-	if (q->buffer[(q->read_index-1)%TAINTENTRIES] == TERM_VAL) return; // No more data to send
-    }
-}
-
-void recv_stream (int s, struct taintq* q)
-{
-    // Get data and put on the inputq
-    while (1) {
-	u_long can_recv;
-	u_long partial_bytes = 0;
-	if (q->write_index >= q->read_index) {			
-	    can_recv = TAINTENTRIES - q->write_index;
-	} else {								
-	    can_recv = q->write_index - q->read_index;		
-	}									
-	if (can_recv) {
-	    can_recv = can_recv*sizeof(u_long)-partial_bytes; // Convert to bytes
-	    long rc = recv (s, q->buffer + q->write_index, can_recv, 0);
-	    if (rc < 0) {
-		fprintf (stderr, "recv returns %ld,errno=%d\n", rc, errno);
-		break;
-	    } else if (rc == 0) {
-		break; // Sender closed connection
-	    }
-	    q->write_index += rc/sizeof(u_long);					       
-	    if (rc%sizeof(u_long)) {
-		partial_bytes += rc%sizeof(u_long);
-		if (partial_bytes > sizeof(u_long)) {
-		    q->write_index++;
-		    partial_bytes -= sizeof(u_long);
-		}
-	    }
-	    if (partial_bytes == 0 && q->buffer[(q->write_index-1)%TAINTENTRIES] == TERM_VAL) break; // Sender is done
-	} else {
-	    usleep(100);
-	}
-    }
-}
-
-#else
-
-void send_stream (int s, struct taintq* q)
+void send_stream (int s, struct taintq_hdr* qh, uint32_t* qb)
 {
     // Listen on output queue and send over network
     bool done = false;
     u_long bytes_sent = 0;
     while (!done) {
 
-	pthread_mutex_lock(&(q->lock));
-	while (q->read_index == q->write_index) {
-	    pthread_cond_wait(&(q->empty), &(q->lock));
+	pthread_mutex_lock(&(qh->lock));
+	while (qh->read_index == qh->write_index) {
+	    pthread_cond_wait(&(qh->empty), &(qh->lock));
 	}
-	pthread_mutex_unlock(&(q->lock));
+	pthread_mutex_unlock(&(qh->lock));
 
-	long rc = safe_write (s, q->buffer + (q->read_index*TAINTBUCKETENTRIES), TAINTBUCKETSIZE);
+	long rc = safe_write (s, qb + (qh->read_index*TAINTBUCKETENTRIES), TAINTBUCKETSIZE);
 	if (rc != (long)TAINTBUCKETSIZE) return; // Error sending the data
 
 	bytes_sent += TAINTBUCKETENTRIES;
 
-	if (q->buffer[q->read_index*TAINTBUCKETENTRIES+TAINTBUCKETENTRIES-1] == TERM_VAL) done = true;
+	if (qb[qh->read_index*TAINTBUCKETENTRIES+TAINTBUCKETENTRIES-1] == TERM_VAL) done = true;
 
-	pthread_mutex_lock(&(q->lock));
-	q->read_index = (q->read_index+1)%TAINTBUCKETS;
-	pthread_cond_signal(&(q->full));
-	pthread_mutex_unlock(&(q->lock));
+	pthread_mutex_lock(&(qh->lock));
+	qh->read_index = (qh->read_index+1)%TAINTBUCKETS;
+	pthread_cond_signal(&(qh->full));
+	pthread_mutex_unlock(&(qh->lock));
     }
 }
 
-void recv_stream (int s, struct taintq* q)
+void recv_stream (int s, struct taintq_hdr* qh, uint32_t* qb)
 {
     // Get data and put on the inputq
     bool done = false;
@@ -1857,73 +1770,69 @@ void recv_stream (int s, struct taintq* q)
     while (!done) {
 
 	// Receive a block at a time
-	pthread_mutex_lock(&(q->lock));
-	while ((q->write_index+1)%TAINTBUCKETS == q->read_index) {
-	    pthread_cond_wait(&(q->full), &(q->lock));
+	pthread_mutex_lock(&(qh->lock));
+	while ((qh->write_index+1)%TAINTBUCKETS == qh->read_index) {
+	    pthread_cond_wait(&(qh->full), &(qh->lock));
 	}
-	pthread_mutex_unlock(&(q->lock));
+	pthread_mutex_unlock(&(qh->lock));
 
-	long rc = safe_read (s, q->buffer + (q->write_index*TAINTBUCKETENTRIES), TAINTBUCKETSIZE);
+	long rc = safe_read (s, qb + (qh->write_index*TAINTBUCKETENTRIES), TAINTBUCKETSIZE);
 	if (rc != (long)TAINTBUCKETSIZE) return; // Error sending the data
 
 	bytes_rcvd += TAINTBUCKETENTRIES;
 
-	if (q->buffer[q->write_index*TAINTBUCKETENTRIES+TAINTBUCKETENTRIES-1] == TERM_VAL) done = true;
+	if (qb[qh->write_index*TAINTBUCKETENTRIES+TAINTBUCKETENTRIES-1] == TERM_VAL) done = true;
 
-	pthread_mutex_lock(&(q->lock));
-	q->write_index = (q->write_index+1)%TAINTBUCKETS;
-	pthread_cond_signal(&(q->empty));
-	pthread_mutex_unlock(&(q->lock));
+	pthread_mutex_lock(&(qh->lock));
+	qh->write_index = (qh->write_index+1)%TAINTBUCKETS;
+	pthread_cond_signal(&(qh->empty));
+	pthread_mutex_unlock(&(qh->lock));
     }
 }
 
-#endif
-
-// Sending to another computer is implemented as separate thread to add asyncrhony
-void* send_output_queue (void* arg)
+int recv_input_queue (struct recvdata* data)
 {
-   struct senddata* data = (struct senddata *) arg;
-
-   int s = connect_output_queue (data);
-   if (s < 0) return NULL;
-
-   if (data->do_sequential) {
-       recv_stream (s, outputq); // First we read data from upstream
-       DOWN_QSEM(outputq);
-   }
-
-   send_stream (s, outputq);
-   close (s);
-   return NULL;
-}
-
-void* recv_input_queue (void* arg)
-{
-    struct recvdata* data = (struct recvdata *) arg;
-
     int s = connect_input_queue (data);
-    if (s < 0) return NULL;
+    if (s < 0) return s;
 
     if (data->do_sequential) {
-	send_stream (s, inputq); // First we send filters downstream	
+	send_stream (s, inputq_hdr, inputq_buf); // First we send filters downstream	
 	fprintf (stderr, "sent data downstream\n");
-	inputq->read_index = inputq->write_index = 0;
-	UP_QSEM(inputq);
+	inputq_hdr->read_index = inputq_hdr->write_index = 0;
+	UP_QSEM(inputq_hdr);
     }
 
-    recv_stream (s, inputq);
+    recv_stream (s, inputq_hdr, inputq_buf);
     close (s);
-    return NULL;
+    return 0;
+}
+
+// Sending to another computer is implemented as separate process to add asyncrhony
+int send_output_queue (struct senddata* data)
+{
+   int s = connect_output_queue (data);
+   if (s < 0) return s;
+
+   if (data->do_sequential) {
+       recv_stream (s, outputq_hdr, outputq_buf); // First we read data from upstream
+       DOWN_QSEM(outputq_hdr);
+   }
+
+   send_stream (s, outputq_hdr, outputq_buf);
+   close (s);
+   return 0;
 }
 
 void format ()
 {
-    fprintf (stderr, "format: stream <dir> <taint port> [-iq input_queue] [-oq output_queue] [-oh output_host] [-ih]\n");
+    fprintf (stderr, "format: stream <dir> <taint port> [-iq input_queue_hdr input_queue] [-oq output_queue_hdr output_queue]\n");
     exit (0);
 }
 
 int main (int argc, char* argv[]) 
 {
+    char* input_queue_hdr = NULL;
+    char* output_queue_hdr = NULL;
     char* input_queue = NULL;
     char* output_queue = NULL;
     char* output_host = NULL;
@@ -1931,7 +1840,6 @@ int main (int argc, char* argv[])
     pthread_t oh_tid, ih_tid;
     struct senddata sd;
     struct recvdata rd;
-    long rc;
     bool do_sequential = false;
 
     if (argc < 3) format();
@@ -1940,11 +1848,23 @@ int main (int argc, char* argv[])
 	if (!strcmp (argv[i], "-iq")) {
 	    i++;
 	    if (i < argc) {
+		input_queue_hdr = argv[i];
+	    } else {
+		format();
+	    }
+	    i++;
+	    if (i < argc) {
 		input_queue = argv[i];
 	    } else {
 		format();
 	    }
 	} else if (!strcmp (argv[i], "-oq")) {
+	    i++;
+	    if (i < argc) {
+		output_queue_hdr = argv[i];
+	    } else {
+		format();
+	    }
 	    i++;
 	    if (i < argc) {
 		output_queue = argv[i];
@@ -1967,61 +1887,117 @@ int main (int argc, char* argv[])
 	}
     }
 
-    if (input_queue) {
-	int iqfd = shm_open (input_queue, O_RDWR, 0);
+    if (output_host) {
+	int oqhdrfd = shm_open (output_queue_hdr, O_RDWR, 0);
+	if (oqhdrfd < 0) {
+	    fprintf (stderr, "Cannot open output queue header %s, errno=%d\n", output_queue_hdr, errno);
+	    return -1;
+	}
+	oqfd = shm_open (output_queue, O_RDWR, 0);
+	if (oqfd < 0) {
+	    fprintf (stderr, "Cannot open output queue %s, errno=%d\n", output_queue, errno);
+	    return -1;
+	}
+	outputq_hdr = (struct taintq_hdr *) mmap (NULL, TAINTQHDRSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, oqhdrfd, 0);
+	if (outputq_hdr == MAP_FAILED) {
+	    fprintf (stderr, "Cannot map output queue header, errno=%d\n", errno);
+	    return -1;
+	}
+	outputq_buf = (uint32_t *) mmap (NULL, TAINTQSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, oqfd, 0);
+	if (outputq_buf == MAP_FAILED) {
+	    fprintf (stderr, "Cannot map input queue, errno=%d\n", errno);
+	    return -1;
+	}
+	can_write = 0;
+	sd.host = output_host;
+	sd.port = STREAM_PORT;
+	sd.do_sequential = do_sequential;
+	return (send_output_queue (&sd));
+    }
+
+    if (input_host) {
+	int iqhdrfd = shm_open (input_queue_hdr, O_RDWR, 0);
+	if (iqhdrfd < 0) {
+	    fprintf (stderr, "Cannot open input queue header %s, errno=%d\n", input_queue_hdr, errno);
+	    return -1;
+	}
+	iqfd = shm_open (input_queue, O_RDWR, 0);
 	if (iqfd < 0) {
 	    fprintf (stderr, "Cannot open input queue %s, errno=%d\n", input_queue, errno);
 	    return -1;
 	}
-	inputq = (struct taintq *) mmap (NULL, TAINTQSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, iqfd, 0);
-	if (inputq == MAP_FAILED) {
+	inputq_hdr = (struct taintq_hdr *) mmap (NULL, TAINTQHDRSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, iqhdrfd, 0);
+	if (inputq_hdr == MAP_FAILED) {
+	    fprintf (stderr, "Cannot map input queue header, errno=%d\n", errno);
+	    return -1;
+	}
+	inputq_buf = (uint32_t *) mmap (NULL, TAINTQSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, iqfd, 0);
+	if (inputq_buf == MAP_FAILED) {
+	    fprintf (stderr, "Cannot map input queue, errno=%d\n", errno);
+	    return -1;
+	}
+	can_read = 0;
+	rd.port = STREAM_PORT;
+	rd.do_sequential = do_sequential;
+	return recv_input_queue (&rd);
+    }
+
+    if (input_queue) {
+	int iqhdrfd = shm_open (input_queue_hdr, O_RDWR, 0);
+	if (iqhdrfd < 0) {
+	    fprintf (stderr, "Cannot open input queue header %s, errno=%d\n", input_queue_hdr, errno);
+	    return -1;
+	}
+	iqfd = shm_open (input_queue, O_RDWR, 0);
+	if (iqfd < 0) {
+	    fprintf (stderr, "Cannot open input queue %s, errno=%d\n", input_queue, errno);
+	    return -1;
+	}
+	inputq_hdr = (struct taintq_hdr *) mmap (NULL, TAINTQHDRSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, iqhdrfd, 0);
+	if (inputq_hdr == MAP_FAILED) {
+	    fprintf (stderr, "Cannot map input queue header, errno=%d\n", errno);
+	    return -1;
+	}
+	inputq_buf = (uint32_t *) mmap (NULL, TAINTQMAPSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, iqfd, 0);
+	if (inputq_buf == MAP_FAILED) {
 	    fprintf (stderr, "Cannot map input queue, errno=%d\n", errno);
 	    return -1;
 	}
 	can_read = 0;
 	finish_flag = false;
     } else {
-	inputq = NULL;
+	inputq_hdr = NULL;
+	inputq_buf = NULL;
 	finish_flag = true;
     }
 
     if (output_queue) {
-	int oqfd = shm_open (output_queue, O_RDWR, 0);
-	if (oqfd < 0) {
-	    fprintf (stderr, "Cannot open input queue %s, errno=%d\n", output_queue, errno);
+	int oqhdrfd = shm_open (output_queue_hdr, O_RDWR, 0);
+	if (oqhdrfd < 0) {
+	    fprintf (stderr, "Cannot open output queue header %s, errno=%d\n", output_queue_hdr, errno);
 	    return -1;
 	}
-	outputq = (struct taintq *) mmap (NULL, TAINTQSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, oqfd, 0);
-	if (outputq == MAP_FAILED) {
+	oqfd = shm_open (output_queue, O_RDWR, 0);
+	if (oqfd < 0) {
+	    fprintf (stderr, "Cannot open output queue %s, errno=%d\n", output_queue, errno);
+	    return -1;
+	}
+	outputq_hdr = (struct taintq_hdr *) mmap (NULL, TAINTQHDRSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, oqhdrfd, 0);
+	if (outputq_hdr == MAP_FAILED) {
+	    fprintf (stderr, "Cannot map output queue header, errno=%d\n", errno);
+	    return -1;
+	}
+	outputq_buf = (uint32_t *) mmap (NULL, TAINTQMAPSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, oqfd, 0);
+	if (outputq_buf == MAP_FAILED) {
 	    fprintf (stderr, "Cannot map input queue, errno=%d\n", errno);
 	    return -1;
 	}
 	can_write = 0;
 	start_flag = false;
     } else {
-	outputq = NULL;
+	outputq_hdr = NULL;
+	outputq_buf = NULL;
 	start_flag = true;
-    }
-
-    if (output_host) {
-	sd.host = output_host;
-	sd.port = STREAM_PORT;
-	sd.do_sequential = do_sequential;
-	rc = pthread_create (&oh_tid, NULL, send_output_queue, &sd);
-	if (rc < 0) {
-	    fprintf (stderr, "Cannot create outputq thread\n");
-	    return rc;
-	}
-    }
-
-    if (input_host) {
-	rd.port = STREAM_PORT;
-	rd.do_sequential = do_sequential;
-	rc = pthread_create (&ih_tid, NULL, recv_input_queue, &rd);
-	if (rc < 0) {
-	    fprintf (stderr, "Cannot create inputq thread\n");
-	    return rc;
-	}
     }
 
     if (do_sequential) {

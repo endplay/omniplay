@@ -32,7 +32,8 @@ using namespace std;
 
 struct epoch_ctl {
     int    status;
-    char   inputqname[256];
+    char   inputqhname[256];
+    char   inputqbname[256];
     pid_t  cpid;
     pid_t  spid;
 };
@@ -377,32 +378,33 @@ void do_stream (int s, struct epoch_hdr& ehdr)
     if (ehdr.finish_flag) qcnt--;
     for (u_long i = 0; i < qcnt; i++) {
 	if (i == 0 && ehdr.start_flag) continue; // No queue needed
-	sprintf(ectl[i].inputqname, "/input_queue%lu", i);
-	int iqfd = shm_open (ectl[i].inputqname, O_CREAT|O_RDWR|O_TRUNC, 0644);	
+
+	sprintf(ectl[i].inputqhname, "/input_queue_hdr%lu", i);
+	int iqfd = shm_open (ectl[i].inputqhname, O_CREAT|O_RDWR|O_TRUNC, 0644);	
 	if (iqfd < 0) {
-	    fprintf (stderr, "Cannot create input queue %s,errno=%d\n", ectl[i].inputqname, errno);
+	    fprintf (stderr, "Cannot create input queue header %s,errno=%d\n", ectl[i].inputqhname, errno);
 	    return;
 	} 
-	rc = ftruncate(iqfd, TAINTQSIZE);
+	rc = ftruncate(iqfd, TAINTQHDRSIZE);
 	if (rc < 0) {
-	    fprintf (stderr, "Cannot truncate input queue %s,errno=%d\n", ectl[i].inputqname, errno);
+	    fprintf (stderr, "Cannot truncate input queue header %s,errno=%d\n", ectl[i].inputqhname, errno);
 	    return;
 	}
-	struct taintq* q = (struct taintq *) mmap (NULL, TAINTQSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, iqfd, 0);
-	if (q == MAP_FAILED) {
+	struct taintq_hdr* qh = (struct taintq_hdr *) mmap (NULL, TAINTQHDRSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, iqfd, 0);
+	if (qh == MAP_FAILED) {
 	    fprintf (stderr, "Cannot map input queue, errno=%d\n", errno);
 	    return;
 	}
-	rc = sem_init(&(q->epoch_sem), 1, 0);
+	rc = sem_init(&(qh->epoch_sem), 1, 0);
 	if (rc < 0) {
 	    fprintf (stderr, "sem_init returns %d, errno=%d\n", rc, errno);
 	    return;
 	}
-#ifndef USE_LF
+
 	pthread_mutexattr_t sharedm;
 	pthread_mutexattr_init(&sharedm);
 	pthread_mutexattr_setpshared(&sharedm, PTHREAD_PROCESS_SHARED);
-	rc = pthread_mutex_init (&(q->lock), &sharedm);
+	rc = pthread_mutex_init (&(qh->lock), &sharedm);
 	if (rc < 0) {
 	    fprintf (stderr, "pthread_mutex_init returns %d, errno=%d\n", rc, errno);
 	    return;
@@ -410,22 +412,83 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	pthread_condattr_t sharedc;
 	pthread_condattr_init(&sharedc);
 	pthread_condattr_setpshared(&sharedc, PTHREAD_PROCESS_SHARED);
-	rc = pthread_cond_init (&(q->full), &sharedc);
+	rc = pthread_cond_init (&(qh->full), &sharedc);
 	if (rc < 0) {
 	    fprintf (stderr, "pthread_mutex_init returns %d, errno=%d\n", rc, errno);
 	    return;
 	}
-	rc = pthread_cond_init (&(q->empty), &sharedc);
+	rc = pthread_cond_init (&(qh->empty), &sharedc);
 	if (rc < 0) {
 	    fprintf (stderr, "pthread_mutex_init returns %d, errno=%d\n", rc, errno);
 	    return;
 	}
-#endif
-	munmap(q,TAINTQSIZE);
+
+	munmap(qh,TAINTQSIZE);
 	close (iqfd);
+
+	sprintf(ectl[i].inputqbname, "/input_queue%lu", i);
+	iqfd = shm_open (ectl[i].inputqbname, O_CREAT|O_RDWR|O_TRUNC, 0644);	
+	if (iqfd < 0) {
+	    fprintf (stderr, "Cannot create input queue %s,errno=%d\n", ectl[i].inputqbname, errno);
+	    return;
+	} 
+	rc = ftruncate(iqfd, TAINTQSIZE);
+	if (rc < 0) {
+	    fprintf (stderr, "Cannot truncate input queue %s,errno=%d\n", ectl[i].inputqbname, errno);
+	    return;
+	}
+	close (iqfd);
+
     }
 
     // Start a stream processor for all epochs at once
+    if (!ehdr.start_flag) {
+	if (fork() == 0) {
+	    const char* args[256];
+	    int argcnt = 0;
+			    
+	    args[argcnt++] = "stream";
+	    args[argcnt++] = "NULL";
+	    args[argcnt++] = "NULL";
+	    args[argcnt++] = "-iq";
+	    args[argcnt++] = ectl[1].inputqhname;
+	    args[argcnt++] = ectl[1].inputqbname;
+	    args[argcnt++] = "-oh";
+	    args[argcnt++] = ehdr.prev_host;
+	    printf ("Setting up output queue to %s\n", ehdr.prev_host);
+	    if (ehdr.cmd_type == AGG_TYPE_SEQ) {
+		args[argcnt++] = "-seq";
+	    }
+	    args[argcnt++] = NULL;
+	    
+	    rc = execv ("./stream", (char **) args);
+	    fprintf (stderr, "execv of stream failed, rc=%d, errno=%d\n", rc, errno);
+	    return;
+	}
+    }
+    if (!ehdr.finish_flag) {
+	if (fork() == 0) {
+	    const char* args[256];
+	    int argcnt = 0;
+			    
+	    args[argcnt++] = "stream";
+	    args[argcnt++] = "NULL";
+	    args[argcnt++] = "NULL";
+	    args[argcnt++] = "-oq";
+	    args[argcnt++] = ectl[epochs-1].inputqhname;
+	    args[argcnt++] = ectl[epochs-1].inputqbname;
+	    args[argcnt++] = "-ih";
+	    printf ("Setting up input n/w queue\n");
+	    if (ehdr.cmd_type == AGG_TYPE_SEQ) {
+		args[argcnt++] = "-seq";
+	    }
+	    args[argcnt++] = NULL;
+	    
+	    rc = execv ("./stream", (char **) args);
+	    fprintf (stderr, "execv of stream failed, rc=%d, errno=%d\n", rc, errno);
+	    return;
+	}
+    }
     printf ("Starting %ld epochs\n", epochs);
     for (u_long i = 0; i < epochs; i++) {
 	
@@ -443,19 +506,21 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	    args[argcnt++] = port;
 	    if (i < epochs-1 || !ehdr.finish_flag) {
 		args[argcnt++] = "-iq";
-		args[argcnt++] = ectl[i+1].inputqname;
+		args[argcnt++] = ectl[i+1].inputqhname;
+		args[argcnt++] = ectl[i+1].inputqbname;
 	    }
 	    if (i == epochs-1 && !ehdr.finish_flag) {
 		args[argcnt++] = "-ih";
 	    }
 	    if (i > 0 || !ehdr.start_flag) {
 		args[argcnt++] = "-oq";
-		args[argcnt++] = ectl[i].inputqname;
+		args[argcnt++] = ectl[i].inputqhname;
+		args[argcnt++] = ectl[i].inputqbname;
 	    }
 	    if (i == 0 && !ehdr.start_flag) {
 		args[argcnt++] = "-oh";
 		args[argcnt++] = ehdr.prev_host;
-		printf ("Setting up output queue to %s\n", ehdr.prev_host);
+		printf ("Setting up output n/w queue to %s\n", ehdr.prev_host);
 	    }
 	    if (ehdr.cmd_type == AGG_TYPE_SEQ) {
 		args[argcnt++] = "-seq";
@@ -493,9 +558,14 @@ void do_stream (int s, struct epoch_hdr& ehdr)
     // Clean up shared memory regions for queues
     for (u_long i = 0; i < qcnt; i++) {
 	if (i == 0 && ehdr.start_flag) continue; // No queue needed
-	rc = shm_unlink (ectl[i].inputqname);
+	rc = shm_unlink (ectl[i].inputqhname);
 	if (rc < 0) {
-	    fprintf (stderr, "Cannot unlink input queue %s,errno=%d\n", ectl[i].inputqname, errno);
+	    fprintf (stderr, "Cannot unlink input queue %s,errno=%d\n", ectl[i].inputqhname, errno);
+	    return;
+	}
+	rc = shm_unlink (ectl[i].inputqbname);
+	if (rc < 0) {
+	    fprintf (stderr, "Cannot unlink input queue %s,errno=%d\n", ectl[i].inputqbname, errno);
 	    return;
 	}
     }

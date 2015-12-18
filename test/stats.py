@@ -9,9 +9,13 @@ dift = []
 recv = []
 receive = []
 output = []
+output_send_idle = []
+output_recv_idle = []
 oidle = []
 index = []
 address = []
+addr_send_idle = []
+addr_recv_idle = []
 idle = []
 finish = []
 prune = []
@@ -50,19 +54,26 @@ for i in range(epochs):
             recv.append(int(line.split()[2]))
         if line[:23] == "Output processing time:":
             output.append(int(line.split()[3]))
-        if line[:23] == "Output processing idle:":
-            oidle.append(int(line.split()[3]))
-            output[i] -= oidle[i]
+        if line[:23] == "Output proc. send idle:":
+            output_send_idle.append(int(line.split()[4]))
+            output[i] -= output_send_idle[i]
+        if line[:23] == "Output proc. recv idle:":
+            output_recv_idle.append(int(line.split()[4]))
+            output[i] -= output_recv_idle[i]
         if line[:22] == "Index generation time:":
             index.append(int(line.split()[3]))
         if line[:24] == "Address processing time:":
             address.append(int(line.split()[3]))
         if line[:12] == "Finish time:":
             finish.append(int(line.split()[2]))
-        if line[:24] == "Address processing idle:":
-            idle.append(int(line.split()[3]))
+        if line[:24] == "Address proc. send idle:":
+            addr_send_idle.append(int(line.split()[4]))
             if i != epochs-1:
-                address[i] -= idle[i]
+                address[i] -= addr_send_idle[i]
+        if line[:24] == "Address proc. recv idle:":
+            addr_recv_idle.append(int(line.split()[4]))
+            if i != epochs-1:
+                address[i] -= addr_recv_idle[i]
         if line[:15] == "Address tokens ":
             values.append(int(line.split()[10]))
             passthrus.append(int(line.split()[4]))
@@ -83,7 +94,8 @@ for i in range(epochs):
 # Not done in the last epoch
 index.append(0)
 address.append(0)
-idle.append(0)
+addr_send_idle.append(0)
+addr_recv_idle.append(0)
 make.append(0)
 send.append(0)
 
@@ -97,6 +109,8 @@ merges.append(0)
 
 for i in range(epochs):
     recv[i] -= dift[i]
+    idle.append(addr_send_idle[i] + addr_recv_idle[i])
+    oidle.append(output_send_idle[i] + output_recv_idle[i])
 
 while len(prune) < epochs:
     receive.append(0)
