@@ -450,12 +450,12 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	    args[argcnt++] = "stream";
 	    args[argcnt++] = "NULL";
 	    args[argcnt++] = "NULL";
-	    args[argcnt++] = "-iq";
-	    args[argcnt++] = ectl[1].inputqhname;
-	    args[argcnt++] = ectl[1].inputqbname;
+	    args[argcnt++] = "-oq";
+	    args[argcnt++] = ectl[0].inputqhname;
+	    args[argcnt++] = ectl[0].inputqbname;
 	    args[argcnt++] = "-oh";
 	    args[argcnt++] = ehdr.prev_host;
-	    printf ("Setting up output queue to %s\n", ehdr.prev_host);
+	    printf ("Setting up output n/w queue to %s\n", ehdr.prev_host);
 	    if (ehdr.cmd_type == AGG_TYPE_SEQ) {
 		args[argcnt++] = "-seq";
 	    }
@@ -474,9 +474,9 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	    args[argcnt++] = "stream";
 	    args[argcnt++] = "NULL";
 	    args[argcnt++] = "NULL";
-	    args[argcnt++] = "-oq";
-	    args[argcnt++] = ectl[epochs-1].inputqhname;
-	    args[argcnt++] = ectl[epochs-1].inputqbname;
+	    args[argcnt++] = "-iq";
+	    args[argcnt++] = ectl[epochs].inputqhname;
+	    args[argcnt++] = ectl[epochs].inputqbname;
 	    args[argcnt++] = "-ih";
 	    printf ("Setting up input n/w queue\n");
 	    if (ehdr.cmd_type == AGG_TYPE_SEQ) {

@@ -1778,6 +1778,7 @@ void recv_stream (int s, struct taintq_hdr* qh, uint32_t* qb)
 
 	long rc = safe_read (s, qb + (qh->write_index*TAINTBUCKETENTRIES), TAINTBUCKETSIZE);
 	if (rc != (long)TAINTBUCKETSIZE) return; // Error sending the data
+	fprintf (stderr, "Read %ld byets\n", rc);
 
 	bytes_rcvd += TAINTBUCKETENTRIES;
 
@@ -1794,6 +1795,8 @@ int recv_input_queue (struct recvdata* data)
 {
     int s = connect_input_queue (data);
     if (s < 0) return s;
+
+    fprintf (stderr, "Connected\n");
 
     if (data->do_sequential) {
 	send_stream (s, inputq_hdr, inputq_buf); // First we send filters downstream	
@@ -1916,29 +1919,35 @@ int main (int argc, char* argv[])
     }
 
     if (input_host) {
+	fprintf (stderr, "Input host %s\n", input_queue_hdr);
 	int iqhdrfd = shm_open (input_queue_hdr, O_RDWR, 0);
 	if (iqhdrfd < 0) {
 	    fprintf (stderr, "Cannot open input queue header %s, errno=%d\n", input_queue_hdr, errno);
 	    return -1;
 	}
+	fprintf (stderr, "Opened header\n");
 	iqfd = shm_open (input_queue, O_RDWR, 0);
 	if (iqfd < 0) {
 	    fprintf (stderr, "Cannot open input queue %s, errno=%d\n", input_queue, errno);
 	    return -1;
 	}
+	fprintf (stderr, "Opened queue\n");
 	inputq_hdr = (struct taintq_hdr *) mmap (NULL, TAINTQHDRSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, iqhdrfd, 0);
 	if (inputq_hdr == MAP_FAILED) {
 	    fprintf (stderr, "Cannot map input queue header, errno=%d\n", errno);
 	    return -1;
 	}
+	fprintf (stderr, "Mapped header\n");
 	inputq_buf = (uint32_t *) mmap (NULL, TAINTQSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, iqfd, 0);
 	if (inputq_buf == MAP_FAILED) {
 	    fprintf (stderr, "Cannot map input queue, errno=%d\n", errno);
 	    return -1;
 	}
+	fprintf (stderr, "Mapped queue\n");
 	can_read = 0;
 	rd.port = STREAM_PORT;
 	rd.do_sequential = do_sequential;
+	fprintf (stderr, "About to recv input queue\n");
 	return recv_input_queue (&rd);
     }
 
