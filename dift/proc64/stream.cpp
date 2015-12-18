@@ -98,7 +98,7 @@ FILE* debugfile;
 #endif
 #ifdef STATS
 FILE* statsfile;
-u_long merges = 0, directs = 0, indirects = 0, values = 0, output_merges;
+u_long merges = 0, directs = 0, indirects = 0, values = 0, quashed = 0, output_merges = 0;
 u_long send_idle = 0, recv_idle = 0, live_set_send_idle = 0, live_set_recv_idle = 0, new_live_set_send_idle = 0, new_live_set_recv_idle = 0, output_send_idle = 0, output_recv_idle = 0;
 u_long atokens = 0, passthrus = 0, aresolved = 0, aindirects = 0, avalues = 0, unmodified = 0, written = 0;
 u_long prune_cnt = 0, simplify_cnt = 0;
@@ -1259,7 +1259,7 @@ long seq_epoch (const char* dirname, int port)
 	wb_index = wb_stop = 0;
     }
     
-    live_set.clear();
+    //live_set.clear();
 
 #ifdef STATS
     gettimeofday(&live_done_tv, NULL);
@@ -1280,18 +1280,23 @@ long seq_epoch (const char* dirname, int port)
 		    directs++;
 #endif
 		    if (value < 0xc0000000 && !start_flag) {
-			PUT_QVALUE (output_token,outputq_hdr,outputq_buf,oqfd);
-			PUT_QVALUE (value,outputq_hdr,outputq_buf,oqfd);
-			PUT_QVALUE (0,outputq_hdr,outputq_buf,oqfd);
+			if (live_set.count(value)) {
+			    PUT_QVALUE (output_token,outputq_hdr,outputq_buf,oqfd);
+			    PUT_QVALUE (value,outputq_hdr,outputq_buf,oqfd);
+			    PUT_QVALUE (0,outputq_hdr,outputq_buf,oqfd);
 #ifdef STATS
-			values_sent += 3;
+			    values_sent += 3;
 #endif
 #ifdef DEBUG
-			if (DEBUG(output_token)) {
-			    fprintf (debugfile, "output %x to unresolved addr %lx\n", output_token, (long) value);
-			}
+			    if (DEBUG(output_token)) {
+				fprintf (debugfile, "output %x to unresolved addr %lx\n", output_token, (long) value);
+			    }
 #endif
-			    
+			} else {
+#ifdef STATS
+			    quashed++;
+#endif
+			}
 		    } else {
 			PRINT_RVALUE (output_token);
 			if (start_flag) {
@@ -1633,7 +1638,7 @@ long seq_epoch (const char* dirname, int port)
     if (!start_flag) {
 	fprintf (statsfile, "Received %ld values in live set\n", (long) live_set_size);
     }
-    fprintf (statsfile, "Output directs %lu indirects %lu values %lu, merges %lu\n", directs, indirects, values, output_merges);
+    fprintf (statsfile, "Output directs %lu indirects %lu values %lu quashed %lu merges %lu\n", directs, indirects, values, quashed, output_merges);
     if (!finish_flag) {
 	fprintf (statsfile, "Pruned %ld simplified %ld unchanged %ld of %ld merge values using live set\n", 
 		prune_cnt, simplify_cnt, mdatasize/sizeof(struct taint_entry)-prune_cnt-simplify_cnt,
