@@ -509,18 +509,10 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 		args[argcnt++] = ectl[i+1].inputqhname;
 		args[argcnt++] = ectl[i+1].inputqbname;
 	    }
-	    if (i == epochs-1 && !ehdr.finish_flag) {
-		args[argcnt++] = "-ih";
-	    }
 	    if (i > 0 || !ehdr.start_flag) {
 		args[argcnt++] = "-oq";
 		args[argcnt++] = ectl[i].inputqhname;
 		args[argcnt++] = ectl[i].inputqbname;
-	    }
-	    if (i == 0 && !ehdr.start_flag) {
-		args[argcnt++] = "-oh";
-		args[argcnt++] = ehdr.prev_host;
-		printf ("Setting up output n/w queue to %s\n", ehdr.prev_host);
 	    }
 	    if (ehdr.cmd_type == AGG_TYPE_SEQ) {
 		args[argcnt++] = "-seq";
