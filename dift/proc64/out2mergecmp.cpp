@@ -185,24 +185,21 @@ int main (int argc, char* argv[])
 
 	optr = (uint32_t *) obuf;
 	while ((u_long) optr < (u_long) obuf + odatasize) {
-	    uint32_t otoken = *optr;
-	    optr++;
-	    while (*optr) {
+	    uint32_t otoken = *optr++;
 #ifdef TARGET
-		if (TARGET(otoken+output_tokens)) {
-		    printf ("Output %x this epoch %x past %x -> input %x this epoch %x past %x, epoch %s offset %lx\n",
-			    otoken+output_tokens, otoken, output_tokens, *optr+input_tokens, *optr, input_tokens, argv[i], (u_long) optr - (u_long) obuf);
-		}
+	    if (TARGET(otoken+output_tokens)) {
+	      printf ("Output %x this epoch %x past %x -> input %x this epoch %x past %x, epoch %s offset %lx\n",
+		      otoken+output_tokens, otoken, output_tokens, *optr+input_tokens, *optr, input_tokens, argv[i], 
+		      (u_long) optr - (u_long) obuf);
+	    }
 #endif
 #ifdef ITARGET
-		if (ITARGET(*optr+input_tokens)) {
-		    printf ("Output %x this epoch %x past %x -> input %x this epoch %x past %x, epoch %s\n",
-			    otoken+output_tokens, otoken, output_tokens, *optr+input_tokens, *optr, input_tokens, argv[i]);
-		}
-#endif
-		omapping.insert(make_pair(otoken+output_tokens,*optr+input_tokens));
-		optr++;
+	    if (ITARGET(*optr+input_tokens)) {
+	      printf ("Output %x this epoch %x past %x -> input %x this epoch %x past %x, epoch %s\n",
+		      otoken+output_tokens, otoken, output_tokens, *optr+input_tokens, *optr, input_tokens, argv[i]);
 	    }
+#endif
+	    omapping.insert(make_pair(otoken+output_tokens,*optr+input_tokens));
 	    optr++;
 	}
 	

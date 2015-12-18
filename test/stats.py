@@ -23,7 +23,7 @@ make = []
 send = []
 
 # For address processing
-values = []
+tokens = []
 passthrus = []
 unmodifieds = []
 resolveds = []
@@ -75,13 +75,13 @@ for i in range(epochs):
             if i != epochs-1:
                 address[i] -= addr_recv_idle[i]
         if line[:15] == "Address tokens ":
-            values.append(int(line.split()[10]))
+            tokens.append(int(line.split()[2]))
             passthrus.append(int(line.split()[4]))
-            unmodifieds.append(int(line.split()[12][0:-1]))
+            unmodifieds.append(int(line.split()[10][0:-1]))
             resolveds.append(int(line.split()[6][0:-1]))
             indirects.append(int(line.split()[8]))
-            others.append(values[i]-(passthrus[i]+unmodifieds[i]+resolveds[i]+indirects[i]))
-            merges.append(int(line.split()[14]))
+            others.append(tokens[i]-(passthrus[i]+unmodifieds[i]+resolveds[i]+indirects[i]))
+            merges.append(int(line.split()[12]))
         if line[:21] == "Receive live set time":
             receive.append(int(line.split()[4]))
         if line[:19] == "Prune live set time":
@@ -99,7 +99,7 @@ addr_recv_idle.append(0)
 make.append(0)
 send.append(0)
 
-values.append(0)
+tokens.append(0)
 passthrus.append(0)
 unmodifieds.append(0)
 resolveds.append(0)
@@ -134,9 +134,9 @@ else:
 
 print
 print
-print "Epoch     Values  Passthrus Unmodified  Resolveds  Indirects      Other   (Merges)"
+print "Epoch     Tokens  Passthrus Unmodified  Resolveds  Indirects      Other   (Merges)"
 for i in range(epochs):
-    print "%5d %10d %10d %10d %10d %10d %10d %10d"%(i,values[i],passthrus[i],unmodifieds[i],resolveds[i],indirects[i],others[i], merges[i])
-print "  Max %10d %10d %10d %10d %10d %10d %10d"%(max(values),max(passthrus),max(unmodifieds),max(resolveds),max(indirects),max(others),max(merges))
-print "Total %10d %10d %10d %10d %10d %10d %10d"%(sum(values),sum(passthrus),sum(unmodifieds),sum(resolveds),sum(indirects),sum(others),sum(merges))
-print " Core %10d %10d %10d %10d %10d %10d %10d"%(sum(values)/epochs,sum(passthrus)/epochs,sum(unmodifieds)/epochs,sum(resolveds)/epochs,sum(indirects)/epochs,sum(others)/epochs,sum(merges)/epochs)
+    print "%5d %10d %10d %10d %10d %10d %10d %10d"%(i,tokens[i],passthrus[i],unmodifieds[i],resolveds[i],indirects[i],others[i], merges[i])
+print "  Max %10d %10d %10d %10d %10d %10d %10d"%(max(tokens),max(passthrus),max(unmodifieds),max(resolveds),max(indirects),max(others),max(merges))
+print "Total %10d %10d %10d %10d %10d %10d %10d"%(sum(tokens),sum(passthrus),sum(unmodifieds),sum(resolveds),sum(indirects),sum(others),sum(merges))
+print " Core %10d %10d %10d %10d %10d %10d %10d"%(sum(tokens)/epochs,sum(passthrus)/epochs,sum(unmodifieds)/epochs,sum(resolveds)/epochs,sum(indirects)/epochs,sum(others)/epochs,sum(merges)/epochs)

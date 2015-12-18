@@ -100,7 +100,7 @@ FILE* debugfile;
 FILE* statsfile;
 u_long merges = 0, directs = 0, indirects = 0, values = 0, quashed = 0, output_merges = 0;
 u_long send_idle = 0, recv_idle = 0, live_set_send_idle = 0, live_set_recv_idle = 0, new_live_set_send_idle = 0, new_live_set_recv_idle = 0, output_send_idle = 0, output_recv_idle = 0;
-u_long atokens = 0, passthrus = 0, aresolved = 0, aindirects = 0, avalues = 0, unmodified = 0, written = 0;
+u_long atokens = 0, passthrus = 0, aresolved = 0, aindirects = 0, unmodified = 0, written = 0;
 u_long prune_cnt = 0, simplify_cnt = 0;
 u_long new_live_no_changes = 0, new_live_zeros = 0, new_live_inputs = 0, new_live_merges = 0, new_live_merge_zeros = 0, new_live_notlive = 0;
 u_long live_set_size = 0, new_live_set_size = 0;
@@ -488,63 +488,50 @@ read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, ta
 }
 #endif
 
-static void map_iter (taint_t value, uint32_t output_token, bool& unresolved_vals, bool& resolved_vals)
+static void map_iter (taint_t value, uint32_t output_token)
 {
     unordered_set<uint32_t>* pset;
 
-    //auto iter = resolved.find(value);
-    //if (iter == resolved.end()) {
-	unordered_set<taint_t> seen_indices;
-	struct taint_entry* pentry;
-	uint32_t stack_depth = 0;
+    unordered_set<taint_t> seen_indices;
+    struct taint_entry* pentry;
+    uint32_t stack_depth = 0;
 	
 #ifdef STATS
-	merges++;
+    merges++;
 #endif
 
-	pset = new unordered_set<uint32_t>;
-	//resolved[value] = pset;
+    pset = new unordered_set<uint32_t>;
 	
-	pentry = &merge_log[value-0xe0000001];
-	// printf ("%llx -> %llx,%llx (%u)\n", value, pentry->p1, pentry->p2, stack_depth);
-	stack[stack_depth++] = pentry->p1;
-	stack[stack_depth++] = pentry->p2;
+    pentry = &merge_log[value-0xe0000001];
+    // printf ("%llx -> %llx,%llx (%u)\n", value, pentry->p1, pentry->p2, stack_depth);
+    stack[stack_depth++] = pentry->p1;
+    stack[stack_depth++] = pentry->p2;
+    
+    do {
+	value = stack[--stack_depth];
+	assert (stack_depth < STACK_SIZE);
 	
-	do {
-	    value = stack[--stack_depth];
-	    assert (stack_depth < STACK_SIZE);
-	    
-	    if (value <= 0xe0000000) {
-		pset->insert(value);
-	    } else {
-		if (seen_indices.insert(value).second) {
-		    pentry = &merge_log[value-0xe0000001];
+	if (value <= 0xe0000000) {
+	    pset->insert(value);
+	} else {
+	    if (seen_indices.insert(value).second) {
+		pentry = &merge_log[value-0xe0000001];
 #ifdef STATS
-		    merges++;
+		merges++;
 #endif
-		    // printf ("%llx -> %llx,%llx (%u)\n", value, pentry->p1, pentry->p2, stack_depth);
-		    stack[stack_depth++] = pentry->p1;
-		    stack[stack_depth++] = pentry->p2;
-		}
+		stack[stack_depth++] = pentry->p1;
+		stack[stack_depth++] = pentry->p2;
 	    }
-	} while (stack_depth);
-	//} else {
-	//pset = iter->second;
-	//}
+	}
+    } while (stack_depth);
 
-	pset->erase(0);
+    pset->erase(0);
     for (auto iter2 = pset->begin(); iter2 != pset->end(); iter2++) {
 	if (*iter2 < 0xc0000000 && !start_flag) {
-	    if (!unresolved_vals) {
-		PUT_QVALUE(output_token,outputq_hdr,outputq_buf,oqfd);
-#ifdef STATS
-		values_sent++;
-#endif
-		unresolved_vals = true;
-	    }
+	    PUT_QVALUE(output_token,outputq_hdr,outputq_buf,oqfd);
 	    PUT_QVALUE (*iter2,outputq_hdr,outputq_buf,oqfd);
 #ifdef STATS
-	    values_sent++;
+	    values_sent += 2;
 #endif
 #ifdef DEBUG
 	    if (DEBUG(output_token)) {
@@ -552,10 +539,7 @@ static void map_iter (taint_t value, uint32_t output_token, bool& unresolved_val
 	    }
 #endif
 	} else {
-	    if (!resolved_vals) {
-		PRINT_RVALUE (output_token);
-		resolved_vals = true;
-	    }
+	    PRINT_RVALUE (output_token);
 	    if (start_flag) {
 		PRINT_RVALUE (*iter2);
 #ifdef DEBUG
@@ -733,7 +717,6 @@ long stream_epoch (const char* dirname, int port)
 		    if (value < 0xc0000000 && !start_flag) {
 			PUT_QVALUE (output_token,outputq_hdr,outputq_buf,oqfd);
 			PUT_QVALUE (value,outputq_hdr,outputq_buf,oqfd);
-			PUT_QVALUE (0,outputq_hdr,outputq_buf,oqfd);
 #ifdef DEBUG
 			if (DEBUG(output_token)) {
 			    fprintf (debugfile, "output %x to unresolved addr %lx\n", output_token, (long) value);
@@ -757,16 +740,12 @@ long stream_epoch (const char* dirname, int port)
 			    }
 #endif
 			}
-			PRINT_RVALUE (0);
 		    }
 		} else {
 #ifdef STATS
 		    indirects++;
 #endif
-		    bool unresolved_vals = false, resolved_vals = false;
-		    map_iter (value, output_token, unresolved_vals, resolved_vals);
-		    if (unresolved_vals) PUT_QVALUE(0,outputq_hdr,outputq_buf,oqfd);
-		    if (resolved_vals) PRINT_RVALUE(0);
+		    map_iter (value, output_token);
 		}
 	    }
 	    output_token++;
@@ -805,91 +784,75 @@ long stream_epoch (const char* dirname, int port)
 #ifdef STATS
 	    atokens++;
 #endif
-	    bool unresolved_vals = false, resolved_vals = false;
-
 	    GET_QVALUE(value, inputq_hdr, inputq_buf, iqfd);
-	    while (value) {
-#ifdef STATS
-		avalues++;
-#endif
-		auto iter = address_map.find(value);
-		if (iter == address_map.end()) {
-		    if (!start_flag) {
+
+	    auto iter = address_map.find(value);
+	    if (iter == address_map.end()) {
+		if (!start_flag) {
 #ifdef STATS
 			passthrus++;
 #endif
 			// Not in this epoch - so pass through to next
-			if (!unresolved_vals) {
-			    PUT_QVALUE(otoken+output_token,outputq_hdr,outputq_buf,oqfd);
-			    unresolved_vals = 1;
-			}
+			PUT_QVALUE(otoken+output_token,outputq_hdr,outputq_buf,oqfd);
+			PUT_QVALUE(value,outputq_hdr,outputq_buf,oqfd);
 #ifdef DEBUG
 			if (DEBUG(otoken+output_token) || DEBUG(otoken)) {
-			    fprintf (debugfile, "output %x(%x/%x) pass through value %lx\n", otoken+output_token, otoken, output_token, (long) value);
+			    fprintf (debugfile, "output %x(%x/%x) pass through value %lx\n", otoken+output_token, otoken, output_token, 
+				     (long) value);
 			}
 #endif
-			PUT_QVALUE(value,outputq_hdr,outputq_buf,oqfd);
-		    }
-		} else {
-		    if (iter->second < 0xc0000000 && !start_flag) {
-			if (iter->second) {
+		}
+	    } else {
+		if (iter->second < 0xc0000000 && !start_flag) {
+		    if (iter->second) {
 #ifdef STATS
-			    unmodified++;
+			unmodified++;
 #endif
-			    // Not in this epoch - so pass through to next
-			    if (!unresolved_vals) {
-				PUT_QVALUE(otoken+output_token,outputq_hdr,outputq_buf,oqfd);
-				unresolved_vals = true;
-			    }
-#ifdef DEBUG
-			    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-				fprintf (debugfile, "output %x to unresolved value %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
-			    }
-#endif
-			    PUT_QVALUE(iter->second,outputq_hdr,outputq_buf,oqfd);
-			} // Else taint was cleared in this epoch
-		    } else if (iter->second < 0xe0000001) {
-			// Maps to input
-#ifdef STATS
-			aresolved++;
-#endif
-			if (!resolved_vals) {
-			    PRINT_RVALUE(otoken+output_token);
-			    resolved_vals = true;
-			}
-			if (start_flag) {
-#ifdef DEBUG
-			    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-				fprintf (debugfile, "output %x to resolved value %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
-			    }
-#endif
-			    PRINT_RVALUE(iter->second);
-			} else {
-#ifdef DEBUG
-			    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-				fprintf (debugfile, "output %x to resolved value %lx via %lx\n", 
-					 otoken+output_token, (long) iter->second-0xc0000000, (long) value);
-			    }
-#endif
-			    PRINT_RVALUE(iter->second-0xc0000000);
-			}
-		    } else {
-			// Maps to merge
-#ifdef STATS
-			aindirects++;
-#endif
+			// Not in this epoch - so pass through to next
+			PUT_QVALUE(otoken+output_token,outputq_hdr,outputq_buf,oqfd);
+			PUT_QVALUE(iter->second,outputq_hdr,outputq_buf,oqfd);
 #ifdef DEBUG
 			if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-			    fprintf (debugfile, "output %x to merge chain %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
+			    fprintf (debugfile, "output %x to unresolved value %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
 			}
 #endif
-			map_iter (iter->second, otoken+output_token, unresolved_vals, resolved_vals);
+		    } // Else taint was cleared in this epoch
+		} else if (iter->second < 0xe0000001) {
+			// Maps to input
+#ifdef STATS
+		    aresolved++;
+#endif
+		    PRINT_RVALUE(otoken+output_token);
+		    if (start_flag) {
+#ifdef DEBUG
+			if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+			    fprintf (debugfile, "output %x to resolved value %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
+			}
+#endif
+			PRINT_RVALUE(iter->second);
+		    } else {
+#ifdef DEBUG
+			if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+			    fprintf (debugfile, "output %x to resolved value %lx via %lx\n", 
+				     otoken+output_token, (long) iter->second-0xc0000000, (long) value);
+			}
+#endif
+			PRINT_RVALUE(iter->second-0xc0000000);
 		    }
+		} else {
+		    // Maps to merge
+#ifdef STATS
+		    aindirects++;
+#endif
+#ifdef DEBUG
+		    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+			fprintf (debugfile, "output %x to merge chain %lx via %lx\n", otoken+output_token, (long) iter->second, 
+				 (long) value);
+		    }
+#endif
+		    map_iter (iter->second, otoken+output_token);
 		}
-		GET_QVALUE(value, inputq_hdr, inputq_buf, iqfd);
 	    }
-	    if (unresolved_vals) PUT_QVALUE(0,outputq_hdr,outputq_buf,oqfd);
-	    if (resolved_vals) PRINT_RVALUE(0);
 	}
 #ifdef STATS
 	gettimeofday(&address_done_tv, NULL);
@@ -987,8 +950,8 @@ long stream_epoch (const char* dirname, int port)
     fprintf (statsfile, "\n");
     fprintf (statsfile, "Output directs %lu indirects %lu values %lu, merges %lu\n", directs, indirects, values, output_merges);
     if (!finish_flag) {
-	fprintf (statsfile, "Address tokens %lu passthrus %lu resolved %lu, indirects %lu values %lu unmodified %lu, merges %lu\n", 
-		 atokens, passthrus, aresolved, aindirects, avalues, unmodified, merges);
+	fprintf (statsfile, "Address tokens %lu passthrus %lu resolved %lu, indirects %lu unmodified %lu, merges %lu\n", 
+		 atokens, passthrus, aresolved, aindirects, unmodified, merges);
     }
     fprintf (statsfile, "Unique indirects %ld\n", (long) resolved.size());
 #endif
@@ -1283,7 +1246,6 @@ long seq_epoch (const char* dirname, int port)
 			if (live_set.count(value)) {
 			    PUT_QVALUE (output_token,outputq_hdr,outputq_buf,oqfd);
 			    PUT_QVALUE (value,outputq_hdr,outputq_buf,oqfd);
-			    PUT_QVALUE (0,outputq_hdr,outputq_buf,oqfd);
 #ifdef STATS
 			    values_sent += 3;
 #endif
@@ -1314,7 +1276,6 @@ long seq_epoch (const char* dirname, int port)
 			    }
 #endif
 			}
-			PRINT_RVALUE (0);
 		    }
 		} else {
 #ifdef STATS
@@ -1327,18 +1288,7 @@ long seq_epoch (const char* dirname, int port)
 #endif
 		    struct taint_entry* pentry = &merge_log[value-0xe0000001];
 		    if (pentry->p1 || pentry->p2) {
-			bool unresolved_vals = false, resolved_vals = false;
-			map_iter (value, output_token, unresolved_vals, resolved_vals);
-			if (unresolved_vals) {
-			    PUT_QVALUE(0,outputq_hdr,outputq_buf,oqfd);
-#ifdef STATS
-			    values_sent++;
-#endif
-			}
-#ifdef STATS
-			values_sent++;
-#endif
-			if (resolved_vals) PRINT_RVALUE(0);
+			map_iter (value, output_token);
 #ifdef DEBUG
 		    } else if (DEBUG(output_token)) {
 			fprintf (debugfile, "merge entry is zero - skip\n");
@@ -1382,13 +1332,9 @@ long seq_epoch (const char* dirname, int port)
 	    values_rcvd++;
 #endif
 	    if (otoken == TERM_VAL) break;
-#ifdef STATS
-	    atokens++;
-#endif
-	    bool unresolved_vals = false, resolved_vals = false;
-
 	    GET_QVALUE(value, inputq_hdr, inputq_buf, iqfd);
 #ifdef STATS
+	    atokens++;
 	    values_rcvd++;
 #endif
 #ifdef DEBUG
@@ -1396,134 +1342,109 @@ long seq_epoch (const char* dirname, int port)
 		fprintf (debugfile, "otoken %x(%x/%x) to value %lx\n", otoken+output_token, otoken, output_token, (long) value);
 	    }
 #endif
-	    while (value) {
-#ifdef STATS
-		avalues++;
-#endif
-		auto iter = address_map.find(value);
-		if (iter == address_map.end()) {
+	    auto iter = address_map.find(value);
+	    if (iter == address_map.end()) {
 #ifdef DEBUG
-		    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-			fprintf (debugfile, "otoken %x(%x/%x) not found in map\n", otoken+output_token, otoken, output_token);
+		if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+		    fprintf (debugfile, "otoken %x(%x/%x) not found in map\n", otoken+output_token, otoken, output_token);
+		}
+#endif
+		if (!start_flag) {
+#ifdef STATS
+		    passthrus++;
+#endif
+		    // Not in this epoch - so pass through to next
+		    PUT_QVALUE(otoken+output_token,outputq_hdr,outputq_buf,oqfd);
+		    PUT_QVALUE(value,outputq_hdr,outputq_buf,oqfd);
+#ifdef STATS
+		    values_sent += 2;
+#endif
+#ifdef DEBUG
+		    if (DEBUG(otoken+output_token) || DEBUG(otoken)) {
+			fprintf (debugfile, "output %x(%x/%x) pass through value %lx\n", otoken+output_token, otoken, output_token, 
+				 (long) value);
 		    }
 #endif
-		    if (!start_flag) {
+		}
+	    } else {
+#ifdef DEBUG
+		if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+		    fprintf (debugfile, "otoken %x(%x/%x) found in map: %x\n", otoken+output_token, otoken, output_token,
+			     iter->second);
+		}
+#endif
+		if (iter->second < 0xc0000000 && !start_flag) {
+		    if (iter->second) {
 #ifdef STATS
-			passthrus++;
+			unmodified++;
 #endif
 			// Not in this epoch - so pass through to next
-			if (!unresolved_vals) {
-			    PUT_QVALUE(otoken+output_token,outputq_hdr,outputq_buf,oqfd);
+			PUT_QVALUE(otoken+output_token,outputq_hdr,outputq_buf,oqfd);
+			PUT_QVALUE(iter->second,outputq_hdr,outputq_buf,oqfd);
 #ifdef STATS
-			    values_sent++;
-#endif
-			    unresolved_vals = 1;
-			}
-#ifdef DEBUG
-			if (DEBUG(otoken+output_token) || DEBUG(otoken)) {
-			    fprintf (debugfile, "output %x(%x/%x) pass through value %lx\n", otoken+output_token, otoken, output_token, (long) value);
-			}
-#endif
-			PUT_QVALUE(value,outputq_hdr,outputq_buf,oqfd);
-#ifdef STATS
-			values_sent++;
-#endif
-		    }
-		} else {
-#ifdef DEBUG
-		    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-			fprintf (debugfile, "otoken %x(%x/%x) found in map: %x\n", otoken+output_token, otoken, output_token,
-				 iter->second);
-		    }
-#endif
-		    if (iter->second < 0xc0000000 && !start_flag) {
-			if (iter->second) {
-#ifdef STATS
-			    unmodified++;
-#endif
-			    // Not in this epoch - so pass through to next
-			    if (!unresolved_vals) {
-				PUT_QVALUE(otoken+output_token,outputq_hdr,outputq_buf,oqfd);
-#ifdef STATS
-				values_sent++;
-#endif
-				unresolved_vals = true;
-			    }
-#ifdef DEBUG
-			    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-				fprintf (debugfile, "output %x to unresolved value %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
-			    }
-#endif
-			    PUT_QVALUE(iter->second,outputq_hdr,outputq_buf,oqfd);
-#ifdef STATS
-			    values_sent++;
-#endif
-			} else {
-#ifdef DEBUG
-			    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-				fprintf (debugfile, "output %x to cleared value\n", otoken+output_token);
-			    }
-#endif
-			}
-		    } else if (iter->second < 0xe0000001) {
-			// Maps to input
-#ifdef STATS
-			aresolved++;
-#endif
-			if (!resolved_vals) {
-			    PRINT_RVALUE(otoken+output_token);
-			    resolved_vals = true;
-			}
-			if (start_flag) {
-#ifdef DEBUG
-			    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-				fprintf (debugfile, "output %x to resolved value %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
-			    }
-#endif
-			    PRINT_RVALUE(iter->second);
-			} else {
-#ifdef DEBUG
-			    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-				fprintf (debugfile, "output %x to resolved value %lx via %lx\n", 
-					 otoken+output_token, (long) iter->second-0xc0000000, (long) value);
-			    }
-#endif
-			    PRINT_RVALUE(iter->second-0xc0000000);
-			}
-		    } else {
-			// Maps to merge
-#ifdef STATS
-			aindirects++;
+			values_sent += 2;
 #endif
 #ifdef DEBUG
 			if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-			    fprintf (debugfile, "output %x to merge chain %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
+			    fprintf (debugfile, "output %x to unresolved value %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
 			}
 #endif
-			// This should happen a lot, so short-circuit
-			struct taint_entry* pentry = &merge_log[iter->second-0xe0000001];
-			if (pentry->p1 || pentry->p2) {
-			    map_iter (iter->second, otoken+output_token, unresolved_vals, resolved_vals);
+		    } else {
+			fprintf (stderr, "value to cleared value\n");
+#ifdef DEBUG
+			if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+			    fprintf (debugfile, "output %x to cleared value\n", otoken+output_token);
 			}
+#endif
+		    }
+		} else if (iter->second < 0xe0000001) {
+		    // Maps to input
+#ifdef STATS
+		    aresolved++;
+#endif
+		    PRINT_RVALUE(otoken+output_token);
+		    if (start_flag) {
+#ifdef DEBUG
+			if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+			    fprintf (debugfile, "output %x to resolved value %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
+			}
+#endif
+			PRINT_RVALUE(iter->second);
+		    } else {
+#ifdef DEBUG
+			if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+			    fprintf (debugfile, "output %x to resolved value %lx via %lx\n", 
+				     otoken+output_token, (long) iter->second-0xc0000000, (long) value);
+			}
+#endif
+			PRINT_RVALUE(iter->second-0xc0000000);
+		    }
+		} else {
+		    // Maps to merge
+#ifdef STATS
+		    aindirects++;
+#endif
+#ifdef DEBUG
+		    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+			fprintf (debugfile, "output %x to merge chain %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
+		    }
+#endif
+		    // This should happen a lot, so short-circuit
+		    struct taint_entry* pentry = &merge_log[iter->second-0xe0000001];
+		    if (pentry->p1 || pentry->p2) {
+			map_iter (iter->second, otoken+output_token);
+		    } else {
+			fprintf (stderr, "NULL merge entry\n");
 		    }
 		}
-		GET_QVALUE(value, inputq_hdr, inputq_buf, iqfd);
-#ifdef STATS
-		values_rcvd++;
-#endif
 	    }
-	    if (unresolved_vals) {
-		PUT_QVALUE(0,outputq_hdr,outputq_buf,oqfd);
-#ifdef STATS
-		values_sent++;
-#endif
-	    }
-	    if (resolved_vals) PRINT_RVALUE(0);
 	}
-#ifdef STATS
-	gettimeofday(&address_done_tv, NULL);
-#endif
     }
+
+#ifdef STATS
+    gettimeofday(&address_done_tv, NULL);
+#endif
+
     if (!start_flag) {
 	PUT_QVALUE(TERM_VAL,outputq_hdr,outputq_buf,oqfd);
 #ifdef STATS
@@ -1643,8 +1564,8 @@ long seq_epoch (const char* dirname, int port)
 	fprintf (statsfile, "Pruned %ld simplified %ld unchanged %ld of %ld merge values using live set\n", 
 		prune_cnt, simplify_cnt, mdatasize/sizeof(struct taint_entry)-prune_cnt-simplify_cnt,
 		mdatasize/sizeof(struct taint_entry));
-	fprintf (statsfile, "Address tokens %lu passthrus %lu resolved %lu, indirects %lu values %lu unmodified %lu, merges %lu\n", 
-		 atokens, passthrus, aresolved, aindirects, avalues, unmodified, merges);
+	fprintf (statsfile, "Address tokens %lu passthrus %lu resolved %lu, indirects %lu unmodified %lu, merges %lu\n", 
+		 atokens, passthrus, aresolved, aindirects, unmodified, merges);
     }
     if (!finish_flag) {
 	fprintf (statsfile, "New live set has size %ld\n", (long) new_live_set_size);
