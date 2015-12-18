@@ -1254,8 +1254,8 @@ long seq_epoch (const char* dirname, int port)
 				fprintf (debugfile, "output %x to unresolved addr %lx\n", output_token, (long) value);
 			    }
 #endif
-			} else {
 #ifdef STATS
+			} else {
 			    quashed++;
 #endif
 			}
@@ -1389,12 +1389,9 @@ long seq_epoch (const char* dirname, int port)
 			    fprintf (debugfile, "output %x to unresolved value %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
 			}
 #endif
+#ifdef PARANOID
 		    } else {
 			fprintf (stderr, "value to cleared value\n");
-#ifdef DEBUG
-			if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-			    fprintf (debugfile, "output %x to cleared value\n", otoken+output_token);
-			}
 #endif
 		    }
 		} else if (iter->second < 0xe0000001) {
@@ -1429,13 +1426,13 @@ long seq_epoch (const char* dirname, int port)
 			fprintf (debugfile, "output %x to merge chain %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
 		    }
 #endif
-		    // This should happen a lot, so short-circuit
+#ifdef PARANOID
 		    struct taint_entry* pentry = &merge_log[iter->second-0xe0000001];
-		    if (pentry->p1 || pentry->p2) {
-			map_iter (iter->second, otoken+output_token);
-		    } else {
+		    if (pentry->p1 == 0 && pentry->p2 == 0) {
 			fprintf (stderr, "NULL merge entry\n");
 		    }
+#endif
+		    map_iter (iter->second, otoken+output_token);
 		}
 	    }
 	}
