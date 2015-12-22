@@ -559,7 +559,7 @@ taintvalue_t get_taint_value (taint_t t, option_t option)
     return 0;
 }
 
-void finish_and_print_taint_stats(FILE* fp, int epoch_index)
+void finish_and_print_taint_stats(FILE* fp)
 {
 #ifdef USE_SHMEM
     int rc = ftruncate64 (node_num_fd, (merge_control_shm->merge_total_count-0xe0000001)*sizeof(struct taint_number));
@@ -572,12 +572,12 @@ void finish_and_print_taint_stats(FILE* fp, int epoch_index)
 #endif
 
 #ifdef TAINT_STATS
-    fprintf(fp, "%d, Taint statistics:\n", epoch_index);
-    fprintf(fp, "%d, Second tables allocated: %lu\n", epoch_index, tsp.num_second_tables);
-    fprintf(fp, "%d, Third tables allocated:  %lu\n", epoch_index, tsp.num_third_tables);
-    fprintf(fp, "%d, Num taint options:       %lu\n", epoch_index, tsp.options);
-    fprintf(fp, "%d, Num merges:              %lu\n", epoch_index, tsp.merges);
-    fprintf(fp, "%d, Num merges saved:        %lu\n", epoch_index, tsp.merges_saved);
+    fprintf(fp, "Taint statistics:\n");
+    fprintf(fp, "Second tables allocated: %lu\n", tsp.num_second_tables);
+    fprintf(fp, "Third tables allocated:  %lu\n", tsp.num_third_tables);
+    fprintf(fp, "Num taint options:       %lu\n", tsp.options);
+    fprintf(fp, "Num merges:              %lu\n", tsp.merges);
+    fprintf(fp, "Num merges saved:        %lu\n", tsp.merges_saved);
     fflush(fp);
 #endif
 }
@@ -672,8 +672,7 @@ taint_t* get_mem_taints(u_long mem_loc, uint32_t size)
 #ifdef TAINT_DEBUG
     u_long i;
     for (i = 0; i < size; i++) {
-	//if (TAINT_DEBUG(*(second + low_index + i))) {
-	if (taint_debug_inst == 0xb76df419) {
+	if (TAINT_DEBUG(*(second + low_index + i))) {
 	    fprintf (debug_f, "Address %lx get taint %x at instr %lx clock %ld\n", mem_loc+i, *(second + low_index + i), taint_debug_inst, *ppthread_log_clock);
 	}
     }
