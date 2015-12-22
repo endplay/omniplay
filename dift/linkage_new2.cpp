@@ -583,7 +583,7 @@ static inline void sys_read_stop(int rc)
 #endif
     }
 
-    memset(&current_thread->read_info_cache, 0, sizeof(struct read_info*));
+    memset(&current_thread->read_info_cache, 0, sizeof(struct read_info));
     current_thread->save_syscall_info = 0;
 }
 
@@ -630,7 +630,7 @@ static inline void sys_pread_stop(int rc)
         create_taints_from_buffer(ri->buf, rc, &tci, tokens_fd, channel_name);
     }
 
-    memset(&current_thread->read_info_cache, 0, sizeof(struct read_info*));
+    memset(&current_thread->read_info_cache, 0, sizeof(struct read_info));
     current_thread->save_syscall_info = 0;
 }
 

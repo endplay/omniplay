@@ -993,7 +993,8 @@ void print_forward_options(struct taint_creation_info* tci,
 void interpret_forward_results(char* results_filename, GHashTable* filename_table)
 {
     int fd;
-    int rc;
+    //    int rc;
+    size_t rc;
     int bytes_read = 0;
     struct stat buf;
     fd = open(results_filename, O_RDONLY);

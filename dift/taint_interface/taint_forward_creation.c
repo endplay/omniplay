@@ -291,7 +291,8 @@ void write_output_taints (int outfd, void* buf, int size)
 {
     uint8_t* taints;
     int new_size;
-    int rc;
+    //int rc;
+    size_t rc;
     u_long new_buf = (u_long) buf;
 
     // round down to neaest factor of 8
@@ -506,7 +507,8 @@ int deserialize_filters(int infd)
 
 void build_filters_from_file(const char* filter_filename) {
     FILE* filter_f = NULL;
-    size_t read;
+    //size_t read;
+    int read;
     size_t len = 0;
     char* line = NULL;
 

@@ -105,16 +105,16 @@ $(OBJDIR)maputil$(OBJ_SUFFIX): maputil.h maputil.c
 	$(CXX) $(TOOL_CXXFLAGS) -Wall -Werror -O2 -c -o $(OBJDIR)maputil$(OBJ_SUFFIX) $(GLIB_INCLUDES) maputil.c
 
 $(OBJDIR)postprocess_linkage: xray_slab_alloc.h postprocess_linkage.cpp $(OBJDIR)xray_token$(OBJ_SUFFIX) maputil.c maputil.h
-	$(CXX) -std=c++0x $(TOOL_CXXFLAGS) -Wall -Werror -O2 -o $(OBJDIR)postprocess_linkage $(GLIB_INCLUDES) $(OBJDIR)xray_token$(OBJ_SUFFIX) postprocess_linkage.cpp maputil.c -lglib-2.0
+	$(CXX) -std=c++0x $(TOOL_CXXFLAGS) -Wall -Werror -O2 -o $(OBJDIR)postprocess_linkage $(GLIB_INCLUDES) $(OBJDIR)xray_token$(OBJ_SUFFIX) postprocess_linkage.cpp maputil.c -lglib-2.0 -lrt
 
 $(OBJDIR)parse_outputs: xray_slab_alloc.h parse_outputs.c $(OBJDIR)xray_token$(OBJ_SUFFIX) maputil.c maputil.h
-	$(APP_CC) $(TOOL_CXXFLAGS) -Wall -Werror -O2 -o $(OBJDIR)parse_outputs $(GLIB_INCLUDES) $(OBJDIR)xray_token$(OBJ_SUFFIX) parse_outputs.c maputil.c -lglib-2.0
+	$(APP_CC) $(TOOL_CXXFLAGS) -Wall -Werror -O2 -o $(OBJDIR)parse_outputs $(GLIB_INCLUDES) $(OBJDIR)xray_token$(OBJ_SUFFIX) parse_outputs.c maputil.c -lglib-2.0 -lrt
 
 $(OBJDIR)mksplice: mksplice.cpp maputil.c maputil.h
-	$(CXX) -std=c++0x -Wall -Werror -O8 -o $(OBJDIR)mksplice $(GLIB_INCLUDES) mksplice.cpp maputil.c -lrt
+	$(CXX) -std=c++0x -Wall -Werror -O8 -o $(OBJDIR)mksplice $(GLIB_INCLUDES) mksplice.cpp maputil.c -lrt -lglib-2.0
 
 $(OBJDIR)mkmultisplice: mkmultisplice.c maputil.c maputil.h
-	$(APP_CC) -Wall -Werror -O8 -o $(OBJDIR)mkmultisplice $(GLIB_INCLUDES) mkmultisplice.c maputil.c -lglib-2.0
+	$(APP_CC) -Wall -Werror -O8 -o $(OBJDIR)mkmultisplice $(GLIB_INCLUDES) mkmultisplice.c maputil.c -lglib-2.0 -lrt
 
 $(OBJDIR)mkmerge: mkmerge.cpp maputil.c maputil.h
 	$(CXX) -std=c++0x -Wall -Werror -O8 -o $(OBJDIR)mkmerge $(GLIB_INCLUDES) mkmerge.cpp maputil.c -lrt
@@ -197,7 +197,7 @@ $(OBJDIR)linkage_data$(OBJ_SUFFIX): linkage_new2.cpp xray_slab_alloc.c xray_slab
 	$(CXX) -DLINKAGE_DATA $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
 
 $(OBJDIR)linkage_data$(PINTOOL_SUFFIX): $(OBJDIR)linkage_data$(OBJ_SUFFIX) 
-	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) $(MY_OBJS) $(TAINT_BACK_OBJS) $(TAINT_OBJS) -lglib-2.0
+	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) $(MY_OBJS) $(TAINT_BACK_OBJS) $(TAINT_OBJS) -lglib-2.0 -lrt
 
 # DATA+INDEX TOOL
 $(OBJDIR)linkage_offset$(OBJ_SUFFIX): linkage_new2.cpp xray_slab_alloc.c xray_slab_alloc.h $(TAINTS_INTERFACE)/taint_interface.h $(TAINTS_INTERFACE)/taint_full_interface.c $(TAINTS_INTERFACE)/taint_byte_creation.c splice.c maputil.c

@@ -100,7 +100,8 @@ void trace_syscall_op(int outfd, int threadid,
 
 void trace_taint_op(int outfd, int threadid, u_long ip, taint_op_t taint_op, u_long dst, u_long src)
 {
-    int rc;
+  //    int rc;
+    size_t rc;
     struct taint_op op;
 
     if (is_dst_zero(taint_op, dst) && is_src_zero(taint_op, src)) {
@@ -207,7 +208,8 @@ void trace_taint_op(int outfd, int threadid, u_long ip, taint_op_t taint_op, u_l
 
 void trace_taint_op_enter(int outfd, int threadid, u_long ip, taint_op_t taint_op, u_long dst, u_long src)
 {
-    int rc;
+  //int rc;
+    size_t rc;
     struct taint_op op;
     int bytes_written = 0;
 
@@ -273,7 +275,8 @@ void trace_taint_op_enter(int outfd, int threadid, u_long ip, taint_op_t taint_o
 
 void trace_taint_op_exit(int outfd, int threadid, u_long ip, taint_op_t taint_op, u_long dst, u_long src)
 {
-    int rc;
+  //    int rc;
+    size_t rc;
     int bytes_written = 0;
 
     // same condition needs to hold for enter and exit to hold

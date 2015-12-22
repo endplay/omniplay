@@ -115,7 +115,7 @@ void print_timing (struct replay_timing* timings, struct extra_data* edata, int 
 
 
     if (filter_syscall > 0) {
-	if ((long) filter_syscall > timings[start].index && (long) filter_syscall <= timings[end].index) {
+	if ((u_long) filter_syscall > timings[start].index && (u_long) filter_syscall <= timings[end].index) {
 	    printf (" %6lu", filter_syscall-timings[start].index+1);
 	} else {
 	    printf (" 999999");

@@ -912,7 +912,8 @@ int deserialize_filters(int infd)
 
 void build_filters_from_file(const char* filter_filename) {
     FILE* filter_f = NULL;
-    size_t read;
+    //    size_t read;
+    int read;
     size_t len = 0;
     char* line = NULL;
 
