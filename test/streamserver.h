@@ -61,19 +61,31 @@ struct epoch_ack {
 };
 
 #ifdef BUILD_64
-#define TAINTQSIZE (512*1024*1024)
+#define TAINTQSIZE ((512*1024*1024))
+#define TAINTENTRIES (TAINTQSIZE)/sizeof(uint32_t))
+#define TAINTQMAPSIZE TAINTQSIZE
 #else
-#define TAINTQSIZE (16*1024*1024)
+#define TAINTQSIZE (256*1024*1024)
+#define TAINTQMAPSIZE (16*1024*1024)
 #endif
-#define TAINTENTRIES ((TAINTQSIZE-(sizeof(sem_t)+sizeof(atomic_ulong)*2+64*3))/sizeof(uint32_t))
-struct taintq {
+
+#define TAINTQMAPENTRIES (TAINTQMAPSIZE/sizeof(uint32_t))
+#define TAINTENTRIES (TAINTQSIZE/sizeof(uint32_t))
+#define TAINTQHDRSIZE (4096)
+#define TAINTBUCKETSIZE    (4096)
+#define TAINTBUCKETENTRIES (TAINTBUCKETSIZE/sizeof(uint32_t))
+#define TAINTBUCKETS       (TAINTENTRIES/TAINTBUCKETENTRIES)
+
+struct taintq_hdr {
     sem_t           epoch_sem;
+    pthread_mutex_t lock;
+    pthread_cond_t  full;
+    pthread_cond_t  empty;
     char            pad1[64];
-    atomic_ulong    read_index;
+    ulong           read_index;
     char            pad2[64];
-    atomic_ulong    write_index;
+    ulong           write_index;
     char            pad3[64];
-    uint32_t        buffer[TAINTENTRIES];
 };
 
 #endif

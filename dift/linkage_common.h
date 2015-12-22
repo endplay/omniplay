@@ -103,7 +103,8 @@ struct thread_data {
     int                      record_pid;  // Ask kernel for corresponding record pid and save it here
     uint64_t                 rg_id;       // record group id
     u_long                   ignore_flag; // location of the ignore flag
-    int                      sysnum; // Stores number of system calls for return
+    int                      sysnum;      // Stores number of system calls for return
+    int                      syscall_in_progress; // True when in middle of a syscall
     int                      syscall_cnt; // per-thread syscall cnt, resets on fork
     
     // These caches are to avoid extra allocations 

@@ -26,7 +26,6 @@ int main (int argc, char* argv[])
 	opt = getopt(argc, argv, "p:");
 	if (opt == -1) 
 	{
-	    //we can parse for dir here! 
 	    if(optind < argc) 
 	    {
 		dir = argv[optind];
@@ -59,9 +58,7 @@ int main (int argc, char* argv[])
 	sprintf (tokfile, "%s/tokens.%s", dir, pid);
 	sprintf (outfile, "%s/dataflow.result.%s", dir, pid);
 	sprintf (mergefile, "%s/mergeout.%s", dir, pid);
-
     }
-
     rc = map_file (tokfile, &tfd, &tdatasize, &tmapsize, &tbuf);
     if (rc < 0) return rc;
     rc = map_file (outfile, &ofd, &odatasize, &omapsize, &obuf);

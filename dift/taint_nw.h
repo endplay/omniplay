@@ -14,7 +14,7 @@ extern "C" {
 #ifdef USE_SHMEM
 #define MAX_MERGE_SIZE 0x80000000 /*   2 GB */
 #define MAX_OUT_SIZE   0x40000000 /*   1 GB */
-#define MAX_DUMP_SIZE  0x40000000 /*   1 GB */
+#define MAX_DUMP_SIZE  0x80000000 /*   2 GB - streamsing so large=OK */
 #define MAX_TOKENS_SIZE 0x1000000 /*  16 MB */
 #endif
 

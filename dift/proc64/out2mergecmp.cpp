@@ -16,8 +16,7 @@ using namespace std;
 #include "../taint_interface/taint.h"
 #include "../taint_interface/taint_creation.h"
 
-//#define TARGET(x) (x==0x47dfa0 || x == 0x47df9c)
-//#define ITARGET 0x56c67
+//#define TARGET(x) (x==0xc6c000)
 
 #define ALLOW_DUPS
 
@@ -57,8 +56,8 @@ int main (int argc, char* argv[])
     long rc;
     int out_start;
     const char* out_dir;
-
     int dir_start = 2;
+    int show_all = 0;
 #ifdef OUTPUT_CMP
     struct output_info oi;
 #endif
@@ -197,24 +196,21 @@ int main (int argc, char* argv[])
 
 	optr = (uint32_t *) obuf;
 	while ((u_long) optr < (u_long) obuf + odatasize) {
-	    uint32_t otoken = *optr;
-	    optr++;
-	    while (*optr) {
+	    uint32_t otoken = *optr++;
 #ifdef TARGET
-		if (TARGET(otoken+output_tokens)) {
-		    printf ("Output %x this epoch %x past %x -> input %x this epoch %x past %x, epoch %s offset %lx\n",
-			    otoken+output_tokens, otoken, output_tokens, *optr+input_tokens, *optr, input_tokens, argv[i], (u_long) optr - (u_long) obuf);
-		}
+	    if (TARGET(otoken+output_tokens)) {
+	      printf ("Output %x this epoch %x past %x -> input %x this epoch %x past %x, epoch %s offset %lx\n",
+		      otoken+output_tokens, otoken, output_tokens, *optr+input_tokens, *optr, input_tokens, argv[i], 
+		      (u_long) optr - (u_long) obuf);
+	    }
 #endif
 #ifdef ITARGET
-		if (ITARGET(*optr+input_tokens)) {
-		    printf ("Output %x this epoch %x past %x -> input %x this epoch %x past %x, epoch %s\n",
-			    otoken+output_tokens, otoken, output_tokens, *optr+input_tokens, *optr, input_tokens, argv[i]);
-		}
-#endif
-		omapping.insert(make_pair(otoken+output_tokens,*optr+input_tokens));
-		optr++;
+	    if (ITARGET(*optr+input_tokens)) {
+	      printf ("Output %x this epoch %x past %x -> input %x this epoch %x past %x, epoch %s\n",
+		      otoken+output_tokens, otoken, output_tokens, *optr+input_tokens, *optr, input_tokens, argv[i]);
 	    }
+#endif
+	    omapping.insert(make_pair(otoken+output_tokens,*optr+input_tokens));
 	    optr++;
 	}
 	
@@ -255,10 +251,16 @@ int main (int argc, char* argv[])
 	    printf ("Entry in mapping %d differs\n", cnt);
 	    printf ("mergeout <%x,%x>, outputs <%x,%x>\n", 
 		    miter->first, miter->second, oiter->first, oiter->second);
-	    exit (0);
+	    if (!show_all) exit (0);
+	    if (*miter < *oiter) {
+		miter++;
+	    } else {
+		oiter++;
+	    }
+	} else {
+	    miter++;
+	    oiter++;
 	}
-	miter++;
-	oiter++;
     }
     if (miter != mapping.end()) {
 	printf ("mergeout has entries remaining but output files do not\n");

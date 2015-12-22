@@ -23,7 +23,7 @@ using namespace std;
 #include "../taint_nw.h"
 #include "../../test/streamserver.h"
 
-//#define DEBUG(x) ((x)==0x47df9c || (x)==0x47dfa0 || (x)==(0x47df9c-0x4676eb) || (x)==(0x47dfa0-0x4676eb) || (x)==(0x47df9c-0x3ebc29) || (x)==(0x47df9c-0x3b1611) || (x)==(0x47df9c-0x37e321) || (x)==(0x47df9c-0x376641) || (x)==(0x47df9c-0x192dc3) || (x)==(0x47df9c-0x16db75))
+//#define DEBUG(x) ((x)==0x175ae21 || (x)==(0x175ae21-0x16db75)|| (x)==(0x175ae21-0x192dce) || (x)==(0x175ae21-0x376641) || (x)==(0x175ae21-0x37e321) || (x)==(0x175ae21-0x3b1611) || (x)==(0x175ae21-0x3ebc29) || (x)==(0x175ae21-0x4676eb) || (x)==(0x175ae21-0x4fba98))
 #define STATS
 
 // Set up limits here - need to be less generate with 32-bit address space
@@ -80,24 +80,37 @@ struct taint_entry {
 unordered_map<taint_t,unordered_set<uint32_t>*> resolved;
 int                 outrfd;
 uint32_t            outrindex = 0;
-uint32_t            outrbuf[OUTBUFSIZE];
 struct taint_entry* merge_log;
-struct taintq*      inputq;
 uint32_t            can_read, can_write;
-struct taintq*      outputq;
+
+struct taintq_hdr*  outputq_hdr;
+struct taintq_hdr*  inputq_hdr;
+uint32_t*           outputq_buf;
+uint32_t*           inputq_buf;
+int                 oqfd = -1;
+int                 iqfd = -1;
+
 bool                start_flag = false;
 bool                finish_flag = false;
+#ifdef BUILD_64
+uint32_t            outrbuf[OUTBUFSIZE];
+#else
+uint64_t            out_total_count = 0;
+uint32_t*           outrbuf;
+#endif
 
 #ifdef DEBUG
 FILE* debugfile;
 #endif
 #ifdef STATS
 FILE* statsfile;
-u_long merges = 0, directs = 0, indirects = 0, values = 0, idle = 0, output_merges;
-u_long atokens = 0, passthrus = 0, aresolved = 0, aindirects = 0, avalues = 0, unmodified = 0, written = 0;
+u_long merges = 0, directs = 0, indirects = 0, values = 0, quashed = 0, output_merges = 0;
+u_long send_idle = 0, recv_idle = 0, live_set_send_idle = 0, live_set_recv_idle = 0, new_live_set_send_idle = 0, new_live_set_recv_idle = 0, output_send_idle = 0, output_recv_idle = 0;
+u_long atokens = 0, passthrus = 0, aresolved = 0, aindirects = 0, unmodified = 0, written = 0;
 u_long prune_cnt = 0, simplify_cnt = 0;
-u_long new_live_zeros = 0, new_live_inputs = 0, new_live_merges = 0, new_live_merge_zeros = 0, new_live_notlive = 0;
+u_long new_live_no_changes = 0, new_live_zeros = 0, new_live_inputs = 0, new_live_merges = 0, new_live_merge_zeros = 0, new_live_notlive = 0;
 u_long live_set_size = 0, new_live_set_size = 0;
+u_long values_sent = 0, values_rcvd = 0;
 struct timeval start_tv, recv_done_tv, output_done_tv, index_created_tv, address_done_tv, end_tv;
 struct timeval live_receive_done_tv, new_live_start_tv, live_done_tv, new_live_send_tv;
 
@@ -107,57 +120,104 @@ static long ms_diff (struct timeval tv1, struct timeval tv2)
 }
 #endif
 
-#ifdef STATS
-#define IDLE					\
-    {						\
-	struct timeval tv1, tv2;		\
-	gettimeofday(&tv1, NULL);		\
-	usleep (100);				\
-	gettimeofday(&tv2, NULL);		\
-	idle += tv2.tv_usec - tv1.tv_usec;	\
-	idle += (tv2.tv_sec - tv1.tv_sec)*1000000;	\
-    }
-#else
-#define IDLE usleep (100);
-#endif
+static u_long wb_index = 0, wb_stop = 0, rb_index = 0, rb_stop = 0;
 
-#define PUT_QVALUE(val,q)						\
-    {									\
-	while (can_write == 0) {					\
-	    IDLE;							\
-	    if ((q)->write_index >= (q)->read_index) {			\
-		can_write = TAINTENTRIES - ((q)->write_index - (q)->read_index); \
-	    } else {							\
-		can_write = (q)->read_index - (q)->write_index;		\
-	    }								\
-	}								\
-	(q)->buffer[(q)->write_index] = (val);				\
-	(q)->write_index++;						\
-	if ((q)->write_index == TAINTENTRIES) (q)->write_index = 0;	\
-	can_write--;							\
+static void taintq_push (uint32_t val, struct taintq_hdr* qh, uint32_t*& qb, int qfd)
+{
+    if (wb_index == wb_stop) {
+	// Get space for next bucket 
+	pthread_mutex_lock(&(qh->lock));
+	while ((qh->write_index+1)%TAINTBUCKETS == qh->read_index) {
+#ifdef STATS
+	    struct timeval tv1, tv2;	       
+	    gettimeofday(&tv1, NULL);	       
+#endif
+	    pthread_cond_wait(&(qh->full), &(qh->lock));
+#ifdef STATS
+	    gettimeofday(&tv2, NULL);		
+	    send_idle += tv2.tv_usec - tv1.tv_usec;	
+	    send_idle += (tv2.tv_sec - tv1.tv_sec)*1000000;	
+#endif
+	}
+	if (wb_index == TAINTQMAPENTRIES) {
+	    if (munmap (qb, TAINTQMAPSIZE) < 0) {
+		fprintf (stderr, "Cannot unmap taintq segment, errno=%d\n", errno);
+	    }
+	    qb = (uint32_t *) mmap (0, TAINTQMAPSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, qfd, qh->write_index*TAINTBUCKETSIZE);
+	    if (qb == MAP_FAILED) {
+		fprintf (stderr, "Cannot map taintq segment, errno=%d\n", errno);
+		exit (0);
+	    }
+	    wb_index = 0;
+	}
+	wb_stop = wb_index + TAINTBUCKETENTRIES;
+	pthread_mutex_unlock(&(qh->lock));
     } 
 
+    qb[wb_index++] = val;
 
-// This will return a bogus value when the done flag is set and all entries are read
-#define GET_QVALUE(val,q)						\
-    {									\
-	while (can_read == 0) {						\
-	    IDLE;							\
-	    if ((q)->read_index > (q)->write_index) {			\
-		can_read = TAINTENTRIES - ((q)->read_index - (q)->write_index); \
-	    } else {							\
-		can_read = (q)->write_index - (q)->read_index;		\
-	    }								\
-	}								\
-	(val) = (q)->buffer[(q)->read_index];				\
-	(q)->read_index++;						\
-	if ((q)->read_index == TAINTENTRIES) (q)->read_index = 0;	\
-	can_read--;							\
+    if (wb_index == wb_stop || val == TERM_VAL) {
+	// This bucket is done
+	if (val == TERM_VAL) {
+	    qb[(wb_stop-1)%TAINTENTRIES] = TERM_VAL; // Mark last bucket
+	}
+	pthread_mutex_lock(&(qh->lock));
+	qh->write_index = (qh->write_index+1)%TAINTBUCKETS;
+	pthread_cond_signal(&(qh->empty));
+	pthread_mutex_unlock(&(qh->lock));
     }
+}
 
-#define DOWN_QSEM(q) sem_wait(&(q)->epoch_sem);
-#define UP_QSEM(q) sem_post(&(q)->epoch_sem);
+static void taintq_pull (uint32_t& val, struct taintq_hdr* qh, uint32_t*& qb, int qfd)
+{
+    if (rb_index == rb_stop) {
+	// Get space for next bucket 
+	pthread_mutex_lock(&(qh->lock));
+	while (qh->write_index == qh->read_index) {
+#ifdef STATS
+	    struct timeval tv1, tv2;	       
+	    gettimeofday(&tv1, NULL);	       
+#endif
+	    pthread_cond_wait(&(qh->empty), &(qh->lock));
+#ifdef STATS
+	    gettimeofday(&tv2, NULL);		
+	    recv_idle += tv2.tv_usec - tv1.tv_usec;	
+	    recv_idle += (tv2.tv_sec - tv1.tv_sec)*1000000;	
+#endif
+	}
+	if (rb_index == TAINTQMAPENTRIES) {
+	    if (munmap (qb, TAINTQMAPSIZE) < 0) {
+		fprintf (stderr, "Cannot unmap taintq segment, errno=%d\n", errno);
+	    }
+	    qb = (uint32_t *) mmap (0, TAINTQMAPSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, qfd, qh->read_index*TAINTBUCKETSIZE);
+	    if (qb == MAP_FAILED) {
+		fprintf (stderr, "Cannot map taintq segment, errno=%d\n", errno);
+		exit (0);
+	    }
+	    rb_index = 0;
+	}
+	rb_stop = rb_index + TAINTBUCKETENTRIES;
+	pthread_mutex_unlock(&(qh->lock));
+    } 
 
+    val = qb[rb_index++];
+
+    if (rb_index == rb_stop || val == TERM_VAL) {
+	// This bucket is done
+	pthread_mutex_lock(&(qh->lock));
+	qh->read_index = (qh->read_index+1)%TAINTBUCKETS;
+	pthread_cond_signal(&(qh->full));
+	pthread_mutex_unlock(&(qh->lock));
+    }
+}
+
+#define PUT_QVALUE(val,q,qb,qfd) taintq_push (val,q,qb,qfd);
+#define GET_QVALUE(val,q,qb,qfd) taintq_pull (val,q,qb,qfd);
+
+#define DOWN_QSEM(qh) sem_wait(&(qh)->epoch_sem);
+#define UP_QSEM(qh) sem_post(&(qh)->epoch_sem);
+
+#ifdef BUILD_64
 static void flush_outrbuf()
 {
     long bytes_written = 0;
@@ -173,6 +233,41 @@ static void flush_outrbuf()
     }
     outrindex = 0;
 }
+#else
+static void flush_outrbuf()
+{
+    long rc;
+
+    out_total_count += outrindex*sizeof(uint32_t);
+    
+    if (outrindex == OUTBUFSIZE) {
+
+	if (munmap (outrbuf, OUTBUFSIZE*sizeof(uint32_t)) < 0) {
+	    fprintf (stderr, "could not munmap out buffer, errno=%d\n", errno);
+	    assert (0);
+	}
+
+	rc = ftruncate64 (outrfd, out_total_count+OUTBUFSIZE*sizeof(uint32_t));
+	if (rc < 0) {
+	    fprintf (stderr, "Truncation of output buffer returns %ld\n", rc);
+	}
+	
+	outrbuf = (taint_t *) mmap64 (0, OUTBUFSIZE*sizeof(uint32_t), PROT_READ|PROT_WRITE, MAP_SHARED, 
+				      outrfd, out_total_count);
+	if (outrbuf == MAP_FAILED) {
+	    fprintf (stderr, "could not map dump buffer, errno=%d\n", errno);
+	    assert (0);
+	}
+    } else {
+	rc = ftruncate64 (outrfd, out_total_count);
+	if (rc < 0) {
+	    fprintf (stderr, "Truncation of output buffer returns %ld\n", rc);
+	}
+    }
+
+    outrindex = 0;
+}
+#endif
 
 #define PRINT_RVALUE(value)					\
     {								\
@@ -401,69 +496,58 @@ read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, ta
 }
 #endif
 
-static void map_iter (taint_t value, uint32_t output_token, bool& unresolved_vals, bool& resolved_vals)
+static void map_iter (taint_t value, uint32_t output_token)
 {
     unordered_set<uint32_t>* pset;
 
-    //auto iter = resolved.find(value);
-    //if (iter == resolved.end()) {
-	unordered_set<taint_t> seen_indices;
-	struct taint_entry* pentry;
-	uint32_t stack_depth = 0;
+    unordered_set<taint_t> seen_indices;
+    struct taint_entry* pentry;
+    uint32_t stack_depth = 0;
 	
 #ifdef STATS
-	merges++;
+    merges++;
 #endif
 
-	pset = new unordered_set<uint32_t>;
-	//resolved[value] = pset;
+    pset = new unordered_set<uint32_t>;
 	
-	pentry = &merge_log[value-0xe0000001];
-	// printf ("%llx -> %llx,%llx (%u)\n", value, pentry->p1, pentry->p2, stack_depth);
-	stack[stack_depth++] = pentry->p1;
-	stack[stack_depth++] = pentry->p2;
+    pentry = &merge_log[value-0xe0000001];
+    // printf ("%llx -> %llx,%llx (%u)\n", value, pentry->p1, pentry->p2, stack_depth);
+    stack[stack_depth++] = pentry->p1;
+    stack[stack_depth++] = pentry->p2;
+    
+    do {
+	value = stack[--stack_depth];
+	assert (stack_depth < STACK_SIZE);
 	
-	do {
-	    value = stack[--stack_depth];
-	    assert (stack_depth < STACK_SIZE);
-	    
-	    if (value <= 0xe0000000) {
-		pset->insert(value);
-	    } else {
-		if (seen_indices.insert(value).second) {
-		    pentry = &merge_log[value-0xe0000001];
+	if (value <= 0xe0000000) {
+	    pset->insert(value);
+	} else {
+	    if (seen_indices.insert(value).second) {
+		pentry = &merge_log[value-0xe0000001];
 #ifdef STATS
-		    merges++;
+		merges++;
 #endif
-		    // printf ("%llx -> %llx,%llx (%u)\n", value, pentry->p1, pentry->p2, stack_depth);
-		    stack[stack_depth++] = pentry->p1;
-		    stack[stack_depth++] = pentry->p2;
-		}
+		stack[stack_depth++] = pentry->p1;
+		stack[stack_depth++] = pentry->p2;
 	    }
-	} while (stack_depth);
-	//} else {
-	//pset = iter->second;
-	//}
-
-	pset->erase(0);
+	}
+    } while (stack_depth);
+    pset->erase(0);
 
     for (auto iter2 = pset->begin(); iter2 != pset->end(); iter2++) {
 	if (*iter2 < 0xc0000000 && !start_flag) {
-	    if (!unresolved_vals) {
-		PUT_QVALUE(output_token,outputq);
-		unresolved_vals = true;
-	    }
-	    PUT_QVALUE (*iter2,outputq);
+	    PUT_QVALUE(output_token,outputq_hdr,outputq_buf,oqfd);
+	    PUT_QVALUE (*iter2,outputq_hdr,outputq_buf,oqfd);
+#ifdef STATS
+	    values_sent += 2;
+#endif
 #ifdef DEBUG
 	    if (DEBUG(output_token)) {
 		fprintf (debugfile, "cached: output %x to unresolved value %x (merge)\n", output_token, *iter2);
 	    }
 #endif
 	} else {
-	    if (!resolved_vals) {
-		PRINT_RVALUE (output_token);
-		resolved_vals = true;
-	    }
+	    PRINT_RVALUE (output_token);
 	    if (start_flag) {
 		PRINT_RVALUE (*iter2);
 #ifdef DEBUG
@@ -524,30 +608,45 @@ build_address_map (unordered_map<taint_t,taint_t>& address_map, taint_t* ts_log,
     return 0;
 }
 
-// Process one epoch 
-long stream_epoch (const char* dirname, int port)
+long setup_aggregation (const char* dirname, int& outputfd, int& inputfd, int& addrsfd)
 {
-    long rc;
-    char* output_log, *token_log, *plog;
-    taint_t *ts_log, value;
-    u_long idatasize = 0, odatasize = 0, mdatasize = 0, adatasize = 0;
-    uint32_t buf_size, tokens, otoken, output_token = 0;
     char outrfile[256], outputfile[256], inputfile[256], addrsfile[256];
-    int outputfd, inputfd, addrsfd;
-
-    // First, resolve all outputs for this epoch
-    rc = mkdir(dirname, 0755);
+    
+    long rc = mkdir(dirname, 0755);
     if (rc < 0 && errno != EEXIST) {
 	fprintf (stderr, "Cannot create output dir %s, errno=%d\n", dirname, errno);
 	return rc;
     }
 
+#ifdef BUILD_64
     sprintf (outrfile, "%s/merge-outputs-resolved", dirname);
     outrfd = open (outrfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
     if (outrfd < 0) {
 	fprintf (stderr, "Cannot create %s, errno=%d\n", outrfile, errno);
 	return -1;
     }
+#else
+    sprintf (outrfile, "%s/merge-outputs-resolved", dirname);
+    for (u_int i = 1; i < strlen(outrfile); i++) {
+	if (outrfile[i] == '/') outrfile[i] = '.';
+    }
+    outrfd = shm_open (outrfile, O_CREAT | O_TRUNC | O_RDWR, 0644);
+    if (outrfd < 0) {
+	fprintf (stderr, "Cannot create %s, errno=%d\n", outrfile, errno);
+	return -1;
+    }
+    rc = ftruncate64 (outrfd, OUTBUFSIZE*sizeof(uint32_t));
+    if (rc < 0) {
+	fprintf(stderr, "could not truncate ouput shmem %s, errno %d\n", outrfile, errno);
+	assert(0);
+    }
+    outrbuf = (uint32_t *) mmap (0, OUTBUFSIZE*sizeof(uint32_t), PROT_READ|PROT_WRITE, 
+				 MAP_SHARED, outrfd, 0);
+    if (outrbuf == MAP_FAILED) {
+	fprintf (stderr, "could not map merge buffer, errno=%d\n", errno);
+	assert (0);
+    }
+#endif
 
     sprintf (outputfile, "%s/dataflow.results", dirname);
     outputfd = open (outputfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
@@ -584,6 +683,22 @@ long stream_epoch (const char* dirname, int port)
     gettimeofday(&start_tv, NULL);
 #endif
 
+    return 0;
+}
+
+// Process one epoch 
+long stream_epoch (const char* dirname, int port)
+{
+    long rc;
+    char* output_log, *token_log, *plog;
+    taint_t *ts_log, value;
+    u_long idatasize = 0, odatasize = 0, mdatasize = 0, adatasize = 0;
+    uint32_t buf_size, tokens, otoken, output_token = 0;
+    int outputfd, inputfd, addrsfd;
+
+    rc = setup_aggregation (dirname, outputfd, inputfd, addrsfd);
+    if (rc < 0) return rc;
+
     // Read inputs from DIFT engine
     rc = read_inputs (port, token_log, output_log, ts_log, merge_log,
 		      mdatasize, odatasize, idatasize, adatasize);
@@ -608,9 +723,8 @@ long stream_epoch (const char* dirname, int port)
 		    directs++;
 #endif
 		    if (value < 0xc0000000 && !start_flag) {
-			PUT_QVALUE (output_token,outputq);
-			PUT_QVALUE (value,outputq);
-			PUT_QVALUE (0,outputq);
+			PUT_QVALUE (output_token,outputq_hdr,outputq_buf,oqfd);
+			PUT_QVALUE (value,outputq_hdr,outputq_buf,oqfd);
 #ifdef DEBUG
 			if (DEBUG(output_token)) {
 			    fprintf (debugfile, "output %x to unresolved addr %lx\n", output_token, (long) value);
@@ -634,16 +748,12 @@ long stream_epoch (const char* dirname, int port)
 			    }
 #endif
 			}
-			PRINT_RVALUE (0);
 		    }
 		} else {
 #ifdef STATS
 		    indirects++;
 #endif
-		    bool unresolved_vals = false, resolved_vals = false;
-		    map_iter (value, output_token, unresolved_vals, resolved_vals);
-		    if (unresolved_vals) PUT_QVALUE(0,outputq);
-		    if (resolved_vals) PRINT_RVALUE(0);
+		    map_iter (value, output_token);
 		}
 	    }
 	    output_token++;
@@ -656,6 +766,9 @@ long stream_epoch (const char* dirname, int port)
 #ifdef STATS
     gettimeofday(&output_done_tv, NULL);
     output_merges = merges;
+    output_send_idle = send_idle;
+    output_recv_idle = recv_idle;
+    send_idle = recv_idle = 0;
     merges = 0;
 #endif
 #ifdef DEBUG
@@ -674,102 +787,86 @@ long stream_epoch (const char* dirname, int port)
 	
 	// Now, process input queue of later epoch outputs
 	while (1) {
-	    GET_QVALUE(otoken, inputq);
+	    GET_QVALUE(otoken, inputq_hdr, inputq_buf, iqfd);
 	    if (otoken == TERM_VAL) break;
 #ifdef STATS
 	    atokens++;
 #endif
-	    bool unresolved_vals = false, resolved_vals = false;
+	    GET_QVALUE(value, inputq_hdr, inputq_buf, iqfd);
 
-	    GET_QVALUE(value, inputq);
-	    while (value) {
-#ifdef STATS
-		avalues++;
-#endif
-		auto iter = address_map.find(value);
-		if (iter == address_map.end()) {
-		    if (!start_flag) {
+	    auto iter = address_map.find(value);
+	    if (iter == address_map.end()) {
+		if (!start_flag) {
 #ifdef STATS
 			passthrus++;
 #endif
 			// Not in this epoch - so pass through to next
-			if (!unresolved_vals) {
-			    PUT_QVALUE(otoken+output_token,outputq);
-			    unresolved_vals = 1;
-			}
+			PUT_QVALUE(otoken+output_token,outputq_hdr,outputq_buf,oqfd);
+			PUT_QVALUE(value,outputq_hdr,outputq_buf,oqfd);
 #ifdef DEBUG
 			if (DEBUG(otoken+output_token) || DEBUG(otoken)) {
-			    fprintf (debugfile, "output %x(%x/%x) pass through value %lx\n", otoken+output_token, otoken, output_token, (long) value);
+			    fprintf (debugfile, "output %x(%x/%x) pass through value %lx\n", otoken+output_token, otoken, output_token, 
+				     (long) value);
 			}
 #endif
-			PUT_QVALUE(value,outputq);
-		    }
-		} else {
-		    if (iter->second < 0xc0000000 && !start_flag) {
-			if (iter->second) {
+		}
+	    } else {
+		if (iter->second < 0xc0000000 && !start_flag) {
+		    if (iter->second) {
 #ifdef STATS
-			    unmodified++;
+			unmodified++;
 #endif
-			    // Not in this epoch - so pass through to next
-			    if (!unresolved_vals) {
-				PUT_QVALUE(otoken+output_token,outputq);
-				unresolved_vals = true;
-			    }
-#ifdef DEBUG
-			    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-				fprintf (debugfile, "output %x to unresolved value %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
-			    }
-#endif
-			    PUT_QVALUE(iter->second,outputq);
-			} // Else taint was cleared in this epoch
-		    } else if (iter->second < 0xe0000001) {
-			// Maps to input
-#ifdef STATS
-			aresolved++;
-#endif
-			if (!resolved_vals) {
-			    PRINT_RVALUE(otoken+output_token);
-			    resolved_vals = true;
-			}
-			if (start_flag) {
-#ifdef DEBUG
-			    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-				fprintf (debugfile, "output %x to resolved value %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
-			    }
-#endif
-			    PRINT_RVALUE(iter->second);
-			} else {
-#ifdef DEBUG
-			    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-				fprintf (debugfile, "output %x to resolved value %lx via %lx\n", 
-					 otoken+output_token, (long) iter->second-0xc0000000, (long) value);
-			    }
-#endif
-			    PRINT_RVALUE(iter->second-0xc0000000);
-			}
-		    } else {
-			// Maps to merge
-#ifdef STATS
-			aindirects++;
-#endif
+			// Not in this epoch - so pass through to next
+			PUT_QVALUE(otoken+output_token,outputq_hdr,outputq_buf,oqfd);
+			PUT_QVALUE(iter->second,outputq_hdr,outputq_buf,oqfd);
 #ifdef DEBUG
 			if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-			    fprintf (debugfile, "output %x to merge chain %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
+			    fprintf (debugfile, "output %x to unresolved value %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
 			}
 #endif
-			map_iter (iter->second, otoken+output_token, unresolved_vals, resolved_vals);
+		    } // Else taint was cleared in this epoch
+		} else if (iter->second < 0xe0000001) {
+			// Maps to input
+#ifdef STATS
+		    aresolved++;
+#endif
+		    PRINT_RVALUE(otoken+output_token);
+		    if (start_flag) {
+#ifdef DEBUG
+			if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+			    fprintf (debugfile, "output %x to resolved value %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
+			}
+#endif
+			PRINT_RVALUE(iter->second);
+		    } else {
+#ifdef DEBUG
+			if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+			    fprintf (debugfile, "output %x to resolved value %lx via %lx\n", 
+				     otoken+output_token, (long) iter->second-0xc0000000, (long) value);
+			}
+#endif
+			PRINT_RVALUE(iter->second-0xc0000000);
 		    }
+		} else {
+		    // Maps to merge
+#ifdef STATS
+		    aindirects++;
+#endif
+#ifdef DEBUG
+		    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+			fprintf (debugfile, "output %x to merge chain %lx via %lx\n", otoken+output_token, (long) iter->second, 
+				 (long) value);
+		    }
+#endif
+		    map_iter (iter->second, otoken+output_token);
 		}
-		GET_QVALUE(value, inputq);
 	    }
-	    if (unresolved_vals) PUT_QVALUE(0,outputq);
-	    if (resolved_vals) PRINT_RVALUE(0);
 	}
 #ifdef STATS
 	gettimeofday(&address_done_tv, NULL);
 #endif
     }
-    if (!start_flag) PUT_QVALUE(TERM_VAL,outputq);
+    if (!start_flag) PUT_QVALUE(TERM_VAL,outputq_hdr,outputq_buf,oqfd);
 
     flush_outrbuf ();
     close (outrfd);
@@ -833,49 +930,6 @@ long stream_epoch (const char* dirname, int port)
 
 
     char statsname[256];
-    sprintf (statsname, "%s/machine-readable-stream-stats.csv", dirname);
-    statsfile = fopen (statsname, "w");
-    if (statsfile == NULL) {
-	fprintf (stderr, "Cannot create %s, errno=%d\n", statsname, errno);
-	return -1;
-    }
-    
-    //first print out all of the time info: 
-    fprintf (statsfile,"%ld,%ld,%ld,", 
-	    ms_diff (end_tv, start_tv),
-	    ms_diff (recv_done_tv, start_tv), 
-	    ms_diff (output_done_tv, recv_done_tv));
-
-    if(!finish_flag) {
-	fprintf(statsfile,"%ld,%ld,%ld,",
-		ms_diff (index_created_tv, output_done_tv),
-		ms_diff (address_done_tv, index_created_tv),
-		ms_diff (end_tv, address_done_tv));
-    }
-    else {
-	fprintf(statsfile,"0,0,%ld,", ms_diff (end_tv, output_done_tv));       
-    }
-    fprintf(statsfile,"%lu,", idle/10);
-    fprintf (statsfile, "%ld, %ld, %ld, %ld,", mdatasize, odatasize,idatasize, adatasize);
-    fprintf (statsfile, "%lu, %lu, %lu, %lu,", directs, indirects, values, output_merges);
-    if (!finish_flag) {
-	fprintf (statsfile, "%lu,%lu,%lu,%lu,%lu,%lu,%lu,", 
-		 atokens, passthrus, aresolved, aindirects, avalues, unmodified, merges);
-    }
-    else {
-	fprintf (statsfile, "0,0,0,0,0,0,0,");
-    }
-    if (!start_flag){
-	written = outputq->write_index;
-	fprintf (statsfile, "%lu,", written*sizeof(u_long)); 
-    }
-    else { 
-	fprintf (statsfile, "0,"); 
-    }
-    fprintf (statsfile, "%u\n", resolved.size());
-    fclose (statsfile);
-
-
     sprintf (statsname, "%s/stream-stats", dirname);
     statsfile = fopen (statsname, "w");
     if (statsfile == NULL) {
@@ -886,14 +940,17 @@ long stream_epoch (const char* dirname, int port)
     fprintf (statsfile, "Total time:              %6ld ms\n", ms_diff (end_tv, start_tv));
     fprintf (statsfile, "Receive time:            %6ld ms\n", ms_diff (recv_done_tv, start_tv));
     fprintf (statsfile, "Output processing time:  %6ld ms\n", ms_diff (output_done_tv, recv_done_tv));
+    fprintf (statsfile, "Output proc. send idle:  %6lu ms\n", output_send_idle/1000);
+    fprintf (statsfile, "Output proc. recv idle:  %6lu ms\n", output_recv_idle/1000);
     if (!finish_flag) {
 	fprintf (statsfile, "Index generation time:   %6ld ms\n", ms_diff (index_created_tv, output_done_tv));
 	fprintf (statsfile, "Address processing time: %6ld ms\n", ms_diff (address_done_tv, index_created_tv));
+	fprintf (statsfile, "Address proc. send idle: %6lu ms\n", send_idle/1000);
+	fprintf (statsfile, "Address proc. recv idle: %6lu ms\n", recv_idle/1000);
 	fprintf (statsfile, "Finish time:             %6ld ms\n", ms_diff (end_tv, address_done_tv));
     } else {
 	fprintf (statsfile, "Finish time:             %6ld ms\n", ms_diff (end_tv, output_done_tv));
     }
-    fprintf (statsfile, "Idle                     %6lu ms\n", idle/1000);
     fprintf (statsfile, "\n");
     fprintf (statsfile, "Received %ld bytes of merge data\n", mdatasize);
     fprintf (statsfile, "Received %ld bytes of output data\n", odatasize);
@@ -902,12 +959,8 @@ long stream_epoch (const char* dirname, int port)
     fprintf (statsfile, "\n");
     fprintf (statsfile, "Output directs %lu output indirects %lu output values %lu output merges %lu\n", directs, indirects, values, output_merges);
     if (!finish_flag) {
-	fprintf (statsfile, "Address tokens %lu passthrus %lu resolved %lu indirects %lu values %lu unmodified %lu merges %lu\n", 
-		 atokens, passthrus, aresolved, aindirects, avalues, unmodified, merges);
-    }
-    if (!start_flag) {
-	written = outputq->write_index;
-	fprintf (statsfile, "Wrote %lu entries (%lu bytes)\n", written, written*sizeof(u_long)); 
+	fprintf (statsfile, "Address tokens %lu passthrus %lu resolved %lu indirects %lu unmodified %lu merges %lu\n", 
+		 atokens, passthrus, aresolved, aindirects, unmodified, merges);
     }
 
     fprintf (statsfile, "Unique indirects %ld\n", (long) resolved.size());
@@ -925,57 +978,10 @@ long seq_epoch (const char* dirname, int port)
     taint_t *ts_log, value;
     u_long idatasize = 0, odatasize = 0, mdatasize = 0, adatasize = 0;
     uint32_t buf_size, tokens, otoken, output_token = 0;
-    char outrfile[256], outputfile[256], inputfile[256], addrsfile[256];
     int outputfd, inputfd, addrsfd;
 
-    // Set up output files
-    rc = mkdir(dirname, 0755);
-    if (rc < 0 && errno != EEXIST) {
-	fprintf (stderr, "Cannot create output dir %s, errno=%d\n", dirname, errno);
-	return rc;
-    }
-
-    sprintf (outrfile, "%s/merge-outputs-resolved", dirname);
-    outrfd = open (outrfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
-    if (outrfd < 0) {
-	fprintf (stderr, "Cannot create %s, errno=%d\n", outrfile, errno);
-	return -1;
-    }
-
-    sprintf (outputfile, "%s/dataflow.results", dirname);
-    outputfd = open (outputfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
-    if (outputfd < 0) {
-	fprintf (stderr, "Cannot create dataflow.results file, errno=%d\n", errno);
-	return -1;
-    }
-
-    sprintf (addrsfile, "%s/merge-addrs", dirname);
-    addrsfd = open (addrsfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
-    if (addrsfd < 0) {
-	fprintf (stderr, "Cannot create merge-addrs file, errno=%d\n", errno);
-	return -1;
-    }
-
-    sprintf (inputfile, "%s/tokens", dirname);
-    inputfd = open (inputfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
-    if (inputfd < 0) {
-	fprintf (stderr, "Cannot create tokens file, errno=%d\n", errno);
-	return -1;
-    }
-
-#ifdef DEBUG
-    char debugname[256];
-    sprintf (debugname, "%s/stream-debug", dirname);
-    debugfile = fopen (debugname, "w");
-    if (debugfile == NULL) {
-	fprintf (stderr, "Cannot create %s, errno=%d\n", debugname, errno);
-	return -1;
-    }
-#endif
-
-#ifdef STATS
-    gettimeofday(&start_tv, NULL);
-#endif
+    rc = setup_aggregation (dirname, outputfd, inputfd, addrsfd);
+    if (rc < 0) return rc;
 
     // Read inputs from DIFT engine
     rc = read_inputs (port, token_log, output_log, ts_log, merge_log,
@@ -987,25 +993,39 @@ long seq_epoch (const char* dirname, int port)
 #endif
 
     unordered_set<uint32_t> live_set;
-    unordered_set<uint32_t> new_live_set;
 
     if (!start_flag) {
 
 	// Wait for preceding epoch to send list of live addresses
 	uint32_t val;
-	do {
-	    GET_QVALUE(val, outputq);
-	    if (val == TERM_VAL) break;
+	GET_QVALUE(val, outputq_hdr, outputq_buf, oqfd);
+	while (val != TERM_VAL) {
 	    live_set.insert(val);
-	    if (!finish_flag) new_live_set.insert(val);
-	}  while (1);
+	    GET_QVALUE(val, outputq_hdr, outputq_buf, oqfd);
+	} 
 
 #ifdef STATS
 	live_set_size = live_set.size();
+	live_set_send_idle = send_idle;
+	live_set_recv_idle = recv_idle;
+	send_idle = recv_idle = 0;
 	gettimeofday(&live_receive_done_tv, NULL);
 #endif
-	// Wait on sender
-	UP_QSEM (outputq);
+	// Reset queue and wait on sender
+	outputq_hdr->read_index = outputq_hdr->write_index = 0;
+	rb_index = rb_stop = 0;
+	if (outputq_hdr->write_index*TAINTBUCKETSIZE >= TAINTQMAPSIZE) {
+	    if (munmap (outputq_buf, TAINTQMAPSIZE) < 0) {
+		fprintf (stderr, "Cannot unmap taintq segment, errno=%d\n", errno);
+	    }
+	    outputq_buf = (uint32_t *) mmap (0, TAINTQMAPSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, oqfd, 0);
+	    if (outputq_buf == MAP_FAILED) {
+		fprintf (stderr, "Cannot map taintq segment, errno=%d\n", errno);
+		exit (0);
+	    }
+	    wb_index = 0;
+	}
+	UP_QSEM (outputq_hdr);
 
 	// Prune the merge log
 	taint_entry* mptr = merge_log;
@@ -1048,55 +1068,72 @@ long seq_epoch (const char* dirname, int port)
 	gettimeofday(&new_live_start_tv, NULL);
 #endif
 
-	// Add live addresses
+	uint32_t* pls = outputq_buf;
+	uint32_t* plsend = outputq_buf + live_set.size();
+	if (live_set.size() > TAINTQMAPENTRIES) {
+	    fprintf (stderr, "Oops: live set is %x\n", live_set.size());
+	    return -1;
+	}
 	taint_t* p = ts_log;
-	for (uint32_t i = 0; i < adatasize/(sizeof(taint_t)*2); i++) {
-	    taint_t addr = *p++;
-	    taint_t val = *p++;
-	    if (val == 0) {
-		new_live_set.erase(addr);
+	u_long ts_offset = 0;
+	while (ts_offset + (u_long) p < (u_long) ts_log + adatasize && pls < plsend) {
+	    taint_t addr = *p;
+	    if (*pls < addr) {
+		// No change - so still in live set
+		PUT_QVALUE(*pls,inputq_hdr,inputq_buf,iqfd);
 #ifdef STATS
-		new_live_zeros++;
+		new_live_no_changes++;
 #endif
-	    } else if (val < 0xc0000000) {
-		if (start_flag || live_set.count(val)) {
-		    new_live_set.insert(addr);
+		pls++;
+	    } else {
+		taint_t val = *(p+1);
+		if (val == 0) {
+		    // Do nothing
+#ifdef STATS
+		    new_live_zeros++;
+#endif
+		} else if (val < 0xc0000000) {
+		    if (start_flag || live_set.count(val)) {
+			PUT_QVALUE(addr,inputq_hdr,inputq_buf,iqfd);
+#ifdef STATS
+			new_live_inputs++;
+#endif
+		    } else {
+#ifdef STATS
+			new_live_notlive++;
+#endif
+		    }
+		} else if (val <= 0xe0000000) {
+		    PUT_QVALUE(addr,inputq_hdr,inputq_buf,iqfd);
 #ifdef STATS
 		    new_live_inputs++;
 #endif
 		} else {
+		    taint_entry* pentry = &merge_log[val-0xe0000001];
+		    if (pentry->p1 || pentry->p2) {
+			PUT_QVALUE(addr,inputq_hdr,inputq_buf,iqfd);
 #ifdef STATS
-		    new_live_notlive++;
+			new_live_merges++;
 #endif
+		    } else {
+#ifdef STATS
+			new_live_merge_zeros++;
+#endif
+		    }
 		}
-	    } else if (val <= 0xe0000000) {
-		new_live_set.insert(addr);
-#ifdef STATS
-		new_live_inputs++;
-#endif
-	    } else {
-		taint_entry* pentry = &merge_log[val-0xe0000001];
-		if (pentry->p1 || pentry->p2) {
-		    new_live_set.insert(addr);
-#ifdef STATS
-		    new_live_merges++;
-#endif
-		} else {
-		    new_live_set.erase(addr);
-#ifdef STATS
-		    new_live_merge_zeros++;
-#endif
-		}
+		p += 2;
+		if (addr == *pls) pls++;
 	    }
 #ifndef BUILD_64
 	    // To conserve memory, only map a portion at a time since we are streaming this
-	    if (i%(MAX_ADDRESS_MAP/(sizeof(taint_t)*2)) == MAX_ADDRESS_MAP/(sizeof(taint_t)*2)-1) {
+	    if ((u_long) p - (u_long) ts_log >= MAX_ADDRESS_MAP) {
 		rc = munmap (ts_log, MAX_ADDRESS_MAP);
 		if (rc < 0) {
 		    fprintf (stderr, "Cannot unmap address chunk\n");
 		}
-
-		p = (taint_t *) mmap (ts_log, MAX_ADDRESS_MAP, PROT_READ|PROT_WRITE, MAP_SHARED, afd, (i+1)*(sizeof(taint_t)*2));
+		
+		ts_offset += MAX_ADDRESS_MAP;
+		p = (taint_t *) mmap (ts_log, MAX_ADDRESS_MAP, PROT_READ|PROT_WRITE, MAP_SHARED, afd, ts_offset);
 		if (p == MAP_FAILED) {
 		    fprintf (stderr, "Cannot map address input chunk, errno=%d\n", errno);
 		    return -1;
@@ -1105,6 +1142,71 @@ long seq_epoch (const char* dirname, int port)
 	    }
 #endif
 	}
+	if (pls == plsend) {
+	    while (ts_offset + (u_long) p < (u_long) ts_log + adatasize) {
+		taint_t addr = *p;
+		taint_t val = *(p+1);
+		if (val == 0) {
+		    // Do nothing
+#ifdef STATS
+		    new_live_zeros++;
+#endif
+		} else if (val < 0xc0000000) {
+		    if (start_flag || live_set.count(val)) {
+			PUT_QVALUE(addr,inputq_hdr,inputq_buf,iqfd);
+#ifdef STATS
+			new_live_inputs++;
+#endif
+		    } else {
+#ifdef STATS
+			new_live_notlive++;
+#endif
+		    }
+		} else if (val <= 0xe0000000) {
+		    PUT_QVALUE(addr,inputq_hdr,inputq_buf,iqfd);
+#ifdef STATS
+		    new_live_inputs++;
+#endif
+		} else {
+		    taint_entry* pentry = &merge_log[val-0xe0000001];
+		    if (pentry->p1 || pentry->p2) {
+			PUT_QVALUE(addr,inputq_hdr,inputq_buf,iqfd);
+#ifdef STATS
+			    new_live_merges++;
+#endif
+		    } else {
+#ifdef STATS
+			new_live_merge_zeros++;
+#endif
+		    }
+		}
+		p += 2;
+#ifndef BUILD_64
+		// To conserve memory, only map a portion at a time since we are streaming this
+		if ((u_long) p - (u_long) ts_log >= MAX_ADDRESS_MAP) {
+		    rc = munmap (ts_log, MAX_ADDRESS_MAP);
+		    if (rc < 0) {
+			fprintf (stderr, "Cannot unmap address chunk\n");
+		    }
+		    
+		    ts_offset += MAX_ADDRESS_MAP;
+		    p = (taint_t *) mmap (ts_log, MAX_ADDRESS_MAP, PROT_READ|PROT_WRITE, MAP_SHARED, afd, ts_offset);
+		    if (p == MAP_FAILED) {
+			fprintf (stderr, "Cannot map address input chunk, errno=%d\n", errno);
+			return -1;
+		    }
+		    ts_log = p;
+		}
+#endif
+	    }
+	}
+	if (ts_offset + (u_long) p == (u_long) ts_log + adatasize) {
+	    while (pls < plsend) {
+		PUT_QVALUE(*pls,inputq_hdr,inputq_buf,iqfd);
+		pls++;
+	    }
+	}
+
 #ifndef BUILD_64
 	if (adatasize >= MAX_ADDRESS_MAP) {
 	    rc = munmap (ts_log, MAX_ADDRESS_MAP);
@@ -1121,18 +1223,17 @@ long seq_epoch (const char* dirname, int port)
 #endif
 
 #ifdef STATS
-	new_live_set_size = new_live_set.size();
 	gettimeofday(&new_live_send_tv, NULL);
+	new_live_set_send_idle = send_idle;
+	new_live_set_recv_idle = recv_idle;
+	send_idle = recv_idle = 0;
 #endif
-	for (auto iter = new_live_set.begin(); iter != new_live_set.end(); iter++) {
-	    PUT_QVALUE(*iter,inputq);
-	}
-	PUT_QVALUE(TERM_VAL,inputq);
 
+	PUT_QVALUE(TERM_VAL,inputq_hdr,inputq_buf,iqfd);
+	wb_index = wb_stop = 0;
     }
     
-    live_set.clear();
-    new_live_set.clear();
+    //live_set.clear();
 
 #ifdef STATS
     gettimeofday(&live_done_tv, NULL);
@@ -1153,15 +1254,22 @@ long seq_epoch (const char* dirname, int port)
 		    directs++;
 #endif
 		    if (value < 0xc0000000 && !start_flag) {
-			PUT_QVALUE (output_token,outputq);
-			PUT_QVALUE (value,outputq);
-			PUT_QVALUE (0,outputq);
-#ifdef DEBUG
-			if (DEBUG(output_token)) {
-			    fprintf (debugfile, "output %x to unresolved addr %lx\n", output_token, (long) value);
-			}
+			if (live_set.count(value)) {
+			    PUT_QVALUE (output_token,outputq_hdr,outputq_buf,oqfd);
+			    PUT_QVALUE (value,outputq_hdr,outputq_buf,oqfd);
+#ifdef STATS
+			    values_sent += 3;
 #endif
-			    
+#ifdef DEBUG
+			    if (DEBUG(output_token)) {
+				fprintf (debugfile, "output %x to unresolved addr %lx\n", output_token, (long) value);
+			    }
+#endif
+#ifdef STATS
+			} else {
+			    quashed++;
+#endif
+			}
 		    } else {
 			PRINT_RVALUE (output_token);
 			if (start_flag) {
@@ -1179,7 +1287,6 @@ long seq_epoch (const char* dirname, int port)
 			    }
 #endif
 			}
-			PRINT_RVALUE (0);
 		    }
 		} else {
 #ifdef STATS
@@ -1192,10 +1299,7 @@ long seq_epoch (const char* dirname, int port)
 #endif
 		    struct taint_entry* pentry = &merge_log[value-0xe0000001];
 		    if (pentry->p1 || pentry->p2) {
-			bool unresolved_vals = false, resolved_vals = false;
-			map_iter (value, output_token, unresolved_vals, resolved_vals);
-			if (unresolved_vals) PUT_QVALUE(0,outputq);
-			if (resolved_vals) PRINT_RVALUE(0);
+			map_iter (value, output_token);
 #ifdef DEBUG
 		    } else if (DEBUG(output_token)) {
 			fprintf (debugfile, "merge entry is zero - skip\n");
@@ -1212,6 +1316,9 @@ long seq_epoch (const char* dirname, int port)
 
 #ifdef STATS
     gettimeofday(&output_done_tv, NULL);
+    output_send_idle = send_idle;
+    output_recv_idle = recv_idle;
+    send_idle = recv_idle = 0;
     output_merges = merges;
     merges = 0;
 #endif
@@ -1227,132 +1334,131 @@ long seq_epoch (const char* dirname, int port)
 #endif
 
 	// Wait on sender
-	DOWN_QSEM(inputq);
+	DOWN_QSEM(inputq_hdr);
 
 	// Now, process input queue of later epoch outputs
 	while (1) {
-	    GET_QVALUE(otoken, inputq);
+	    GET_QVALUE(otoken, inputq_hdr, inputq_buf, iqfd);
+#ifdef STATS
+	    values_rcvd++;
+#endif
 	    if (otoken == TERM_VAL) break;
+	    GET_QVALUE(value, inputq_hdr, inputq_buf, iqfd);
 #ifdef STATS
 	    atokens++;
+	    values_rcvd++;
 #endif
-	    bool unresolved_vals = false, resolved_vals = false;
-
-	    GET_QVALUE(value, inputq);
 #ifdef DEBUG
-	    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+	    if (DEBUG(otoken+output_token)||DEBUG(otoken)||DEBUG(value)) {
 		fprintf (debugfile, "otoken %x(%x/%x) to value %lx\n", otoken+output_token, otoken, output_token, (long) value);
 	    }
 #endif
-	    while (value) {
-#ifdef STATS
-		avalues++;
-#endif
-		auto iter = address_map.find(value);
-		if (iter == address_map.end()) {
+	    auto iter = address_map.find(value);
+	    if (iter == address_map.end()) {
 #ifdef DEBUG
-		    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-			fprintf (debugfile, "otoken %x(%x/%x) not found in map\n", otoken+output_token, otoken, output_token);
+		if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+		    fprintf (debugfile, "otoken %x(%x/%x) not found in map\n", otoken+output_token, otoken, output_token);
+		}
+#endif
+		if (!start_flag) {
+#ifdef STATS
+		    passthrus++;
+#endif
+		    // Not in this epoch - so pass through to next
+		    PUT_QVALUE(otoken+output_token,outputq_hdr,outputq_buf,oqfd);
+		    PUT_QVALUE(value,outputq_hdr,outputq_buf,oqfd);
+#ifdef STATS
+		    values_sent += 2;
+#endif
+#ifdef DEBUG
+		    if (DEBUG(otoken+output_token) || DEBUG(otoken)) {
+			fprintf (debugfile, "output %x(%x/%x) pass through value %lx\n", otoken+output_token, otoken, output_token, 
+				 (long) value);
 		    }
 #endif
-		    if (!start_flag) {
+		}
+	    } else {
+#ifdef DEBUG
+		if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+		    fprintf (debugfile, "otoken %x(%x/%x) found in map: %x\n", otoken+output_token, otoken, output_token,
+			     iter->second);
+		}
+#endif
+		if (iter->second < 0xc0000000 && !start_flag) {
+		    if (iter->second) {
 #ifdef STATS
-			passthrus++;
+			unmodified++;
 #endif
 			// Not in this epoch - so pass through to next
-			if (!unresolved_vals) {
-			    PUT_QVALUE(otoken+output_token,outputq);
-			    unresolved_vals = 1;
-			}
-#ifdef DEBUG
-			if (DEBUG(otoken+output_token) || DEBUG(otoken)) {
-			    fprintf (debugfile, "output %x(%x/%x) pass through value %lx\n", otoken+output_token, otoken, output_token, (long) value);
-			}
-#endif
-			PUT_QVALUE(value,outputq);
-		    }
-		} else {
-#ifdef DEBUG
-		    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-			fprintf (debugfile, "otoken %x(%x/%x) found in map: %x\n", otoken+output_token, otoken, output_token,
-				 iter->second);
-		    }
-#endif
-		    if (iter->second < 0xc0000000 && !start_flag) {
-			if (iter->second) {
+			PUT_QVALUE(otoken+output_token,outputq_hdr,outputq_buf,oqfd);
+			PUT_QVALUE(iter->second,outputq_hdr,outputq_buf,oqfd);
 #ifdef STATS
-			    unmodified++;
-#endif
-			    // Not in this epoch - so pass through to next
-			    if (!unresolved_vals) {
-				PUT_QVALUE(otoken+output_token,outputq);
-				unresolved_vals = true;
-			    }
-#ifdef DEBUG
-			    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-				fprintf (debugfile, "output %x to unresolved value %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
-			    }
-#endif
-			    PUT_QVALUE(iter->second,outputq);
-			} else {
-#ifdef DEBUG
-			    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-				fprintf (debugfile, "output %x to cleared value\n", otoken+output_token);
-			    }
-#endif
-			}
-		    } else if (iter->second < 0xe0000001) {
-			// Maps to input
-#ifdef STATS
-			aresolved++;
-#endif
-			if (!resolved_vals) {
-			    PRINT_RVALUE(otoken+output_token);
-			    resolved_vals = true;
-			}
-			if (start_flag) {
-#ifdef DEBUG
-			    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-				fprintf (debugfile, "output %x to resolved value %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
-			    }
-#endif
-			    PRINT_RVALUE(iter->second);
-			} else {
-#ifdef DEBUG
-			    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-				fprintf (debugfile, "output %x to resolved value %lx via %lx\n", 
-					 otoken+output_token, (long) iter->second-0xc0000000, (long) value);
-			    }
-#endif
-			    PRINT_RVALUE(iter->second-0xc0000000);
-			}
-		    } else {
-			// Maps to merge
-#ifdef STATS
-			aindirects++;
+			values_sent += 2;
 #endif
 #ifdef DEBUG
 			if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-			    fprintf (debugfile, "output %x to merge chain %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
+			    fprintf (debugfile, "output %x to unresolved value %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
 			}
 #endif
-			// This should happen a lot, so short-circuit
-			struct taint_entry* pentry = &merge_log[iter->second-0xe0000001];
-			if (pentry->p1 || pentry->p2) {
-			    map_iter (iter->second, otoken+output_token, unresolved_vals, resolved_vals);
-			}
+#ifdef PARANOID
+		    } else {
+			fprintf (stderr, "value to cleared value\n");
+#endif
 		    }
-		}
-		GET_QVALUE(value, inputq);
-	    }
-	    if (unresolved_vals) PUT_QVALUE(0,outputq);
-	    if (resolved_vals) PRINT_RVALUE(0);
-	}
+		} else if (iter->second < 0xe0000001) {
+		    // Maps to input
 #ifdef STATS
-	gettimeofday(&address_done_tv, NULL);
+		    aresolved++;
+#endif
+		    PRINT_RVALUE(otoken+output_token);
+		    if (start_flag) {
+#ifdef DEBUG
+			if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+			    fprintf (debugfile, "output %x to resolved value %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
+			}
+#endif
+			PRINT_RVALUE(iter->second);
+		    } else {
+#ifdef DEBUG
+			if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+			    fprintf (debugfile, "output %x to resolved value %lx via %lx\n", 
+				     otoken+output_token, (long) iter->second-0xc0000000, (long) value);
+			}
+#endif
+			PRINT_RVALUE(iter->second-0xc0000000);
+		    }
+		} else {
+		    // Maps to merge
+#ifdef STATS
+		    aindirects++;
+#endif
+#ifdef DEBUG
+		    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+			fprintf (debugfile, "output %x to merge chain %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
+		    }
+#endif
+#ifdef PARANOID
+		    struct taint_entry* pentry = &merge_log[iter->second-0xe0000001];
+		    if (pentry->p1 == 0 && pentry->p2 == 0) {
+			fprintf (stderr, "NULL merge entry\n");
+		    }
+#endif
+		    map_iter (iter->second, otoken+output_token);
+		}
+	    }
+	}
+    }
+
+#ifdef STATS
+    gettimeofday(&address_done_tv, NULL);
+#endif
+
+    if (!start_flag) {
+	PUT_QVALUE(TERM_VAL,outputq_hdr,outputq_buf,oqfd);
+#ifdef STATS
+	values_sent++;
 #endif
     }
-    if (!start_flag) PUT_QVALUE(TERM_VAL,outputq)
 
     flush_outrbuf ();
     close (outrfd);
@@ -1426,6 +1532,8 @@ long seq_epoch (const char* dirname, int port)
     fprintf (statsfile, "Receive time:            %6ld ms\n", ms_diff (recv_done_tv, start_tv));
     if (!start_flag) {
 	fprintf (statsfile, "Receive live set time:   %6ld ms\n", ms_diff (live_receive_done_tv, recv_done_tv));
+	fprintf (statsfile, "Receive live snd idle:   %6lu ms\n", live_set_send_idle/1000);
+	fprintf (statsfile, "Receive live rcv idle:   %6lu ms\n", live_set_recv_idle/1000);
 	if (!finish_flag) {
 	    fprintf (statsfile, "Prune live set time:     %6ld ms\n", ms_diff (new_live_start_tv, live_receive_done_tv));
 	} else {
@@ -1435,16 +1543,21 @@ long seq_epoch (const char* dirname, int port)
     if (!finish_flag) {
 	fprintf (statsfile, "Make live set time:      %6ld ms\n", ms_diff (new_live_send_tv, new_live_start_tv));
 	fprintf (statsfile, "Send live set time:      %6ld ms\n", ms_diff (live_done_tv, new_live_send_tv));
+	fprintf (statsfile, "Send live snd idle:      %6lu ms\n", new_live_set_send_idle/1000);
+	fprintf (statsfile, "Send live rcv idle:      %6lu ms\n", new_live_set_recv_idle/1000);
     }
     fprintf (statsfile, "Output processing time:  %6ld ms\n", ms_diff (output_done_tv, live_done_tv));
+    fprintf (statsfile, "Output proc. send idle:  %6lu ms\n", output_send_idle/1000);
+    fprintf (statsfile, "Output proc. recv idle:  %6lu ms\n", output_recv_idle/1000);
     if (!finish_flag) {
 	fprintf (statsfile, "Index generation time:   %6ld ms\n", ms_diff (index_created_tv, output_done_tv));
 	fprintf (statsfile, "Address processing time: %6ld ms\n", ms_diff (address_done_tv, index_created_tv));
+	fprintf (statsfile, "Address proc. send idle: %6lu ms\n", send_idle/1000);
+	fprintf (statsfile, "Address proc. recv idle: %6lu ms\n", recv_idle/1000);
 	fprintf (statsfile, "Finish time:             %6ld ms\n", ms_diff (end_tv, address_done_tv));
     } else {
 	fprintf (statsfile, "Finish time:             %6ld ms\n", ms_diff (end_tv, output_done_tv));
     }
-    fprintf (statsfile, "Idle                     %6lu ms\n", idle/1000);
     fprintf (statsfile, "\n");
     fprintf (statsfile, "Received %ld bytes of merge data\n", mdatasize);
     fprintf (statsfile, "Received %ld bytes of output data\n", odatasize);
@@ -1452,26 +1565,24 @@ long seq_epoch (const char* dirname, int port)
     fprintf (statsfile, "Received %ld bytes of addr data\n", adatasize);
     fprintf (statsfile, "\n");
     if (!start_flag) {
-	fprintf (statsfile, "Received %ld values in live set\n", (long) live_set.size());
+	fprintf (statsfile, "Received %ld values in live set\n", (long) live_set_size);
     }
-    fprintf (statsfile, "Output directs %lu indirects %lu values %lu, merges %lu\n", directs, indirects, values, output_merges);
+    fprintf (statsfile, "Output directs %lu indirects %lu values %lu quashed %lu merges %lu\n", directs, indirects, values, quashed, output_merges);
     if (!finish_flag) {
 	fprintf (statsfile, "Pruned %ld simplified %ld unchanged %ld of %ld merge values using live set\n", 
 		prune_cnt, simplify_cnt, mdatasize/sizeof(struct taint_entry)-prune_cnt-simplify_cnt,
 		mdatasize/sizeof(struct taint_entry));
-	fprintf (statsfile, "Address tokens %lu passthrus %lu resolved %lu, indirects %lu values %lu unmodified %lu, merges %lu\n", 
-		 atokens, passthrus, aresolved, aindirects, avalues, unmodified, merges);
+	fprintf (statsfile, "Address tokens %lu passthrus %lu resolved %lu, indirects %lu unmodified %lu, merges %lu\n", 
+		 atokens, passthrus, aresolved, aindirects, unmodified, merges);
     }
-    if (!start_flag) {
-	fprintf (statsfile, "New live set has size %ld\n", (long) new_live_set.size());
-	fprintf (statsfile, "zeros %lu, inputs %lu, merges %lu, merge_zeros %lu, not live %lu\n", new_live_zeros, 
+    if (!finish_flag) {
+	fprintf (statsfile, "New live set has size %ld\n", (long) new_live_set_size);
+	fprintf (statsfile, "no changes %lu, zeros %lu, inputs %lu, merges %lu, merge_zeros %lu, not live %lu\n", 
+		 new_live_no_changes, new_live_zeros, 
 		 new_live_inputs, new_live_merges, new_live_merge_zeros, new_live_notlive);
     }
-    if (!start_flag) {
-	written = outputq->write_index;
-	fprintf (statsfile, "Wrote %lu entries (%lu bytes)\n", written, written*sizeof(u_long)); 
-    }
     fprintf (statsfile, "Unique indirects %ld\n", (long) resolved.size());
+    fprintf (statsfile, "Values rcvd %lu sent %lu\n", values_rcvd, values_sent);
 #endif
 
     return 0;
@@ -1558,107 +1669,104 @@ int connect_input_queue (struct recvdata* data)
     return s;
 }
 
-void send_stream (int s, struct taintq* q)
+void send_stream (int s, struct taintq_hdr* qh, uint32_t* qb)
 {
     // Listen on output queue and send over network
-    while (1) {
-	u_long can_send = 0;
+    bool done = false;
+    u_long bytes_sent = 0;
+    while (!done) {
 
-	while (can_send == 0) {
-	    usleep (100);
-	    if (q->read_index > q->write_index) {			
-		can_send = TAINTENTRIES - q->read_index;
-	    } else {								
-		can_send = q->write_index - q->read_index;		
-	    }		
+	pthread_mutex_lock(&(qh->lock));
+	while (qh->read_index == qh->write_index) {
+	    pthread_cond_wait(&(qh->empty), &(qh->lock));
 	}
+	pthread_mutex_unlock(&(qh->lock));
 
-	long rc = safe_write (s, q->buffer + q->read_index, can_send*sizeof(uint32_t));
-	if (rc != (long)(can_send*sizeof(u_int32_t))) return; // Error sending the data
+	long rc = safe_write (s, qb + (qh->read_index*TAINTBUCKETENTRIES), TAINTBUCKETSIZE);
+	if (rc != (long)TAINTBUCKETSIZE) return; // Error sending the data
 
-	q->read_index += can_send;
-	if (q->buffer[(q->read_index-1)%TAINTENTRIES] == TERM_VAL) return; // No more data to send
+	bytes_sent += TAINTBUCKETENTRIES;
+
+	if (qb[qh->read_index*TAINTBUCKETENTRIES+TAINTBUCKETENTRIES-1] == TERM_VAL) done = true;
+
+	pthread_mutex_lock(&(qh->lock));
+	qh->read_index = (qh->read_index+1)%TAINTBUCKETS;
+	pthread_cond_signal(&(qh->full));
+	pthread_mutex_unlock(&(qh->lock));
     }
 }
 
-void recv_stream (int s, struct taintq* q)
+void recv_stream (int s, struct taintq_hdr* qh, uint32_t* qb)
 {
     // Get data and put on the inputq
-    while (1) {
-	u_long can_recv;
-	u_long partial_bytes = 0;
-	if (q->write_index >= q->read_index) {			
-	    can_recv = TAINTENTRIES - q->write_index;
-	} else {								
-	    can_recv = q->write_index - q->read_index;		
-	}									
-	if (can_recv) {
-	    can_recv = can_recv*sizeof(u_long)-partial_bytes; // Convert to bytes
-	    long rc = recv (s, q->buffer + q->write_index, can_recv, 0);
-	    if (rc < 0) {
-		fprintf (stderr, "recv returns %ld,errno=%d\n", rc, errno);
-		break;
-	    } else if (rc == 0) {
-		break; // Sender closed connection
-	    }
-	    q->write_index += rc/sizeof(u_long);					       
-	    if (rc%sizeof(u_long)) {
-		partial_bytes += rc%sizeof(u_long);
-		if (partial_bytes > sizeof(u_long)) {
-		    q->write_index++;
-		    partial_bytes -= sizeof(u_long);
-		}
-	    }
-	    if (partial_bytes == 0 && q->buffer[(q->write_index-1)%TAINTENTRIES] == TERM_VAL) break; // Sender is done
-	} else {
-	    usleep(100);
+    bool done = false;
+    u_long bytes_rcvd = 0;
+    while (!done) {
+
+	// Receive a block at a time
+	pthread_mutex_lock(&(qh->lock));
+	while ((qh->write_index+1)%TAINTBUCKETS == qh->read_index) {
+	    pthread_cond_wait(&(qh->full), &(qh->lock));
 	}
+	pthread_mutex_unlock(&(qh->lock));
+
+	long rc = safe_read (s, qb + (qh->write_index*TAINTBUCKETENTRIES), TAINTBUCKETSIZE);
+	if (rc != (long)TAINTBUCKETSIZE) return; // Error sending the data
+
+	bytes_rcvd += TAINTBUCKETENTRIES;
+
+	if (qb[qh->write_index*TAINTBUCKETENTRIES+TAINTBUCKETENTRIES-1] == TERM_VAL) done = true;
+
+	pthread_mutex_lock(&(qh->lock));
+	qh->write_index = (qh->write_index+1)%TAINTBUCKETS;
+	pthread_cond_signal(&(qh->empty));
+	pthread_mutex_unlock(&(qh->lock));
     }
 }
 
-// Sending to another computer is implemented as separate thread to add asyncrhony
-void* send_output_queue (void* arg)
+int recv_input_queue (struct recvdata* data)
 {
-   struct senddata* data = (struct senddata *) arg;
-
-   int s = connect_output_queue (data);
-   if (s < 0) return NULL;
-
-   if (data->do_sequential) {
-       recv_stream (s, outputq); // First we read data from upstream
-       DOWN_QSEM(outputq);
-   }
-
-   send_stream (s, outputq);
-   close (s);
-   return NULL;
-}
-
-void* recv_input_queue (void* arg)
-{
-    struct recvdata* data = (struct recvdata *) arg;
-
     int s = connect_input_queue (data);
-    if (s < 0) return NULL;
+    if (s < 0) return s;
 
     if (data->do_sequential) {
-	send_stream (s, inputq); // First we send filters downstream	
-	UP_QSEM(inputq);
+	send_stream (s, inputq_hdr, inputq_buf); // First we send filters downstream	
+	fprintf (stderr, "sent data downstream\n");
+	inputq_hdr->read_index = inputq_hdr->write_index = 0;
+	UP_QSEM(inputq_hdr);
     }
 
-    recv_stream (s, inputq);
+    recv_stream (s, inputq_hdr, inputq_buf);
     close (s);
-    return NULL;
+    return 0;
+}
+
+// Sending to another computer is implemented as separate process to add asyncrhony
+int send_output_queue (struct senddata* data)
+{
+   int s = connect_output_queue (data);
+   if (s < 0) return s;
+
+   if (data->do_sequential) {
+       recv_stream (s, outputq_hdr, outputq_buf); // First we read data from upstream
+       DOWN_QSEM(outputq_hdr);
+   }
+
+   send_stream (s, outputq_hdr, outputq_buf);
+   close (s);
+   return 0;
 }
 
 void format ()
 {
-    fprintf (stderr, "format: stream <dir> <taint port> [-iq input_queue] [-oq output_queue] [-oh output_host] [-ih]\n");
+    fprintf (stderr, "format: stream <dir> <taint port> [-iq input_queue_hdr input_queue] [-oq output_queue_hdr output_queue]\n");
     exit (0);
 }
 
 int main (int argc, char* argv[]) 
 {
+    char* input_queue_hdr = NULL;
+    char* output_queue_hdr = NULL;
     char* input_queue = NULL;
     char* output_queue = NULL;
     char* output_host = NULL;
@@ -1666,7 +1774,6 @@ int main (int argc, char* argv[])
     pthread_t oh_tid, ih_tid;
     struct senddata sd;
     struct recvdata rd;
-    long rc;
     bool do_sequential = false;
 
     if (argc < 3) format();
@@ -1675,11 +1782,23 @@ int main (int argc, char* argv[])
 	if (!strcmp (argv[i], "-iq")) {
 	    i++;
 	    if (i < argc) {
+		input_queue_hdr = argv[i];
+	    } else {
+		format();
+	    }
+	    i++;
+	    if (i < argc) {
 		input_queue = argv[i];
 	    } else {
 		format();
 	    }
 	} else if (!strcmp (argv[i], "-oq")) {
+	    i++;
+	    if (i < argc) {
+		output_queue_hdr = argv[i];
+	    } else {
+		format();
+	    }
 	    i++;
 	    if (i < argc) {
 		output_queue = argv[i];
@@ -1702,61 +1821,117 @@ int main (int argc, char* argv[])
 	}
     }
 
-    if (input_queue) {
-	int iqfd = shm_open (input_queue, O_RDWR, 0);
+    if (output_host) {
+	int oqhdrfd = shm_open (output_queue_hdr, O_RDWR, 0);
+	if (oqhdrfd < 0) {
+	    fprintf (stderr, "Cannot open output queue header %s, errno=%d\n", output_queue_hdr, errno);
+	    return -1;
+	}
+	oqfd = shm_open (output_queue, O_RDWR, 0);
+	if (oqfd < 0) {
+	    fprintf (stderr, "Cannot open output queue %s, errno=%d\n", output_queue, errno);
+	    return -1;
+	}
+	outputq_hdr = (struct taintq_hdr *) mmap (NULL, TAINTQHDRSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, oqhdrfd, 0);
+	if (outputq_hdr == MAP_FAILED) {
+	    fprintf (stderr, "Cannot map output queue header, errno=%d\n", errno);
+	    return -1;
+	}
+	outputq_buf = (uint32_t *) mmap (NULL, TAINTQSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, oqfd, 0);
+	if (outputq_buf == MAP_FAILED) {
+	    fprintf (stderr, "Cannot map input queue, errno=%d\n", errno);
+	    return -1;
+	}
+	can_write = 0;
+	sd.host = output_host;
+	sd.port = STREAM_PORT;
+	sd.do_sequential = do_sequential;
+	return (send_output_queue (&sd));
+    }
+
+    if (input_host) {
+	int iqhdrfd = shm_open (input_queue_hdr, O_RDWR, 0);
+	if (iqhdrfd < 0) {
+	    fprintf (stderr, "Cannot open input queue header %s, errno=%d\n", input_queue_hdr, errno);
+	    return -1;
+	}
+	iqfd = shm_open (input_queue, O_RDWR, 0);
 	if (iqfd < 0) {
 	    fprintf (stderr, "Cannot open input queue %s, errno=%d\n", input_queue, errno);
 	    return -1;
 	}
-	inputq = (struct taintq *) mmap (NULL, TAINTQSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, iqfd, 0);
-	if (inputq == MAP_FAILED) {
+	inputq_hdr = (struct taintq_hdr *) mmap (NULL, TAINTQHDRSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, iqhdrfd, 0);
+	if (inputq_hdr == MAP_FAILED) {
+	    fprintf (stderr, "Cannot map input queue header, errno=%d\n", errno);
+	    return -1;
+	}
+	inputq_buf = (uint32_t *) mmap (NULL, TAINTQSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, iqfd, 0);
+	if (inputq_buf == MAP_FAILED) {
+	    fprintf (stderr, "Cannot map input queue, errno=%d\n", errno);
+	    return -1;
+	}
+	can_read = 0;
+	rd.port = STREAM_PORT;
+	rd.do_sequential = do_sequential;
+	return recv_input_queue (&rd);
+    }
+
+    if (input_queue) {
+	int iqhdrfd = shm_open (input_queue_hdr, O_RDWR, 0);
+	if (iqhdrfd < 0) {
+	    fprintf (stderr, "Cannot open input queue header %s, errno=%d\n", input_queue_hdr, errno);
+	    return -1;
+	}
+	iqfd = shm_open (input_queue, O_RDWR, 0);
+	if (iqfd < 0) {
+	    fprintf (stderr, "Cannot open input queue %s, errno=%d\n", input_queue, errno);
+	    return -1;
+	}
+	inputq_hdr = (struct taintq_hdr *) mmap (NULL, TAINTQHDRSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, iqhdrfd, 0);
+	if (inputq_hdr == MAP_FAILED) {
+	    fprintf (stderr, "Cannot map input queue header, errno=%d\n", errno);
+	    return -1;
+	}
+	inputq_buf = (uint32_t *) mmap (NULL, TAINTQMAPSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, iqfd, 0);
+	if (inputq_buf == MAP_FAILED) {
 	    fprintf (stderr, "Cannot map input queue, errno=%d\n", errno);
 	    return -1;
 	}
 	can_read = 0;
 	finish_flag = false;
     } else {
-	inputq = NULL;
+	inputq_hdr = NULL;
+	inputq_buf = NULL;
 	finish_flag = true;
     }
 
     if (output_queue) {
-	int oqfd = shm_open (output_queue, O_RDWR, 0);
-	if (oqfd < 0) {
-	    fprintf (stderr, "Cannot open input queue %s, errno=%d\n", output_queue, errno);
+	int oqhdrfd = shm_open (output_queue_hdr, O_RDWR, 0);
+	if (oqhdrfd < 0) {
+	    fprintf (stderr, "Cannot open output queue header %s, errno=%d\n", output_queue_hdr, errno);
 	    return -1;
 	}
-	outputq = (struct taintq *) mmap (NULL, TAINTQSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, oqfd, 0);
-	if (outputq == MAP_FAILED) {
+	oqfd = shm_open (output_queue, O_RDWR, 0);
+	if (oqfd < 0) {
+	    fprintf (stderr, "Cannot open output queue %s, errno=%d\n", output_queue, errno);
+	    return -1;
+	}
+	outputq_hdr = (struct taintq_hdr *) mmap (NULL, TAINTQHDRSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, oqhdrfd, 0);
+	if (outputq_hdr == MAP_FAILED) {
+	    fprintf (stderr, "Cannot map output queue header, errno=%d\n", errno);
+	    return -1;
+	}
+	outputq_buf = (uint32_t *) mmap (NULL, TAINTQMAPSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, oqfd, 0);
+	if (outputq_buf == MAP_FAILED) {
 	    fprintf (stderr, "Cannot map input queue, errno=%d\n", errno);
 	    return -1;
 	}
 	can_write = 0;
 	start_flag = false;
     } else {
-	outputq = NULL;
+	outputq_hdr = NULL;
+	outputq_buf = NULL;
 	start_flag = true;
-    }
-
-    if (output_host) {
-	sd.host = output_host;
-	sd.port = STREAM_PORT;
-	sd.do_sequential = do_sequential;
-	rc = pthread_create (&oh_tid, NULL, send_output_queue, &sd);
-	if (rc < 0) {
-	    fprintf (stderr, "Cannot create outputq thread\n");
-	    return rc;
-	}
-    }
-
-    if (input_host) {
-	rd.port = STREAM_PORT;
-	rd.do_sequential = do_sequential;
-	rc = pthread_create (&ih_tid, NULL, recv_input_queue, &rd);
-	if (rc < 0) {
-	    fprintf (stderr, "Cannot create inputq thread\n");
-	    return rc;
-	}
     }
 
     if (do_sequential) {

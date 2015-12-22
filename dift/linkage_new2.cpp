@@ -285,6 +285,7 @@ extern int dump_mem_taints (int fd);
 extern int dump_reg_taints (int fd, taint_t* pregs);
 extern int dump_mem_taints_start (int fd);
 extern int dump_reg_taints_start (int fd, taint_t* pregs);
+
 #ifdef TAINT_DEBUG
 extern void print_taint_debug_reg (int tid, taint_t* pregs);
 extern void print_taint_debug_mem ();
@@ -292,6 +293,13 @@ extern u_long debug_taint_cnt;
 FILE* debug_f;
 u_long taint_debug_inst = 0;
 #endif
+
+#ifdef TAINT_STATS
+struct timeval begin_tv, end_tv;
+u_long inst_instrumented = 0;
+FILE* stats_f;
+#endif
+
 extern void write_token_finish (int fd);
 extern void output_finish (int fd);
 
@@ -320,7 +328,7 @@ static void dift_done ()
 	assert(0);
     }
     if (all_output) {
-	int rc = ftruncate (taint_fd, MAX_DUMP_SIZE);
+	int rc = ftruncate64 (taint_fd, MAX_DUMP_SIZE);
 	if (rc < 0) {
 	    fprintf(stderr, "could not truncate shmem %s, errno %d\n", taint_structures_file, errno);
 	    assert(0);
@@ -361,8 +369,21 @@ static void dift_done ()
     output_finish (outfd);
 #endif
 
-    finish_and_print_taint_stats(stdout, epoch_index);
-    printf("DIFT done at %ld\n", global_syscall_cnt);
+#ifdef TAINT_STATS
+    gettimeofday(&end_tv, NULL);
+    fprintf (stats_f, "Instructions instrumented: %ld\n", inst_instrumented);
+    fprintf (stats_f, "DIFT began at %ld.%06ld\n", begin_tv.tv_sec, begin_tv.tv_usec);
+    fprintf (stats_f, "DIFT ended at %ld.%06ld\n", end_tv.tv_sec, end_tv.tv_usec);
+    finish_and_print_taint_stats(stats_f);
+    fclose (stats_f);
+#else
+    finish_and_print_taint_stats(stdout);
+#endif
+
+#ifdef TAINT_DEBUG
+    fclose (debug_f);
+#endif
+
 
 #ifdef USE_SHMEM
     // Send "done" message to aggregator
@@ -413,8 +434,9 @@ static inline void increment_syscall_cnt (int syscall_num)
             current_thread->syscall_cnt++;
         }
 #ifdef TAINT_DEBUG
-	fprintf (debug_f, "pid %d syscall %d global syscall cnt %lu num %d clock %ld\n", current_thread->record_pid, 
-		 current_thread->syscall_cnt, global_syscall_cnt, syscall_num, *ppthread_log_clock);
+	extern taint_t merge_total_count;
+	fprintf (debug_f, "pid %d syscall %d global syscall cnt %lu num %d clock %ld mtc %x\n", current_thread->record_pid, 
+		 current_thread->syscall_cnt, global_syscall_cnt, syscall_num, *ppthread_log_clock, merge_total_count);
 #endif
     }
 }
@@ -444,7 +466,7 @@ static void create_connect_info_name(char* connect_info_name, int domain,
     }
 }
 
-static inline void sys_open_start(char* filename, int flags)
+static inline void sys_open_start(struct thread_data* tdata, char* filename, int flags)
 {
     SYSCALL_DEBUG (stderr, "open_start: filename %s\n", filename);
     struct open_info* oi = (struct open_info *) get_slice(&open_info_alloc);
@@ -452,7 +474,7 @@ static inline void sys_open_start(char* filename, int flags)
     oi->flags = flags;
     oi->fileno = open_file_cnt;
     open_file_cnt++;
-    current_thread->save_syscall_info = (void *) oi;
+    tdata->save_syscall_info = (void *) oi;
 }
 
 char* get_file_ext(char* filename){
@@ -500,10 +522,10 @@ static inline void sys_open_stop(int rc)
     current_thread->save_syscall_info = NULL;
 }
 
-static inline void sys_close_start(int fd)
+static inline void sys_close_start(struct thread_data* tdata, int fd)
 {
     SYSCALL_DEBUG (stderr, "close_start:fd = %d\n", fd);
-    current_thread->save_syscall_info = (void *) fd;
+    tdata->save_syscall_info = (void *) fd;
 }
 
 static inline void sys_close_stop(int rc)
@@ -531,13 +553,13 @@ static inline void sys_close_stop(int rc)
     current_thread->save_syscall_info = 0;
 }
 
-static inline void sys_read_start(int fd, char* buf, int size)
+static inline void sys_read_start(struct thread_data* tdata, int fd, char* buf, int size)
 {
     SYSCALL_DEBUG(stderr, "sys_read_start: fd = %d\n", fd);
-    struct read_info* ri = (struct read_info*) &current_thread->read_info_cache;
+    struct read_info* ri = &tdata->read_info_cache;
     ri->fd = fd;
     ri->buf = buf;
-    current_thread->save_syscall_info = (void *) ri;
+    tdata->save_syscall_info = (void *) ri;
 }
 
 static inline void sys_read_stop(int rc)
@@ -545,7 +567,6 @@ static inline void sys_read_stop(int rc)
     int read_fileno = -1;
     struct read_info* ri = (struct read_info*) &current_thread->read_info_cache;
 
-    // If global_syscall_cnt == 0, then read handled in previous epoch
     if (rc > 0) {
         struct taint_creation_info tci;
         char* channel_name = (char *) "--";
@@ -557,7 +578,6 @@ static inline void sys_read_stop(int rc)
             channel_name = oi->name;
         } else if(ri->fd == fileno(stdin)) {
             read_fileno = FILENO_STDIN;
-        } else {
         }
 
         SYSCALL_DEBUG (stderr, "read_stop from file: %s\n", channel_name);
@@ -572,8 +592,7 @@ static inline void sys_read_stop(int rc)
         LOG_PRINT ("Create taints from buffer sized %d at location %#lx\n",
                         rc, (unsigned long) ri->buf);
         //fprintf(stderr, "inst_count = %lld\n", inst_count);
-        create_taints_from_buffer(ri->buf, rc, &tci, tokens_fd,
-                                        channel_name);
+        create_taints_from_buffer(ri->buf, rc, &tci, tokens_fd, channel_name);
 #ifdef LINKAGE_FDTRACK
         //fprintf(stderr, "read from fd %d\n", ri->fd);
         if (is_fd_tainted(ri->fd)) {
@@ -587,13 +606,13 @@ static inline void sys_read_stop(int rc)
     current_thread->save_syscall_info = 0;
 }
 
-static inline void sys_pread_start(int fd, char* buf, int size)
+static inline void sys_pread_start(struct thread_data* tdata, int fd, char* buf, int size)
 {
     SYSCALL_DEBUG(stderr, "pread fd = %d\n", fd);
-    struct read_info* ri = (struct read_info*) &current_thread->read_info_cache;
+    struct read_info* ri = &tdata->read_info_cache;
     ri->fd = fd;
     ri->buf = buf;
-    current_thread->save_syscall_info = (void *) ri;
+    tdata->save_syscall_info = (void *) ri;
 }
 
 static inline void sys_pread_stop(int rc)
@@ -635,13 +654,14 @@ static inline void sys_pread_stop(int rc)
 }
 
 #ifdef LINKAGE_FDTRACK
-static void sys_select_start(int nfds, fd_set* readfds, fd_set* writefds, fd_set* exceptfds, struct timeval* timeout)
+static void sys_select_start(struct thread_data* tdata, int nfds, fd_set* readfds, fd_set* writefds, 
+			     fd_set* exceptfds, struct timeval* timeout)
 {
-    current_thread->select_info_cache.nfds = nfds;
-    current_thread->select_info_cache.readfds = readfds;
-    current_thread->select_info_cache.writefds = writefds;
-    current_thread->select_info_cache.exceptfds = exceptfds;
-    current_thread->select_info_cache.timeout = timeout;
+    tdata->select_info_cache.nfds = nfds;
+    tdata->select_info_cache.readfds = readfds;
+    tdata->select_info_cache.writefds = writefds;
+    tdata->select_info_cache.exceptfds = exceptfds;
+    tdata->select_info_cache.timeout = timeout;
 }
 
 static void sys_select_stop(int rc)
@@ -665,14 +685,14 @@ static void sys_select_stop(int rc)
 }
 #endif
 
-static void sys_mmap_start(u_long addr, int len, int prot, int fd)
+static void sys_mmap_start(struct thread_data* tdata, u_long addr, int len, int prot, int fd)
 {
-    struct mmap_info* mmi = &(current_thread->mmap_info_cache);
+    struct mmap_info* mmi = &tdata->mmap_info_cache;
     mmi->addr = addr;
     mmi->length = len;
     mmi->prot = prot;
     mmi->fd = fd;
-    current_thread->save_syscall_info = (void *) mmi;
+    tdata->save_syscall_info = (void *) mmi;
 }
 
 static void sys_mmap_stop(int rc)
@@ -717,20 +737,19 @@ static void sys_mmap_stop(int rc)
 #endif
 }
 
-static inline void sys_write_start(int fd, char* buf, int size)
+static inline void sys_write_start(struct thread_data* tdata, int fd, char* buf, int size)
 {
     SYSCALL_DEBUG(stderr, "sys_write_start: fd = %d\n", fd);
-    struct write_info* wi = (struct write_info *) &current_thread->write_info_cache;
+    struct write_info* wi = &tdata->write_info_cache;
     wi->fd = fd;
     wi->buf = buf;
-    current_thread->save_syscall_info = (void *) wi;
+    tdata->save_syscall_info = (void *) wi;
 }
 
 static inline void sys_write_stop(int rc)
 {
     struct write_info* wi = (struct write_info *) &current_thread->write_info_cache;
     int channel_fileno = -1;
-    // If syscall cnt = 0, then write handled in previous epoch
     if (rc > 0) {
         struct taint_creation_info tci;
         SYSCALL_DEBUG (stderr, "write_stop: sucess write of size %d\n", rc);
@@ -753,25 +772,26 @@ static inline void sys_write_stop(int rc)
         tci.rg_id = current_thread->rg_id;
         tci.record_pid = current_thread->record_pid;
         tci.syscall_cnt = current_thread->syscall_cnt;
+	if (!current_thread->syscall_in_progress) {
+	    tci.syscall_cnt--; // Weird restart issue
+	}
         tci.offset = 0;
         tci.fileno = channel_fileno;
 
         LOG_PRINT ("Output buffer result syscall %ld, %#lx\n", tci.syscall_cnt, (u_long) wi->buf);
         output_buffer_result (wi->buf, rc, &tci, outfd);
     }
-    memset(&current_thread->write_info_cache, 0, sizeof(struct write_info));
 }
 
-static inline void sys_writev_start(int fd, struct iovec* iov, int count)
+static inline void sys_writev_start(struct thread_data* tdata, int fd, struct iovec* iov, int count)
 {
     SYSCALL_DEBUG(stderr, "sys_writev_start: fd = %d\n", fd);
     struct writev_info* wvi;
-    wvi = (struct writev_info *) &current_thread->writev_info_cache;
+    wvi = (struct writev_info *) &tdata->writev_info_cache;
     wvi->fd = fd;
     wvi->count = count;
     wvi->vi = iov;
-
-    current_thread->save_syscall_info = (void *) wvi;
+    tdata->save_syscall_info = (void *) wvi;
 }
 
 static inline void sys_writev_stop(int rc)
@@ -821,7 +841,7 @@ static inline void sys_writev_stop(int rc)
     memset(&current_thread->writev_info_cache, 0, sizeof(struct writev_info));
 }
 
-static void sys_socket_start (int domain, int type, int protocol)
+static void sys_socket_start (struct thread_data* tdata, int domain, int type, int protocol)
 {
     struct socket_info* si = (struct socket_info*) malloc(sizeof(struct socket_info));
     if (si == NULL) {
@@ -834,7 +854,7 @@ static void sys_socket_start (int domain, int type, int protocol)
     si->protocol = protocol;
     si->fileno = -1; // will be set in connect/accept/bind
 
-    current_thread->save_syscall_info = si;
+    tdata->save_syscall_info = si;
 }
 
 static void sys_socket_stop(int rc)
@@ -847,7 +867,7 @@ static void sys_socket_stop(int rc)
     }
 }
 
-static void sys_connect_start(int sockfd, struct sockaddr* addr, socklen_t addrlen)
+static void sys_connect_start(thread_data* tdata, int sockfd, struct sockaddr* addr, socklen_t addrlen)
 {
     if (monitor_has_fd(open_socks, sockfd)) {
         struct socket_info* si = (struct socket_info*) monitor_get_fd_data(open_socks, sockfd);
@@ -894,7 +914,7 @@ static void sys_connect_start(int sockfd, struct sockaddr* addr, socklen_t addrl
             free(ci);
             return;
         }
-        current_thread->save_syscall_info = (void *) ci;
+        tdata->save_syscall_info = (void *) ci;
     }
 }
 
@@ -949,13 +969,13 @@ static void sys_connect_stop(int rc)
     }
 }
 
-static void sys_recv_start(int fd, char* buf, int size) 
+static void sys_recv_start(thread_data* tdata, int fd, char* buf, int size) 
 {
     // recv and read are similar so they can share the same info struct
     struct read_info* ri = (struct read_info*) &current_thread->read_info_cache;
     ri->fd = fd;
     ri->buf = buf;
-    current_thread->save_syscall_info = (void *) ri;
+    tdata->save_syscall_info = (void *) ri;
     LOG_PRINT ("recv on fd %d\n", fd);
 }
 
@@ -1006,7 +1026,7 @@ static void sys_recv_stop(int rc)
     current_thread->save_syscall_info = 0;
 }
 
-static void sys_recvmsg_start(int fd, struct msghdr* msg, int flags) 
+static void sys_recvmsg_start(struct thread_data* tdata, int fd, struct msghdr* msg, int flags) 
 {
     struct recvmsg_info* rmi;
     rmi = (struct recvmsg_info *) malloc(sizeof(struct recvmsg_info));
@@ -1018,7 +1038,7 @@ static void sys_recvmsg_start(int fd, struct msghdr* msg, int flags)
     rmi->msg = msg;
     rmi->flags = flags;
 
-    current_thread->save_syscall_info = (void *) rmi;
+    tdata->save_syscall_info = (void *) rmi;
 }
 
 static void sys_recvmsg_stop(int rc) 
@@ -1062,7 +1082,7 @@ static void sys_recvmsg_stop(int rc)
     free(rmi);
 }
 
-static void sys_sendmsg_start(int fd, struct msghdr* msg, int flags)
+static void sys_sendmsg_start(struct thread_data* tdata, int fd, struct msghdr* msg, int flags)
 {
     struct sendmsg_info* smi;
     smi = (struct sendmsg_info *) malloc(sizeof(struct sendmsg_info));
@@ -1074,7 +1094,7 @@ static void sys_sendmsg_start(int fd, struct msghdr* msg, int flags)
     smi->msg = msg;
     smi->flags = flags;
 
-    current_thread->save_syscall_info = (void *) smi;
+    tdata->save_syscall_info = (void *) smi;
 }
 
 static void sys_sendmsg_stop(int rc)
@@ -1113,44 +1133,33 @@ static void sys_sendmsg_stop(int rc)
     free(smi);
 }
 
-void syscall_start(int sysnum, ADDRINT syscallarg0, ADDRINT syscallarg1,
+void syscall_start(struct thread_data* tdata, int sysnum, ADDRINT syscallarg0, ADDRINT syscallarg1,
 		   ADDRINT syscallarg2, ADDRINT syscallarg3, ADDRINT syscallarg4, ADDRINT syscallarg5)
 {
     switch (sysnum) {
         case SYS_open:
-            sys_open_start((char *) syscallarg0, (int) syscallarg1);
+            sys_open_start(tdata, (char *) syscallarg0, (int) syscallarg1);
             break;
         case SYS_close:
-            sys_close_start((int) syscallarg0); 
+            sys_close_start(tdata, (int) syscallarg0); 
             break;
         case SYS_read:
-            sys_read_start((int) syscallarg0,
-                                    (char *) syscallarg1,
-                                    (int) syscallarg2);
+	    sys_read_start(tdata, (int) syscallarg0, (char *) syscallarg1, (int) syscallarg2);
             break;
         case SYS_write:
-            sys_write_start((int) syscallarg0,
-                                    (char *) syscallarg1,
-                                    (int) syscallarg2);
+            sys_write_start(tdata, (int) syscallarg0, (char *) syscallarg1, (int) syscallarg2);
             break;
         case SYS_writev:
-            sys_writev_start((int) syscallarg0,
-                                        (struct iovec *) syscallarg1,
-                                        (int) syscallarg2);
+            sys_writev_start(tdata, (int) syscallarg0, (struct iovec *) syscallarg1, (int) syscallarg2);
             break;
         case SYS_pread64:
-            sys_pread_start((int) syscallarg0,
-                                    (char *) syscallarg1,
-                                    (int) syscallarg2);
+            sys_pread_start(tdata, (int) syscallarg0, (char *) syscallarg1, (int) syscallarg2);
             break;
 #ifdef LINKAGE_FDTRACK
         case SYS_select:
         case 142:
-            sys_select_start((int) syscallarg0,
-                                    (fd_set *) syscallarg1,
-                                    (fd_set *) syscallarg2,
-                                    (fd_set *) syscallarg3,
-                                    (struct timeval *) syscallarg4);
+            sys_select_start(tdata, (int) syscallarg0, (fd_set *) syscallarg1, (fd_set *) syscallarg2,
+			     (fd_set *) syscallarg3, (struct timeval *) syscallarg4);
             break;
 #endif
         case SYS_socketcall:
@@ -1161,28 +1170,24 @@ void syscall_start(int sysnum, ADDRINT syscallarg0, ADDRINT syscallarg1,
             switch (call) {
                 case SYS_SOCKET:
                     SYSCALL_DEBUG(stderr, "socket_start\n");
-                    sys_socket_start((int)args[0], (int)args[1], (int)args[2]);
+                    sys_socket_start(tdata, (int)args[0], (int)args[1], (int)args[2]);
                     break;
                 case SYS_CONNECT:
                     SYSCALL_DEBUG(stderr, "connect_start\n");
-                    sys_connect_start((int)args[0],
-                                        (struct sockaddr *)args[1],
-                                        (socklen_t)args[2]);
+                    sys_connect_start(tdata, (int)args[0], (struct sockaddr *)args[1], (socklen_t)args[2]);
                     break;
                 case SYS_RECV:
                 case SYS_RECVFROM:
                     SYSCALL_DEBUG(stderr, "recv_start\n");
-                    sys_recv_start((int)args[0], (char *)args[1], (int)args[2]);
+                    sys_recv_start(tdata, (int)args[0], (char *)args[1], (int)args[2]);
                     break;
                 case SYS_RECVMSG:
                     SYSCALL_DEBUG(stderr, "recvmsg_start\n");
-                    sys_recvmsg_start((int)args[0], (struct msghdr *)args[1],
-                                            (int)args[2]);
+                    sys_recvmsg_start(tdata, (int)args[0], (struct msghdr *)args[1], (int)args[2]);
                     break;
                 case SYS_SENDMSG:
                     SYSCALL_DEBUG(stderr, "sendmsg_start\n");
-                    sys_sendmsg_start((int)args[0], 
-                            (struct msghdr *)args[1], (int)args[2]);
+                    sys_sendmsg_start(tdata, (int)args[0], (struct msghdr *)args[1], (int)args[2]);
                     break;
                 default:
                     break;
@@ -1191,8 +1196,7 @@ void syscall_start(int sysnum, ADDRINT syscallarg0, ADDRINT syscallarg1,
         }
         case SYS_mmap:
         case SYS_mmap2:
-            sys_mmap_start((u_long)syscallarg0, (int)syscallarg1,
-                            (int)syscallarg2, (int)syscallarg4);
+            sys_mmap_start(tdata, (u_long)syscallarg0, (int)syscallarg1, (int)syscallarg2, (int)syscallarg4);
             break;
     }
 }
@@ -1270,15 +1274,8 @@ void instrument_syscall(ADDRINT syscall_num,
     // Because of Pin restart issues, this function alone has to use PIN thread-specific data
     struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
     tdata->sysnum = sysnum;
+    tdata->syscall_in_progress = true;
 
-#ifdef TRACE_TAINT_OPS
-    trace_syscall_op(tdata,
-		     trace_taint_outfd,
-		     0, // TODO Fill in ip later
-		     PIN_ThreadId(),
-		     TAINTOP_SYSCALL,
-		     sysnum, global_syscall_cnt);
-#endif
     if (sysnum == 31) {
 	tdata->ignore_flag = (u_long) syscallarg1;
     }
@@ -1290,13 +1287,15 @@ void instrument_syscall(ADDRINT syscall_num,
 
     if (segment_length && *ppthread_log_clock >= segment_length) {
 	// Done with this replay - do exit stuff now because we may not get clean unwind
-	printf("Pin terminating at Pid %d, entry to syscall %ld, term. clock %ld cur. clock %ld\n", PIN_GetPid(), global_syscall_cnt, segment_length, *ppthread_log_clock);
+#ifdef TAINT_DEBUG
+	fprintf (debug_f, "Pin terminating at Pid %d, entry to syscall %ld, term. clock %ld cur. clock %ld\n", PIN_GetPid(), global_syscall_cnt, segment_length, *ppthread_log_clock);
+#endif
 	dift_done ();
 	try_to_exit(dev_fd, PIN_GetPid());
         PIN_ExitApplication(0);
     }
 	
-    syscall_start(sysnum, syscallarg0, syscallarg1, syscallarg2, 
+    syscall_start(tdata, sysnum, syscallarg0, syscallarg1, syscallarg2, 
 		  syscallarg3, syscallarg4, syscallarg5);
     
     tdata->app_syscall = syscall_num;
@@ -1317,11 +1316,39 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
     if (current_thread->app_syscall != 999) current_thread->app_syscall = 0;
 
     ADDRINT ret_value = PIN_GetSyscallReturn(ctxt, std);
-    syscall_end(current_thread->sysnum, ret_value);
 
-    // reset the syscall number after returning from system call
-    increment_syscall_cnt (current_thread->sysnum);
-    current_thread->sysnum = 0;
+    if (segment_length && *ppthread_log_clock > segment_length) {
+#ifdef TAINT_DEBUG
+	fprintf (debug_f, "Skip Pid %d, exit from syscall %ld due to termination, term. clock %ld cur. clock %ld\n", PIN_GetPid(), global_syscall_cnt, segment_length, *ppthread_log_clock);
+#endif
+    } else {
+	syscall_end(current_thread->sysnum, ret_value);
+    }
+
+    if (!current_thread->syscall_in_progress) {
+	/* Pin restart oddity: initial write will nondeterministically return twice (once with rc=0).
+	   Just don't increment the global syscall cnt when this happens. */
+	if (global_syscall_cnt == 0) {
+	    if (current_thread->sysnum != SYS_write) {
+#ifdef TAINT_DEBUG
+		fprintf (debug_f, "First syscall %d not in progress and not write\n", current_thread->sysnum);
+#endif
+	    }
+	} else {
+#ifdef TAINT_DEBUG
+	    fprintf (debug_f, "Syscall not in progress for global_syscall_cnt %ld sysnum %d\n", global_syscall_cnt, current_thread->sysnum);
+#endif
+	}
+    } else {
+	// reset the syscall number after returning from system call
+	increment_syscall_cnt (current_thread->sysnum);
+	current_thread->syscall_in_progress = false;
+    }
+
+    // The first syscall returns twice 
+    if (global_syscall_cnt > 1) { 
+	current_thread->sysnum = 0;
+    }
 }
 
 void track_inst(INS ins, void* data) 
@@ -11698,9 +11725,6 @@ void instrument_mov (INS ins)
  * */
 void instrument_movx (INS ins)
 {
-#ifdef TAINT_STATS
-    instrument_inst_count();
-#endif
     int op1mem, op2mem, op1reg, op2reg;
     op1mem = INS_OperandIsMemory(ins, 0);
     op2mem = INS_OperandIsMemory(ins, 1);
@@ -13417,6 +13441,9 @@ void instruction_instrumentation(INS ins, void *v)
     UINT32 category;
     int instrumented = 0;
 
+#ifdef TAINT_STATS
+    inst_instrumented++;
+#endif
     if(INS_IsSyscall(ins)) {
         INS_InsertCall(ins, IPOINT_BEFORE, AFUNPTR(instrument_syscall),
                 IARG_SYSCALL_NUMBER, 
@@ -14250,7 +14277,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 		fprintf(stderr, "could not open tokens shmem %s, errno %d\n", token_file, errno);
 		assert(0);
 	    }
-	    int rc = ftruncate (tokens_fd, MAX_TOKENS_SIZE);
+	    int rc = ftruncate64 (tokens_fd, MAX_TOKENS_SIZE);
 	    if (rc < 0) {
 		fprintf(stderr, "could not truncate tokens %s, errno %d\n", token_file, errno);
 		assert(0);
@@ -14281,7 +14308,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 		fprintf(stderr, "could not open tokens shmem %s, errno %d\n", output_file, errno);
 		assert(0);
 	    }
-	    int rc = ftruncate (outfd, MAX_OUT_SIZE);
+	    int rc = ftruncate64 (outfd, MAX_OUT_SIZE);
 	    if (rc < 0) {
 		fprintf(stderr, "could not truncate tokens %s, errno %d\n", output_file, errno);
 		assert(0);
@@ -14392,6 +14419,20 @@ void init_logs(void)
                 exit(0);
             }
         }
+    }
+#endif
+#ifdef TAINT_STATS
+    {
+        char stats_log_name[256];
+        if (!stats_f) {
+            snprintf(stats_log_name, 256, "%s/taint_stats", group_directory);
+	    stats_f = fopen(stats_log_name, "w");
+            if (!stats_f) {
+                fprintf(stderr, "could not create taint stats file, errno %d\n", errno);
+                exit(0);
+            }
+        }
+	gettimeofday(&begin_tv, NULL);
     }
 #endif
 }
