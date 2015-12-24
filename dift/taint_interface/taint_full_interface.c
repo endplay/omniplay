@@ -650,8 +650,8 @@ static void flush_dumpbuf(int dumpfd)
     dump_total_count += dumpindex*sizeof(taint_t);
 
     // Check for overflow
-    if (dump_total_count >= MAX_DUMP_SIZE/sizeof(taint_t)) {
-	fprintf (stderr, "Cannot allocate any more dump buffer than %ld\n", (u_long) dump_total_count);
+    if (dump_total_count >= MAX_DUMP_SIZE) {
+	fprintf (stderr, "Cannot allocate any more dump buffer than %ld bytes\n", (u_long) dump_total_count);
 	assert (0);
     }
 
@@ -662,8 +662,7 @@ static void flush_dumpbuf(int dumpfd)
     }
 
     // Map in the next region
-    dumpbuf = (taint_t *) mmap (0, DUMPBUFSIZE*sizeof(taint_t), PROT_READ|PROT_WRITE, MAP_SHARED, 
-				dumpfd, dump_total_count*sizeof(taint_t));
+    dumpbuf = (taint_t *) mmap (0, DUMPBUFSIZE*sizeof(taint_t), PROT_READ|PROT_WRITE, MAP_SHARED, dumpfd, dump_total_count);
     if (dumpbuf == MAP_FAILED) {
 	fprintf (stderr, "could not map dump buffer, errno=%d\n", errno);
 	assert (0);
@@ -722,8 +721,8 @@ int dump_mem_taints(int fd)
     }
 
 #ifdef USE_SHMEM
-    if (ftruncate (fd, (dump_total_count+dumpindex)*sizeof(taint_t))) {
-	fprintf (stderr, "Cound not truncate dump mem to %ld\n", dump_total_count*sizeof(taint_t));
+    if (ftruncate (fd, dump_total_count+(dumpindex*sizeof(taint_t)))) {
+	fprintf (stderr, "Could not truncate dump mem to %ld\n", dump_total_count+(dumpindex*sizeof(taint_t)));
 	assert (0);
     }
     close (fd);

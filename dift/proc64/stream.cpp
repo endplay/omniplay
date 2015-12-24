@@ -46,7 +46,6 @@ const u_long OUTBUFSIZE =   0x2000000; // 128MB size
 const u_long MAX_ADDRESS_MAP = 0; // No limit
 #else
 const u_long MAX_ADDRESS_MAP = 0x100000; // 16 MB
-int afd;
 #endif
 #endif
 
@@ -419,8 +418,8 @@ read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, ta
 #endif 
 #ifdef USE_SHMEM
 
-static void*
-map_buffer (const char* prefix, const char* group_directory, u_long& datasize, u_long maxsize, int& fd)
+static void
+unlink_buffer (const char* prefix, const char* group_directory)
 {
     char filename[256];
     snprintf(filename, 256, "/%s_shm%s", prefix, group_directory);
@@ -428,7 +427,22 @@ map_buffer (const char* prefix, const char* group_directory, u_long& datasize, u
 	if (filename[i] == '/') filename[i] = '.';
     }
 
-    fd = shm_open(filename, O_RDWR, 0644);
+    long rc = shm_unlink (filename);
+    if (rc < 0) {
+	fprintf (stderr, "shm_unlink of %s failed, rc=%ld, errno=%d\n", filename, rc, errno);
+    }
+}
+
+static void*
+map_buffer (const char* prefix, const char* group_directory, u_long& datasize, u_long maxsize)
+{
+    char filename[256];
+    snprintf(filename, 256, "/%s_shm%s", prefix, group_directory);
+    for (u_int i = 1; i < strlen(filename); i++) {
+	if (filename[i] == '/') filename[i] = '.';
+    }
+
+    int fd = shm_open(filename, O_RDWR, 0644);
     if (fd < 0) {
 	fprintf(stderr, "could not open shmem %s, errno %d\n", filename, errno);
 	return NULL;
@@ -451,37 +465,57 @@ map_buffer (const char* prefix, const char* group_directory, u_long& datasize, u
 	fprintf (stderr, "Cannot map input data for %s, errno=%d\n", filename, errno);
 	return NULL;
     }
-    rc = shm_unlink (filename);
-    if (rc < 0) {
-	fprintf (stderr, "shm_unlink of %s failed, rc=%d, errno=%d\n", filename, rc, errno);
-    }
+    close (fd);
+#ifndef MINIMIZE_MEMORY
+    unlink_buffer (prefix, group_directory);
+#endif
 
     return ptr;
+}
+
+#ifdef MINIMIZE_MEMORY
+static long
+unmap_buffer (char* buf, u_long datasize)
+{
+    if (datasize%4096) datasize += 4096-datasize%4096;
+    long rc = munmap (buf, datasize);
+    if (rc < 0) fprintf (stderr, "Unable to munmap buffer, errno=%d\n", errno);
+    return rc;
+}
+#endif
+
+static long
+setup_shmem (int port, char* group_directory)
+{
+    // Initialize a socket to receive a little bit of input data
+    int s = init_socket (port);
+    if (s < 0) {
+	fprintf (stderr, "init socket reutrns %d\n", s);
+	return s;
+    }
+    // This will be sent after processing is completed 
+    int rc = safe_read (s, group_directory, 256);
+    if (rc != 256) {
+	fprintf (stderr, "Read of group directory failed, rc=%d, errno=%d\n", rc, errno);
+	return -1;
+    }
+
+    close (s);
+    return 0;
 }
 
 static long
 read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, taint_entry*& merge_log,
 	     u_long& mdatasize, u_long& odatasize, u_long& idatasize, u_long& adatasize)
 {
-    // Initialize a socket to receive a little bit of input data
-    int s = init_socket (port);
-
-    // This will be sent after processing is completed 
     char group_directory[256];
-    int rc = read (s, &group_directory, sizeof(group_directory));
-    if (rc != sizeof(group_directory)) {
-	fprintf (stderr, "read of group directory failed, rc=%d, errno=%d\n", rc, errno);
-	return -1;
-    }
 
-    int token_fd, output_fd, ts_fd, merge_fd;
-    token_log = (char *) map_buffer ("tokens", group_directory, idatasize, 0, token_fd);
-    output_log = (char *) map_buffer ("dataflow.results", group_directory, odatasize, 0, output_fd);
-    ts_log = (taint_t *) map_buffer ("taint_structures", group_directory, adatasize, MAX_ADDRESS_MAP, ts_fd);
-    merge_log = (taint_entry *) map_buffer ("node_nums", group_directory, mdatasize, 0, merge_fd);
-#ifndef BUILD_64
-    afd = ts_fd;
-#endif
+    if (setup_shmem(port, group_directory) < 0) return -1;
+
+    token_log = (char *) map_buffer ("tokens", group_directory, idatasize, 0);
+    output_log = (char *) map_buffer ("dataflow.results", group_directory, odatasize, 0);
+    ts_log = (taint_t *) map_buffer ("taint_structures", group_directory, adatasize, 0);
+    merge_log = (taint_entry *) map_buffer ("node_nums", group_directory, mdatasize, 0);
     printf ("%s: i %ld o %ld a %ld m %ld\n", group_directory, idatasize,
 	    odatasize, adatasize, mdatasize);
     return 0;
@@ -564,12 +598,34 @@ static void map_iter (taint_t value, uint32_t output_token)
 static long
 build_address_map (unordered_map<taint_t,taint_t>& address_map, taint_t* ts_log, u_long adatasize)
 {
-#ifdef BUILD_64
     for (uint32_t i = 0; i < adatasize/(sizeof(taint_t)*2); i++) {
 	address_map[ts_log[2*i]] = ts_log[2*i+1];
     }
-#else
+    return 0;
+}
+
+#ifdef MINIMIZE_MEMORY
+static long
+build_address_map_incr (unordered_map<taint_t,taint_t>& address_map, ulong adatasize, const char* group_directory)
+{
     // To conserve memory, only map a portion at a time since we are streaming this
+    char filename[256];
+    snprintf(filename, 256, "/taint_structures_shm%s", group_directory);
+    for (u_int i = 1; i < strlen(filename); i++) {
+	if (filename[i] == '/') filename[i] = '.';
+    }
+
+    int afd = shm_open(filename, O_RDWR, 0644);
+    if (afd < 0) {
+	fprintf(stderr, "could not open shmem %s, errno %d\n", filename, errno);
+	return afd;
+    }
+
+    taint_t* ts_log = (taint_t *) mmap (NULL, MAX_ADDRESS_MAP, PROT_READ|PROT_WRITE, MAP_SHARED, afd, 0);
+    if (ts_log == MAP_FAILED) {
+	fprintf (stderr, "Cannot map address input chunk, errno=%d\n", errno);
+	return -1;
+    }
     taint_t* p = (taint_t *) ts_log;
     long rc;
     for (uint32_t i = 0; i < adatasize/(sizeof(taint_t)*2); i++) {
@@ -594,11 +650,12 @@ build_address_map (unordered_map<taint_t,taint_t>& address_map, taint_t* ts_log,
     if (rc < 0) {
 	fprintf (stderr, "Cannot unmap last address chunk\n");
     }	    
-    ts_log = NULL;
-#endif
 
+    close (afd);
+    ts_log = NULL;
     return 0;
 }
+#endif
 
 long setup_aggregation (const char* dirname, int& outputfd, int& inputfd, int& addrsfd)
 {
@@ -863,6 +920,7 @@ long stream_epoch (const char* dirname, int port)
     flush_outrbuf ();
     close (outrfd);
 
+
     // Get number of tokens for this epoch
     if (idatasize > 0) {
 	struct token* ptoken = (struct token *) &token_log[idatasize-sizeof(struct token)];
@@ -959,6 +1017,106 @@ long stream_epoch (const char* dirname, int port)
     return 0;
 }
 
+void make_new_live_set (taint_t* p, taint_t* pend, taint_t* pls, taint_t* plsend, unordered_set<uint32_t>& live_set)
+{
+    while (p < pend && pls < plsend) {
+	taint_t addr = *p;
+	if (*pls < addr) {
+	    // No change - so still in live set
+	    PUT_QVALUE(*pls,inputq_hdr,inputq_buf,iqfd);
+#ifdef STATS
+	    new_live_no_changes++;
+#endif
+	    pls++;
+	} else {
+	    taint_t val = *(p+1);
+	    if (val == 0) {
+		// Do nothing
+#ifdef STATS
+		new_live_zeros++;
+#endif
+	    } else if (val < 0xc0000000) {
+		if (start_flag || live_set.count(val)) {
+		    PUT_QVALUE(addr,inputq_hdr,inputq_buf,iqfd);
+#ifdef STATS
+		    new_live_inputs++;
+#endif
+		} else {
+#ifdef STATS
+		    new_live_notlive++;
+#endif
+		}
+	    } else if (val <= 0xe0000000) {
+		PUT_QVALUE(addr,inputq_hdr,inputq_buf,iqfd);
+#ifdef STATS
+		new_live_inputs++;
+#endif
+	    } else {
+		taint_entry* pentry = &merge_log[val-0xe0000001];
+		if (pentry->p1 || pentry->p2) {
+		    PUT_QVALUE(addr,inputq_hdr,inputq_buf,iqfd);
+#ifdef STATS
+		    new_live_merges++;
+#endif
+		} else {
+#ifdef STATS
+		    new_live_merge_zeros++;
+#endif
+		}
+	    }
+	    p += 2;
+	    if (addr == *pls) pls++;
+	}
+    }
+    if (pls == plsend) {
+	while (p < pend) {
+	    taint_t addr = *p;
+	    taint_t val = *(p+1);
+	    if (val == 0) {
+		// Do nothing
+#ifdef STATS
+		new_live_zeros++;
+#endif
+	    } else if (val < 0xc0000000) {
+		if (start_flag || live_set.count(val)) {
+		    PUT_QVALUE(addr,inputq_hdr,inputq_buf,iqfd);
+#ifdef STATS
+		    new_live_inputs++;
+#endif
+		} else {
+#ifdef STATS
+		    new_live_notlive++;
+#endif
+		}
+	    } else if (val <= 0xe0000000) {
+		PUT_QVALUE(addr,inputq_hdr,inputq_buf,iqfd);
+#ifdef STATS
+		new_live_inputs++;
+#endif
+	    } else {
+		taint_entry* pentry = &merge_log[val-0xe0000001];
+		if (pentry->p1 || pentry->p2) {
+		    PUT_QVALUE(addr,inputq_hdr,inputq_buf,iqfd);
+#ifdef STATS
+		    new_live_merges++;
+#endif
+		} else {
+#ifdef STATS
+		    new_live_merge_zeros++;
+#endif
+		}
+	    }
+	    p += 2;
+	}
+    }
+    if (p == pend) {
+	while (pls < plsend) {
+	    PUT_QVALUE(*pls,inputq_hdr,inputq_buf,iqfd);
+	    pls++;
+	}
+    }
+}
+
 // Process one epoch for sequential forward strategy 
 long seq_epoch (const char* dirname, int port)
 {
@@ -972,10 +1130,18 @@ long seq_epoch (const char* dirname, int port)
     rc = setup_aggregation (dirname, outputfd, inputfd, addrsfd);
     if (rc < 0) return rc;
 
+#ifndef MINIMIZE_MEMORY
     // Read inputs from DIFT engine
     rc = read_inputs (port, token_log, output_log, ts_log, merge_log,
 		      mdatasize, odatasize, idatasize, adatasize);
     if (rc < 0) return rc;
+#else
+    char group_directory[256];
+    rc = setup_shmem (port, group_directory);
+    if (rc < 0) return rc;
+
+    merge_log = (taint_entry *) map_buffer ("node_nums", group_directory, mdatasize, 0);
+#endif
 
 #ifdef STATS
     gettimeofday(&recv_done_tv, NULL);
@@ -1057,158 +1223,20 @@ long seq_epoch (const char* dirname, int port)
 	gettimeofday(&new_live_start_tv, NULL);
 #endif
 
+#ifdef MINIMIZE_MEMORY
+	ts_log = (taint_t *) map_buffer ("taint_structures", group_directory, adatasize, 0);
+	fprintf (stderr, "address log size is %ld\n", adatasize);
+#endif
 	uint32_t* pls = outputq_buf;
 	uint32_t* plsend = outputq_buf + live_set.size();
 	if (live_set.size() > TAINTQMAPENTRIES) {
 	    fprintf (stderr, "Oops: live set is %x\n", live_set.size());
 	    return -1;
 	}
-	taint_t* p = ts_log;
-	u_long ts_offset = 0;
-	while (ts_offset + (u_long) p < (u_long) ts_log + adatasize && pls < plsend) {
-	    taint_t addr = *p;
-	    if (*pls < addr) {
-		// No change - so still in live set
-		PUT_QVALUE(*pls,inputq_hdr,inputq_buf,iqfd);
-#ifdef STATS
-		new_live_no_changes++;
-#endif
-		pls++;
-	    } else {
-		taint_t val = *(p+1);
-		if (val == 0) {
-		    // Do nothing
-#ifdef STATS
-		    new_live_zeros++;
-#endif
-		} else if (val < 0xc0000000) {
-		    if (start_flag || live_set.count(val)) {
-			PUT_QVALUE(addr,inputq_hdr,inputq_buf,iqfd);
-#ifdef STATS
-			new_live_inputs++;
-#endif
-		    } else {
-#ifdef STATS
-			new_live_notlive++;
-#endif
-		    }
-		} else if (val <= 0xe0000000) {
-		    PUT_QVALUE(addr,inputq_hdr,inputq_buf,iqfd);
-#ifdef STATS
-		    new_live_inputs++;
-#endif
-		} else {
-		    taint_entry* pentry = &merge_log[val-0xe0000001];
-		    if (pentry->p1 || pentry->p2) {
-			PUT_QVALUE(addr,inputq_hdr,inputq_buf,iqfd);
-#ifdef STATS
-			new_live_merges++;
-#endif
-		    } else {
-#ifdef STATS
-			new_live_merge_zeros++;
-#endif
-		    }
-		}
-		p += 2;
-		if (addr == *pls) pls++;
-	    }
-#ifndef BUILD_64
-	    // To conserve memory, only map a portion at a time since we are streaming this
-	    if ((u_long) p - (u_long) ts_log >= MAX_ADDRESS_MAP) {
-		rc = munmap (ts_log, MAX_ADDRESS_MAP);
-		if (rc < 0) {
-		    fprintf (stderr, "Cannot unmap address chunk\n");
-		}
-		
-		ts_offset += MAX_ADDRESS_MAP;
-		p = (taint_t *) mmap (ts_log, MAX_ADDRESS_MAP, PROT_READ|PROT_WRITE, MAP_SHARED, afd, ts_offset);
-		if (p == MAP_FAILED) {
-		    fprintf (stderr, "Cannot map address input chunk, errno=%d\n", errno);
-		    return -1;
-		}
-		ts_log = p;
-	    }
-#endif
-	}
-	if (pls == plsend) {
-	    while (ts_offset + (u_long) p < (u_long) ts_log + adatasize) {
-		taint_t addr = *p;
-		taint_t val = *(p+1);
-		if (val == 0) {
-		    // Do nothing
-#ifdef STATS
-		    new_live_zeros++;
-#endif
-		} else if (val < 0xc0000000) {
-		    if (start_flag || live_set.count(val)) {
-			PUT_QVALUE(addr,inputq_hdr,inputq_buf,iqfd);
-#ifdef STATS
-			new_live_inputs++;
-#endif
-		    } else {
-#ifdef STATS
-			new_live_notlive++;
-#endif
-		    }
-		} else if (val <= 0xe0000000) {
-		    PUT_QVALUE(addr,inputq_hdr,inputq_buf,iqfd);
-#ifdef STATS
-		    new_live_inputs++;
-#endif
-		} else {
-		    taint_entry* pentry = &merge_log[val-0xe0000001];
-		    if (pentry->p1 || pentry->p2) {
-			PUT_QVALUE(addr,inputq_hdr,inputq_buf,iqfd);
-#ifdef STATS
-			    new_live_merges++;
-#endif
-		    } else {
-#ifdef STATS
-			new_live_merge_zeros++;
-#endif
-		    }
-		}
-		p += 2;
-#ifndef BUILD_64
-		// To conserve memory, only map a portion at a time since we are streaming this
-		if ((u_long) p - (u_long) ts_log >= MAX_ADDRESS_MAP) {
-		    rc = munmap (ts_log, MAX_ADDRESS_MAP);
-		    if (rc < 0) {
-			fprintf (stderr, "Cannot unmap address chunk\n");
-		    }
-		    
-		    ts_offset += MAX_ADDRESS_MAP;
-		    p = (taint_t *) mmap (ts_log, MAX_ADDRESS_MAP, PROT_READ|PROT_WRITE, MAP_SHARED, afd, ts_offset);
-		    if (p == MAP_FAILED) {
-			fprintf (stderr, "Cannot map address input chunk, errno=%d\n", errno);
-			return -1;
-		    }
-		    ts_log = p;
-		}
-#endif
-	    }
-	}
-	if (ts_offset + (u_long) p == (u_long) ts_log + adatasize) {
-	    while (pls < plsend) {
-		PUT_QVALUE(*pls,inputq_hdr,inputq_buf,iqfd);
-		pls++;
-	    }
-	}
+	make_new_live_set(ts_log, ts_log + adatasize/sizeof(taint_t), pls, plsend, live_set);
 
-#ifndef BUILD_64
-	if (adatasize >= MAX_ADDRESS_MAP) {
-	    rc = munmap (ts_log, MAX_ADDRESS_MAP);
-	    if (rc < 0) {
-		fprintf (stderr, "Cannot unmap last address chunk\n");
-	    }
-	    
-	    taint_t* ts_log = (taint_t *) mmap (NULL, MAX_ADDRESS_MAP, PROT_READ|PROT_WRITE, MAP_SHARED, afd, 0);
-	    if (ts_log == MAP_FAILED) {
-		fprintf (stderr, "Cannot map address input chunk, errno=%d\n", errno);
-		return -1;
-	    }
-	}
+#ifdef MINIMIZE_MEMORY
+	unmap_buffer ((char *) ts_log, adatasize);
 #endif
 
 #ifdef STATS
@@ -1222,12 +1250,15 @@ long seq_epoch (const char* dirname, int port)
 	wb_index = wb_stop = 0;
     }
     
-    //live_set.clear();
+
 
 #ifdef STATS
     gettimeofday(&live_done_tv, NULL);
 #endif
 
+#ifdef MINIMIZE_MEMORY
+    output_log = (char *) map_buffer ("dataflow.results", group_directory, odatasize, 0);
+#endif
     plog = output_log;
     while ((u_long) plog < (u_long) output_log + odatasize) {
 	plog += sizeof(struct taint_creation_info) + sizeof(uint32_t);
@@ -1303,6 +1334,10 @@ long seq_epoch (const char* dirname, int port)
  	}
     }
 
+#ifdef MINIMIZE_MEMORY
+    unmap_buffer ((char *) output_log, odatasize);
+#endif
+
 #ifdef STATS
     gettimeofday(&output_done_tv, NULL);
     output_send_idle = send_idle;
@@ -1313,9 +1348,14 @@ long seq_epoch (const char* dirname, int port)
 #endif
 
     if (!finish_flag) {
+
 	// Next, build index of output addresses
 	unordered_map<taint_t,taint_t> address_map;
+#ifdef MINIMIZE_MEMORY
+	rc = build_address_map_incr (address_map, adatasize, group_directory);
+#else
 	rc = build_address_map (address_map, ts_log, adatasize);
+#endif
 	if (rc < 0) return rc;
 
 #ifdef STATS
@@ -1438,6 +1478,11 @@ long seq_epoch (const char* dirname, int port)
 	}
     }
 
+#ifdef MINIMIZE_MEMORY
+    unmap_buffer ((char *) merge_log, mdatasize);
+    token_log = (char *) map_buffer ("tokens", group_directory, idatasize, 0);
+#endif
+
 #ifdef STATS
     gettimeofday(&address_done_tv, NULL);
 #endif
@@ -1488,6 +1533,10 @@ long seq_epoch (const char* dirname, int port)
     }
     close (inputfd);
 
+#ifdef MINIMIZE_MEMORY
+    output_log = (char *) map_buffer ("dataflow.results", group_directory, odatasize, 0);
+#endif
+
     char* optr = output_log;
     while ((u_long) optr < (u_long) output_log + odatasize) {
 	rc = write (outputfd, optr, sizeof(struct taint_creation_info));
@@ -1505,6 +1554,13 @@ long seq_epoch (const char* dirname, int port)
 	optr += sizeof(uint32_t) + buf_size*(sizeof(uint32_t)+sizeof(taint_t));
     }
     close (outputfd);
+
+#ifdef MINIMIZE_MEMORY
+    unlink_buffer ("tokens", group_directory);
+    unlink_buffer ("dataflow.results", group_directory);
+    unlink_buffer ("taint_structures", group_directory);
+    unlink_buffer ("node_nums", group_directory);
+#endif
 
 #ifdef STATS
     gettimeofday(&end_tv, NULL);
