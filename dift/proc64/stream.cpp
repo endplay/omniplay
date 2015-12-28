@@ -104,6 +104,7 @@ u_long prune_cnt = 0, simplify_cnt = 0;
 u_long new_live_no_changes = 0, new_live_zeros = 0, new_live_inputs = 0, new_live_merges = 0, new_live_merge_zeros = 0, new_live_notlive = 0;
 u_long live_set_size = 0, new_live_set_size = 0;
 u_long values_sent = 0, values_rcvd = 0;
+u_long prune_lookup = 0, prune_indirect = 0;
 struct timeval start_tv, recv_done_tv, output_done_tv, index_created_tv, address_done_tv, end_tv;
 struct timeval live_receive_done_tv, new_live_start_tv, live_done_tv, new_live_send_tv;
 
@@ -1017,7 +1018,152 @@ long stream_epoch (const char* dirname, int port)
     return 0;
 }
 
-void make_new_live_set (taint_t* p, taint_t* pend, taint_t* pls, taint_t* plsend, unordered_set<uint32_t>& live_set)
+#if 1
+// This does live set lookups for a range of the merge log (this part is embarassingly parallel)
+#define PAR 8
+
+struct prune_pass_1 {
+    pthread_t                tid;
+    taint_entry*             mptr; 
+    taint_entry*             mend; 
+    unordered_set<uint32_t>* live_set;
+};
+
+void* prune_range_pass_1 (void* data)
+{
+    prune_pass_1* pp1 = (prune_pass_1 *) data;
+    taint_entry* mptr = pp1->mptr;
+    taint_entry* mend = pp1->mend;
+    unordered_set<uint32_t>* live_set = pp1->live_set;
+
+    while (mptr < mend) {
+	if (mptr->p1 < 0xc0000000) {
+	    if (live_set->count(mptr->p1) == 0) {
+		mptr->p1 = 0;
+	    } 
+	} 
+	if (mptr->p2 < 0xc0000000) {
+	    if (live_set->count(mptr->p2) == 0) {
+		mptr->p2 = 0;
+	    } 
+	} 
+	mptr++;
+    }
+    return NULL;
+}
+
+
+static void 
+prune_merge_log (u_long mdatasize, unordered_set<uint32_t>& live_set) 
+{
+    u_long entries = mdatasize/sizeof(taint_entry);
+    u_long incr = entries/PAR;
+    struct prune_pass_1 pp[PAR];
+
+    for (int i = 0; i < PAR; i++) {
+	if (i == 0) {
+	    pp[i].mptr = merge_log;
+	} else {
+	    pp[i].mptr = pp[i-1].mend;
+	}
+	if (i == PAR-1) {
+	    pp[i].mend = merge_log + entries;
+	} else {
+	    pp[i].mend = pp[i].mptr + incr;
+	}
+	pp[i].live_set = &live_set;
+	long rc = pthread_create (&pp[i].tid, NULL, prune_range_pass_1, &pp[i]);
+	if (rc < 0) {
+	    fprintf (stderr, "Cannot create prune thread, rc=%ld\n", rc);
+	    assert (0);
+	}
+    }
+    for (int i = 0; i < PAR; i++) {
+	long rc = pthread_join(pp[i].tid, NULL);
+	if (rc < 0) fprintf (stderr, "Cannot join prune thread, rc=%ld\n", rc); 
+    }
+    fprintf (stderr, "Prune threads are done\n");
+
+    taint_entry* mptr = merge_log;
+    while ((u_long) mptr < (u_long) merge_log + mdatasize) {
+	if (mptr->p1 > 0xe0000000) {
+	    taint_entry* pentry = &merge_log[mptr->p1-0xe0000001];
+	    if (pentry->p1 == 0) {
+		mptr->p1 = pentry->p2;
+	    } else if (pentry->p2 == 0) {
+		mptr->p1 = pentry->p1;
+	    }
+	}
+	if (mptr->p2 > 0xe0000000) {
+	    taint_entry* pentry = &merge_log[mptr->p2-0xe0000001];
+	    if (pentry->p1 == 0) {
+		mptr->p2 = pentry->p2;
+	    } else if (pentry->p2 == 0) {
+		mptr->p2 = pentry->p1;
+	    }
+	}
+#ifdef STATS
+	if (mptr->p1 == 0 && mptr->p2 == 0) prune_cnt++;
+	else if (mptr->p1 == 0 || mptr->p2 == 0) simplify_cnt++;
+#endif
+	mptr++;
+    }
+}
+
+#else
+static void 
+prune_merge_log (u_long mdatasize, unordered_set<uint32_t>& live_set) 
+{
+    
+    taint_entry* mptr = merge_log;
+    while ((u_long) mptr < (u_long) merge_log + mdatasize) {
+	if (mptr->p1 < 0xc0000000) {
+#ifdef STATS
+	    prune_lookup++;
+#endif
+	    if (live_set.count(mptr->p1) == 0) {
+		mptr->p1 = 0;
+	    } 
+	} else if (mptr->p1 > 0xe0000000) {
+#ifdef STATS
+	    prune_indirect++;
+#endif
+	    taint_entry* pentry = &merge_log[mptr->p1-0xe0000001];
+	    if (pentry->p1 == 0) {
+		mptr->p1 = pentry->p2;
+	    } else if (pentry->p2 == 0) {
+		mptr->p1 = pentry->p1;
+	    }
+	}
+	if (mptr->p2 < 0xc0000000) {
+#ifdef STATS
+	    prune_lookup++;
+#endif
+	    if (live_set.count(mptr->p2) == 0) {
+		mptr->p2 = 0;
+	    } 
+	} else if (mptr->p2 > 0xe0000000) {
+#ifdef STATS
+	    prune_indirect++;
+#endif
+	    taint_entry* pentry = &merge_log[mptr->p2-0xe0000001];
+	    if (pentry->p1 == 0) {
+		mptr->p2 = pentry->p2;
+	    } else if (pentry->p2 == 0) {
+		mptr->p2 = pentry->p1;
+	    }
+	}
+#ifdef STATS
+	if (mptr->p1 == 0 && mptr->p2 == 0) prune_cnt++;
+	else if (mptr->p1 == 0 || mptr->p2 == 0) simplify_cnt++;
+#endif
+	mptr++;
+    }
+}
+#endif
+
+static void 
+make_new_live_set (taint_t* p, taint_t* pend, taint_t* pls, taint_t* plsend, unordered_set<uint32_t>& live_set)
 {
     while (p < pend && pls < plsend) {
 	taint_t addr = *p;
@@ -1183,38 +1329,7 @@ long seq_epoch (const char* dirname, int port)
 	UP_QSEM (outputq_hdr);
 
 	// Prune the merge log
-	taint_entry* mptr = merge_log;
-	while ((u_long) mptr < (u_long) merge_log + mdatasize) {
-	    if (mptr->p1 < 0xc0000000) {
-		if (live_set.count(mptr->p1) == 0) {
-		    mptr->p1 = 0;
-		} 
-	    } else if (mptr->p1 > 0xe0000000) {
-		taint_entry* pentry = &merge_log[mptr->p1-0xe0000001];
-		if (pentry->p1 == 0) {
-		    mptr->p1 = pentry->p2;
-		} else if (pentry->p2 == 0) {
-		    mptr->p1 = pentry->p1;
-		}
-	    }
-	    if (mptr->p2 < 0xc0000000) {
-		if (live_set.count(mptr->p2) == 0) {
-		    mptr->p2 = 0;
-		} 
-	    } else if (mptr->p2 > 0xe0000000) {
-		taint_entry* pentry = &merge_log[mptr->p2-0xe0000001];
-		if (pentry->p1 == 0) {
-		    mptr->p2 = pentry->p2;
-		} else if (pentry->p2 == 0) {
-		    mptr->p2 = pentry->p1;
-		}
-	    }
-#ifdef STATS
-	    if (mptr->p1 == 0 && mptr->p2 == 0) prune_cnt++;
-	    else if (mptr->p1 == 0 || mptr->p2 == 0) simplify_cnt++;
-#endif
-	    mptr++;
-	}
+	prune_merge_log (mdatasize, live_set);
     }
 
     // Construct and send out new live set
@@ -1614,6 +1729,7 @@ long seq_epoch (const char* dirname, int port)
     }
     fprintf (statsfile, "Output directs %lu indirects %lu values %lu quashed %lu merges %lu\n", directs, indirects, values, quashed, output_merges);
     if (!finish_flag) {
+	fprintf (statsfile, "Prune lookups %ld indirects %ld\n", prune_lookup, prune_indirect);
 	fprintf (statsfile, "Pruned %ld simplified %ld unchanged %ld of %ld merge values using live set\n", 
 		prune_cnt, simplify_cnt, mdatasize/sizeof(struct taint_entry)-prune_cnt-simplify_cnt,
 		mdatasize/sizeof(struct taint_entry));
