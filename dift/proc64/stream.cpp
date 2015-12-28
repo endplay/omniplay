@@ -26,6 +26,8 @@ using namespace std;
 //#define DEBUG(x) ((x)==0x175ae21 || (x)==(0x175ae21-0x16db75)|| (x)==(0x175ae21-0x192dce) || (x)==(0x175ae21-0x376641) || (x)==(0x175ae21-0x37e321) || (x)==(0x175ae21-0x3b1611) || (x)==(0x175ae21-0x3ebc29) || (x)==(0x175ae21-0x4676eb) || (x)==(0x175ae21-0x4fba98))
 #define STATS
 
+#define PAR 8
+
 // Set up limits here - need to be less generate with 32-bit address space
 #ifdef USE_NW
 #ifdef BUILD_64
@@ -107,6 +109,7 @@ u_long values_sent = 0, values_rcvd = 0;
 u_long prune_lookup = 0, prune_indirect = 0;
 struct timeval start_tv, recv_done_tv, output_done_tv, index_created_tv, address_done_tv, end_tv;
 struct timeval live_receive_done_tv, new_live_start_tv, live_done_tv, new_live_send_tv;
+struct timeval pp1_start_tv[PAR], pp1_end_tv[PAR], pp2_start_tv[PAR], pp2_end_tv[PAR];
 
 static long ms_diff (struct timeval tv1, struct timeval tv2)
 {
@@ -1020,38 +1023,92 @@ long stream_epoch (const char* dirname, int port)
 
 #if 1
 // This does live set lookups for a range of the merge log (this part is embarassingly parallel)
-#define PAR 8
 
 struct prune_pass_1 {
     pthread_t                tid;
     taint_entry*             mptr; 
     taint_entry*             mend; 
     unordered_set<uint32_t>* live_set;
+#ifdef STATS
+    struct timeval          start_tv, end_tv;
+#endif
 };
 
-void* prune_range_pass_1 (void* data)
+static void* 
+prune_range_pass_1 (void* data)
 {
     prune_pass_1* pp1 = (prune_pass_1 *) data;
     taint_entry* mptr = pp1->mptr;
     taint_entry* mend = pp1->mend;
     unordered_set<uint32_t>* live_set = pp1->live_set;
 
+#ifdef STATS
+    gettimeofday(&pp1->start_tv, NULL);
+#endif
     while (mptr < mend) {
 	if (mptr->p1 < 0xc0000000) {
 	    if (live_set->count(mptr->p1) == 0) {
 		mptr->p1 = 0;
 	    } 
-	} 
+	}
 	if (mptr->p2 < 0xc0000000) {
 	    if (live_set->count(mptr->p2) == 0) {
 		mptr->p2 = 0;
 	    } 
-	} 
+	}
 	mptr++;
     }
+#ifdef STATS
+    gettimeofday(&pp1->end_tv, NULL);
+#endif
+
     return NULL;
 }
 
+// This is for the first pass or non-parallel version
+static void 
+prune_range_pass_both (taint_entry* mptr, taint_entry* mend, unordered_set<uint32_t>& live_set)
+{
+#ifdef STATS
+    gettimeofday(&pp1_start_tv[0], NULL);
+    gettimeofday(&pp2_start_tv[0], NULL);
+#endif
+    while (mptr < mend) {
+	if (mptr->p1 < 0xc0000000) {
+	    if (live_set.count(mptr->p1) == 0) {
+		mptr->p1 = 0;
+	    } 
+	} else if (mptr->p1 > 0xe0000000) {
+	    taint_entry* pentry = &merge_log[mptr->p1-0xe0000001];
+	    if (pentry->p1 == 0) {
+		mptr->p1 = pentry->p2;
+	    } else if (pentry->p2 == 0) {
+		mptr->p1 = pentry->p1;
+	    }
+	}
+	if (mptr->p2 < 0xc0000000) {
+	    if (live_set.count(mptr->p2) == 0) {
+		mptr->p2 = 0;
+	    } 
+	} else if (mptr->p2 > 0xe0000000) {
+	    taint_entry* pentry = &merge_log[mptr->p2-0xe0000001];
+	    if (pentry->p1 == 0) {
+		mptr->p2 = pentry->p2;
+	    } else if (pentry->p2 == 0) {
+		mptr->p2 = pentry->p1;
+	    }
+	}
+#ifdef STATS
+	if (mptr->p1 == 0 && mptr->p2 == 0) prune_cnt++;
+	else if (mptr->p1 == 0 || mptr->p2 == 0) simplify_cnt++;
+#endif
+	mptr++;
+    }
+#ifdef STATS
+    gettimeofday(&pp1_end_tv[0], NULL);
+    gettimeofday(&pp2_end_tv[0], NULL);
+#endif
+}
 
 static void 
 prune_merge_log (u_long mdatasize, unordered_set<uint32_t>& live_set) 
@@ -1072,41 +1129,55 @@ prune_merge_log (u_long mdatasize, unordered_set<uint32_t>& live_set)
 	    pp[i].mend = pp[i].mptr + incr;
 	}
 	pp[i].live_set = &live_set;
-	long rc = pthread_create (&pp[i].tid, NULL, prune_range_pass_1, &pp[i]);
-	if (rc < 0) {
-	    fprintf (stderr, "Cannot create prune thread, rc=%ld\n", rc);
-	    assert (0);
+	if (i > 0) {
+	    long rc = pthread_create (&pp[i].tid, NULL, prune_range_pass_1, &pp[i]);
+	    if (rc < 0) {
+		fprintf (stderr, "Cannot create prune thread, rc=%ld\n", rc);
+		assert (0);
+	    }
 	}
     }
-    for (int i = 0; i < PAR; i++) {
+
+    prune_range_pass_both(pp[0].mptr, pp[0].mend, live_set);
+
+    for (int i = 1; i < PAR; i++) {
 	long rc = pthread_join(pp[i].tid, NULL);
 	if (rc < 0) fprintf (stderr, "Cannot join prune thread, rc=%ld\n", rc); 
-    }
-    fprintf (stderr, "Prune threads are done\n");
+#ifdef STATS
+	pp1_start_tv[i] = pp[i].start_tv;
+	pp1_end_tv[i] = pp[i].end_tv;
+#endif
+#ifdef STATS
+	gettimeofday(&pp2_start_tv[i], NULL);
+#endif
 
-    taint_entry* mptr = merge_log;
-    while ((u_long) mptr < (u_long) merge_log + mdatasize) {
-	if (mptr->p1 > 0xe0000000) {
-	    taint_entry* pentry = &merge_log[mptr->p1-0xe0000001];
-	    if (pentry->p1 == 0) {
-		mptr->p1 = pentry->p2;
-	    } else if (pentry->p2 == 0) {
-		mptr->p1 = pentry->p1;
+	taint_entry* mptr = pp[i].mptr;
+	while (mptr < pp[i].mend) {
+	    if (mptr->p1 > 0xe0000000) {
+		taint_entry* pentry = &merge_log[mptr->p1-0xe0000001];
+		if (pentry->p1 == 0) {
+		    mptr->p1 = pentry->p2;
+		} else if (pentry->p2 == 0) {
+		    mptr->p1 = pentry->p1;
+		}
 	    }
-	}
-	if (mptr->p2 > 0xe0000000) {
-	    taint_entry* pentry = &merge_log[mptr->p2-0xe0000001];
-	    if (pentry->p1 == 0) {
-		mptr->p2 = pentry->p2;
-	    } else if (pentry->p2 == 0) {
-		mptr->p2 = pentry->p1;
+	    if (mptr->p2 > 0xe0000000) {
+		taint_entry* pentry = &merge_log[mptr->p2-0xe0000001];
+		if (pentry->p1 == 0) {
+		    mptr->p2 = pentry->p2;
+		} else if (pentry->p2 == 0) {
+		    mptr->p2 = pentry->p1;
+		}
 	    }
+#ifdef STATS
+	    if (mptr->p1 == 0 && mptr->p2 == 0) prune_cnt++;
+	    else if (mptr->p1 == 0 || mptr->p2 == 0) simplify_cnt++;
+#endif
+	    mptr++;
 	}
 #ifdef STATS
-	if (mptr->p1 == 0 && mptr->p2 == 0) prune_cnt++;
-	else if (mptr->p1 == 0 || mptr->p2 == 0) simplify_cnt++;
+	gettimeofday(&pp2_end_tv[i], NULL);
 #endif
-	mptr++;
     }
 }
 
@@ -1118,16 +1189,10 @@ prune_merge_log (u_long mdatasize, unordered_set<uint32_t>& live_set)
     taint_entry* mptr = merge_log;
     while ((u_long) mptr < (u_long) merge_log + mdatasize) {
 	if (mptr->p1 < 0xc0000000) {
-#ifdef STATS
-	    prune_lookup++;
-#endif
 	    if (live_set.count(mptr->p1) == 0) {
 		mptr->p1 = 0;
 	    } 
 	} else if (mptr->p1 > 0xe0000000) {
-#ifdef STATS
-	    prune_indirect++;
-#endif
 	    taint_entry* pentry = &merge_log[mptr->p1-0xe0000001];
 	    if (pentry->p1 == 0) {
 		mptr->p1 = pentry->p2;
@@ -1136,16 +1201,10 @@ prune_merge_log (u_long mdatasize, unordered_set<uint32_t>& live_set)
 	    }
 	}
 	if (mptr->p2 < 0xc0000000) {
-#ifdef STATS
-	    prune_lookup++;
-#endif
 	    if (live_set.count(mptr->p2) == 0) {
 		mptr->p2 = 0;
 	    } 
 	} else if (mptr->p2 > 0xe0000000) {
-#ifdef STATS
-	    prune_indirect++;
-#endif
 	    taint_entry* pentry = &merge_log[mptr->p2-0xe0000001];
 	    if (pentry->p1 == 0) {
 		mptr->p2 = pentry->p2;
@@ -1744,6 +1803,16 @@ long seq_epoch (const char* dirname, int port)
     }
     fprintf (statsfile, "Unique indirects %ld\n", (long) resolved.size());
     fprintf (statsfile, "Values rcvd %lu sent %lu\n", values_rcvd, values_sent);
+    for (int i = 0; i < PAR; i++) {
+	fprintf (statsfile, "Prune thread %d started at %ld.%06ld ended at %ld.%06ld time %ld\n", i,
+		 pp1_start_tv[i].tv_sec, pp1_start_tv[i].tv_usec, 
+		 pp1_end_tv[i].tv_sec, pp1_end_tv[i].tv_usec,
+		 ms_diff (pp1_end_tv[i], pp1_start_tv[i]));
+	fprintf (statsfile, "Prune finish %d started at %ld.%06ld ended at %ld.%06ld time %ld\n", i, 
+		 pp2_start_tv[i].tv_sec, pp2_start_tv[i].tv_usec, 
+		 pp2_end_tv[i].tv_sec, pp2_end_tv[i].tv_usec,
+		 ms_diff (pp2_end_tv[i], pp2_start_tv[i]));
+    }
 #endif
 
     return 0;
