@@ -46,12 +46,6 @@ struct epoch_ctl {
     struct timeval tv_start_dift;
     struct timeval tv_done;
 };
-static long ms_diff (struct timeval tv1, struct timeval tv2)
-{
-    return ((tv1.tv_sec - tv2.tv_sec) * 1000 + (tv1.tv_usec - tv2.tv_usec) / 1000);
-}
-
-
 int sync_logfiles (int s)
 {
     u_long fcnt, ccnt;
@@ -234,7 +228,7 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 {
 #ifndef BUILD_64
     int rc;
-    struct timeval tv_start, tv_done;
+    struct timeval tv_start;
     gettimeofday (&tv_start, NULL);
 
     fprintf(stderr, "do_dift started \n");
@@ -386,30 +380,21 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 
 	
     // Wait for all children to complete
-    //this was beefed up... we should care about when each individual epoch was finished.
     u_long epochs_done = 0;
-    do {
+    for (u_long i = 0; i < epochs; i++) { 
 	int status;
-	pid_t wpid = waitpid (-1, &status, 0);
+	pid_t wpid = waitpid (ectl[i].waiting_on_rp_group, &status, 0);
 	if (wpid < 0) {
 	    fprintf (stderr, "waitpid returns %d, errno %d\n", rc, errno);
 	    return;
 	} else {
-	    for (u_long i = 0; i < epochs; i++) {
-
-		if (wpid == ectl[i].waiting_on_rp_group) { 
 #ifdef DETAILS
-		    printf ("DIFT of epoch %lu is done\n", i);
+	    printf ("DIFT of epoch %lu is done\n", i);
 #endif
-		    gettimeofday (&ectl[i].tv_done, NULL);
-		    ectl[i].status = STATUS_DONE;
-		    epochs_done++;
-		}
-	    }
+	    ectl[i].status = STATUS_DONE;
+	    epochs_done++;	
 	}
-    } while (epochs_done < epochs);
-
-    gettimeofday (&tv_done, NULL);
+    }
 
     if (ehdr.flags&SEND_ACK) {
 	long retval = 0;
@@ -418,18 +403,40 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 	    fprintf (stderr, "Cannot send ack,rc=%d\n", rc);
 	}
     }
-    char statsname[256];
-    //write all of the stats out to files
+
+    //write all of the stats out to files (this is kinda janky, but my orchestrator needs to be able to 
+    //reference these stats files by epoch index instead of pid.. 
+    char statsname[PATHLEN];
+    char pathname[PATHLEN];
+    char buff[1024];
+    int read_chars, written_chars;
+    
     for (u_long i = 0; i < epochs; i++) {
 	sprintf (statsname, "/tmp/dift-stats%lu", i);
+	sprintf (pathname, "/tmp/%d/taint_stats", ectl[i].cpid);
 	FILE* statsfile = fopen (statsname, "w");
 	if (statsfile == NULL) {
 	    fprintf (stderr, "Cannot create %s, errno=%d\n", statsname, errno);
 	    return;
 	}
-	fprintf (statsfile,"start time %ld\ndift time %ld\n", 
-		 ms_diff(ectl[i].tv_start_dift, ectl[i].tv_start),
-		 ms_diff(ectl[i].tv_done, ectl[i].tv_start_dift)); 
+	FILE* taint_stats = fopen (pathname, "r");
+	if (taint_stats == NULL) {
+	    fprintf (stderr, "Cannot read %s, errno=%d\n", pathname, errno);
+	    return;
+	}
+	fprintf (statsfile, "start at %ld.%06ld\n", ectl[i].tv_start.tv_sec, ectl[i].tv_start.tv_usec);
+
+	while((read_chars = fread(buff,sizeof(char),1024,taint_stats)) > 0) 
+	{ 
+	    written_chars = 0;
+	    while(written_chars < read_chars) { 
+		written_chars += fwrite(buff,sizeof(char),read_chars-written_chars, statsfile);
+	    }
+	}
+	if(read_chars < 0) { 
+	    fprintf(stderr, "There was an error reading file (FILE*) rc %d, errno %d\n",read_chars,errno);
+	}
+
 	fclose(statsfile);
     }
     // send stats if requested
