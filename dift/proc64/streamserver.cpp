@@ -608,7 +608,7 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	}
     }
 
-    for (int i = (int) epochs-1; i >= 0; i--) {
+    for (int i = (int)(epochs-1); i >= 0; i--) {
 	int status;
 	pid_t wpid = waitpid (ectl[i].spid, &status, 0);
 	if (wpid < 0) {
