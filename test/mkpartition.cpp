@@ -108,10 +108,13 @@ long read_ckpts (char* dirname)
 
 
 
-void print_timing (struct replay_timing* timings, struct extra_data* edata, int start, int end)
+void print_timing (struct replay_timing* timings, struct extra_data* edata, int start, int end, char* fork_flags)
 { 
     //printf ("%d %5d %6lu %5d %6d ", process_index, timings[start].pid, timings[start].index, timings[end].pid, end-start);
-    printf ("%5d %6lu %5d %6lu ", timings[start].pid, timings[start].index, timings[end].pid, edata[end].start_clock);
+    if(!strncmp("", fork_flags,0)) 
+	printf ("%5d %6lu %6lu 0", timings[start].pid, timings[start].index, edata[end].start_clock);
+    else
+	printf ("%5d %6lu %6lu %s", timings[start].pid, timings[start].index, edata[end].start_clock, fork_flags);
 
 
     if (filter_syscall > 0) {
@@ -151,11 +154,14 @@ static int cnt_interval (struct extra_data* edata, int start, int end)
     return edata[end].aindex - edata[start].aindex;
 }
 
+
+//right here I need to include the fork_flags parameter!
 int gen_timings (struct replay_timing* timings, 
 		 struct extra_data* edata, 
 		 int start, 
 		 int end, 
-		 int partitions){
+		 int partitions, 
+		 char* fork_flags){
 
     double biggest_gap = 0.0, goal;
     int gap_start, gap_end, last, i, new_part;
@@ -164,7 +170,7 @@ int gen_timings (struct replay_timing* timings,
     assert (partitions <= cnt_interval(edata, start, end));
 
     if (partitions == 1) {
-	    print_timing (timings, edata, start, end);
+	print_timing (timings, edata, start, end, fork_flags);
 	return 0;
     }
 
@@ -196,8 +202,8 @@ int gen_timings (struct replay_timing* timings,
 	partitions--;
 	if (gap_start == start) {
 
-	    print_timing (timings, edata, gap_start, gap_end);
-	    return gen_timings (timings, edata, gap_end, end, partitions);
+	    print_timing (timings, edata, gap_start, gap_end, fork_flags);
+	    return gen_timings (timings, edata, gap_end, end, partitions, fork_flags);
 	}
 
 	new_part = 0.5 + (partitions * (edata[gap_start].dtiming - edata[start].dtiming)) / total_time;
@@ -215,9 +221,9 @@ int gen_timings (struct replay_timing* timings,
 	    printf ("gap - new part %d\n", new_part);
 	}
 
-	gen_timings (timings, edata, start, gap_start, new_part);
-	print_timing (timings, edata,  gap_start, gap_end);
-	return gen_timings (timings, edata, gap_end, end, partitions - new_part);
+	gen_timings (timings, edata, start, gap_start, new_part, fork_flags);
+	print_timing (timings, edata,  gap_start, gap_end, fork_flags);
+	return gen_timings (timings, edata, gap_end, end, partitions - new_part, fork_flags);
     } else {
 	// Allocate first interval
 	goal = total_time/partitions;
@@ -227,8 +233,8 @@ int gen_timings (struct replay_timing* timings,
 	for (i = start+1; i < end; i++) {
 	    if (can_attach(timings[i].syscall)) {
 		if (edata[i].dtiming-edata[start].dtiming > goal || cnt_interval(edata, i, end) == partitions-1) {
-		    print_timing (timings, edata,  start, i);
-		    return gen_timings(timings, edata, i, end, partitions-1);
+		    print_timing (timings, edata,  start, i, fork_flags);
+		    return gen_timings(timings, edata, i, end, partitions-1, fork_flags);
 		}
 	    }
 	}
@@ -621,7 +627,6 @@ int build_fork_flags(vector<char*> &fork_flags,
 		     map<u_int,map<u_int,u_int>> &index_interval_inclusions,
 		     const struct replay_timing *timings,
 		     const int num){ 
-    
     for(int i = 0; i < num; i++) { 
 	struct replay_timing curr_timing = timings[i];
 	if (curr_timing.syscall == 120) { 
@@ -648,6 +653,7 @@ int build_fork_flags(vector<char*> &fork_flags,
 	}
     }	
 
+/*
     for(auto it :index_interval_inclusions)
     {
 	printf("intervals for %d\n",it.first);
@@ -657,10 +663,12 @@ int build_fork_flags(vector<char*> &fork_flags,
 	}
 	printf("\n");
     }
+    printf("fork_flags size %d\n", fork_flags.size());
     for(auto fork: fork_flags){ 
 	printf("fork flag %s\n", fork);
-	
     }
+
+*/
 
     return 0;
 
@@ -731,11 +739,12 @@ int create_multiprocess_ds(vector<u_int> &num_el,
     return 0; // on success
 }
 
-void generate_timings_for_process( struct replay_timing *timings,
-				  struct extra_data* edata,
+void generate_timings_for_process(struct replay_timing *timings,
+				  struct extra_data* edata,				 
 				  const u_int num_partitions,
 				  const u_int num,
-				  const char* dir)
+				  const char* dir,
+				  char* fork_flags)
 {
     // First, need to sum times for all threads to get totals for this group
     int total_time = 0;
@@ -781,7 +790,7 @@ void generate_timings_for_process( struct replay_timing *timings,
 	}
 	printf ("----------------------------------------\n");
     }
-    gen_timings (timings, edata, 0, num-1, num_partitions);
+    gen_timings (timings, edata, 0, num-1, num_partitions, fork_flags);
 }
 
 int main (int argc, char* argv[])
@@ -902,7 +911,7 @@ int main (int argc, char* argv[])
     if (group_by > 0) printf ("group by %d\n", group_by);
 
     for(u_int i = 0; i < num_el.size(); i++ ) {
-	generate_timings_for_process(timings_vect[i], edata_vect[i], num_parts[i], num_el[i], argv[1]);
+	generate_timings_for_process(timings_vect[i], edata_vect[i], num_parts[i], num_el[i], argv[1], fork_flags[i]);
     }
     
     

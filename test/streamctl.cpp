@@ -434,7 +434,7 @@ int main (int argc, char* argv[])
 		fprintf (stderr, "Cannot send cache file count to streamserver, rc=%d\n", rc);
 		return rc;
 	    }
-	    fprintf(stderr, "we have %u cache files to send\n", cnt);
+	    fprintf(stderr, "we have %u cache files to send to %s\n", cnt, conf.difts[i]->hostname);
 	    
 	    // And finally the cache files
 	    for (auto iter = cache_files.begin(); iter != cache_files.end(); iter++) {
@@ -458,10 +458,10 @@ int main (int argc, char* argv[])
 	    u_long l, j;
 	    for (l = 0; l < log_files.size(); l++) {
 		if (response[l]) {
-		    printf ("%ld of %d log files requested\n", l, log_files.size());
+		    fprintf (stderr,"%ld of %d log files requested\n", l, log_files.size());
 		    char* filename = NULL;
 		    for (int j = strlen(log_files[l].path); j >= 0; j--) {
-			if (log_files[i].path[j] == '/') {
+			if (log_files[l].path[j] == '/') {
 			    filename = &log_files[l].path[j+1];
 			    break;
 			} 
@@ -548,7 +548,7 @@ int main (int argc, char* argv[])
 	    sprintf (statfile, "/tmp/stream-stats-%lu", i);
 	    if (fetch_file(conf.epochs[i].pagg->s, "/tmp") < 0) return -1;
 	    rc = rename ("/tmp/stream-stats", statfile);
-	    if (rc < 0) printf ("Unable to rename affregator stats file, rc=%d, errno=%d\n", rc, errno);
+	    if (rc < 0) printf ("Unable to rename aggregator stats file, rc=%d, errno=%d\n", rc, errno);
 
 	    sprintf (statfile, "/tmp/taint-stats-%lu", i);
 	    if (fetch_file(conf.epochs[i].pdift->s, "/tmp") < 0) return -1;
