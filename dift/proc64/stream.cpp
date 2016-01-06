@@ -1528,6 +1528,10 @@ long seq_epoch (const char* dirname, int port)
 	return -1;
     }
 
+
+    fprintf (statsfile,"start time %ld.%06ld\n", start_tv.tv_sec, start_tv.tv_usec);
+    fprintf (statsfile, "recv done time %ld.%06ld\n", end_tv.tv_sec, end_tv.tv_usec);
+
     fprintf (statsfile, "Total time:              %6ld ms\n", ms_diff (end_tv, start_tv));
     fprintf (statsfile, "Receive time:            %6ld ms\n", ms_diff (recv_done_tv, start_tv));
     if (!start_flag) {
