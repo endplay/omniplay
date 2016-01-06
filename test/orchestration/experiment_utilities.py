@@ -3,7 +3,7 @@ import spur
 
 
 def open_ssh_session(host, user, password):
-    return spur.SshShell(hostname=host, username=user, password=password, missing_host_key=spur.ssh.MissingHostKey.warn)
+    return spur.SshShell(hostname=host, username=user, password=password, missing_host_key=spur.ssh.MissingHostKey.accept)
 
 
 def open_paramiko_ssh_session(host, user, password): 
@@ -21,5 +21,5 @@ def put_file(host, user, password, local_file, remote_file):
 def get_file(host, user, password, local_file, remote_file):
     ssh = open_paramiko_ssh_session(host, user, password)
     sftp = ssh.open_sftp()
-    sftp.get(local_file, remote_file)
+    sftp.get(remote_file, local_file)
     sftp.close()

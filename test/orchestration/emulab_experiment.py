@@ -15,6 +15,8 @@ CLOUDLAB_PREFIX_DIR = "/local/src/omniplay/eglibc-2.15/"
 CLOUDLAB_STREAMSERVER_DIR = "/local/src/omniplay/dift/proc64"
 CLOUDLAB_SCRIPTS_DIR = "/local/src/omniplay/scripts"
 STREAMCTL_DIR = "/home/arquinn/Documents/omniplay/test/"
+OUT2MERGE_DIR = "/home/arquinn/Documents/omniplay/dift/proc64"
+HOME_DIR = "/home/arquinn"
 
 class Server:
     def __init__(self, host, num_epochs):
@@ -30,7 +32,7 @@ class Server:
         return (self.host != other.host)
 
     def get_output_name(self):
-        return self.host + "." + str(self.num_epochs)
+        return self.host
 
     def replace_prefix(self, user, password, prefix_name):
         shell = experiment_utilities.open_ssh_session(self.host, user, password)
@@ -57,28 +59,40 @@ class Server:
         self.create_new_replay_dirs(user,password)
 
     def start_server(self, user, password, output_path):
-        out = open(output_path + self.get_output_name() + ".stdout","wr")
-        err = open(output_path + self.get_output_name() + ".stderr","wr")
+        out = output_path + ".stdout"
+        err = output_path + ".stderr"
 
         shell = experiment_utilities.open_ssh_session(self.host, user, password)
-        spawn = shell.spawn(["./streamserver"],cwd=CLOUDLAB_STREAMSERVER_DIR, stdout=out, stderr=err, store_pid=True)
+        spawn = shell.spawn(["nohup","./streamserver",">",out,"2>",err],cwd=CLOUDLAB_STREAMSERVER_DIR, store_pid=True)
         return shell, spawn
 
 class Test_Configuration: 
     #not sure that I need both the server_list and the server_config file....? 
-    def __init__(self, partition_filename, server_config_file, prefix, debug_dir, results_dir): 
+    def __init__(self, partition_filename, server_config_files, prefix, stats_dir, results_dir, correct_dir): 
         self.partition_filename = partition_filename
-        self.server_config_file = "orchestration/" + server_config_file
         self.prefix = prefix
         self.num_partitions = sum(1 for this_line in open("../" + partition_filename, "r")) -1 #off by one b/c line with directory
         self.hosts = []
-        self.debug_dir = debug_dir
+        self.stats_dir = stats_dir
         self.results_dir = results_dir
+        self.correct_dir = correct_dir
 
+        self.server_config_file = ""
         self.results = []
         self.shells = []
 
-        with open(server_config_file, "r") as server_list:
+        for server_config in server_config_files:
+            lines = sum(1 for line in open(server_config, "r"))
+            num_cores = int(open(server_config, "r").readline().split()[0])
+            total = lines * num_cores
+            if total >= self.num_partitions:
+                self.server_config_file = "orchestration/" + server_config
+                break
+
+        if len(self.server_config_file) == 0:
+            print "oh no!, we don't have a server config big enough for",self.num_partitions
+
+        with open("../" + self.server_config_file, "r") as server_list:
             curr_num = 0
             while curr_num < self.num_partitions: 
                 line = server_list.readline() 
@@ -93,41 +107,51 @@ class Test_Configuration:
             
                 curr_num += int(words[0])
             
+
     def prepare_for_replay(self, user, password): 
         if self.prefix:
             for h in self.hosts: 
                 h.prepare_for_replay(user, password, self.prefix)
+                print "<prepared",h.host,"for replay>"
         else:
             print "no prefix specified, skipping the prepare_for_replay"
 
-    def start_ctl(self, user, password, flags): 
+        #clear out the existing results directories:
+        server_index = 0
+        offset = 0
+
+        for i in range(self.num_partitions):
+            if i >= offset + self.hosts[server_index].num_epochs:
+                offset += self.hosts[server_index].num_epochs
+                server_index += 1
+                            
+            server = self.hosts[server_index]
+            remote_results_dir =  "/tmp/" + str(i - offset)
+            shell = experiment_utilities.open_ssh_session(server.host, user, password)
+            with shell:
+                shell.run(["rm","-rf",remote_results_dir],cwd="/")
+
+    def start_ctl(self, flags): 
+        args = ["./streamctl", self.partition_filename, self.server_config_file, "-w"]
+        for item in flags:
+            args.append(item)
+                
         try:
-            p = subprocess.check_output(["./streamctl", self.partition_filename, self.server_config_file, "-w", flags], cwd=STREAMCTL_DIR)
+            p = subprocess.check_output(args, cwd=STREAMCTL_DIR)
+            print p
         except subprocess.CalledProcessError as e:
             print "streamctl returned non-zero rc"
             print e.cmd
             print e.returncode
             print e.output
-            
 
-    def start_servers(self, user, password):
-        output_filename = self.debug_dir + "/" + str(self.num_partitions) + "."
-        for h in self.hosts:
-            shell, result = h.start_server(user, password, output_filename)
-            self.shells.append(shell)
-            self.results.append(result)
 
-    def kill_procs(self):
-        for i in range(len(self.shells)):
-            with self.shells[i]:
-                self.results[i].send_signal(9)
-
+    #needs to be rewritten
     def get_stats_files(self, user, password): 
         
-        output_file_prefix = results_dir + "/" + str(test.num_parititions) + "."
+        output_file_prefix = self.stats_dir + "/" + str(self.num_partitions)
         server_index = 0
         offset = 0
-        results = []
     
         for i in range(self.num_partitions):
 
@@ -142,28 +166,130 @@ class Test_Configuration:
             remote_stream_file =  "/tmp/dift-stats" + str(i - offset)
             remote_agg_file =  "/tmp/" + str(i - offset)+ "/stream-stats" 
 
-            experiment_utilities.get_file(server.host, username, password,local_stream_file, remote_stream_file)
-            experiment_utilities.get_file(server.host, username, password, local_agg_file, remote_agg_file)
+            experiment_utilities.get_file(server.host, user, password,local_stream_file, remote_stream_file)
+            experiment_utilities.get_file(server.host, user, password, local_agg_file, remote_agg_file)
+
+    def out2mergecmp(self):
+        output_dir = self.results_dir + "/" + str(self.num_partitions) + "/"
+        p = subprocess.check_output(["rm","-rf","tmp"],cwd=STREAMCTL_DIR+"/orchestration/"+output_dir)
+
+        files = os.listdir(output_dir)
+        sorted_files = sorted(files, key=lambda x: int(x.split('.')[0]), reverse=True)
+
+        for i in sorted_files:
+            p = subprocess.check_output(["tar","-xzf",i],cwd=STREAMCTL_DIR+"/orchestration/"+output_dir)
+            os.chdir(output_dir + "/tmp/")
+            newest_dir = max(os.listdir("."), key = os.path.getctime)
+            os.chdir(STREAMCTL_DIR+"/orchestration")
+
+            dest = i.split(".")[0]
+            if newest_dir != dest:
+                p = subprocess.check_output(["mv",newest_dir,dest],cwd=STREAMCTL_DIR+"/orchestration/"+output_dir +"/tmp/")
+
+            
+        args = ["./out2mergecmp",self.correct_dir,"-d",STREAMCTL_DIR+"/orchestration/"+output_dir+"/tmp"]
+        for i in range(self.num_partitions):
+            args.append(str(i))
+
+        p = subprocess.check_output(args,cwd=OUT2MERGE_DIR)    
+        print p
+
+
+    def get_results_files(self, user, password):        
+        output_dir = self.results_dir + "/" + str(self.num_partitions) + "/"
+        if not os.path.isdir(output_dir):
+            os.makedirs(output_dir)
+        
+        server_index = 0
+        offset = 0
     
-def get_tests(filename, server_desc_filename, prefix_filename, debug_dir, results_dir):
+        for i in range(self.num_partitions):
+
+            if i >= offset + self.hosts[server_index].num_epochs:
+                offset += self.hosts[server_index].num_epochs
+                server_index += 1
+                            
+            server = self.hosts[server_index]
+            remote_results_dir =  "/tmp/" + str(i - offset)
+            remote_merge_output =  "/dev/shm/tmp." + str(i - offset) + ".merge-outputs-resolved"
+            shell = experiment_utilities.open_ssh_session(server.host, user, password)
+            with shell:
+                shell.run(["mv",remote_merge_output, remote_results_dir + "/merge-outputs-resolved"],cwd="/")
+                shell.run(["tar","-zcf",remote_results_dir+".tgz",remote_results_dir],cwd = "/")
+                    
+
+            local_results = output_dir + str(i) + ".tgz"
+            remote_results = remote_results_dir + ".tgz"
+
+            print "transfering",remote_results,"to",local_results
+            experiment_utilities.get_file(server.host, user, password,local_results, remote_results)
+
+def get_hosts(server_config_file):
+
+
+    hosts = []
+    with open("../" + server_config_file, "r") as server_list:
+        for line in server_list:
+            words = line.split()
+            s = Server(words[1], int(words[0]))    
+            hosts.append(s)
+
+    return hosts
+
+    
+def get_tests(filename, server_descs, prefix_filename, stats_dir, results_dir, correct_dir):
 
     config_file = open(filename, "r")
     tests = []
     for line in config_file:        
-        next_test = Test_Configuration(line.strip(), server_desc_filename, prefix_filename, debug_dir, results_dir)
+
+        next_test = Test_Configuration(line.strip(), server_descs, prefix_filename, stats_dir, results_dir, correct_dir)
         tests.append(next_test)
 
     config_file.close()
-    return tests
+    return tests, get_hosts("orchestration/" +server_descs[0])
 
 
-def make_server_description(num_parts, cores_per_server, server_name_ending):
+def make_server_description(num_hosts, cores_list, server_name_ending):
 
-    num_rows = int(math.ceil((num_parts + 0.0) / (cores_per_server + 0.0)))
-    with open("server_config.tmp","w+") as wfile:
-        for i in range(num_rows):
-            server_name = "node-" + str(i) + server_name_ending
-            wfile.write(str(cores_per_server) + " " + server_name + " " + server_name + "\n")    
+    server_config_names = []
+    j = -1
+
+    for num_cores in cores_list:
+        j += 1
+        server_config_names.append("server_config."+str(j))
+        with open("server_config."+ str(j),"w+") as wfile:
+            for i in range(num_hosts):
+                server_name = "node-" + str(i) + server_name_ending
+                wfile.write(str(num_cores) + " " + server_name + " " + server_name + "\n")    
+
+    return server_config_names
+
+
+
+# start_servers... needs to all be overhauled.. 
+#
+#
+def start_servers(hosts, user, password):
+    shells = []
+    results = []
+    output_filename = "/tmp/emulab_experiment."
+    for h in hosts:
+        print "next_server",h.host
+        shell, result = h.start_server(user, password, output_filename)
+        shells.append(shell)
+        results.append(result)
+
+    return shells, results
+
+# kill_procs with shells and results
+#
+#
+def kill_procs(shells, results):
+    for i in range(len(shells)):
+        with shells[i]:
+            results[i].send_signal(9)
+
 
 def main(): 
     if (len(sys.argv) < 2):
@@ -177,15 +303,33 @@ def main():
     parser = optparse.OptionParser()
     parser.add_option("-o", "--output-dir", dest="output_dir",
                       help="where to save all the output files", metavar="OUTPUT-DIR")
-
     parser.add_option("-p", "--eglib-prefix-tar.gz", dest="prefix",
                       help="where the eglibc prefix.tar.gz is currently stored on this machine", metavar="PREFIX.TAR.GZ")
-
     parser.add_option("-s", "--sync", action="store_true",dest="sync",
                       help="whether to sync the prefix and replay files", metavar="SYNC")
+    parser.add_option("--hs", "--host-suffix",dest="host_suffix",
+                      help="the end of the hostname", metavar="HOST_SUFFIX")
+    parser.add_option("-n", "--num_hosts",dest="num_hosts",
+                      help="the number of hosts", metavar="NUM_HOSTS")
+    parser.add_option("-c", "--correct_results_dir",dest="correct_dir",
+                      help="the dir containing the seqtt results", metavar="CORRECCT_DIR")
 
 
     (options, args) = parser.parse_args()
+    if options.host_suffix == None or len(options.host_suffix) == 0: 
+        print "You must specify a host_suffix!"
+        return -3
+
+    if options.num_hosts == None or len(options.num_hosts) == 0: 
+        print "You must specify the number of hosts"
+        return -4
+
+    if options.correct_dir == None or not os.path.isdir(options.correct_dir):
+        print "You must specify the directory with the seqtt answer!"
+        print options.correct_dir
+        return -5
+
+
     output_dir = options.output_dir
 
     if output_dir == None:
@@ -195,18 +339,17 @@ def main():
         if not os.path.isdir(output_dir):
             os.makedirs(output_dir)        
         
-    debug_dir = output_dir + "debug"
+    stats_dir = output_dir + "stats"
     results_dir = output_dir + "results"
 
-    if not os.path.isdir(debug_dir):
-        os.makedirs(debug_dir)
+    if not os.path.isdir(stats_dir):
+        os.makedirs(stats_dir)
     if not os.path.isdir(results_dir):
         os.makedirs(results_dir)
 
     if options.sync and not options.prefix:
         print "if you want to sync files, you must specify a prefix path!"
         return -2 
-        
 
     #stuff to manage cloudlab --> we need to ship additional data that we didn't need to send! 
     #1. We need to make sure to run the streamctl with -s in order to ship the logs 
@@ -214,29 +357,32 @@ def main():
     #3. We need to make sure to ship the prefix lib that is needed for this experiment. 
     #4. We need to clear out the replay logdb and replay_cache
         
-    #I assume for now that we won't go over 64 parts! 
-    make_server_description(64, 4, ".arquinn-QV12107.Dift.emulab.net")
-    test_configurations = get_tests(config_file, "server_config.tmp", options.prefix, debug_dir, results_dir)
+    server_config_files = make_server_description(int(options.num_hosts), [4,8], options.host_suffix)  
+    test_configurations, hosts = get_tests(config_file, server_config_files, options.prefix, stats_dir, results_dir, options.correct_dir)
     password = getpass.getpass()         
 
-    
-    #Need to add a sync parameter to the parser
+    #start_servers
+    shells,results = start_servers(hosts, "arquinn", password)
+
     if options.sync: 
         last_test = test_configurations[-1]
         last_test.prepare_for_replay("arquinn", password)
-        last_test.start_servers("arquinn", password)
-        last_test.start_ctl("arquinn",password, "-s")
-        sys.stderr.write("finished syncing the files\n");    
-        last_test.kill_procs()
+        last_test.start_ctl(["-s", "-seq", "-stats"])
+        last_test.get_results_files("arquinn",password)
+        last_test.out2mergecmp()
+        sys.stderr.write("finished syncing the files\n")
 
-    return -2
+        kill_procs(shells, results)
+        return 0 #if we do sync, we don't do experiment
             
     for test in test_configurations:    
         #startup all aggregators in this test configuration:
-        test.start_servers("arquinn", password)
-        test.start_ctl("arquinn",password, "")
+        test.start_ctl(["-seq", "-stats"])
+        
+        test.get_results_files("arquinn",password)
         test.get_stats_files("arquinn", password)
-        test.kill_procs()
+        test.out2mergecmp() #run the comparison! (for now at least)
         sys.stderr.write("finished with " + test.partition_filename+ "\n")
 
+    kill_procs(shells, results)
 main()
