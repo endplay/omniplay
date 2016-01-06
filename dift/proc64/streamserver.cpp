@@ -512,7 +512,7 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	    return;
 	}
 
-	munmap(qh,TAINTQSIZE);
+	munmap(qh,TAINTQHDRSIZE);
 	close (iqfd);
 
 	sprintf(ectl[i].inputqbname, "/input_queue%lu", i);
