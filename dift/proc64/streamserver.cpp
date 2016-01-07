@@ -272,6 +272,16 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 	    return;
 	} else {
 	    ectl[i].status = STATUS_STARTING;
+	    //create our listening process
+	    ectl[i].waiting_on_rp_group = fork(); 
+	    if(ectl[i].waiting_on_rp_group == 0) { 
+		//we want to close out of our sockets here... kinda weird but still. 
+		close(s);
+		s = -99999;
+		wait_for_replay_group(fd,ectl[i].cpid);
+		return;
+	    }	    
+
 	    gettimeofday (&ectl[i].tv_start, NULL);
 	}
     }
@@ -284,35 +294,7 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 	    rc = -1;
 	    if (ectl[i].status == STATUS_STARTING) {
 		
-		/*
-		 * so we need to wait to attach because pin needs to be waiting for us, 
-		 * but we cannot be certain that this cpid is actually the pid we want to wait
-		 * on... 
-		 */
-
-		//this code is awful. Gotta figure out how to do better
-		if(ectl[i].tracked_pid < 0) {
-		    ectl[i].tracked_pid = get_replay_pid(fd, ectl[i].cpid, edata[i].start_pid);		   
-
-		    //need to guarentee that this stuff only happens once. 
-		    if(ectl[i].tracked_pid > 0) {
-			printf("%lu: found %d for cpid %d, start_pid %d\n",i,ectl[i].tracked_pid,ectl[i].cpid, edata[i].start_pid);
-			
-			ectl[i].waiting_on_rp_group = fork(); 
-			if(ectl[i].waiting_on_rp_group == 0) { 
-			    //we want to close out of our sockets here... kinda weird but still. 
-			    close(s);
-			    s = -99999;
-			    wait_for_replay_group(fd,ectl[i].tracked_pid);
-			    return;
-			}	
-		    }	 
-		}
-		if(ectl[i].tracked_pid > 0) {
-		    rc = get_attach_status (fd, ectl[i].tracked_pid);
-		}
-
-
+		rc = get_attach_status (fd, ectl[i].cpid);
 		if (rc > 0) {
 		    pid_t mpid = fork();
 		    if (mpid == 0) {
@@ -400,45 +382,10 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 	long retval = 0;
 	rc = send (s, &retval, sizeof(retval), 0);
 	if (rc != sizeof(retval)) {
-	    fprintf (stderr, "Cannot send ack,rc=%d\n", rc);
+	    fprintf (stderr, "Cannot send ack,rc=%d, errno %d\n", rc, errno);
 	}
     }
 
-    //write all of the stats out to files (this is kinda janky, but my orchestrator needs to be able to 
-    //reference these stats files by epoch index instead of pid.. 
-    char statsname[PATHLEN];
-    char pathname[PATHLEN];
-    char buff[1024];
-    int read_chars, written_chars;
-    
-    for (u_long i = 0; i < epochs; i++) {
-	sprintf (statsname, "/tmp/dift-stats%lu", i);
-	sprintf (pathname, "/tmp/%d/taint_stats", ectl[i].cpid);
-	FILE* statsfile = fopen (statsname, "w");
-	if (statsfile == NULL) {
-	    fprintf (stderr, "Cannot create %s, errno=%d\n", statsname, errno);
-	    return;
-	}
-	FILE* taint_stats = fopen (pathname, "r");
-	if (taint_stats == NULL) {
-	    fprintf (stderr, "Cannot read %s, errno=%d\n", pathname, errno);
-	    return;
-	}
-	fprintf (statsfile, "start at %ld.%06ld\n", ectl[i].tv_start.tv_sec, ectl[i].tv_start.tv_usec);
-
-	while((read_chars = fread(buff,sizeof(char),1024,taint_stats)) > 0) 
-	{ 
-	    written_chars = 0;
-	    while(written_chars < read_chars) { 
-		written_chars += fwrite(buff,sizeof(char),read_chars-written_chars, statsfile);
-	    }
-	}
-	if(read_chars < 0) { 
-	    fprintf(stderr, "There was an error reading file (FILE*) rc %d, errno %d\n",read_chars,errno);
-	}
-
-	fclose(statsfile);
-    }
     // send stats if requested
     if (ehdr.flags&SEND_STATS) {
 	for (u_long i = 0; i < epochs; i++) {
