@@ -275,13 +275,12 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 	    //create our listening process
 	    ectl[i].waiting_on_rp_group = fork(); 
 	    if(ectl[i].waiting_on_rp_group == 0) { 
-		//we want to close out of our sockets here... kinda weird but still. 
 		close(s);
 		s = -99999;
+		fprintf(stderr, "waiting on replay_group for cpid %d\n",ectl[i].cpid);
 		wait_for_replay_group(fd,ectl[i].cpid);
 		return;
 	    }	    
-
 	    gettimeofday (&ectl[i].tv_start, NULL);
 	}
     }
