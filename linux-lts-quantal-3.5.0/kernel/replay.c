@@ -1911,10 +1911,14 @@ destroy_replay_group (struct replay_group *prepg)
 	 * ARQUINN: this function is always called with the lock. (look at the calls 
 	 *          to the put_replay_group). So, I don't need to grab the lock for the
 	 *          finished variable below, its already being grabbed. 
+
+
+	 how does wakeup work...? 
       	 */
 	prepg->rg_rec_group->finished = 1;
-	wake_up(&(prepg->rg_rec_group->finished_queue));
-
+	printk ("waking up all sleepers on finished_queue for %d\n",current->pid);
+	wake_up_all(&(prepg->rg_rec_group->finished_queue));
+ 
 	// Put record group so it can be destroyed
 	put_record_group (prepg->rg_rec_group);
 
@@ -2400,14 +2404,17 @@ void ret_from_fork_replay (void)
 	}
 
 	MPRINT("Pid %d sleeping after returning from fork call.\n", current->pid);
-	//Add the try_to_exit logic here. 
+	//should probably get rid of the MPRINT's 
+	printk("pid %d sleeping on wait queue at line %d, try_to_exit %d\n", current->pid, __LINE__, current->replay_thrd->rp_group->rg_try_to_exit);
+	ret = wait_event_interruptible_timeout (prept->rp_waitq, prept->rp_status == REPLAY_STATUS_RUNNING, SCHED_TO);
+	printk("pid %d woken up from wait queue at line %d, try_to_exit %d\n", current->pid, __LINE__, current->replay_thrd->rp_group->rg_try_to_exit);
 
-	ret = wait_event_interruptible_timeout (prept->rp_waitq, prept->rp_status == REPLAY_STATUS_RUNNING || prg->rg_try_to_exit, SCHED_TO);
+
 
 	if (ret == 0) printk ("Replay pid %d timed out waiting for cloned thread to go, status \n", current->pid);
 	if (prg->rg_try_to_exit) {
 		printk("Replay pid %d woken up to die on exit\n", current->pid);
-		sys_exit (0);
+		sys_exit (0); //this is a sys_exit() now... its a sys_exit_group() in some other places...? 
 	}
 
 	if (ret == -ERESTARTSYS) printk ("Pid %d: ret_from_fork_replay cannot wait due to signal - try again\n", current->pid);
@@ -2966,7 +2973,7 @@ EXPORT_SYMBOL(get_current_record_pid);
 /*
  * With great power comes great responsibility. The parent can be a zombie, 
  * which means that its replay_thread can be a dangling pointer, which means
- * you can segfault. Swim at your own risk. 
+ * you can segfault.
  */
 
 pid_t get_replay_pid(pid_t parent_pid, pid_t record_pid)
@@ -4861,7 +4868,9 @@ get_next_clock (struct replay_thread* prt, struct replay_group* prg, long wait_c
 		while (!(prt->rp_status == REPLAY_STATUS_RUNNING || (prt->rp_replay_exit && prt->rp_record_thread->rp_in_ptr == prt->rp_out_ptr+1))) {	
 			MPRINT ("Replay pid %d waiting for clock value %ld but current clock value is %ld\n", current->pid, wait_clock_value, *(prt->rp_preplay_clock));
 			rg_unlock (prg->rg_rec_group);
+			printk("pid %d sleeping on wait queue at line %d, try_to_exit %d\n", current->pid, __LINE__, current->replay_thrd->rp_group->rg_try_to_exit);
 			ret = wait_event_interruptible_timeout (prt->rp_waitq, prt->rp_status == REPLAY_STATUS_RUNNING || prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && prt->rp_record_thread->rp_in_ptr == prt->rp_out_ptr+1), SCHED_TO);
+			printk("pid %d woken up from wait queue at line %d, try_to_exit %d\n", current->pid, __LINE__, current->replay_thrd->rp_group->rg_try_to_exit);
 			rg_lock (prg->rg_rec_group);
 			if (ret == 0) printk ("Replay pid %d timed out waiting for clock value %ld but current clock value is %ld\n", current->pid, wait_clock_value, *(prt->rp_preplay_clock));
 			if (prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && (prt->rp_record_thread->rp_in_ptr == prt->rp_out_ptr+1))) {
@@ -5104,7 +5113,9 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 		while (!(prt->rp_status == REPLAY_STATUS_RUNNING || (prt->rp_replay_exit && prect->rp_in_ptr == prt->rp_out_ptr+1))) {	
 			MPRINT ("Replay pid %d waiting for clock value %ld on syscall entry but current clock value is %ld\n", current->pid, start_clock, *(prt->rp_preplay_clock));
 			rg_unlock (prg->rg_rec_group);
+			printk("pid %d sleeping on wait queue at line %d, try_to_exit %d\n", current->pid, __LINE__, current->replay_thrd->rp_group->rg_try_to_exit);
 			ret = wait_event_interruptible_timeout (prt->rp_waitq, prt->rp_status == REPLAY_STATUS_RUNNING || prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && prect->rp_in_ptr == prt->rp_out_ptr+1), SCHED_TO);
+			printk("pid %d woken up from wait queue at line %d, try_to_exit %d\n", current->pid, __LINE__, current->replay_thrd->rp_group->rg_try_to_exit);
 			rg_lock (prg->rg_rec_group);
 			if (ret == 0) printk ("Replay pid %d timed out waiting for clock value %ld on syscall entry but current clock value is %ld\n", current->pid, start_clock, *(prt->rp_preplay_clock));
 			if (prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && (prect->rp_in_ptr == prt->rp_out_ptr+1))) {
@@ -5173,7 +5184,9 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 		printk ("Pid %d replay will pause here, clock is %lu now\n", current->pid, *prt->rp_preplay_clock);
 		prt->rp_wait_clock = *(prt->rp_preplay_clock + 1);
 		rg_unlock (prg->rg_rec_group);
+		printk("pid %d sleeping on wait queue at line %d, try_to_exit %d\n", current->pid, __LINE__, current->replay_thrd->rp_group->rg_try_to_exit);
 		ret = wait_event_interruptible_timeout (prt->rp_waitq, *prt->rp_preplay_clock < *(prt->rp_preplay_clock + 1), SCHED_TO);
+		printk("pid %d woken up from wait queue at line %d, try_to_exit %d\n", current->pid, __LINE__, current->replay_thrd->rp_group->rg_try_to_exit);
 		if (ret == 0) printk ("Replay_pause: Replay pid %d timed out waiting for clock value %ld on syscall entry but current clock value is %ld\n", current->pid, start_clock, *(prt->rp_preplay_clock));
 		if (ret == -ERESTARTSYS) {
 			printk ("Pid %d: entering syscall cannot wait due to signal for replay_pause\n", current->pid);
@@ -5265,15 +5278,15 @@ get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, stru
 			MPRINT ("Replay pid %d waiting for clock value %ld on syscall exit but current clock value is %ld\n", current->pid, stop_clock, *(prt->rp_preplay_clock));
 
 
-
 			rg_unlock (prg->rg_rec_group);
-			//ARQUINN: Do we need to add the try_to_exit flag in to this mix? 
-			ret = wait_event_interruptible_timeout (prt->rp_waitq, prt->rp_status == REPLAY_STATUS_RUNNING || prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && prect->rp_in_ptr == prt->rp_out_ptr+1) || prg->rg_try_to_exit, SCHED_TO);
+			printk("pid %d sleeping on wait queue at line %d, try_to_exit %d\n", current->pid, __LINE__, current->replay_thrd->rp_group->rg_try_to_exit);
+			ret = wait_event_interruptible_timeout (prt->rp_waitq, prt->rp_status == REPLAY_STATUS_RUNNING || prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && prect->rp_in_ptr == prt->rp_out_ptr+1), SCHED_TO);
+			printk("pid %d woken up from wait queue at line %d, try_to_exit %d\n", current->pid, __LINE__, current->replay_thrd->rp_group->rg_try_to_exit);
 			rg_lock (prg->rg_rec_group);
 
 
 			if (ret == 0) printk ("Replay pid %d timed out waiting for clock value %ld on syscall exit but current clock value is %ld\n", current->pid, stop_clock, *(prt->rp_preplay_clock));
-			if (prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && (prect->rp_in_ptr == prt->rp_out_ptr+1)) || prg->rg_try_to_exit) {
+			if (prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && (prect->rp_in_ptr == prt->rp_out_ptr+1))) {
 				rg_unlock (prg->rg_rec_group);
 				MPRINT ("Replay pid %d woken up to die on exit\n", current->pid);
 				sys_exit (0);
@@ -5733,10 +5746,15 @@ wait_for_replay_group(pid_t pid)
 	tsk = find_task_by_vpid(pid);
 	if (tsk) {
 		if(tsk->replay_thrd) { 
-			//just slightly easier to deal with
+       		//just slightly easier to deal with
 			struct replay_group* rp_group = tsk->replay_thrd->rp_group;
-			struct record_group* rec_group = rp_group->rg_rec_group;
+			struct record_group* rec_group;
+			if (!rp_group) { 
+			    printk("wait_for_replay_group, the rp_group has already been destroyed");
+			    return -EINVAL;				
+			}
 
+			rec_group = rp_group->rg_rec_group;
 			get_record_group (rec_group);
 			rg_lock(rec_group);
 
@@ -5748,9 +5766,9 @@ wait_for_replay_group(pid_t pid)
 				MPRINT("Pid %d woken up after waiting on replay group\n", current->pid );
 				rg_lock(rec_group);
 			};
-
 			rg_unlock(rec_group);
 			put_record_group (rec_group);
+			MPRINT("Pid %d finished up with wait_for_replay gropu \n", current->pid);
 			return pid;
 		}
 		else {
@@ -5970,11 +5988,16 @@ sys_pthread_block (u_long clock)
 			printk ("user-level-block: pid %d attaching now %d\n", current->pid,  prt->rp_pin_attaching);
 		}
 
+
+//whats rp_in)ptr and prt->rp_out_ptr??? 
+
 		while (!(prt->rp_status == REPLAY_STATUS_RUNNING || (prt->rp_replay_exit && prt->rp_record_thread->rp_in_ptr == prt->rp_out_ptr))) {
 			MPRINT ("Replay pid %d waiting for user clock value %ld\n", current->pid, clock);
 			
 			rg_unlock (prg->rg_rec_group);
+			printk("pid %d sleeping on wait queue at line %d, try_to_exit %d\n", current->pid, __LINE__, current->replay_thrd->rp_group->rg_try_to_exit);
 			ret = wait_event_interruptible_timeout (prt->rp_waitq, prt->rp_status == REPLAY_STATUS_RUNNING || prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && prt->rp_record_thread->rp_in_ptr == prt->rp_out_ptr), SCHED_TO);
+			printk("pid %d woken up from wait queue at line %d, try_to_exit %d\n", current->pid, __LINE__, current->replay_thrd->rp_group->rg_try_to_exit);
 			rg_lock (prg->rg_rec_group);
 			if (ret == 0) printk ("Replay pid %d timed out waiting for user clock value %ld\n", current->pid, clock);
 			if (prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && (prt->rp_record_thread->rp_in_ptr == prt->rp_out_ptr))) break; // exit condition below
@@ -6028,7 +6051,8 @@ long try_to_exit (u_long pid)
 			rpt = rpt->rp_next_thread;
 		    } while (rpt != original);
 		    rg_unlock(rpt->rp_group->rg_rec_group);
-
+		    
+		    printk("finished with try_to_exit %ld\n",pid);
 		    return 0;
 	    } else {
 		    printk ("try_to_exit: no replay thread for pid %ld\n", pid);
@@ -11310,7 +11334,9 @@ asmlinkage long shim_sched_yield (void)
 				tmp->rp_status = REPLAY_STATUS_RUNNING;
 				if (tmp->rp_pin_thread_data) put_user (tmp->rp_pin_thread_data, tmp->rp_pin_curthread_ptr);
 				wake_up (&tmp->rp_waitq);
+				printk("pid %d sleeping on wait queue at line %d, try_to_exit %d\n", current->pid, __LINE__, current->replay_thrd->rp_group->rg_try_to_exit);
 				ret = wait_event_interruptible_timeout (current->replay_thrd->rp_waitq, current->replay_thrd->rp_status == REPLAY_STATUS_RUNNING || current->replay_thrd->rp_group->rg_rec_group->rg_mismatch_flag, SCHED_TO);
+				printk("pid %d woken up from wait queue at line %d, try_to_exit %d\n", current->pid, __LINE__, current->replay_thrd->rp_group->rg_try_to_exit);
 				if (ret == 0) printk ("Replay pid %d timed out waiting after yield\n", current->pid);
 				if (ret == -ERESTARTSYS) {
 					printk ("Pid %d: cannot wait due to yield - try again\n", current->pid);
@@ -12437,8 +12463,9 @@ replay_vfork (unsigned long clone_flags, unsigned long stack_start, struct pt_re
 
 		// Next, we have to wait while child runs 
 		DPRINT ("replay_vfork: pid %d going to sleep\n", current->pid);
+		printk("pid %d sleeping on wait queue at line %d, try_to_exit %d\n", current->pid, __LINE__, current->replay_thrd->rp_group->rg_try_to_exit);
 		ret = wait_event_interruptible_timeout (prt->rp_waitq, prt->rp_status == REPLAY_STATUS_RUNNING, SCHED_TO);
-
+		printk("pid %d woken up from wait queue at line %d, try_to_exit %d\n", current->pid, __LINE__, current->replay_thrd->rp_group->rg_try_to_exit);
 		rg_lock(prg->rg_rec_group);
 		if (ret == 0) printk ("Replay pid %d timed out waiting for vfork to complete\n", current->pid);
 		if (prt->rp_status != REPLAY_STATUS_RUNNING) {
