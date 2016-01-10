@@ -494,7 +494,7 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	if (ectl[i].spid == 0) {
 	    // Now start up a stream processor for this epoch
 	    const char* args[256];
-	    char dirname[80], port[80];
+	    char dirname[80], port[80], parstring[80];
 	    int argcnt = 0;
 			    
 	    args[argcnt++] = "stream";
@@ -515,6 +515,9 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	    if (ehdr.cmd_type == AGG_TYPE_SEQ) {
 		args[argcnt++] = "-seq";
 	    }
+	    args[argcnt++] = "-par";
+	    sprintf (parstring, "%d", ehdr.parallelize);
+	    args[argcnt++] = parstring;
 	    args[argcnt++] = NULL;
 	    
 	    rc = execv ("./stream", (char **) args);
@@ -574,12 +577,12 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	    char pathname[PATHLEN];
 	    sprintf (pathname, "/tmp/%ld/merge-addrs", i);
 	    send_file (s, pathname, "merge-addrs");
-	    sprintf (pathname, "/tmp/%ld/merge-outputs-resolved", i);
-#ifdef BUILD_64
-	    send_file (s, pathname, "merge-outputs-resolved");
-#else
-	    send_shmem (s, pathname, "merge-outputs-resolved");
-#endif
+	    for (int j = 0; j < ehdr.parallelize; j++) {
+		char filename[256];
+		sprintf (pathname, "/tmp/%ld/merge-outputs-resolved-%d", i, j);
+		sprintf (filename, "merge-outputs-resolved-%d", j);
+		send_shmem (s, pathname, filename);
+	    }
 	    sprintf (pathname, "/tmp/%ld/tokens", i);
 	    send_file (s, pathname, "tokens");
 	    sprintf (pathname, "/tmp/%ld/dataflow.results", i);

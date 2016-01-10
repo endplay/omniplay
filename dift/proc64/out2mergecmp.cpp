@@ -15,8 +15,9 @@ using namespace std;
 
 #include "../taint_interface/taint.h"
 #include "../taint_interface/taint_creation.h"
+#include "../../test/streamserver.h"
 
-//#define TARGET(x) (x==0x192fda)
+//#define TARGET(x) ((x)==0xb1)
 
 #define ALLOW_DUPS
 
@@ -61,25 +62,27 @@ int main (int argc, char* argv[])
     struct output_info oi;
 #endif
 
-    if (argc < 3) {
-	fprintf (stderr, "format: out2mergecmp.c <mergeout dir> [-d dir] <list of output dirs>\n");
+    if (argc < 4) {
+	fprintf (stderr, "format: out2mergecmp.c [thread #] <mergeout dir> [-d dir] <list of output dirs>\n");
 	return -1;
     }
 
-    sprintf (mfile, "%s/mergeout", argv[1]);
+    int parallelize = atoi(argv[1]);
+
+    sprintf (mfile, "%s/mergeout", argv[2]);
     rc = map_file (mfile, &mfd, &mdatasize, &mmapsize, &mbuf);
     if (rc < 0) return rc;
 
-    sprintf (dfile, "%s/dataflow.result", argv[1]);
+    sprintf (dfile, "%s/dataflow.result", argv[2]);
     rc = map_file (dfile, &dfd, &ddatasize, &dmapsize, &dbuf);
     if (rc < 0) return rc;
 
-    if (!strcmp(argv[2], "-d")) {
-        out_dir = argv[3];
-	out_start = 4;
+    if (!strcmp(argv[3], "-d")) {
+        out_dir = argv[4];
+	out_start = 5;
     } else {
 	out_dir = "/tmp";
-	out_start = 2;
+	out_start = 5;
     }
 
 #ifdef OUTPUT_CMP      
@@ -179,31 +182,32 @@ int main (int argc, char* argv[])
 	    tokval += *psize;
 	}
 #endif
-	sprintf (ofile, "%s/%s/merge-outputs-resolved", out_dir, argv[i]);
-	rc = map_file (ofile, &ofd, &odatasize, &omapsize, &obuf);
-	if (rc < 0) return rc;	
+	for (int j = 0; j < parallelize; j++) {
+	    sprintf (ofile, "%s/%s/merge-outputs-resolved-%d", out_dir, argv[i], j);
+	    rc = map_file (ofile, &ofd, &odatasize, &omapsize, &obuf);
+	    if (rc < 0) return rc;	
 
-	optr = (uint32_t *) obuf;
-	while ((u_long) optr < (u_long) obuf + odatasize) {
-	    uint32_t otoken = *optr++;
+	    optr = (uint32_t *) obuf;
+	    while ((u_long) optr < (u_long) obuf + odatasize) {
+		uint32_t otoken = *optr++;
 #ifdef TARGET
-	    if (TARGET(otoken+output_tokens)) {
-	      printf ("Output %x this epoch %x past %x -> input %x this epoch %x past %x, epoch %s offset %lx\n",
-		      otoken+output_tokens, otoken, output_tokens, *optr+input_tokens, *optr, input_tokens, argv[i], 
-		      (u_long) optr - (u_long) obuf);
-	    }
+		if (TARGET(otoken+output_tokens)) {
+		    printf ("Output %x this epoch %x past %x -> input %x this epoch %x past %x, epoch %s offset %lx\n",
+			    otoken+output_tokens, otoken, output_tokens, *optr+input_tokens, *optr, input_tokens, argv[i], 
+			    (u_long) optr - (u_long) obuf);
+		}
 #endif
 #ifdef ITARGET
-	    if (ITARGET(*optr+input_tokens)) {
-	      printf ("Output %x this epoch %x past %x -> input %x this epoch %x past %x, epoch %s\n",
-		      otoken+output_tokens, otoken, output_tokens, *optr+input_tokens, *optr, input_tokens, argv[i]);
-	    }
+		if (ITARGET(*optr+input_tokens)) {
+		    printf ("Output %x this epoch %x past %x -> input %x this epoch %x past %x, epoch %s\n",
+			    otoken+output_tokens, otoken, output_tokens, *optr+input_tokens, *optr, input_tokens, argv[i]);
+		}
 #endif
-	    omapping.insert(make_pair(otoken+output_tokens,*optr+input_tokens));
-	    optr++;
+		omapping.insert(make_pair(otoken+output_tokens,*optr+input_tokens));
+		optr++;
+	    }
+	    unmap_file (obuf, ofd, omapsize);
 	}
-	
-	unmap_file (obuf, ofd, omapsize);
 
 	sprintf (afile, "%s/%s/merge-addrs", out_dir, argv[i]);
 	afd = open(afile, O_RDONLY);

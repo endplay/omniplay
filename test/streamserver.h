@@ -35,6 +35,7 @@ struct epoch_hdr {
     bool     start_flag;
     bool     finish_flag;
     u_char   cmd_type;
+    u_char   parallelize;
     char     flags;
     char     dirname[NAMELEN];
     char     prev_host[NAMELEN];
@@ -58,13 +59,10 @@ struct epoch_ack {
 #ifdef BUILD_64
 #define TAINTQSIZE ((512*1024*1024))
 #define TAINTENTRIES (TAINTQSIZE)/sizeof(uint32_t))
-#define TAINTQMAPSIZE TAINTQSIZE
 #else
-#define TAINTQSIZE (256*1024*1024)
-#define TAINTQMAPSIZE (16*1024*1024)
+#define TAINTQSIZE (64*1024*1024)
 #endif
 
-#define TAINTQMAPENTRIES (TAINTQMAPSIZE/sizeof(uint32_t))
 #define TAINTENTRIES (TAINTQSIZE/sizeof(uint32_t))
 #define TAINTQHDRSIZE (4096)
 #define TAINTBUCKETSIZE    (4096)
