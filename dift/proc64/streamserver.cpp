@@ -277,8 +277,11 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 	    if(ectl[i].waiting_on_rp_group == 0) { 
 		close(s);
 		s = -99999;
-		fprintf(stderr, "waiting on replay_group for cpid %d\n",ectl[i].cpid);
-		wait_for_replay_group(fd,ectl[i].cpid);
+		fprintf(stderr, "%lu(%d):waiting on replay_group for cpid %d\n",i,getpid(),ectl[i].cpid);
+		rc = -1;
+		while(rc < 0){
+		    rc = wait_for_replay_group(fd,ectl[i].cpid);
+		}
 		return;
 	    }	    
 	    gettimeofday (&ectl[i].tv_start, NULL);

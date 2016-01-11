@@ -509,7 +509,6 @@ int main (int argc, char* argv[])
 	    if (rc != sizeof(ack)) {
 		fprintf (stderr, "Cannot recv ack,rc=%d,errno=%d\n", rc, errno);
 	    }
-	    printf ("done reval is %d\n", ack.retval);
 	}
     }
 

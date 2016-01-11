@@ -50,7 +50,7 @@ int s = -1;
 // #define LINKAGE_FPU
 // #define LINKAGE_SYSCALL              // system call & libc function abstraction
 // #define LINKAGE_CODE
-//#define LINKAGE_FDTRACK
+#define LINKAGE_FDTRACK
 // #define CTRL_FLOW                    // direct control flow
 // #define ALT_PATH_EXPLORATION         // indirect control flow
 // #define CONFAID
@@ -506,10 +506,10 @@ char* get_file_ext(char* filename){
 static inline void sys_open_stop(int rc)
 {
     if (rc > 0) {
+        struct open_info* oi = (struct open_info *) current_thread->save_syscall_info;
         monitor_add_fd(open_fds, rc, 0, current_thread->save_syscall_info);
 	SYSCALL_DEBUG(stderr, "open: added fd %d\n", rc);
 #ifdef OUTPUT_FILENAMES
-        struct open_info* oi = (struct open_info *) current_thread->save_syscall_info;
         write_filename_mapping(filenames_f, oi->fileno, oi->name);
 #endif
 
