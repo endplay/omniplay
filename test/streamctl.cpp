@@ -125,6 +125,7 @@ int main (int argc, char* argv[])
     struct vector<struct cache_info> cache_files;
     u_char agg_type = AGG_TYPE_STREAM;
     struct config conf;
+    int parallelize = 1; 
 
     if (argc < 3) {
 	format();
@@ -345,6 +346,8 @@ int main (int argc, char* argv[])
 	    strcpy (ehdr.next_host, conf.aggregators[i+1]->hostname);
 	}
 	ehdr.cmd_type = agg_type;
+	ehdr.parallelize = conf.aggregators[i]->num_epochs;
+	if (ehdr.parallelize > parallelize) parallelize = ehdr.parallelize;
 
 	conf.aggregators[i]->s = connect_to_server (conf.aggregators[i]->hostname, conf.aggregators[i]->port);
 	if (conf.aggregators[i]->s < 0) return conf.aggregators[i]->s;
@@ -523,15 +526,16 @@ int main (int argc, char* argv[])
 		fprintf (stderr, "Cannot make dir %s\n", rdir);
 		return rc;
 	    }
-	    // Fetch 4 files: results, addresses, input and output tokens
-	    for (int j = 0; j < 4; j++) {
+
+	    // Fetch n+3 files: results, addresses, input and output tokens
+	    for (int j = 0; j < parallelize+3; j++) {
 		if (fetch_file(conf.epochs[i].pagg->s, rdir) < 0) return -1;
 	    }
 	}
 
 	// Now actually do the comaprison
 	char cmd[512];
-	sprintf (cmd, "../dift/proc64/out2mergecmp %s -d %s", cmp_dir, dest_dir);
+	sprintf (cmd, "../dift/proc64/out2mergecmp %d %s -d %s", parallelize, cmp_dir, dest_dir);
 	for (u_long i = 0; i < conf.epochs.size(); i++) {
 	    char add[64];
 	    sprintf (add, " %lu", i);
