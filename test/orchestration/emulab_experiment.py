@@ -13,6 +13,7 @@ STREAMSERVER_PORT = 19764 #Streamserver port as defined by the
 ERRORS_DIR = "stream_outputs/"
 CLOUDLAB_PREFIX_DIR = "/local/src/omniplay/eglibc-2.15/"
 CLOUDLAB_STREAMSERVER_DIR = "/local/src/omniplay/dift/proc64"
+CLOUDLAB_STREAMCTL_DIR = "/local/src/omniplay/test/"
 CLOUDLAB_SCRIPTS_DIR = "/local/src/omniplay/scripts"
 STREAMCTL_DIR = "/home/arquinn/Documents/omniplay/test/"
 OUT2MERGE_DIR = "/home/arquinn/Documents/omniplay/dift/proc64"
@@ -53,18 +54,50 @@ class Server:
             results = shell.run(["sudo","/bin/rm","-rf","/replay_cache/*"],cwd = "/")
             results = shell.run(["sudo","/bin/chmod","777","/replay_cache"],cwd = "/")
             results = shell.run(["./insert_spec_emulab.sh"], cwd = "/local/src/omniplay/scripts")
+            
+
+    def ship_script(self, user, password):
+        experiment_utilities.put_file(self.host, user, password, "run_background_task.sh", CLOUDLAB_STREAMSERVER_DIR + "/run_background_task.sh")
+        experiment_utilities.put_file(self.host, user, password, "recv_replay_files", CLOUDLAB_STREAMSERVER_DIR + "/recv_replay_files")
+        shell = experiment_utilities.open_ssh_session(self.host, user, password)
+        with shell:
+            results = shell.run(["sudo","/bin/chmod","777","run_background_task.sh"],cwd = CLOUDLAB_STREAMSERVER_DIR)
+            results = shell.run(["sudo","/bin/chmod","777","recv_replay_files"],cwd = CLOUDLAB_STREAMSERVER_DIR)
 
     def prepare_for_replay(self, user, password, prefix_name): 
         self.replace_prefix(user, password, prefix_name)
         self.create_new_replay_dirs(user,password)
+        self.ship_script(user,password)
 
-    def start_server(self, user, password, output_path):
-        out = output_path + ".stdout"
-        err = output_path + ".stderr"
+    def start_server(self, user, password):
+        shell = experiment_utilities.open_ssh_session(self.host, user, password)
+        with shell:
+            result = shell.run(["./run_background_task.sh","./streamserver"],cwd=CLOUDLAB_STREAMSERVER_DIR)
+
+    def start_recv_files(self, user, password):
+        shell = experiment_utilities.open_ssh_session(self.host, user, password)
+        with shell:
+            result = shell.run(["./run_background_task.sh","./recv_replay_files"],cwd=CLOUDLAB_STREAMSERVER_DIR)
+
+    def prep_for_ctrl(self,user,password, partitions_file, server_config_file): 
+        experiment_utilities.put_file(self.host, user, password, STREAMCTL_DIR + partitions_file, CLOUDLAB_STREAMCTL_DIR + "partitions.test")
+        experiment_utilities.put_file(self.host, user, password, STREAMCTL_DIR + server_config_file, CLOUDLAB_STREAMCTL_DIR + "server.config")
+    
+    def start_ctrl(self, user,password, flags):
+        args = ["./streamctl","partitions.test","server.config","-w"]
+        for item in flags:
+            args.append(item)                
 
         shell = experiment_utilities.open_ssh_session(self.host, user, password)
-        spawn = shell.spawn(["nohup","./streamserver",">",out,"2>",err],cwd=CLOUDLAB_STREAMSERVER_DIR, store_pid=True)
-        return shell, spawn
+        with shell:
+            result = shell.run(args,cwd=CLOUDLAB_STREAMCTL_DIR)
+            print result.output
+
+
+    def kill_server(self, user, password):
+        shell = experiment_utilities.open_ssh_session(self.host, user, password)
+        with shell:
+            shell.spawn(["pkill","-9","streamserver"])
 
 class Test_Configuration: 
     #not sure that I need both the server_list and the server_config file....? 
@@ -130,11 +163,15 @@ class Test_Configuration:
             shell = experiment_utilities.open_ssh_session(server.host, user, password)
             with shell:
                 shell.run(["rm","-rf",remote_results_dir],cwd="/")
+        print "<finished preparing for reaplay>"
 
-    def start_ctl(self, flags): 
-        args = ["./streamctl", self.partition_filename, self.server_config_file, "-w"]
-        for item in flags:
-            args.append(item)
+
+    def ship_replay_files(self,user,password): 
+        ctrl_host = self.hosts[0]
+        ctrl_host.start_recv_files(user, password)
+
+        replay_dir = open("../" +self.partition_filename, "r").readline().strip()
+        args = ["./sync_files", replay_dir, ctrl_host.host]
                 
         try:
             p = subprocess.check_output(args, cwd=STREAMCTL_DIR)
@@ -146,28 +183,30 @@ class Test_Configuration:
             print e.output
 
 
+    def start_ctrl(self, user, password, flags): 
+        ctrl_host = self.hosts[0]
+        ctrl_host.prep_for_ctrl(user,password, self.partition_filename, self.server_config_file)
+        ctrl_host.start_ctrl(user, password, flags)
+        print "<finished with stream_ctl for "+str(self.num_partitions) + " host test>"
+
     #needs to be rewritten
-    def get_stats_files(self, user, password): 
-        
+    def get_stats_files(self, user, password):         
+        ctrl_host = self.hosts[0]
         output_file_prefix = self.stats_dir + "/" + str(self.num_partitions)
-        server_index = 0
-        offset = 0
-    
+
         for i in range(self.num_partitions):
+            taint_file = "/tmp/taint-stats-" + str(i)
+            stream_file = "/tmp/stream-stats-" + str(i)
 
-            if i >= offset + self.hosts[server_index].num_epochs:
-                offset += self.hosts[server_index].num_epochs
-                server_index += 1
-                            
-            server = self.hosts[server_index]
+            results_taint_file = STREAMCTL_DIR + "orchestration/" + output_file_prefix + ".taint-stats-" + str(i)
+            results_stream_file = STREAMCTL_DIR + "orchestration/"+ output_file_prefix  +".stream-stats-" + str(i)
 
-            local_stream_file = output_file_prefix + "." + server.get_output_name() + ".dift-stats" + str(i)
-            local_agg_file = output_file_prefix + "." + server.get_output_name() + ".stream-stats" + str(i)
-            remote_stream_file =  "/tmp/dift-stats" + str(i - offset)
-            remote_agg_file =  "/tmp/" + str(i - offset)+ "/stream-stats" 
+            print taint_file, stream_file
+            print results_taint_file, results_stream_file
 
-            experiment_utilities.get_file(server.host, user, password,local_stream_file, remote_stream_file)
-            experiment_utilities.get_file(server.host, user, password, local_agg_file, remote_agg_file)
+            experiment_utilities.get_file(ctrl_host.host, user, password, results_taint_file, taint_file)
+            experiment_utilities.get_file(ctrl_host.host, user, password, results_stream_file, stream_file)
+
 
     def out2mergecmp(self):
         output_dir = self.results_dir + "/" + str(self.num_partitions) + "/"
@@ -221,12 +260,11 @@ class Test_Configuration:
             local_results = output_dir + str(i) + ".tgz"
             remote_results = remote_results_dir + ".tgz"
 
-            print "transfering",remote_results,"to",local_results
+
             experiment_utilities.get_file(server.host, user, password,local_results, remote_results)
+        print "<finished transfering results files>"
 
 def get_hosts(server_config_file):
-
-
     hosts = []
     with open("../" + server_config_file, "r") as server_list:
         for line in server_list:
@@ -265,30 +303,22 @@ def make_server_description(num_hosts, cores_list, server_name_ending):
 
     return server_config_names
 
-
-
 # start_servers... needs to all be overhauled.. 
 #
 #
 def start_servers(hosts, user, password):
-    shells = []
-    results = []
-    output_filename = "/tmp/emulab_experiment."
     for h in hosts:
-        print "next_server",h.host
-        shell, result = h.start_server(user, password, output_filename)
-        shells.append(shell)
-        results.append(result)
-
-    return shells, results
-
+        h.start_server(user, password)
+        print "<started streamserver on "+str(h.host)+">"
+        
 # kill_procs with shells and results
 #
 #
-def kill_procs(shells, results):
-    for i in range(len(shells)):
-        with shells[i]:
-            results[i].send_signal(9)
+def kill_procs(hosts, user, password):
+    for h in hosts:
+        h.kill_server(user, password)
+        print "<killed streamserver on "+str(h.host)+">"
+
 
 
 def main(): 
@@ -361,28 +391,33 @@ def main():
     test_configurations, hosts = get_tests(config_file, server_config_files, options.prefix, stats_dir, results_dir, options.correct_dir)
     password = getpass.getpass()         
 
-    #start_servers
-    shells,results = start_servers(hosts, "arquinn", password)
 
+    last_test = test_configurations[-1]
     if options.sync: 
-        last_test = test_configurations[-1]
-        last_test.prepare_for_replay("arquinn", password)
-        last_test.start_ctl(["-s", "-seq", "-stats"])
+        #last_test.prepare_for_replay("arquinn", password)
+        last_test.ship_replay_files("arquinn",password)
+
+    hosts_used = hosts[:last_test.num_partitions / 4] #this oughta be the number of hosts that we're using no? 
+    start_servers(hosts_used, "arquinn", password) #why can't I just use last_test's hosts? 
+        
+    if options.sync:
+        last_test.start_ctrl("arquinn", password,["-seq","-s","-stats"]) #change back to include sync
         last_test.get_results_files("arquinn",password)
         last_test.out2mergecmp()
+        last_test.get_stats_files("arquinn",password)
         sys.stderr.write("finished syncing the files\n")
 
-        kill_procs(shells, results)
+        kill_procs(hosts,"arquinn", password)
         return 0 #if we do sync, we don't do experiment
             
     for test in test_configurations:    
         #startup all aggregators in this test configuration:
         test.start_ctl(["-seq", "-stats"])
         
-        test.get_results_files("arquinn",password)
+        #test.get_results_files("arquinn",password)
         test.get_stats_files("arquinn", password)
-        test.out2mergecmp() #run the comparison! (for now at least)
+        #test.out2mergecmp() #run the comparison! (for now at least)
         sys.stderr.write("finished with " + test.partition_filename+ "\n")
 
-    kill_procs(shells, results)
+    kill_procs(hosts,"arquinn",password)
 main()
