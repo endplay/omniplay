@@ -258,8 +258,8 @@ add_merge_number(taint_t p1, taint_t p2)
     merge_buffer[merge_control_shm->merge_buffer_count].p1 = p1;
     merge_buffer[merge_control_shm->merge_buffer_count].p2 = p2;
 #ifdef TAINT_DEBUG
-    if (TAINT_DEBUG(p1) || TAINT_DEBUG(p2) || TAINT_DEBUG(merge_total_count)) {
-	fprintf (debug_f, "merge %x,%x -> %x inst %lx clock %ld\n", p1, p2, merge_total_count, taint_debug_inst, *ppthread_log_clock);
+    if (TAINT_DEBUG(p1) || TAINT_DEBUG(p2)|| TAINT_DEBUG(merge_control_shm->merge_total_count)) {
+	fprintf (debug_f, "merge %x,%x -> %lx inst %lx clock %ld\n", p1, p2, merge_control_shm->merge_total_count, taint_debug_inst, *ppthread_log_clock);
     }
 #endif
 

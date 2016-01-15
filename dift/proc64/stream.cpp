@@ -31,22 +31,17 @@ using namespace std;
 #ifdef USE_NW
 #ifdef BUILD_64
 const u_long MERGE_SIZE  = 0x400000000; // 16GB max
-const u_long OUTPUT_SIZE = 0x100000000; // 4GB max	//const u_long OUTPUT_SIZE = 0x800000000; // 32GB max
+const u_long OUTPUT_SIZE = 0x100000000; // 4GB max
 #else
-const u_long MERGE_SIZE  = 0x10000000; // 1GB max
-const u_long OUTPUT_SIZE = 0x10000000; // 1GB max
+const u_long MERGE_SIZE  = 0x40000000; // 1GB max
+const u_long OUTPUT_SIZE = 0x40000000; // 1GB max
 #endif
 const u_long TOKEN_SIZE =   0x10000000; // 256MB max
-const u_long TS_SIZE =      0x10000000; // 1GB max
+const u_long TS_SIZE =      0x40000000; // 1GB max
 const u_long OUTBUFSIZE =   0x10000000; // 1GB size
 #endif
 
-//this doesn't matter... but it won't make and I'm too lazy to actually fix it
-#ifdef USE_NULL
-const u_long OUTBUFSIZE =   0x2000000; // 128MB size
-#endif
-
-#ifdef USE_SHMEM 
+#ifdef USE_SHMEM
 const u_long OUTBUFSIZE =   0x2000000; // 128MB size
 #ifdef BUILD_64
 const u_long MAX_ADDRESS_MAP = 0; // No limit
@@ -55,13 +50,10 @@ const u_long MAX_ADDRESS_MAP = 0x100000; // 16 MB
 #endif
 #endif
 
-
-
 #define BUCKET_TERM_VAL 0xfffffffe // Sentinel for queue transmission
 #define TERM_VAL        0xffffffff // Sentinel for queue transmission
 #define QSTOP(val) (((val)&0xfffffffe)==0xfffffffe)
 #define QEND(val) ((val)==TERM_VAL)
-
 
 struct senddata {
     char*  host;
@@ -450,7 +442,6 @@ static void flush_alloutbufs()
 static int
 init_socket (int port)
 {
-    printf("stream: init_socket(%d)\n",port);
    int c = socket (AF_INET, SOCK_STREAM, 0);
     if (c < 0) {
 	fprintf (stderr, "Cannot create socket, errno=%d\n", errno);
@@ -495,7 +486,7 @@ init_socket (int port)
 static long recv_taint_data (int s, char* buffer, u_long bufsize, uint32_t inputsize, u_long& ndx)
 {
     if (ndx+inputsize > bufsize) {
-	fprintf (stderr, "recv_taint_data: buffer of %lu bytes too small, we need %lu\n", bufsize, ndx+inputsize);
+	fprintf (stderr, "recv_taint_data: buffer of %lu bytes too small\n", bufsize);
 	return -1;
     }
     uint32_t bytes_received = 0;
@@ -544,7 +535,6 @@ read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, ta
 
     // Initialize a socket to receive input data
     int s = init_socket (port);
-
 
     // Now receive the data into our memory buffers
     while (1) {
@@ -727,7 +717,6 @@ static void map_iter_par (taint_t value, uint32_t output_token, taint_t* stack, 
 
     pset.erase(0);
     for (auto iter2 = pset.begin(); iter2 != pset.end(); iter2++) {
-
 	if (*iter2 < 0xc0000000 && !start_flag) {
 	    PUT_QVALUEB (output_token,outputq_hdr,outputq_buf,oqfd, bucket_cnt, bucket_stop);
 	    PUT_QVALUEB (*iter2,outputq_hdr,outputq_buf,oqfd,bucket_cnt, bucket_stop);
@@ -1544,7 +1533,6 @@ long stream_epoch (const char* dirname, int port)
 #ifdef STATS
     gettimeofday (&end_tv, NULL);
     print_stats (dirname, mdatasize, odatasize, idatasize, adatasize);
-
 #endif
 
     return 0;

@@ -434,9 +434,8 @@ static inline void increment_syscall_cnt (int syscall_num)
             current_thread->syscall_cnt++;
         }
 #ifdef TAINT_DEBUG
-	extern taint_t merge_total_count;
-	fprintf (debug_f, "pid %d syscall %d global syscall cnt %lu num %d clock %ld mtc %x\n", current_thread->record_pid, 
-		 current_thread->syscall_cnt, global_syscall_cnt, syscall_num, *ppthread_log_clock, merge_total_count);
+	fprintf (debug_f, "pid %d syscall %d global syscall cnt %lu num %d clock %ld\n", current_thread->record_pid, 
+		 current_thread->syscall_cnt, global_syscall_cnt, syscall_num, *ppthread_log_clock);
 #endif
     }
 }
