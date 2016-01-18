@@ -11,6 +11,7 @@
 #include "parseklib.h"
 #include <map>
 #include <vector>
+#include <set>
 using namespace std;
 
 struct replay_timing {
@@ -54,7 +55,7 @@ static int group_by = 0, filter_syscall = 0, details = 0, use_ckpt = 0;
 
 void format ()
 {
-    fprintf (stderr, "Format: mkpartition <timing dir> <# of partitions> [-g group_by] [-f filter syscall] [-v]\n");
+    fprintf (stderr, "Format: mkpartition <timing dir> <# of partitions> [-g group_by] [-f filter syscall] [-v] <list of pids to track>\n");
     exit (22);
 }
 
@@ -247,7 +248,8 @@ int find_processes(map<u_int,u_int> &pid_to_index,
 		   map<u_int,u_int> &fork_offset,
 		   const char* dir, 
 		   const struct replay_timing* timings,
-		   const u_int num)
+		   const u_int num, 
+		   const set<int> procs)
 {
     char klog_filename[256];
     int timings_map_index = 0; 
@@ -279,8 +281,10 @@ int find_processes(map<u_int,u_int> &pid_to_index,
 	//we're searching for calls to the clone() syscall
 	while((res = parseklog_get_next_psr(log)) != NULL) {
 	    if(res->psr.sysnum == 120 ) { 
-		if(res->psr.flags == 0x14) 
+		//these flags are not saved!
+		if(procs.count(res->retval) > 0) 
 		{ 
+		    printf("found a fork! res->retval %ld from pid %d, index %lld \n", res->retval, pid_iter->first, res->index);
 		    //this is a fork! 
 		    pid_found[res->retval] = true; 
 		    pid_to_index[res->retval] = timings_map_index; 
@@ -682,7 +686,8 @@ int create_multiprocess_ds(vector<u_int> &num_el,
 			   const struct replay_timing *timings,
 			   const char* dir,
 			   const int parts,
-			   const int num){
+			   const int num,
+			   const set<int> procs){
     
     int rc = 0;
     map<u_int,u_int> pid_to_index;
@@ -691,7 +696,7 @@ int create_multiprocess_ds(vector<u_int> &num_el,
     map<u_int, map<u_int,u_int>> index_interval_inclusions;
 
 
-    rc = find_processes(pid_to_index, fork_process, fork_offset, dir, timings, num);
+    rc = find_processes(pid_to_index, fork_process, fork_offset, dir, timings, num, procs);
     if(rc) { 
 	printf("could not find_processes, rc %d\n", rc);
 	return rc;
@@ -800,6 +805,7 @@ int main (int argc, char* argv[])
     struct extra_data* edata;
     struct stat st;
     int fd, rc, num, i, parts;
+    set<int> procs;
 
     if (argc < 3) {
 	format ();
@@ -820,7 +826,7 @@ int main (int argc, char* argv[])
 		format();
 	    }
 	}
-	if (!strcmp(argv[i], "-f")) {
+	else if (!strcmp(argv[i], "-f")) {
 	    i++;
 	    if (i < argc) {
 		filter_syscall = atoi(argv[i]);
@@ -828,11 +834,15 @@ int main (int argc, char* argv[])
 		format();
 	    }
 	}
-	if (!strcmp(argv[i], "-v")) {
+	else if (!strcmp(argv[i], "-v")) {
 	    details = 1;
 	}
-	if (!strcmp(argv[i], "-c")) {
+	else if (!strcmp(argv[i], "-c")) {
 	    use_ckpt = 1;
+	}
+	else { 
+	    //the assumption is that if we get to this point that its listing of the procs now
+	    procs.insert(atoi(argv[i]));
 	}
     }
 		
@@ -884,7 +894,7 @@ int main (int argc, char* argv[])
 
 
     num = st.st_size/sizeof(struct replay_timing); 
-    create_multiprocess_ds(num_el, timings_vect, edata_vect, num_parts, fork_flags,timings, argv[1], parts, num);
+    create_multiprocess_ds(num_el, timings_vect, edata_vect, num_parts, fork_flags,timings, argv[1], parts, num, procs);
   
     if(details) { 
 	for(u_int i = 0; i < num_el.size(); i++ ) 

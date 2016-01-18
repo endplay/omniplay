@@ -2857,7 +2857,7 @@ int set_pin_address (u_long pin_address, u_long thread_data, u_long __user* curt
 		if (prept->rp_pin_attaching) {
 			*attach_ndx = prept->rp_pin_attach_ndx;
 			if (prept->rp_record_thread->rp_record_pid != prept->rp_group->rg_attach_pid) {
-				prept->rp_pin_attaching = PIN_ATTACHING_FF; // Still need to wait for the clock
+				prept->rp_pin_attaching = PIN_ATTACHING_FF; // Still need to wait for the clock 
 				return PIN_ATTACH_BLOCKED; // This thread will block
 			} else {
 				prept->rp_pin_attaching = PIN_ATTACHING_RESTART;
@@ -4984,6 +4984,7 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 
 	MPRINT ("Replay Pid %d, index %ld sys %d\n", current->pid, prt->rp_out_ptr, psr->sysnum);
 
+	//the comment in here especially doesn't make too much sense in here... What if the thread happens to have been in user land on attach?
 	if (prt->rp_pin_attaching == PIN_ATTACHING_FF || prt->rp_pin_attaching == PIN_ATTACHING_RESTART) {
 		// Since we are redoing this system call, we need to go roll back to the beginnning
 		u_long clock_adj = argsconsumed(prt->rp_record_thread)-prt->rp_ckpt_save_args_head;
@@ -5436,11 +5437,11 @@ static long
 test_pin_attach (struct replay_thread* prept, short syscall)
 {
 	struct replay_group* prepg = prept->rp_group;
-	struct task_struct* task, *this_task;
+	struct task_struct* task, *this_task, *t;
 	pid_t this_tgid = 0;
 
 	struct replay_thread* tmp, *tmp2;
-
+       
 
 	//sysid can actually be 0.... 
 	if (prepg->rg_attach_sysid >= 0 && !is_pin_attached() && !is_gdb_attached() &&
@@ -5482,6 +5483,7 @@ test_pin_attach (struct replay_thread* prept, short syscall)
 		    //ARQUINN: added logic to make it so pin_attaching only set on certain cases
 
 		    this_task = find_task_by_vpid(prept->rp_replay_pid);
+		    task = this_task;
 		    if(!this_task) {
 			printk("pid %d, something terrible has happened, cannot find this_task \n", current->pid);
 			//we're going to hace some issues down below, but thats actually okay, we can't continue anyway
@@ -5489,33 +5491,30 @@ test_pin_attach (struct replay_thread* prept, short syscall)
 		    this_tgid = this_task->tgid;		
 		    // If >1 thread, Pin may send other threads signal too
 		    for (tmp = prept->rp_next_thread; tmp != prept; tmp = tmp->rp_next_thread) {
-			
 			/*
 			 * the logic goes: 1. find the task 2. If that task exists and its tgid is the same as the 
 			 * tgid for the replay thread that is being woken up, then we need to set PIN_ATTACHING (as 
 			 * this means that the threads are part of the same process). 
 			 */
 			task = find_task_by_vpid(tmp->rp_replay_pid);
-			if(task && this_tgid) {			    
-			    if(this_tgid == task->tgid ) {
-				printk ("Pid %d status %d\n", tmp->rp_record_thread->rp_record_pid, tmp->rp_status);
-				tmp->rp_pin_attaching = PIN_ATTACHING; // Let Pin interrupt and attach
-				tmp->app_syscall_addr = 1; 
 
-				// Calculate attach index
-				tmp->rp_pin_attach_ndx = 0;
-				for (tmp2 = tmp->rp_next_thread; tmp2 != tmp; tmp2 = tmp2->rp_next_thread) {
-					if ((tmp2->rp_status == REPLAY_STATUS_RUNNING || tmp2->rp_status == REPLAY_STATUS_WAIT_CLOCK) && 
-					    tmp2->rp_record_thread->rp_record_pid < tmp->rp_record_thread->rp_record_pid) {
-						tmp->rp_pin_attach_ndx++;
-					}
+			if(!task || (this_tgid == task->tgid )) {
+			    printk ("Pid %d status %d\n", tmp->rp_record_thread->rp_record_pid, tmp->rp_status);
+			    tmp->rp_pin_attaching = PIN_ATTACHING; // Let Pin interrupt and attach
+			    tmp->app_syscall_addr = 1; 
+
+			    // Calculate attach index
+			    tmp->rp_pin_attach_ndx = 0;
+			    for (tmp2 = tmp->rp_next_thread; tmp2 != tmp; tmp2 = tmp2->rp_next_thread) {
+				if ((tmp2->rp_status == REPLAY_STATUS_RUNNING || tmp2->rp_status == REPLAY_STATUS_WAIT_CLOCK) && 
+				    tmp2->rp_record_thread->rp_record_pid < tmp->rp_record_thread->rp_record_pid) {
+				    tmp->rp_pin_attach_ndx++;
 				}
-
-			    }
+			    }			    
 			}
 			else {
 			    //the else isn't a big deal... It can happen if the replay thread already exited
-			    MPRINT("current->pid %d, could not find linux task for pid %d, task\n",current->pid, tmp->rp_replay_pid);
+			    MPRINT("%d: pid %d is not in the same process %d\n",current->pid, tmp->rp_replay_pid);
 			}
 		    }		   
 		    return -EINTR; // Pin will restart syscall
@@ -5951,7 +5950,6 @@ sys_pthread_block (u_long clock)
 	prg = prt->rp_group;
 
 	if (clock == INT_MAX) consume_remaining_records(); // Before we block forever, consume any remaining system call records
-
 	while (*(prt->rp_preplay_clock) < clock) {
 		rg_lock (prg->rg_rec_group);
 
@@ -5988,16 +5986,11 @@ sys_pthread_block (u_long clock)
 			printk ("user-level-block: pid %d attaching now %d\n", current->pid,  prt->rp_pin_attaching);
 		}
 
-
-//whats rp_in)ptr and prt->rp_out_ptr??? 
-
 		while (!(prt->rp_status == REPLAY_STATUS_RUNNING || (prt->rp_replay_exit && prt->rp_record_thread->rp_in_ptr == prt->rp_out_ptr))) {
 			MPRINT ("Replay pid %d waiting for user clock value %ld\n", current->pid, clock);
 			
 			rg_unlock (prg->rg_rec_group);
-//			printk("pid %d sleeping on wait queue at line %d, try_to_exit %d\n", current->pid, __LINE__, current->replay_thrd->rp_group->rg_try_to_exit);
 			ret = wait_event_interruptible_timeout (prt->rp_waitq, prt->rp_status == REPLAY_STATUS_RUNNING || prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && prt->rp_record_thread->rp_in_ptr == prt->rp_out_ptr), SCHED_TO);
-//			printk("pid %d woken up from wait queue at line %d, try_to_exit %d\n", current->pid, __LINE__, current->replay_thrd->rp_group->rg_try_to_exit);
 			rg_lock (prg->rg_rec_group);
 			if (ret == 0) printk ("Replay pid %d timed out waiting for user clock value %ld\n", current->pid, clock);
 			if (prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && (prt->rp_record_thread->rp_in_ptr == prt->rp_out_ptr))) break; // exit condition below
@@ -6025,6 +6018,15 @@ sys_pthread_block (u_long clock)
 		}
 		rg_unlock (prg->rg_rec_group);
 	}
+	/* 
+	 * there's one case where we hit this function and we don't make it into the block above... but I think we still want to flip 
+	 * pin attaching... because above it seems like we always want to flip it. 
+	 */
+	if (prt->rp_pin_attaching == PIN_ATTACHING_FF) {
+	    prt->rp_pin_attaching = PIN_ATTACHING_NONE; // This is the only place we could have been waiting
+	    printk ("user-level-block: pid %d attaching now %d\n", current->pid,  prt->rp_pin_attaching);
+	}
+
         MPRINT ("Pid %d returning from user-level replay block\n", current->pid);
 	return 0;
 }
