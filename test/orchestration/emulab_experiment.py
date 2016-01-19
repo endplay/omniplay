@@ -207,13 +207,13 @@ class Test_Configuration:
             shell.run(stream_files,cwd = "/")    
 
 
-        local_taint = output_file_prefix + "taint-stats.tgz" + ending
-        local_stream = output_file_prefix + "stream-stats.tgz" + ending
+        local_taint = output_file_prefix + ".taint-stats.tgz" + str(ending)
+        local_stream = output_file_prefix + ".stream-stats.tgz" + str(ending)
         remote_taint = "/tmp/taint-stats.tgz"
         remote_stream = "/tmp/stream-stats.tgz"
 
-        experiment_utilities.get_file(server.host, user, password,local_taint, remote_taint)
-        experiment_utilities.get_file(server.host, user, password,local_stream, remote_stream)
+        experiment_utilities.get_file(ctrl_host.host, user, password,local_taint, remote_taint)
+        experiment_utilities.get_file(ctrl_host.host, user, password,local_stream, remote_stream)
 
 
     def out2mergecmp(self):
@@ -379,7 +379,7 @@ def main():
     if options.num_rounds == None: 
         num_rounds = 1
     else:
-        num_rounds = options.num_rounds
+        num_rounds = int(options.num_rounds)
 
 
     output_dir = options.output_dir
@@ -426,7 +426,6 @@ def main():
         last_test.start_ctrl("arquinn", password,["-seq","-s","-stats"])
         last_test.get_results_files("arquinn",password)
         last_test.out2mergecmp()
-#        last_test.get_stats_files("arquinn",password)
         sys.stderr.write("finished syncing the files\n")
 
         kill_procs(hosts,"arquinn", password)
@@ -434,13 +433,11 @@ def main():
             
     for test in test_configurations:    
         #startup all aggregators in this test configuration:
-        for r in num_rounds:
+        for r in range(num_rounds):
             test.start_ctrl("arquinn", password,["-seq", "-stats"])
             test.get_stats_files("arquinn", password, r)
             sys.stderr.write("finished with " + test.partition_filename+ "\n")
 
-        #test.get_results_files("arquinn",password)
-        #test.out2mergecmp() #run the comparison! (for now at least)
 
     kill_procs(hosts_used,"arquinn",password)
 main()
