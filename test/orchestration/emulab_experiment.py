@@ -398,7 +398,7 @@ def main():
 
     last_test = test_configurations[-1]
     if options.sync: 
-        #last_test.prepare_for_replay("arquinn", password)
+        last_test.prepare_for_replay("arquinn", password)
         last_test.ship_replay_files("arquinn",password)
 
     hosts_used = hosts[:last_test.num_partitions / 4] #this oughta be the number of hosts that we're using no? 

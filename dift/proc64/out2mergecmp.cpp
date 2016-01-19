@@ -17,7 +17,7 @@ using namespace std;
 #include "../taint_interface/taint_creation.h"
 #include "../../test/streamserver.h"
 
-#define TARGET(x) ((x)==0x1742ca)
+//#define TARGET(x) ((x)==0x1742ca)
 #define ALLOW_DUPS
 
 #define BUFSIZE 100000
@@ -195,17 +195,15 @@ int main (int argc, char* argv[])
 	    rc = map_file (ofile, &ofd, &odatasize, &omapsize, &obuf);
 	    if (rc < 0) return rc;	
 
-	    printf("%s ofile\n",ofile);
-
 	    optr = (uint32_t *) obuf;
 	    while ((u_long) optr < (u_long) obuf + odatasize) {
 		uint32_t otoken = *optr++;
 #ifdef TARGET
-//		if (TARGET(otoken+output_tokens)) {
+		if (TARGET(otoken+output_tokens)) {
 		    printf ("Output %x this epoch %x past %x -> input %x this epoch %x past %x, epoch %s,thread %d offset %lx\n",
 			    otoken+output_tokens, otoken, output_tokens, *optr+input_tokens, *optr, input_tokens, argv[i], j,
 			    (u_long) optr - (u_long) obuf);
-//		}
+		}
 #endif
 #ifdef ITARGET
 		if (ITARGET(*optr+input_tokens)) {
