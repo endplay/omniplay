@@ -190,19 +190,30 @@ class Test_Configuration:
         print "<finished with stream_ctl for "+str(self.num_partitions) + " host test>"
 
     #needs to be rewritten
-    def get_stats_files(self, user, password):         
+    def get_stats_files(self, user, password, ending):         
+
         ctrl_host = self.hosts[0]
         output_file_prefix = self.stats_dir + "/" + str(self.num_partitions)
-
+        
+        taint_files = ["tar","-zcf","/tmp/taint-stats.tgz"]
+        stream_files = ["tar","-zcf","/tmp/stream-stats.tgz"]
         for i in range(self.num_partitions):
-            taint_file = "/tmp/taint-stats-" + str(i)
-            stream_file = "/tmp/stream-stats-" + str(i)
+            taint_files.append("/tmp/taint-stats-" + str(i))
+            stream_files.append("/tmp/stream-stats-" + str(i))
 
-            results_taint_file = STREAMCTL_DIR + "orchestration/" + output_file_prefix + ".taint-stats-" + str(i)
-            results_stream_file = STREAMCTL_DIR + "orchestration/"+ output_file_prefix  +".stream-stats-" + str(i)
+        shell = experiment_utilities.open_ssh_session(ctrl_host.host, user, password)
+        with shell:
+            shell.run(taint_files,cwd = "/")
+            shell.run(stream_files,cwd = "/")    
 
-            experiment_utilities.get_file(ctrl_host.host, user, password, results_taint_file, taint_file)
-            experiment_utilities.get_file(ctrl_host.host, user, password, results_stream_file, stream_file)
+
+        local_taint = output_file_prefix + "taint-stats.tgz" + ending
+        local_stream = output_file_prefix + "stream-stats.tgz" + ending
+        remote_taint = "/tmp/taint-stats.tgz"
+        remote_stream = "/tmp/stream-stats.tgz"
+
+        experiment_utilities.get_file(server.host, user, password,local_taint, remote_taint)
+        experiment_utilities.get_file(server.host, user, password,local_stream, remote_stream)
 
 
     def out2mergecmp(self):
@@ -347,6 +358,8 @@ def main():
                       help="the dir containing the seqtt results", metavar="CORRECCT_DIR")
     parser.add_option("--password", dest="password",
                       help="the password for username", metavar="PASSWORD")
+    parser.add_option("-r", "--num_rounds",dest="num_rounds",
+                      help="the dir containing the seqtt results", metavar="NUM_ROUNDS")
 
 
     (options, args) = parser.parse_args()
@@ -362,6 +375,11 @@ def main():
         print "You must specify the directory with the seqtt answer!"
         print options.correct_dir
         return -5
+
+    if options.num_rounds == None: 
+        num_rounds = 1
+    else:
+        num_rounds = options.num_rounds
 
 
     output_dir = options.output_dir
@@ -408,7 +426,7 @@ def main():
         last_test.start_ctrl("arquinn", password,["-seq","-s","-stats"])
         last_test.get_results_files("arquinn",password)
         last_test.out2mergecmp()
-        last_test.get_stats_files("arquinn",password)
+#        last_test.get_stats_files("arquinn",password)
         sys.stderr.write("finished syncing the files\n")
 
         kill_procs(hosts,"arquinn", password)
@@ -416,9 +434,10 @@ def main():
             
     for test in test_configurations:    
         #startup all aggregators in this test configuration:
-        test.start_ctrl("arquinn", password,["-seq", "-stats"])
-        test.get_stats_files("arquinn", password)
-        sys.stderr.write("finished with " + test.partition_filename+ "\n")
+        for r in num_rounds:
+            test.start_ctrl("arquinn", password,["-seq", "-stats"])
+            test.get_stats_files("arquinn", password, r)
+            sys.stderr.write("finished with " + test.partition_filename+ "\n")
 
         #test.get_results_files("arquinn",password)
         #test.out2mergecmp() #run the comparison! (for now at least)
