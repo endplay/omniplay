@@ -201,9 +201,6 @@ class Test_Configuration:
             results_taint_file = STREAMCTL_DIR + "orchestration/" + output_file_prefix + ".taint-stats-" + str(i)
             results_stream_file = STREAMCTL_DIR + "orchestration/"+ output_file_prefix  +".stream-stats-" + str(i)
 
-            print taint_file, stream_file
-            print results_taint_file, results_stream_file
-
             experiment_utilities.get_file(ctrl_host.host, user, password, results_taint_file, taint_file)
             experiment_utilities.get_file(ctrl_host.host, user, password, results_stream_file, stream_file)
 
@@ -226,7 +223,9 @@ class Test_Configuration:
                 p = subprocess.check_output(["mv",newest_dir,dest],cwd=STREAMCTL_DIR+"/orchestration/"+output_dir +"/tmp/")
 
             
-        args = ["./out2mergecmp",self.correct_dir,"-d",STREAMCTL_DIR+"/orchestration/"+output_dir+"/tmp"]
+        ctrl_host = self.hosts[0]
+        
+        args = ["./out2mergecmp",str(ctrl_host.num_epochs), self.correct_dir,"-d",STREAMCTL_DIR+"/orchestration/"+output_dir+"/tmp"]
         for i in range(self.num_partitions):
             args.append(str(i))
 
@@ -253,9 +252,12 @@ class Test_Configuration:
             remote_merge_output =  "/dev/shm/tmp." + str(i - offset) + ".merge-outputs-resolved"
             shell = experiment_utilities.open_ssh_session(server.host, user, password)
             with shell:
-                shell.run(["mv",remote_merge_output, remote_results_dir + "/merge-outputs-resolved"],cwd="/")
-                shell.run(["tar","-zcf",remote_results_dir+".tgz",remote_results_dir],cwd = "/")
-                    
+                for j in range(server.num_epochs):
+                    remote_merge = remote_merge_output + "-" + str(j)
+                    remote_results = remote_results_dir + "/merge-outputs-resolved-" + str(j)
+                    shell.run(["mv",remote_merge, remote_results],cwd="/")
+
+                shell.run(["tar","-zcf",remote_results_dir+".tgz",remote_results_dir],cwd = "/")                    
 
             local_results = output_dir + str(i) + ".tgz"
             remote_results = remote_results_dir + ".tgz"
@@ -343,6 +345,8 @@ def main():
                       help="the number of hosts", metavar="NUM_HOSTS")
     parser.add_option("-c", "--correct_results_dir",dest="correct_dir",
                       help="the dir containing the seqtt results", metavar="CORRECCT_DIR")
+    parser.add_option("--password", dest="password",
+                      help="the password for username", metavar="PASSWORD")
 
 
     (options, args) = parser.parse_args()
@@ -389,7 +393,7 @@ def main():
         
     server_config_files = make_server_description(int(options.num_hosts), [4,8], options.host_suffix)  
     test_configurations, hosts = get_tests(config_file, server_config_files, options.prefix, stats_dir, results_dir, options.correct_dir)
-    password = getpass.getpass()         
+    password = options.password
 
 
     last_test = test_configurations[-1]
@@ -401,7 +405,7 @@ def main():
     start_servers(hosts_used, "arquinn", password) #why can't I just use last_test's hosts? 
         
     if options.sync:
-        last_test.start_ctrl("arquinn", password,["-seq","-s","-stats"]) #change back to include sync
+        last_test.start_ctrl("arquinn", password,["-seq","-s","-stats"])
         last_test.get_results_files("arquinn",password)
         last_test.out2mergecmp()
         last_test.get_stats_files("arquinn",password)
@@ -412,12 +416,12 @@ def main():
             
     for test in test_configurations:    
         #startup all aggregators in this test configuration:
-        test.start_ctl(["-seq", "-stats"])
-        
-        #test.get_results_files("arquinn",password)
+        test.start_ctrl("arquinn", password,["-seq", "-stats"])
         test.get_stats_files("arquinn", password)
-        #test.out2mergecmp() #run the comparison! (for now at least)
         sys.stderr.write("finished with " + test.partition_filename+ "\n")
 
-    kill_procs(hosts,"arquinn",password)
+        #test.get_results_files("arquinn",password)
+        #test.out2mergecmp() #run the comparison! (for now at least)
+
+    kill_procs(hosts_used,"arquinn",password)
 main()

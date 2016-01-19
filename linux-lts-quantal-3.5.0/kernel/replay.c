@@ -4982,9 +4982,10 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 
 	psr = &prect->rp_log[prt->rp_out_ptr];
 
+
+	//HERE
 	MPRINT ("Replay Pid %d, index %ld sys %d\n", current->pid, prt->rp_out_ptr, psr->sysnum);
 
-	//the comment in here especially doesn't make too much sense in here... What if the thread happens to have been in user land on attach?
 	if (prt->rp_pin_attaching == PIN_ATTACHING_FF || prt->rp_pin_attaching == PIN_ATTACHING_RESTART) {
 		// Since we are redoing this system call, we need to go roll back to the beginnning
 		u_long clock_adj = argsconsumed(prt->rp_record_thread)-prt->rp_ckpt_save_args_head;
@@ -5437,7 +5438,7 @@ static long
 test_pin_attach (struct replay_thread* prept, short syscall)
 {
 	struct replay_group* prepg = prept->rp_group;
-	struct task_struct* task, *this_task, *t;
+	struct task_struct* task, *this_task;
 	pid_t this_tgid = 0;
 
 	struct replay_thread* tmp, *tmp2;
@@ -5514,7 +5515,7 @@ test_pin_attach (struct replay_thread* prept, short syscall)
 			}
 			else {
 			    //the else isn't a big deal... It can happen if the replay thread already exited
-			    MPRINT("%d: pid %d is not in the same process %d\n",current->pid, tmp->rp_replay_pid);
+			    MPRINT("%d: pid %d is not in the same process\n",current->pid, tmp->rp_replay_pid);
 			}
 		    }		   
 		    return -EINTR; // Pin will restart syscall
@@ -6019,15 +6020,19 @@ sys_pthread_block (u_long clock)
 		rg_unlock (prg->rg_rec_group);
 	}
 	/* 
-	 * there's one case where we hit this function and we don't make it into the block above... but I think we still want to flip 
-	 * pin attaching... because above it seems like we always want to flip it. 
+	 * there's one case where we hit this function and we don't make it into the block above. Basically, pin will restart this function call 
+	 * after a pin attach. In this case, its possible that we run into a case where the rp_preplay_clock is not less than the clock value that
+	 * is passed into the function. But, pin_attaching might accidently be set to be PIN_ATTACHING_FF in this case, even though we're relying
+	 * on this function to reset pin_attaching. We check pin_attaching here and flip it just in case we didn't get a chance to flip it above. 
+	 *
+	 * tl;dr: it seems like we always want to flip pin_attaching back to PIN_ATTACHING_NONE
 	 */
 	if (prt->rp_pin_attaching == PIN_ATTACHING_FF) {
 	    prt->rp_pin_attaching = PIN_ATTACHING_NONE; // This is the only place we could have been waiting
-	    printk ("user-level-block: pid %d attaching now %d\n", current->pid,  prt->rp_pin_attaching);
+	    printk ("user-level-block: pid %d attaching now second case %d\n", current->pid,  prt->rp_pin_attaching);
 	}
 
-        MPRINT ("Pid %d returning from user-level replay block\n", current->pid);
+	MPRINT ("Pid %d returning from user-level replay block, preplay_clock %ld, clock %ld, attaching %d, rp_status %d\n", current->pid, *(prt->rp_preplay_clock), clock, prt->rp_pin_attaching, prt->rp_status);
 	return 0;
 }
 
