@@ -4,6 +4,9 @@ import sys
 
 seq = 1
 
+# Fod DIFT stats
+instrumented = []
+
 # For timings
 dift = []
 recv = []
@@ -37,6 +40,8 @@ for i in range(epochs):
         if line[:10] == "DIFT ended":
             ended = float(line.split()[3])
             dift.append(int((ended-began)*1000.0))
+        if line[:26] == "Instructions instrumented:":
+            instrumented.append(int(line.split()[2]))
     fh.close()
 
 for i in range(epochs):
@@ -91,3 +96,11 @@ for i in range(epochs):
 print "  Max %10d %10d %10d %10d %10d %10d %10d"%(max(tokens),max(passthrus),max(unmodifieds),max(resolveds),max(indirects),max(others),max(merges))
 print "Total %10d %10d %10d %10d %10d %10d %10d"%(sum(tokens),sum(passthrus),sum(unmodifieds),sum(resolveds),sum(indirects),sum(others),sum(merges))
 print " Core %10d %10d %10d %10d %10d %10d %10d"%(sum(tokens)/epochs,sum(passthrus)/epochs,sum(unmodifieds)/epochs,sum(resolveds)/epochs,sum(indirects)/epochs,sum(others)/epochs,sum(merges)/epochs)
+
+if len(sys.argv) > 2 and sys.argv[2] == "-i":
+    print "Epoch Instrumented"
+    for i in range(epochs):
+        print "%5d %12d"%(i, instrumented[i])
+    print "  Max %12d"%(max(instrumented))
+    print "Total %12d"%(sum(instrumented))
+    print " Core %12d"%(sum(instrumented)/epochs)

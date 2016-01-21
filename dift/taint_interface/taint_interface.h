@@ -34,7 +34,6 @@ taintvalue_t get_taint_value (taint_t t, option_t option);
 
 taintvalue_t get_max_taint_value(void);
 int is_taint_zero(taint_t src);
-taint_t merge_taints(taint_t dst, taint_t src);
 
 /* Translate a register from the Pin representation
  *  E.g. translates AH to EAX
