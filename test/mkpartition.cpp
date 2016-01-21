@@ -25,6 +25,7 @@ struct extra_data {
     double   dtiming;
     u_long   aindex;
     u_long   start_clock;
+    map<u_int, short> rpg_syscalls;
 };
 
 struct ckpt_data {
@@ -145,9 +146,15 @@ void print_timing (struct replay_timing* timings, struct extra_data* edata, int 
     }
 }
 
-static int can_attach (short syscall) 
+static int can_attach (map<u_int, short> syscalls) 
 {
-    return (syscall != 192 && syscall != 91);
+    bool attach = true;
+    for (auto iter : syscalls){ 
+	if (iter.second == 192 || iter.second == 91 || iter.second == 120){
+	    attach = false;
+	}	
+    }
+    return attach;
 }
 
 static int cnt_interval (struct extra_data* edata, int start, int end)
@@ -184,7 +191,7 @@ int gen_timings (struct replay_timing* timings,
 
     last = start;
     for (i = start+1; i < end; i++) {
-	if (can_attach(timings[i].syscall)) {
+	if (can_attach(edata[i].rpg_syscalls)) {
 	    double gap = edata[i].dtiming - edata[last].dtiming;
 	    if (gap > biggest_gap) {
 		gap_start = last;
@@ -232,7 +239,7 @@ int gen_timings (struct replay_timing* timings,
 	    printf ("step: goal is %.3f\n", goal);
 	}
 	for (i = start+1; i < end; i++) {
-	    if (can_attach(timings[i].syscall)) {
+	    if (can_attach(edata[i].rpg_syscalls)) {
 		if (edata[i].dtiming-edata[start].dtiming > goal || cnt_interval(edata, i, end) == partitions-1) {
 		    print_timing (timings, edata,  start, i, fork_flags);
 		    return gen_timings(timings, edata, i, end, partitions-1, fork_flags);
@@ -752,9 +759,16 @@ void generate_timings_for_process(struct replay_timing *timings,
 				  char* fork_flags)
 {
     // First, need to sum times for all threads to get totals for this group
+    /*
+     * while we're iterating through the timings list, I'm also going to track the syscall that
+     * other processes are waiting on
+     */
+
     int total_time = 0;
     u_int i, j, k; 
     map<u_int,u_int> last_time;    
+    map<u_int,short> latest_syscall;    
+
 
     for (i = 0; i < num; i++) {
 	u_int pid = timings[i].pid;
@@ -766,6 +780,9 @@ void generate_timings_for_process(struct replay_timing *timings,
 	}
 	last_time[pid] = timings[i].ut;
 	timings[i].ut = total_time;
+
+	latest_syscall[pid] = timings[i].syscall;  //update the latest_syscall of this pid to be this syscall
+	edata[i].rpg_syscalls = latest_syscall; //keep track of the latest syscall for each thread
     }
 
     // Next interpolate values where increment is small
@@ -782,7 +799,7 @@ void generate_timings_for_process(struct replay_timing *timings,
     // Calculate index in terms of system calls we can attach to 
     u_long aindex = 1;
     for (i = 0; i < num; i++) {
-	if (can_attach(timings[i].syscall)) {
+	if (can_attach(edata[i].rpg_syscalls)) {
 	    edata[i].aindex = aindex++;
 	} else {
 	    edata[i].aindex = 0;
