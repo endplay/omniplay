@@ -342,7 +342,7 @@ int*       outrfds;
 uint32_t** outptrs;
 uint32_t** outstops;
 uint32_t*  out_total_counts;
-const u_long OUTENTRIES = 0x400000; // 16MB size
+const u_long OUTENTRIES = 0x100000; // 4MB size
 const u_long OUTBYTES = OUTENTRIES*sizeof(uint32_t);
 
 static void 
@@ -402,7 +402,7 @@ static void flush_outrbuf2(uint32_t*& outptr, uint32_t*& outstop)
     }
 
     if (outptr == outstop) {
-	if (munmap (outstops[ndx]-OUTBYTES, OUTBYTES) < 0) {
+	if (munmap (outstops[ndx]-OUTENTRIES, OUTBYTES) < 0) {
 	    fprintf (stderr, "could not munmap out buffer, errno=%d\n", errno);
 	    assert (0);
 	}
@@ -417,7 +417,9 @@ static void flush_outrbuf2(uint32_t*& outptr, uint32_t*& outstop)
 	    fprintf (stderr, "could not map dump buffer, errno=%d\n", errno);
 	    assert (0);
 	}
-	outstop = outptr + OUTBYTES;
+	outstop = outptr + OUTENTRIES;
+	outptrs[ndx] = outptr;
+	outstops[ndx] = outstop;
     } else {
 	out_total_counts[ndx] += OUTBYTES - ((u_long) outstop - (u_long) outptr);
 	rc = ftruncate64 (outrfds[ndx], out_total_counts[ndx]);
