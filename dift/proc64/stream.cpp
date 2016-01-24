@@ -1373,8 +1373,8 @@ print_stats (const char* dirname, u_long mdatasize, u_long odatasize, u_long ida
 
     fprintf (statsfile, "Total time:              %6ld ms\n", ms_diff (end_tv, start_tv));
     fprintf (statsfile, "Receive time:            %6ld ms\n", ms_diff (recv_done_tv, start_tv));
-    fprintf (statsfile, "Receive live set time:   %6ld ms\n", ms_diff (live_receive_end_tv, live_receive_start_tv));
     fprintf (statsfile, "Preprune local time:     %6ld ms\n", ms_diff (preprune_local_end_tv, preprune_local_start_tv));
+    fprintf (statsfile, "Receive live set time:   %6ld ms\n", ms_diff (live_receive_end_tv, live_receive_start_tv));
     fprintf (statsfile, "Prune live set time:     %6ld ms\n", ms_diff (prune_2_end_tv, prune_1_start_tv));
     fprintf (statsfile, "Make live set time:      %6ld ms\n", ms_diff (new_live_end_tv, new_live_start_tv));
     fprintf (statsfile, "Send live set wait time: %6ld ms\n", ms_diff (send_wait_end_tv, send_wait_start_tv));
@@ -1416,7 +1416,7 @@ print_stats (const char* dirname, u_long mdatasize, u_long odatasize, u_long ida
     fprintf (statsfile, "Unique indirects %ld\n", (long) resolved.size());
     fprintf (statsfile, "Values rcvd %lu sent %lu\n", values_rcvd, values_sent);
     if (preprune_prior_mdatasize) {
-	fprintf (statsfile, "Preprune reduced merge data size from %lu to %lu (%.3lf)\n", preprune_prior_mdatasize, mdatasize, 
+	fprintf (statsfile, "Local preprune reduced merge data size from %lu to %lu (%.3lf%%)\n", preprune_prior_mdatasize, mdatasize, 
 		 (double)(preprune_prior_mdatasize-mdatasize)*100.0/(double)(preprune_prior_mdatasize));
     }
 
