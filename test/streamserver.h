@@ -28,6 +28,7 @@ struct cache_info {
 #define DO_DIFT         0
 #define AGG_TYPE_STREAM 1
 #define AGG_TYPE_SEQ    2
+#define AGG_TYPE_SEQ_PP 3
 
 // Info from description file
 struct epoch_hdr {

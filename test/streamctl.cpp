@@ -107,7 +107,7 @@ int fetch_results (char* top_dir, struct epoch_ctl ectl)
 
 void format ()
 {
-    fprintf (stderr, "format: streamctl <epoch description file> <host config file> [-w] [-s] [-v dest_dir cmp_dir] [-stats] [-seq]\n");
+    fprintf (stderr, "format: streamctl <epoch description file> <host config file> [-w] [-s] [-v dest_dir cmp_dir] [-stats] [-seq/-seqpp]\n");
     exit (0);
 }
 
@@ -153,6 +153,8 @@ int main (int argc, char* argv[])
 	    }
 	} else if (!strcmp (argv[i], "-seq")) {
 	    agg_type = AGG_TYPE_SEQ;
+	} else if (!strcmp (argv[i], "-seqpp")) {
+	    agg_type = AGG_TYPE_SEQ_PP;
 	} else {
 	    format();
 	}

@@ -24,7 +24,7 @@ using namespace std;
 #include "../taint_nw.h"
 #include "../../test/streamserver.h"
 
-//#define DEBUG(x) ((x)==0x5864 || (x)==0x5864-0x24a6 || (x) == 0x5864-0x24eb)
+#define DEBUG(x) ((x)==0x3ab)
 #define STATS
 
 // Set up limits here - need to be less generate with 32-bit address space
@@ -107,6 +107,7 @@ u_long live_set_size = 0;
 u_long values_sent = 0, values_rcvd = 0;
 u_long prune_lookup = 0, prune_indirect = 0;
 u_long total_address_ms = 0, longest_address_ms = 0, total_output_ms = 0, longest_output_ms = 0, total_new_live_set_ms = 0, longest_new_live_set_ms = 0, total_prune_1_ms = 0, longest_prune_1_ms = 0, total_prune_2_ms = 0;
+u_long preprune_prior_mdatasize = 0;
 
 struct timeval start_tv, recv_done_tv, finish_start_tv, end_tv;
 struct timeval live_receive_start_tv = {0,0}, live_receive_end_tv = {0,0};
@@ -117,6 +118,7 @@ struct timeval index_wait_start_tv = {0,0}, index_wait_end_tv = {0,0};
 struct timeval output_start_tv = {0,0}, output_end_tv = {0,0};
 struct timeval address_start_tv = {0,0}, address_end_tv = {0,0};
 struct timeval new_live_start_tv = {0,0}, new_live_end_tv = {0,0}, live_done_tv = {0,0}, new_live_send_tv = {0,0};
+struct timeval preprune_local_start_tv = {0,0}, preprune_local_end_tv = {0,0};
 
 static long ms_diff (struct timeval tv1, struct timeval tv2)
 {
@@ -1372,6 +1374,7 @@ print_stats (const char* dirname, u_long mdatasize, u_long odatasize, u_long ida
     fprintf (statsfile, "Total time:              %6ld ms\n", ms_diff (end_tv, start_tv));
     fprintf (statsfile, "Receive time:            %6ld ms\n", ms_diff (recv_done_tv, start_tv));
     fprintf (statsfile, "Receive live set time:   %6ld ms\n", ms_diff (live_receive_end_tv, live_receive_start_tv));
+    fprintf (statsfile, "Preprune local time:     %6ld ms\n", ms_diff (preprune_local_end_tv, preprune_local_start_tv));
     fprintf (statsfile, "Prune live set time:     %6ld ms\n", ms_diff (prune_2_end_tv, prune_1_start_tv));
     fprintf (statsfile, "Make live set time:      %6ld ms\n", ms_diff (new_live_end_tv, new_live_start_tv));
     fprintf (statsfile, "Send live set wait time: %6ld ms\n", ms_diff (send_wait_end_tv, send_wait_start_tv));
@@ -1412,6 +1415,10 @@ print_stats (const char* dirname, u_long mdatasize, u_long odatasize, u_long ida
 	     new_live_inputs, new_live_merges, new_live_merge_zeros, new_live_notlive);
     fprintf (statsfile, "Unique indirects %ld\n", (long) resolved.size());
     fprintf (statsfile, "Values rcvd %lu sent %lu\n", values_rcvd, values_sent);
+    if (preprune_prior_mdatasize) {
+	fprintf (statsfile, "Preprune reduced merge data size from %lu to %lu (%.3lf)\n", preprune_prior_mdatasize, mdatasize, 
+		 (double)(preprune_prior_mdatasize-mdatasize)*100.0/(double)(preprune_prior_mdatasize));
+    }
 
     fclose (statsfile);
 }
@@ -1949,8 +1956,112 @@ make_new_live_set (taint_t* p, taint_t* pend, taint_t* pls, taint_t* plsend, uno
 #endif
 }
 
+void preprune_local (u_long& mdatasize, char* output_log, u_long odatasize, taint_t* ts_log, u_long adatasize)
+{
+    u_long mentries = mdatasize/sizeof(struct taint_entry);
+
+#ifdef STATS
+    gettimeofday(&preprune_local_start_tv, NULL);
+    preprune_prior_mdatasize = mdatasize;
+#endif
+
+    u_long* is_used = new u_long[mentries];
+    memset (is_used, 0, mentries);
+
+    char* plog = output_log;
+    char* outstop = output_log + odatasize;
+    while (plog < outstop) {
+	plog += sizeof(struct taint_creation_info) + sizeof(uint32_t);
+	uint32_t buf_size = *((uint32_t *) plog);
+	plog += sizeof(uint32_t);
+	for (uint32_t i = 0; i < buf_size; i++) {
+	    plog += sizeof(uint32_t);
+	    taint_t value = *((taint_t *) plog);
+	    plog += sizeof(taint_t);
+	    if (value > 0xe0000000) {
+		is_used[value-0xe0000001] = 1;
+	    }
+	}
+    }
+
+    taint_t* paptr = ts_log;
+    taint_t* pastop = ts_log + adatasize/sizeof(taint_t);
+    while (paptr < pastop) {
+	paptr++;
+	if (*paptr > 0xe0000000) {
+	    is_used[*paptr-0xe0000001] = 1;
+	}
+	paptr++;
+    }
+
+    struct taint_entry* pentry = merge_log + mentries - 1;
+    u_long* pused = is_used + mentries - 1;
+    while (pentry >= merge_log) {
+	if (*pused) {
+	    if (pentry->p1 > 0xe0000001) {
+		is_used[pentry->p1-0xe0000001] = 1;
+	    }
+	    if (pentry->p2 > 0xe0000001) {
+		is_used[pentry->p2-0xe0000001] = 1;
+	    }
+	}
+	pused--;
+	pentry--;
+    }
+
+    u_long cnt = 0;
+    for (u_long i = 0; i < mentries; i++) {
+	if (is_used[i]) cnt++;
+    }
+    
+    u_long new_index = 0;
+    for (u_long i = 0; i < mentries; i++) {
+	if (is_used[i]) {
+	    is_used[i] = new_index;
+	    pentry = &merge_log[new_index];
+	    merge_log[new_index++] = merge_log[i];
+	    if (pentry->p1 > 0xe0000001) {
+		pentry->p1 = 0xe0000001 + is_used[pentry->p1-0xe0000001];
+	    } 
+	    if (pentry->p2 > 0xe0000001) {
+		pentry->p2 = 0xe0000001 + is_used[pentry->p2-0xe0000001];
+	    } 
+	}
+    }
+    mdatasize = new_index*sizeof(struct taint_entry);
+    
+    plog = output_log;
+    while (plog < outstop) {
+	plog += sizeof(struct taint_creation_info) + sizeof(uint32_t);
+	uint32_t buf_size = *((uint32_t *) plog);
+	plog += sizeof(uint32_t);
+	for (uint32_t i = 0; i < buf_size; i++) {
+	    plog += sizeof(uint32_t);
+	    if (*((taint_t *) plog) > 0xe0000000) {
+		*((taint_t *) plog) = 0xe0000001 + is_used[*((taint_t *) plog)-0xe0000001];
+	    }
+	    plog += sizeof(taint_t);
+	}
+    }
+
+    paptr = ts_log;
+    while (paptr < pastop) {
+	paptr++;
+	if (*paptr > 0xe0000000) {
+	    *paptr = 0xe0000001 + is_used[*paptr-0xe0000001];
+	}
+	paptr++;
+    }
+
+#ifdef STATS
+    gettimeofday(&preprune_local_end_tv, NULL);
+#endif
+
+    delete [] is_used;
+}
+
 // Process one epoch for sequential forward strategy 
-long seq_epoch (const char* dirname, int port)
+long seq_epoch (const char* dirname, int port, bool do_preprune)
 {
     long rc;
     char* output_log, *token_log;
@@ -1975,6 +2086,8 @@ long seq_epoch (const char* dirname, int port)
 #endif
 
     bucket_init();
+
+    if (do_preprune) preprune_local (mdatasize, output_log, odatasize, ts_log, adatasize);
 
     if (!finish_flag) build_map_tid = spawn_map_thread (&address_map, ts_log, adatasize);
 
@@ -2312,7 +2425,7 @@ int main (int argc, char* argv[])
     bool input_host = false;
     struct senddata sd;
     struct recvdata rd;
-    bool do_sequential = false;
+    bool do_sequential = false, do_preprune = false;
 
     if (argc < 3) format();
 
@@ -2361,6 +2474,8 @@ int main (int argc, char* argv[])
 	    input_host = true;
 	} else if (!strcmp (argv[i], "-seq")) {
 	    do_sequential = true;
+	} else if (!strcmp (argv[i], "-pp")) {
+	    do_preprune = true;
 	} else {
 	    format();
 	}
@@ -2476,7 +2591,7 @@ int main (int argc, char* argv[])
     }
 
     if (do_sequential) {
-	seq_epoch (argv[1], atoi(argv[2]));
+	seq_epoch (argv[1], atoi(argv[2]), do_preprune);
     } else {
 	stream_epoch (argv[1], atoi(argv[2]));
     }
