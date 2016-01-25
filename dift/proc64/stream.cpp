@@ -1974,7 +1974,8 @@ make_new_live_set (taint_t* p, taint_t* pend, taint_t* pls, taint_t* plsend, uno
 #endif
 }
 
-void preprune_local (u_long& mdatasize, char* output_log, u_long odatasize, taint_t* ts_log, u_long adatasize)
+static int
+preprune_local_lowmem (u_long& mdatasize, char* output_log, u_long odatasize, taint_t* ts_log, u_long adatasize)
 {
     u_long mentries = mdatasize/sizeof(struct taint_entry);
 
@@ -1983,8 +1984,200 @@ void preprune_local (u_long& mdatasize, char* output_log, u_long odatasize, tain
     preprune_prior_mdatasize = mdatasize;
 #endif
 
-    u_long* is_used = new u_long[mentries];
-    memset (is_used, 0, mentries*sizeof(u_long));
+    u_char* is_used;
+    u_long* redirects;
+    try {
+	redirects = new u_long[mentries/2+1];
+	memset (redirects, 0, (mentries/2+1)*sizeof(u_long));
+    } catch (bad_alloc& ba) {
+	fprintf (stderr, "Cannot preprune due to lack of memory\n");
+#ifdef STATS
+	gettimeofday(&preprune_local_end_tv, NULL);
+#endif
+	return -1;
+    }
+    try {
+	is_used = new u_char[mentries/8+1];
+	memset (is_used, 0, mentries/8+1);
+    } catch (bad_alloc& ba) {
+	delete [] redirects;
+	fprintf (stderr, "Cannot preprune due to lack of memory\n");
+#ifdef STATS
+	gettimeofday(&preprune_local_end_tv, NULL);
+#endif
+	return -1;
+    }
+
+    char* plog = output_log;
+    char* outstop = output_log + odatasize;
+    while (plog < outstop) {
+	plog += sizeof(struct taint_creation_info) + sizeof(uint32_t);
+	uint32_t buf_size = *((uint32_t *) plog);
+	plog += sizeof(uint32_t);
+	for (uint32_t i = 0; i < buf_size; i++) {
+	    plog += sizeof(uint32_t);
+	    taint_t value = *((taint_t *) plog);
+	    plog += sizeof(taint_t);
+	    if (value > 0xe0000000) {
+		is_used[(value-0xe0000001)/8] = is_used[(value-0xe0000001)/8] | (1 << (value-0xe0000001)%8);
+	    }
+	}
+    }
+
+    taint_t* paptr = ts_log;
+    taint_t* pastop = ts_log + adatasize/sizeof(taint_t);
+    while (paptr < pastop) {
+	paptr++;
+	if (*paptr > 0xe0000000) {
+	    is_used[(*paptr-0xe0000001)/8] = is_used[(*paptr-0xe0000001)/8] | (1 << (*paptr-0xe0000001)%8);
+	}
+	paptr++;
+    }
+
+    struct taint_entry* pentry = merge_log + mentries - 1;
+    int ndx = mentries - 1;
+    while (pentry >= merge_log) {
+	if (is_used[ndx/8] & (1 << ndx%8)) {
+	    if (pentry->p1 > 0xe0000000) {
+		is_used[(pentry->p1-0xe0000001)/8] = is_used[(pentry->p1-0xe0000001)/8] | (1 << (pentry->p1-0xe0000001)%8);
+	    }
+	    if (pentry->p2 > 0xe0000000) {
+		is_used[(pentry->p2-0xe0000001)/8] = is_used[(pentry->p2-0xe0000001)/8] | (1 << (pentry->p2-0xe0000001)%8);
+	    }
+	}
+	pentry--;
+    }
+
+    u_long ucnt = 0, tcnt = 0;
+    for (u_long i = 0; i < mentries; i++) {
+	if (is_used[i/8] & (1 << i%8)) {
+	    ucnt++;
+	}
+	tcnt++;
+    }
+    fprintf (stderr, "%lu out of %lu entries are used\n", ucnt, tcnt);
+    
+    // Compress first half of log
+    u_long split = mentries/2;
+    u_long new_index = 0;
+    for (u_long i = 0; i < split; i++) {
+	if (is_used[i/8] & (1 << i%8)) {
+	    redirects[i] = new_index;
+	    struct taint_entry* pentry = &merge_log[new_index];
+	    merge_log[new_index++] = merge_log[i];
+	    if (pentry->p1 > 0xe0000000) {
+		pentry->p1 = 0xe0000001 + redirects[pentry->p1-0xe0000001];
+	    } 
+	    if (pentry->p2 > 0xe0000000) {
+		pentry->p2 = 0xe0000001 + redirects[pentry->p2-0xe0000001];
+	    } 
+	}
+    }
+    for (u_long i = split; i < mentries; i++) {
+	struct taint_entry* pentry = &merge_log[i];
+	if (pentry->p1 > 0xe0000000 && pentry->p1 < 0xe0000001+split) {
+	    pentry->p1 = 0xe0000001 + redirects[pentry->p1-0xe0000001];
+	} 
+	if (pentry->p2 > 0xe0000000 && pentry->p2 < 0xe0000001+split) {
+	    pentry->p2 = 0xe0000001 + redirects[pentry->p2-0xe0000001];
+	} 
+    }
+
+    plog = output_log;
+    while (plog < outstop) {
+	plog += sizeof(struct taint_creation_info) + sizeof(uint32_t);
+	uint32_t buf_size = *((uint32_t *) plog);
+	plog += sizeof(uint32_t);
+	for (uint32_t i = 0; i < buf_size; i++) {
+	    plog += sizeof(uint32_t);
+	    if (*((taint_t *) plog) > 0xe0000000 && *((taint_t *) plog) < 0xe0000001+split) {
+		*((taint_t *) plog) = 0xe0000001 + redirects[*((taint_t *) plog)-0xe0000001];
+	    }
+	    plog += sizeof(taint_t);
+	}
+    }
+
+    paptr = ts_log;
+    while (paptr < pastop) {
+	paptr++;
+	if (*paptr > 0xe0000000 && *paptr < 0xe0000001+split) {
+	    *paptr = 0xe0000001 + redirects[*paptr-0xe0000001];
+	}
+	paptr++;
+    }
+
+    // Now compress second half of log
+    for (u_long i = split; i < mentries; i++) {
+	if (is_used[i/8] & (1 << i%8)) {
+	    redirects[i-split] = new_index;
+	    struct taint_entry* pentry = &merge_log[new_index];
+	    merge_log[new_index++] = merge_log[i];
+	    if (pentry->p1 > split+0xe0000000) {
+		pentry->p1 = 0xe0000001 + redirects[pentry->p1-0xe0000001-split];
+	    } 
+	    if (pentry->p2 > split+0xe0000000) {
+		pentry->p2 = 0xe0000001 + redirects[pentry->p2-0xe0000001-split];
+	    } 
+	}
+    }
+
+    mdatasize = new_index*sizeof(struct taint_entry);
+    fprintf (stderr, "new index is %lu\n", new_index);
+
+    plog = output_log;
+    while (plog < outstop) {
+	plog += sizeof(struct taint_creation_info) + sizeof(uint32_t);
+	uint32_t buf_size = *((uint32_t *) plog);
+	plog += sizeof(uint32_t);
+	for (uint32_t i = 0; i < buf_size; i++) {
+	    plog += sizeof(uint32_t);
+	    if (*((taint_t *) plog) > 0xe0000000+split) {
+		*((taint_t *) plog) = 0xe0000001 + redirects[*((taint_t *) plog)-0xe0000001-split];
+	    }
+	    plog += sizeof(taint_t);
+	}
+    }
+
+    paptr = ts_log;
+    while (paptr < pastop) {
+	paptr++;
+	if (*paptr > 0xe0000000+split) {
+	    *paptr = 0xe0000001 + redirects[*paptr-0xe0000001-split];
+	}
+	paptr++;
+    }
+
+    delete [] is_used;
+    delete [] redirects;
+
+#ifdef STATS
+    gettimeofday(&preprune_local_end_tv, NULL);
+#endif
+
+    return 0;
+}
+
+static int
+preprune_local (u_long& mdatasize, char* output_log, u_long odatasize, taint_t* ts_log, u_long adatasize)
+{
+    u_long mentries = mdatasize/sizeof(struct taint_entry);
+
+#ifdef STATS
+    gettimeofday(&preprune_local_start_tv, NULL);
+    preprune_prior_mdatasize = mdatasize;
+#endif
+
+    u_long* is_used;
+    try {
+	is_used = new u_long[mentries];
+	memset (is_used, 0, mentries*sizeof(u_long));
+    } catch (bad_alloc& ba) {
+	fprintf (stderr, "Cannot preprune due to lack of memory\n");
+#ifdef STATS
+	gettimeofday(&preprune_local_end_tv, NULL);
+#endif
+	return -1;
+    }
 
     char* plog = output_log;
     char* outstop = output_log + odatasize;
@@ -2016,10 +2209,10 @@ void preprune_local (u_long& mdatasize, char* output_log, u_long odatasize, tain
     u_long* pused = is_used + mentries - 1;
     while (pentry >= merge_log) {
 	if (*pused) {
-	    if (pentry->p1 > 0xe0000001) {
+	    if (pentry->p1 > 0xe0000000) {
 		is_used[pentry->p1-0xe0000001] = 1;
 	    }
-	    if (pentry->p2 > 0xe0000001) {
+	    if (pentry->p2 > 0xe0000000) {
 		is_used[pentry->p2-0xe0000001] = 1;
 	    }
 	}
@@ -2033,10 +2226,10 @@ void preprune_local (u_long& mdatasize, char* output_log, u_long odatasize, tain
 	    is_used[i] = new_index;
 	    struct taint_entry* pentry = &merge_log[new_index];
 	    merge_log[new_index++] = merge_log[i];
-	    if (pentry->p1 > 0xe0000001) {
+	    if (pentry->p1 > 0xe0000000) {
 		pentry->p1 = 0xe0000001 + is_used[pentry->p1-0xe0000001];
 	    } 
-	    if (pentry->p2 > 0xe0000001) {
+	    if (pentry->p2 > 0xe0000000) {
 		pentry->p2 = 0xe0000001 + is_used[pentry->p2-0xe0000001];
 	    } 
 	}
@@ -2071,6 +2264,8 @@ void preprune_local (u_long& mdatasize, char* output_log, u_long odatasize, tain
 #ifdef STATS
     gettimeofday(&preprune_local_end_tv, NULL);
 #endif
+
+    return 0;
 }
 
 void preprune_global (u_long& mdatasize, char* output_log, u_long odatasize, unordered_map<taint_t,taint_t> address_map)
@@ -2267,7 +2462,11 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
     }
 #endif
 
-    if (do_preprune == PREPRUNE_LOCAL) preprune_local (mdatasize, output_log, odatasize, ts_log, adatasize);
+    if (do_preprune == PREPRUNE_LOCAL) {
+	if (preprune_local (mdatasize, output_log, odatasize, ts_log, adatasize) < 0) {
+	    preprune_local_lowmem (mdatasize, output_log, odatasize, ts_log, adatasize);
+	}
+    }
 
     if (do_preprune == PREPRUNE_GLOBAL) {
 	build_address_map (address_map, ts_log, adatasize);
