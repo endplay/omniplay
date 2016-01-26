@@ -1984,7 +1984,7 @@ void preprune_local (u_long& mdatasize, char* output_log, u_long odatasize, tain
 #endif
 
     u_long* is_used = new u_long[mentries];
-    memset (is_used, 0, mentries);
+    memset (is_used, 0, mentries*sizeof(u_long));
 
     char* plog = output_log;
     char* outstop = output_log + odatasize;
@@ -2256,6 +2256,7 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 
     bucket_init();
 
+#if 0
     {
 	unordered_set<taint_entry,TEHash> uniques;
 	u_long i;
@@ -2264,6 +2265,7 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	}
 	fprintf (stderr, "%d unique entries out of %lu total entries in merge log\n", uniques.size(), i);
     }
+#endif
 
     if (do_preprune == PREPRUNE_LOCAL) preprune_local (mdatasize, output_log, odatasize, ts_log, adatasize);
 

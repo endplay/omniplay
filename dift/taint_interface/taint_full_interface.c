@@ -324,13 +324,11 @@ static inline taint_t merge_taints(taint_t dst, taint_t src)
     }
 
 #ifdef USE_MERGE_HASH
-#if 0
     if (dst < src) {
 	taint_t tmp = src;
 	src = dst;
 	dst = tmp;
     }
-#endif
     taint_t h = src + (dst << 2) + (dst << 3);
     struct simple_bucket& bucket = simple_hash[h%SIMPLE_HASH_SIZE];
     if (bucket.p1 == src && bucket.p2 == dst) {
