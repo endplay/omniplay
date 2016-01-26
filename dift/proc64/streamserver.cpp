@@ -458,9 +458,13 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	    if (ehdr.cmd_type == AGG_TYPE_SEQ) {
 		args[argcnt++] = "-seq";
 	    }
-	    if (ehdr.cmd_type == AGG_TYPE_SEQ_PP) {
+	    if (ehdr.cmd_type == AGG_TYPE_SEQ_PPL) {
 		args[argcnt++] = "-seq";
-		args[argcnt++] = "-pp";
+		args[argcnt++] = "-ppl";
+	    }
+	    if (ehdr.cmd_type == AGG_TYPE_SEQ_PPG) {
+		args[argcnt++] = "-seq";
+		args[argcnt++] = "-ppg";
 	    }
 	    args[argcnt++] = NULL;
 	    
@@ -484,9 +488,13 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	    if (ehdr.cmd_type == AGG_TYPE_SEQ) {
 		args[argcnt++] = "-seq";
 	    }
-	    if (ehdr.cmd_type == AGG_TYPE_SEQ_PP) {
+	    if (ehdr.cmd_type == AGG_TYPE_SEQ_PPL) {
 		args[argcnt++] = "-seq";
-		args[argcnt++] = "-pp";
+		args[argcnt++] = "-ppl";
+	    }
+	    if (ehdr.cmd_type == AGG_TYPE_SEQ_PPG) {
+		args[argcnt++] = "-seq";
+		args[argcnt++] = "-ppg";
 	    }
 	    args[argcnt++] = NULL;
 	    
@@ -523,9 +531,13 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	    if (ehdr.cmd_type == AGG_TYPE_SEQ) {
 		args[argcnt++] = "-seq";
 	    }
-	    if (ehdr.cmd_type == AGG_TYPE_SEQ_PP) {
+	    if (ehdr.cmd_type == AGG_TYPE_SEQ_PPL) {
 		args[argcnt++] = "-seq";
-		args[argcnt++] = "-pp";
+		args[argcnt++] = "-ppl";
+	    }
+	    if (ehdr.cmd_type == AGG_TYPE_SEQ_PPG) {
+		args[argcnt++] = "-seq";
+		args[argcnt++] = "-ppg";
 	    }
 	    args[argcnt++] = "-par";
 	    sprintf (parstring, "%d", ehdr.parallelize);

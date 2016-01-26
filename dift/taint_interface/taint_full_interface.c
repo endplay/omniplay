@@ -244,7 +244,7 @@ struct taint_leafnode {
 #ifdef USE_MERGE_HASH
 
 // simple hash for holding merged indices
-#define SIMPLE_HASH_SIZE 0x100000
+#define SIMPLE_HASH_SIZE 0x1000000
 struct simple_bucket {
     taint_t p1, p2, n;
 };
@@ -324,9 +324,17 @@ static inline taint_t merge_taints(taint_t dst, taint_t src)
     }
 
 #ifdef USE_MERGE_HASH
-    taint_t h = src + (dst << 2);
+#if 0
+    if (dst < src) {
+	taint_t tmp = src;
+	src = dst;
+	dst = tmp;
+    }
+#endif
+    taint_t h = src + (dst << 2) + (dst << 3);
     struct simple_bucket& bucket = simple_hash[h%SIMPLE_HASH_SIZE];
     if (bucket.p1 == src && bucket.p2 == dst) {
+
 #ifdef TAINT_STATS
 	tsp.merges_saved++;
 #endif
