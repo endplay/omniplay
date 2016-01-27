@@ -33,7 +33,6 @@ using namespace std;
 #include "xray_monitor.h"
 #include "xray_token.h"
 #include "xray_slab_alloc.h"
-#include "taint_interface/taint_debug.h"
 #include "trace_x.h"
 #include "splice.h"
 #include "taint_nw.h"
@@ -297,6 +296,8 @@ u_long taint_debug_inst = 0;
 #ifdef TAINT_STATS
 struct timeval begin_tv, end_tv;
 u_long inst_instrumented = 0;
+u_long traces_instrumented = 0;
+uint64_t instrument_time = 0;
 FILE* stats_f;
 #endif
 
@@ -372,6 +373,8 @@ static void dift_done ()
 #ifdef TAINT_STATS
     gettimeofday(&end_tv, NULL);
     fprintf (stats_f, "Instructions instrumented: %ld\n", inst_instrumented);
+    fprintf (stats_f, "Traces instrumented: %ld\n", traces_instrumented);
+    fprintf (stats_f, "Instrument time: %lld us\n", instrument_time);
     fprintf (stats_f, "DIFT began at %ld.%06ld\n", begin_tv.tv_sec, begin_tv.tv_usec);
     fprintf (stats_f, "DIFT ended at %ld.%06ld\n", end_tv.tv_sec, end_tv.tv_usec);
     finish_and_print_taint_stats(stats_f);
@@ -13833,6 +13836,24 @@ void instruction_instrumentation(INS ins, void *v)
 #endif
 }
 
+void trace_instrumentation(TRACE trace, void* v)
+{
+    struct timeval tv_end, tv_start;
+
+    gettimeofday (&tv_start, NULL);
+    TRACE_InsertCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_after, IARG_INST_PTR, IARG_END);
+
+    for (BBL bbl = TRACE_BblHead(trace); BBL_Valid(bbl); bbl = BBL_Next(bbl)) {
+	for (INS ins = BBL_InsHead(bbl); INS_Valid(ins); ins = INS_Next(ins)) {
+	    instruction_instrumentation (ins, NULL);
+	}
+    }
+    gettimeofday (&tv_end, NULL);
+
+    traces_instrumented++;
+    instrument_time += tv_end.tv_usec - tv_start.tv_usec + (tv_end.tv_sec - tv_start.tv_sec) * 1000000;
+}
+
 int restore_state_from_disk (struct thread_data* ptdata)
 {
     int infd;
@@ -14618,13 +14639,13 @@ int main(int argc, char** argv)
 
     main_prev_argv = argv;
 
-    //INS_AddInstrumentFunction(track_inst, 0); // Fixme - this should be in the routing below I would think
-    INS_AddInstrumentFunction(instruction_instrumentation, 0);
+    //INS_AddInstrumentFunction(instruction_instrumentation, 0);
+    TRACE_AddInstrumentFunction (trace_instrumentation, 0);
 
     // Register a notification handler that is called when the application
     // forks a new process
     PIN_AddForkFunction(FPOINT_AFTER_IN_CHILD, AfterForkInChild, 0);
-    TRACE_AddInstrumentFunction (track_trace, 0);
+    //TRACE_AddInstrumentFunction (track_trace, 0);
     RTN_AddInstrumentFunction(track_function, 0);
 
 #if 0

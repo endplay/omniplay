@@ -24,8 +24,12 @@ using namespace std;
 #include "../taint_nw.h"
 #include "../../test/streamserver.h"
 
-//#define DEBUG(x) ((x)==0x5864 || (x)==0x5864-0x24a6 || (x) == 0x5864-0x24eb)
+#define DEBUG(x) ((x)==0x3ab)
 #define STATS
+
+#define PREPRUNE_NONE   0
+#define PREPRUNE_LOCAL  1
+#define PREPRUNE_GLOBAL 2
 
 // Set up limits here - need to be less generate with 32-bit address space
 #ifdef USE_NW
@@ -59,16 +63,31 @@ struct senddata {
     char*  host;
     short  port;
     bool   do_sequential;
+    bool   do_preprune_global;
 };
 
 struct recvdata {
     short  port;
     bool   do_sequential;
+    bool   do_preprune_global;
 };
 
 struct taint_entry {
     taint_t p1;
     taint_t p2;
+};
+
+inline bool operator == (const taint_entry& t1, const taint_entry& t2) 
+{ 
+    return (t1.p1 == t2.p1 && t1.p2 == t2.p2); 
+}
+
+struct TEHash
+{
+    size_t operator()(const taint_entry& t) const
+	{
+	    return t.p1 + (t.p2 << 2);
+	}
 };
 
 #define STREAM_PORT 19765
@@ -107,6 +126,7 @@ u_long live_set_size = 0;
 u_long values_sent = 0, values_rcvd = 0;
 u_long prune_lookup = 0, prune_indirect = 0;
 u_long total_address_ms = 0, longest_address_ms = 0, total_output_ms = 0, longest_output_ms = 0, total_new_live_set_ms = 0, longest_new_live_set_ms = 0, total_prune_1_ms = 0, longest_prune_1_ms = 0, total_prune_2_ms = 0;
+u_long preprune_prior_mdatasize = 0;
 
 struct timeval start_tv, recv_done_tv, finish_start_tv, end_tv;
 struct timeval live_receive_start_tv = {0,0}, live_receive_end_tv = {0,0};
@@ -117,6 +137,7 @@ struct timeval index_wait_start_tv = {0,0}, index_wait_end_tv = {0,0};
 struct timeval output_start_tv = {0,0}, output_end_tv = {0,0};
 struct timeval address_start_tv = {0,0}, address_end_tv = {0,0};
 struct timeval new_live_start_tv = {0,0}, new_live_end_tv = {0,0}, live_done_tv = {0,0}, new_live_send_tv = {0,0};
+struct timeval preprune_local_start_tv = {0,0}, preprune_local_end_tv = {0,0};
 
 static long ms_diff (struct timeval tv1, struct timeval tv2)
 {
@@ -295,13 +316,12 @@ struct build_map_data {
     u_long                          adatasize;
 };
 
-static long
+static void
 build_address_map (unordered_map<taint_t,taint_t>& address_map, taint_t* ts_log, u_long adatasize)
 {
     for (uint32_t i = 0; i < adatasize/(sizeof(taint_t)*2); i++) {
 	address_map[ts_log[2*i]] = ts_log[2*i+1];
     }
-    return 0;
 }
 
 void*
@@ -342,7 +362,7 @@ int*       outrfds;
 uint32_t** outptrs;
 uint32_t** outstops;
 uint32_t*  out_total_counts;
-const u_long OUTENTRIES = 0x400000; // 16MB size
+const u_long OUTENTRIES = 0x100000; // 4MB size
 const u_long OUTBYTES = OUTENTRIES*sizeof(uint32_t);
 
 static void 
@@ -1369,6 +1389,7 @@ print_stats (const char* dirname, u_long mdatasize, u_long odatasize, u_long ida
 
     fprintf (statsfile, "Total time:              %6ld ms\n", ms_diff (end_tv, start_tv));
     fprintf (statsfile, "Receive time:            %6ld ms\n", ms_diff (recv_done_tv, start_tv));
+    fprintf (statsfile, "Preprune local time:     %6ld ms\n", ms_diff (preprune_local_end_tv, preprune_local_start_tv));
     fprintf (statsfile, "Receive live set time:   %6ld ms\n", ms_diff (live_receive_end_tv, live_receive_start_tv));
     fprintf (statsfile, "Prune live set time:     %6ld ms\n", ms_diff (prune_2_end_tv, prune_1_start_tv));
     fprintf (statsfile, "Make live set time:      %6ld ms\n", ms_diff (new_live_end_tv, new_live_start_tv));
@@ -1410,6 +1431,10 @@ print_stats (const char* dirname, u_long mdatasize, u_long odatasize, u_long ida
 	     new_live_inputs, new_live_merges, new_live_merge_zeros, new_live_notlive);
     fprintf (statsfile, "Unique indirects %ld\n", (long) resolved.size());
     fprintf (statsfile, "Values rcvd %lu sent %lu\n", values_rcvd, values_sent);
+    if (preprune_prior_mdatasize) {
+	fprintf (statsfile, "Local preprune reduced merge data size from %lu to %lu (%.3lf%%)\n", preprune_prior_mdatasize, mdatasize, 
+		 (double)(preprune_prior_mdatasize-mdatasize)*100.0/(double)(preprune_prior_mdatasize));
+    }
 
     fclose (statsfile);
 }
@@ -1947,8 +1972,458 @@ make_new_live_set (taint_t* p, taint_t* pend, taint_t* pls, taint_t* plsend, uno
 #endif
 }
 
+static int
+preprune_local_lowmem (u_long& mdatasize, char* output_log, u_long odatasize, taint_t* ts_log, u_long adatasize)
+{
+    u_long mentries = mdatasize/sizeof(struct taint_entry);
+
+#ifdef STATS
+    gettimeofday(&preprune_local_start_tv, NULL);
+    preprune_prior_mdatasize = mdatasize;
+#endif
+
+    u_char* is_used;
+    u_long* redirects;
+    try {
+	redirects = new u_long[mentries/2+1];
+	memset (redirects, 0, (mentries/2+1)*sizeof(u_long));
+    } catch (bad_alloc& ba) {
+	fprintf (stderr, "Cannot preprune due to lack of memory\n");
+#ifdef STATS
+	gettimeofday(&preprune_local_end_tv, NULL);
+#endif
+	return -1;
+    }
+    try {
+	is_used = new u_char[mentries/8+1];
+	memset (is_used, 0, mentries/8+1);
+    } catch (bad_alloc& ba) {
+	delete [] redirects;
+	fprintf (stderr, "Cannot preprune due to lack of memory\n");
+#ifdef STATS
+	gettimeofday(&preprune_local_end_tv, NULL);
+#endif
+	return -1;
+    }
+
+    char* plog = output_log;
+    char* outstop = output_log + odatasize;
+    while (plog < outstop) {
+	plog += sizeof(struct taint_creation_info) + sizeof(uint32_t);
+	uint32_t buf_size = *((uint32_t *) plog);
+	plog += sizeof(uint32_t);
+	for (uint32_t i = 0; i < buf_size; i++) {
+	    plog += sizeof(uint32_t);
+	    taint_t value = *((taint_t *) plog);
+	    plog += sizeof(taint_t);
+	    if (value > 0xe0000000) {
+		is_used[(value-0xe0000001)/8] = is_used[(value-0xe0000001)/8] | (1 << (value-0xe0000001)%8);
+	    }
+	}
+    }
+
+    taint_t* paptr = ts_log;
+    taint_t* pastop = ts_log + adatasize/sizeof(taint_t);
+    while (paptr < pastop) {
+	paptr++;
+	if (*paptr > 0xe0000000) {
+	    is_used[(*paptr-0xe0000001)/8] = is_used[(*paptr-0xe0000001)/8] | (1 << (*paptr-0xe0000001)%8);
+	}
+	paptr++;
+    }
+
+    struct taint_entry* pentry = merge_log + mentries - 1;
+    int ndx = mentries - 1;
+    while (pentry >= merge_log) {
+	if (is_used[ndx/8] & (1 << ndx%8)) {
+	    if (pentry->p1 > 0xe0000000) {
+		is_used[(pentry->p1-0xe0000001)/8] = is_used[(pentry->p1-0xe0000001)/8] | (1 << (pentry->p1-0xe0000001)%8);
+	    }
+	    if (pentry->p2 > 0xe0000000) {
+		is_used[(pentry->p2-0xe0000001)/8] = is_used[(pentry->p2-0xe0000001)/8] | (1 << (pentry->p2-0xe0000001)%8);
+	    }
+	}
+	pentry--;
+    }
+
+    u_long ucnt = 0, tcnt = 0;
+    for (u_long i = 0; i < mentries; i++) {
+	if (is_used[i/8] & (1 << i%8)) {
+	    ucnt++;
+	}
+	tcnt++;
+    }
+    fprintf (stderr, "%lu out of %lu entries are used\n", ucnt, tcnt);
+    
+    // Compress first half of log
+    u_long split = mentries/2;
+    u_long new_index = 0;
+    for (u_long i = 0; i < split; i++) {
+	if (is_used[i/8] & (1 << i%8)) {
+	    redirects[i] = new_index;
+	    struct taint_entry* pentry = &merge_log[new_index];
+	    merge_log[new_index++] = merge_log[i];
+	    if (pentry->p1 > 0xe0000000) {
+		pentry->p1 = 0xe0000001 + redirects[pentry->p1-0xe0000001];
+	    } 
+	    if (pentry->p2 > 0xe0000000) {
+		pentry->p2 = 0xe0000001 + redirects[pentry->p2-0xe0000001];
+	    } 
+	}
+    }
+    for (u_long i = split; i < mentries; i++) {
+	struct taint_entry* pentry = &merge_log[i];
+	if (pentry->p1 > 0xe0000000 && pentry->p1 < 0xe0000001+split) {
+	    pentry->p1 = 0xe0000001 + redirects[pentry->p1-0xe0000001];
+	} 
+	if (pentry->p2 > 0xe0000000 && pentry->p2 < 0xe0000001+split) {
+	    pentry->p2 = 0xe0000001 + redirects[pentry->p2-0xe0000001];
+	} 
+    }
+
+    plog = output_log;
+    while (plog < outstop) {
+	plog += sizeof(struct taint_creation_info) + sizeof(uint32_t);
+	uint32_t buf_size = *((uint32_t *) plog);
+	plog += sizeof(uint32_t);
+	for (uint32_t i = 0; i < buf_size; i++) {
+	    plog += sizeof(uint32_t);
+	    if (*((taint_t *) plog) > 0xe0000000 && *((taint_t *) plog) < 0xe0000001+split) {
+		*((taint_t *) plog) = 0xe0000001 + redirects[*((taint_t *) plog)-0xe0000001];
+	    }
+	    plog += sizeof(taint_t);
+	}
+    }
+
+    paptr = ts_log;
+    while (paptr < pastop) {
+	paptr++;
+	if (*paptr > 0xe0000000 && *paptr < 0xe0000001+split) {
+	    *paptr = 0xe0000001 + redirects[*paptr-0xe0000001];
+	}
+	paptr++;
+    }
+
+    // Now compress second half of log
+    for (u_long i = split; i < mentries; i++) {
+	if (is_used[i/8] & (1 << i%8)) {
+	    redirects[i-split] = new_index;
+	    struct taint_entry* pentry = &merge_log[new_index];
+	    merge_log[new_index++] = merge_log[i];
+	    if (pentry->p1 > split+0xe0000000) {
+		pentry->p1 = 0xe0000001 + redirects[pentry->p1-0xe0000001-split];
+	    } 
+	    if (pentry->p2 > split+0xe0000000) {
+		pentry->p2 = 0xe0000001 + redirects[pentry->p2-0xe0000001-split];
+	    } 
+	}
+    }
+
+    mdatasize = new_index*sizeof(struct taint_entry);
+    fprintf (stderr, "new index is %lu\n", new_index);
+
+    plog = output_log;
+    while (plog < outstop) {
+	plog += sizeof(struct taint_creation_info) + sizeof(uint32_t);
+	uint32_t buf_size = *((uint32_t *) plog);
+	plog += sizeof(uint32_t);
+	for (uint32_t i = 0; i < buf_size; i++) {
+	    plog += sizeof(uint32_t);
+	    if (*((taint_t *) plog) > 0xe0000000+split) {
+		*((taint_t *) plog) = 0xe0000001 + redirects[*((taint_t *) plog)-0xe0000001-split];
+	    }
+	    plog += sizeof(taint_t);
+	}
+    }
+
+    paptr = ts_log;
+    while (paptr < pastop) {
+	paptr++;
+	if (*paptr > 0xe0000000+split) {
+	    *paptr = 0xe0000001 + redirects[*paptr-0xe0000001-split];
+	}
+	paptr++;
+    }
+
+    delete [] is_used;
+    delete [] redirects;
+
+#ifdef STATS
+    gettimeofday(&preprune_local_end_tv, NULL);
+#endif
+
+    return 0;
+}
+
+static int
+preprune_local (u_long& mdatasize, char* output_log, u_long odatasize, taint_t* ts_log, u_long adatasize)
+{
+    u_long mentries = mdatasize/sizeof(struct taint_entry);
+
+#ifdef STATS
+    gettimeofday(&preprune_local_start_tv, NULL);
+    preprune_prior_mdatasize = mdatasize;
+#endif
+
+    u_long* is_used;
+    try {
+	is_used = new u_long[mentries];
+	memset (is_used, 0, mentries*sizeof(u_long));
+    } catch (bad_alloc& ba) {
+	fprintf (stderr, "Cannot preprune due to lack of memory\n");
+#ifdef STATS
+	gettimeofday(&preprune_local_end_tv, NULL);
+#endif
+	return -1;
+    }
+
+    char* plog = output_log;
+    char* outstop = output_log + odatasize;
+    while (plog < outstop) {
+	plog += sizeof(struct taint_creation_info) + sizeof(uint32_t);
+	uint32_t buf_size = *((uint32_t *) plog);
+	plog += sizeof(uint32_t);
+	for (uint32_t i = 0; i < buf_size; i++) {
+	    plog += sizeof(uint32_t);
+	    taint_t value = *((taint_t *) plog);
+	    plog += sizeof(taint_t);
+	    if (value > 0xe0000000) {
+		is_used[value-0xe0000001] = 1;
+	    }
+	}
+    }
+
+    taint_t* paptr = ts_log;
+    taint_t* pastop = ts_log + adatasize/sizeof(taint_t);
+    while (paptr < pastop) {
+	paptr++;
+	if (*paptr > 0xe0000000) {
+	    is_used[*paptr-0xe0000001] = 1;
+	}
+	paptr++;
+    }
+
+    struct taint_entry* pentry = merge_log + mentries - 1;
+    u_long* pused = is_used + mentries - 1;
+    while (pentry >= merge_log) {
+	if (*pused) {
+	    if (pentry->p1 > 0xe0000000) {
+		is_used[pentry->p1-0xe0000001] = 1;
+	    }
+	    if (pentry->p2 > 0xe0000000) {
+		is_used[pentry->p2-0xe0000001] = 1;
+	    }
+	}
+	pused--;
+	pentry--;
+    }
+
+    u_long new_index = 0;
+    for (u_long i = 0; i < mentries; i++) {
+	if (is_used[i]) {
+	    is_used[i] = new_index;
+	    struct taint_entry* pentry = &merge_log[new_index];
+	    merge_log[new_index++] = merge_log[i];
+	    if (pentry->p1 > 0xe0000000) {
+		pentry->p1 = 0xe0000001 + is_used[pentry->p1-0xe0000001];
+	    } 
+	    if (pentry->p2 > 0xe0000000) {
+		pentry->p2 = 0xe0000001 + is_used[pentry->p2-0xe0000001];
+	    } 
+	}
+    }
+    mdatasize = new_index*sizeof(struct taint_entry);
+    
+    plog = output_log;
+    while (plog < outstop) {
+	plog += sizeof(struct taint_creation_info) + sizeof(uint32_t);
+	uint32_t buf_size = *((uint32_t *) plog);
+	plog += sizeof(uint32_t);
+	for (uint32_t i = 0; i < buf_size; i++) {
+	    plog += sizeof(uint32_t);
+	    if (*((taint_t *) plog) > 0xe0000000) {
+		*((taint_t *) plog) = 0xe0000001 + is_used[*((taint_t *) plog)-0xe0000001];
+	    }
+	    plog += sizeof(taint_t);
+	}
+    }
+
+    paptr = ts_log;
+    while (paptr < pastop) {
+	paptr++;
+	if (*paptr > 0xe0000000) {
+	    *paptr = 0xe0000001 + is_used[*paptr-0xe0000001];
+	}
+	paptr++;
+    }
+
+    delete [] is_used;
+
+#ifdef STATS
+    gettimeofday(&preprune_local_end_tv, NULL);
+#endif
+
+    return 0;
+}
+
+void preprune_global (u_long& mdatasize, char* output_log, u_long odatasize, unordered_map<taint_t,taint_t> address_map)
+{
+    u_long mentries = mdatasize/sizeof(struct taint_entry);
+    taint_t* stack = astacks[0];
+    struct timeval tv1, tv2;
+
+    gettimeofday(&tv1, NULL);
+    unordered_set<u_long> output_set;
+    u_long* is_used = new u_long[mentries];
+    memset (is_used, 0, mentries);
+
+    // First process outputs 
+    char* plog = output_log;
+    char* outstop = output_log + odatasize;
+    while (plog < outstop) {
+	plog += sizeof(struct taint_creation_info) + sizeof(uint32_t);
+	uint32_t buf_size = *((uint32_t *) plog);
+	plog += sizeof(uint32_t);
+	for (uint32_t i = 0; i < buf_size; i++) {
+	    plog += sizeof(uint32_t);
+	    taint_t value = *((taint_t *) plog);
+	    plog += sizeof(taint_t);
+	    if (value > 0xe0000000) {
+		if (!is_used[value-0xe0000001]) {
+		    is_used[value-0xe0000001] = 1;
+		    int stack_depth = 0;
+		    struct taint_entry* pentry = &merge_log[value-0xe0000001];
+		    stack[stack_depth++] = pentry->p1;
+		    stack[stack_depth++] = pentry->p2;
+		    do {
+			assert (stack_depth < STACK_SIZE);
+			value = stack[--stack_depth];
+			
+			if (value > 0xe0000000) {
+			    if (!is_used[value-0xe0000001]) {
+				is_used[value-0xe0000001] = 1;
+				pentry = &merge_log[value-0xe0000001];
+				stack[stack_depth++] = pentry->p1;
+				stack[stack_depth++] = pentry->p2;
+			    }
+			} else if (value < 0xc0000000) {
+			    output_set.insert(value);
+			}
+		    } while (stack_depth);
+		}
+	    } else if (value < 0xc0000000) {
+		output_set.insert(value);
+	    }
+	}
+    }
+
+    // Next process addresses as they are received
+    if (!finish_flag) {
+	uint32_t val, rbucket_cnt = 0, rbucket_stop = 0;
+	GET_QVALUEB(val, inputq_hdr, inputq_buf, iqfd, rbucket_cnt, rbucket_stop);
+	while (val != TERM_VAL) {
+	    auto iter = address_map.find(val);
+	    if (iter != address_map.end()) {
+		taint_t value = iter->second;
+		if (value > 0xe0000000) {
+		    if (!is_used[value-0xe0000001]) {
+			is_used[value-0xe0000001] = 1;
+			int stack_depth = 0;
+			struct taint_entry* pentry = &merge_log[value-0xe0000001];
+			stack[stack_depth++] = pentry->p1;
+			stack[stack_depth++] = pentry->p2;
+			do {
+			    assert (stack_depth < STACK_SIZE);
+			    value = stack[--stack_depth];
+			
+			    if (value > 0xe0000000) {
+				if (!is_used[value-0xe0000001]) {
+				    is_used[value-0xe0000001] = 1;
+				    pentry = &merge_log[value-0xe0000001];
+				    stack[stack_depth++] = pentry->p1;
+				    stack[stack_depth++] = pentry->p2;
+				}
+			    } else if (value < 0xc0000000) {
+				output_set.insert(value);
+			    }
+			} while (stack_depth);
+		    }
+		} else if (value < 0xc0000000) {
+		    output_set.insert(value);
+		}
+	    } else {
+		output_set.insert(val);
+	    }
+	    GET_QVALUEB(val, inputq_hdr, inputq_buf, iqfd, rbucket_cnt, rbucket_stop);
+	} 
+
+	// Done reading data - reset queue and wait on sender
+	inputq_hdr->read_index = inputq_hdr->write_index = 0;
+	UP_QSEM (inputq_hdr);
+    }
+
+    // Spit out the outputs 
+    if (!start_flag) {
+	u_long ocnt = 0;
+	uint32_t write_cnt = 0, write_stop = 0;
+	for (auto iter = output_set.begin(); iter != output_set.end(); iter++) {
+	    PUT_QVALUEB(*iter, outputq_hdr, outputq_buf, oqfd, write_cnt, write_stop);
+	    ocnt++;
+	}
+	PUT_QVALUEB(TERM_VAL, outputq_hdr, outputq_buf, oqfd, write_cnt, write_stop);
+	bucket_term (outputq_hdr, outputq_buf, oqfd, write_cnt, write_stop);
+	fprintf (stderr, "%lu values in new output set\n", ocnt);
+
+	// Wait until the data has been acknowledged
+	DOWN_QSEM(outputq_hdr);
+    }
+    gettimeofday(&tv2, NULL);
+
+    u_long new_index = 0;
+    for (u_long i = 0; i < mentries; i++) {
+	if (is_used[i]) {
+	    is_used[i] = new_index;
+	    struct taint_entry* pentry = &merge_log[new_index];
+	    merge_log[new_index++] = merge_log[i];
+	    if (pentry->p1 > 0xe0000001) {
+		pentry->p1 = 0xe0000001 + is_used[pentry->p1-0xe0000001];
+	    } 
+	    if (pentry->p2 > 0xe0000001) {
+		pentry->p2 = 0xe0000001 + is_used[pentry->p2-0xe0000001];
+	    } 
+	}
+    }
+    mdatasize = new_index*sizeof(struct taint_entry);
+    
+    plog = output_log;
+    while (plog < outstop) {
+	plog += sizeof(struct taint_creation_info) + sizeof(uint32_t);
+	uint32_t buf_size = *((uint32_t *) plog);
+	plog += sizeof(uint32_t);
+	for (uint32_t i = 0; i < buf_size; i++) {
+	    plog += sizeof(uint32_t);
+	    if (*((taint_t *) plog) > 0xe0000000) {
+		*((taint_t *) plog) = 0xe0000001 + is_used[*((taint_t *) plog)-0xe0000001];
+	    }
+	    plog += sizeof(taint_t);
+	}
+    }
+
+    for (auto iter = address_map.begin(); iter != address_map.end(); iter++) {
+	if (iter->second > 0xe0000000) {
+	    iter->second = 0xe0000001 + is_used[iter->second-0xe0000001];
+	}
+    }
+
+    u_long cnt = 0;
+    for (u_long i = 0; i < mentries; i++) {
+	if (is_used[i]) cnt++;
+    }
+    fprintf (stderr, "%lu merge log entries used out of %lu in %ld ms\n", cnt, mentries, ms_diff(tv2,tv1));
+}
+
 // Process one epoch for sequential forward strategy 
-long seq_epoch (const char* dirname, int port)
+long seq_epoch (const char* dirname, int port, int do_preprune)
 {
     long rc;
     char* output_log, *token_log;
@@ -1974,10 +2449,32 @@ long seq_epoch (const char* dirname, int port)
 
     bucket_init();
 
-    if (!finish_flag) build_map_tid = spawn_map_thread (&address_map, ts_log, adatasize);
+#if 0
+    {
+	unordered_set<taint_entry,TEHash> uniques;
+	u_long i;
+	for (i = 0; i < mdatasize/sizeof(struct taint_entry); i++) {
+	    uniques.insert(merge_log[i]);
+	}
+	fprintf (stderr, "%d unique entries out of %lu total entries in merge log\n", uniques.size(), i);
+    }
+#endif
+
+    if (do_preprune == PREPRUNE_LOCAL) {
+	if (preprune_local (mdatasize, output_log, odatasize, ts_log, adatasize) < 0) {
+	    preprune_local_lowmem (mdatasize, output_log, odatasize, ts_log, adatasize);
+	}
+    }
+
+    if (do_preprune == PREPRUNE_GLOBAL) {
+	build_address_map (address_map, ts_log, adatasize);
+	preprune_global (mdatasize, output_log, odatasize, address_map);
+	bucket_init();
+    } else {
+	if (!finish_flag) build_map_tid = spawn_map_thread (&address_map, ts_log, adatasize);
+    }
 
     if (!start_flag) {
-
 	// Wait for preceding epoch to send list of live addresses
 #ifdef STATS
 	gettimeofday(&live_receive_start_tv, NULL);
@@ -2032,8 +2529,10 @@ long seq_epoch (const char* dirname, int port)
 	gettimeofday(&index_wait_start_tv, NULL);
 #endif
 
-	rc = pthread_join(build_map_tid, NULL);
-	if (rc < 0) return rc;
+	if (do_preprune != PREPRUNE_GLOBAL) {
+	    rc = pthread_join(build_map_tid, NULL);
+	    if (rc < 0) return rc;
+	}
 
 #ifdef STATS
 	gettimeofday(&index_wait_end_tv, NULL);
@@ -2268,6 +2767,10 @@ int recv_input_queue (struct recvdata* data)
     if (s < 0) return s;
 
     if (data->do_sequential) {
+	if (data->do_preprune_global) {
+	    recv_stream (s, inputq_hdr, inputq_buf);
+	    DOWN_QSEM(inputq_hdr);
+	}
 	send_stream (s, inputq_hdr, inputq_buf); // First we send filters downstream	
 	inputq_hdr->read_index = inputq_hdr->write_index = 0;
 	UP_QSEM(inputq_hdr);
@@ -2285,6 +2788,11 @@ int send_output_queue (struct senddata* data)
    if (s < 0) return s;
 
    if (data->do_sequential) {
+       if (data->do_preprune_global) {
+	   send_stream (s, outputq_hdr, outputq_buf);
+	   outputq_hdr->read_index = outputq_hdr->write_index = 0;
+	   UP_QSEM(outputq_hdr);
+       }
        recv_stream (s, outputq_hdr, outputq_buf); // First we read data from upstream
        DOWN_QSEM(outputq_hdr);
    }
@@ -2311,6 +2819,7 @@ int main (int argc, char* argv[])
     struct senddata sd;
     struct recvdata rd;
     bool do_sequential = false;
+    int do_preprune = PREPRUNE_NONE;
 
     if (argc < 3) format();
 
@@ -2359,6 +2868,10 @@ int main (int argc, char* argv[])
 	    input_host = true;
 	} else if (!strcmp (argv[i], "-seq")) {
 	    do_sequential = true;
+	} else if (!strcmp (argv[i], "-ppl")) {
+	    do_preprune = PREPRUNE_LOCAL;
+	} else if (!strcmp (argv[i], "-ppg")) {
+	    do_preprune = PREPRUNE_GLOBAL;
 	} else {
 	    format();
 	}
@@ -2388,6 +2901,7 @@ int main (int argc, char* argv[])
 	sd.host = output_host;
 	sd.port = STREAM_PORT;
 	sd.do_sequential = do_sequential;
+	sd.do_preprune_global = (do_preprune == PREPRUNE_GLOBAL);
 	return (send_output_queue (&sd));
     }
 
@@ -2414,6 +2928,7 @@ int main (int argc, char* argv[])
 	}
 	rd.port = STREAM_PORT;
 	rd.do_sequential = do_sequential;
+	rd.do_preprune_global = (do_preprune == PREPRUNE_GLOBAL);
 	return recv_input_queue (&rd);
     }
 
@@ -2474,7 +2989,7 @@ int main (int argc, char* argv[])
     }
 
     if (do_sequential) {
-	seq_epoch (argv[1], atoi(argv[2]));
+	seq_epoch (argv[1], atoi(argv[2]), do_preprune);
     } else {
 	stream_epoch (argv[1], atoi(argv[2]));
     }
