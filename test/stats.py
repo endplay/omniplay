@@ -12,6 +12,7 @@ dift = []
 recv = []
 total = []
 preprune = []
+prepruneg = []
 receive = []
 output = []
 index = []
@@ -54,6 +55,8 @@ for i in range(epochs):
             recv.append(int(line.split()[2]))
         if line[:19] == "Preprune local time":
             preprune.append(int(line.split()[3]))
+        if line[:20] == "Preprune global time":
+            prepruneg.append(int(line.split()[3]))
         if line[:21] == "Receive live set time":
             receive.append(int(line.split()[4]))
         if line[:19] == "Prune live set time":
@@ -81,15 +84,16 @@ for i in range(epochs):
             merges.append(int(line.split()[12]))
 
 for i in range(epochs):
+    preprune[i] += prepruneg[i]
     other.append(total[i]-recv[i]-preprune[i]-receive[i]-prune[i]-make[i]-send[i]-output[i]-index[i]-address[i]-finish[i])
     recv[i] -= dift[i]
 
-print "Epoch    DIFT     FF     PP   Recv.  Prune   Make   Send Output  Index Address Finish  Other"
+print "Epoch    DIFT     FF     PP   Recv.  Prune   Make   Send Output  Index Address Finish  Other   Total"
 for i in range(epochs):
-    print "%5s %7s %6s %6s %7s %6s %6s %6d %6d %6d %7d %6d %6d"%(i,dift[i],recv[i],preprune[i],receive[i],prune[i],make[i],send[i],output[i],index[i],address[i],finish[i],other[i])
-print "  Max %7d %6d %6d %7d %6d %6d %6d %6d %6d %7d %6d %6d"%(max(dift),max(recv),max(preprune),max(receive),max(prune),max(make),max(send),max(output),max(index),max(address),max(finish),max(other))
-print "Total %7d %6d %6d %7d %6d %6d %6d %6d %6d %7d %6d %6d"%(sum(dift),sum(recv),sum(preprune),sum(receive),sum(prune),sum(make),sum(send),sum(output),sum(index),sum(address),sum(finish),sum(other))
-print " Core %7d %6d %6d %7d %6d %6d %6d %6d %6d %7d %6d %6d"%(sum(dift)/epochs,sum(recv)/epochs,sum(preprune)/epochs,sum(receive)/epochs,sum(prune)/epochs,sum(make)/epochs,sum(send)/epochs,sum(output)/epochs,sum(index)/epochs,sum(address)/epochs,sum(finish)/epochs,sum(other)/epochs)
+    print "%5s %7s %6s %6s %7s %6s %6s %6d %6d %6d %7d %6d %6d %7d"%(i,dift[i],recv[i],preprune[i],receive[i],prune[i],make[i],send[i],output[i],index[i],address[i],finish[i],other[i], total[i])
+print "  Max %7d %6d %6d %7d %6d %6d %6d %6d %6d %7d %6d %6d %7d"%(max(dift),max(recv),max(preprune),max(receive),max(prune),max(make),max(send),max(output),max(index),max(address),max(finish),max(other),max(total))
+print "Total %7d %6d %6d %7d %6d %6d %6d %6d %6d %7d %6d %6d %7d"%(sum(dift),sum(recv),sum(preprune),sum(receive),sum(prune),sum(make),sum(send),sum(output),sum(index),sum(address),sum(finish),sum(other), sum(total))
+print " Core %7d %6d %6d %7d %6d %6d %6d %6d %6d %7d %6d %6d %7d"%(sum(dift)/epochs,sum(recv)/epochs,sum(preprune)/epochs,sum(receive)/epochs,sum(prune)/epochs,sum(make)/epochs,sum(send)/epochs,sum(output)/epochs,sum(index)/epochs,sum(address)/epochs,sum(finish)/epochs,sum(other)/epochs,sum(total)/epochs)
 
 print
 print
