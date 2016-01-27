@@ -2856,6 +2856,7 @@ int recv_input_queue (struct recvdata* data)
 	    DOWN_QSEM(inputq_hdr);
 	}
 	send_stream (s, inputq_hdr, inputq_buf); // First we send filters downstream	
+	shutdown (s, SHUT_WR);
 	inputq_hdr->read_index = inputq_hdr->write_index = 0;
 	UP_QSEM(inputq_hdr);
     }
