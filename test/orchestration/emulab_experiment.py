@@ -51,7 +51,7 @@ class Server:
 
             results = shell.run(["sudo","/bin/mkdir","/replay_logdb"],cwd = "/")
             results = shell.run(["sudo","/bin/chmod","777","/replay_logdb"],cwd = "/")
-            results = shell.run(["sudo","/bin/rm","-rf","/replay_cache/*"],cwd = "/")
+            results = shell.run(["sudo","/bin/rm","/replay_cache/*"],cwd = "/")
             results = shell.run(["sudo","/bin/chmod","777","/replay_cache"],cwd = "/")
             results = shell.run(["./insert_spec_emulab.sh"], cwd = "/local/src/omniplay/scripts")
             
@@ -434,7 +434,7 @@ def main():
     for test in test_configurations:    
         #startup all aggregators in this test configuration:
         for r in range(num_rounds):
-            test.start_ctrl("arquinn", password,["-seq", "-stats"])
+            test.start_ctrl("arquinn", password,["-seq","-stats"])
             test.get_stats_files("arquinn", password, r)
             sys.stderr.write("finished with " + test.partition_filename+ "\n")
 

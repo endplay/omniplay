@@ -25,6 +25,7 @@ struct extra_data {
     double   dtiming;
     u_long   aindex;
     u_long   start_clock;
+    u_long   rtn_value; //the return value of the syscall.. used entirely for fork. 
     map<u_int, short> rpg_syscalls;
 };
 
@@ -150,7 +151,7 @@ static int can_attach (map<u_int, short> syscalls)
 {
     bool attach = true;
     for (auto iter : syscalls){ 
-	if (iter.second == 192 || iter.second == 91 || iter.second == 120){
+	if (iter.second == 192 || iter.second == 91 || iter.second == 120 || iter.second == -1){
 	    attach = false;
 	}	
     }
@@ -253,6 +254,7 @@ int gen_timings (struct replay_timing* timings,
 int find_processes(map<u_int,u_int> &pid_to_index, 
 		   map<u_int,u_int> &fork_process,
 		   map<u_int,u_int> &fork_offset,
+		   map<pair<u_int,u_int>, u_int> &clone_retvals,
 		   const char* dir, 
 		   const struct replay_timing* timings,
 		   const u_int num, 
@@ -288,7 +290,9 @@ int find_processes(map<u_int,u_int> &pid_to_index,
 	//we're searching for calls to the clone() syscall
 	while((res = parseklog_get_next_psr(log)) != NULL) {
 	    if(res->psr.sysnum == 120 ) { 
-		//these flags are not saved!
+		auto p = make_pair(pid_iter->first, res->index);
+		clone_retvals[p] = res->retval;
+
 		if(procs.count(res->retval) > 0) 
 		{ 
 		    printf("found a fork! res->retval %ld from pid %d, index %lld \n", res->retval, pid_iter->first, res->index);
@@ -632,6 +636,26 @@ int populate_start_clock(vector<struct replay_timing *> &timings_vect,
     }
     return 0;
 }
+int populate_ret_val(vector<struct replay_timing *> &timings_vect, 
+		     vector<struct extra_data*> &edata_vect, 
+		     vector<u_int> &num_el, 
+		     map<pair<u_int,u_int>,u_int> &clone_retvals) { 
+
+    for (u_int i = 0; i < timings_vect.size(); ++i) { 
+	auto timings = timings_vect[i];
+	auto edata = edata_vect[i];
+	auto num = num_el[i];
+
+	for (u_int j = 0; j < num; ++j) { 
+	    auto curr_timing = timings[j];
+	    if (curr_timing.syscall == 120) { 
+		auto p = make_pair(curr_timing.pid, curr_timing.index);
+		edata[j].rtn_value = clone_retvals[p];
+	    }
+	}
+    }
+    return 0;
+}
 
 int build_fork_flags(vector<char*> &fork_flags,
 		     map<u_int,u_int> &pid_to_index,
@@ -697,13 +721,15 @@ int create_multiprocess_ds(vector<u_int> &num_el,
 			   const set<int> procs){
     
     int rc = 0;
-    map<u_int,u_int> pid_to_index;
+    map<u_int, u_int> pid_to_index;
     map<u_int, u_int> fork_process; //maps from index to fork process id
     map<u_int, u_int> fork_offset; //maps from index to fork offset
     map<u_int, map<u_int,u_int>> index_interval_inclusions;
 
+    map<pair<u_int,u_int>, u_int> clone_retvals; //an index from (proc,index) -> child_pid
 
-    rc = find_processes(pid_to_index, fork_process, fork_offset, dir, timings, num, procs);
+
+    rc = find_processes(pid_to_index, fork_process, fork_offset, clone_retvals, dir, timings, num, procs);
     if(rc) { 
 	printf("could not find_processes, rc %d\n", rc);
 	return rc;
@@ -746,6 +772,11 @@ int create_multiprocess_ds(vector<u_int> &num_el,
 	return rc;
     }
 
+    rc = populate_ret_val(timings_vect, edata_vect, num_el,clone_retvals);
+    if(rc) { 
+	printf("could not split_timings, rc %d\n", rc);
+	return rc;
+    }
 
 
     return 0; // on success
@@ -765,6 +796,7 @@ void generate_timings_for_process(struct replay_timing *timings,
      */
 
     int total_time = 0;
+    int child_pid;
     u_int i, j, k; 
     map<u_int,u_int> last_time;    
     map<u_int,short> latest_syscall;    
@@ -780,6 +812,12 @@ void generate_timings_for_process(struct replay_timing *timings,
 	}
 	last_time[pid] = timings[i].ut;
 	timings[i].ut = total_time;
+	
+	//when we see a fork, we need to add the child to the list right?  
+	if (timings[i].syscall == 120) { 
+	    child_pid = edata[i].rtn_value;
+	    latest_syscall[child_pid] = -1; //to indicate that the child just started
+	}
 
 	latest_syscall[pid] = timings[i].syscall;  //update the latest_syscall of this pid to be this syscall
 	edata[i].rpg_syscalls = latest_syscall; //keep track of the latest syscall for each thread
