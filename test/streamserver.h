@@ -27,9 +27,13 @@ struct cache_info {
     struct timespec mtime;
 };
 
-#define DO_DIFT         0
-#define AGG_TYPE_STREAM 1
-#define AGG_TYPE_SEQ    2
+
+// Possible commands
+#define DO_DIFT          0
+#define AGG_TYPE_STREAM  1
+#define AGG_TYPE_SEQ     2
+#define AGG_TYPE_SEQ_PPL 3
+#define AGG_TYPE_SEQ_PPG 4
 
 // Info from description file
 struct epoch_hdr {
