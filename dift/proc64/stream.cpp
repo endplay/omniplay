@@ -24,7 +24,7 @@ using namespace std;
 #include "../taint_nw.h"
 #include "../../test/streamserver.h"
 
-#define DEBUG(x) ((x)==0x3ab)
+//#define DEBUG(x) ((x)==0x192f89 || (x)==0x192f89-0x192dc3 || (x)==0x192f89-0x16db75)
 #define STATS
 
 #define PREPRUNE_NONE   0
@@ -138,6 +138,7 @@ struct timeval output_start_tv = {0,0}, output_end_tv = {0,0};
 struct timeval address_start_tv = {0,0}, address_end_tv = {0,0};
 struct timeval new_live_start_tv = {0,0}, new_live_end_tv = {0,0}, live_done_tv = {0,0}, new_live_send_tv = {0,0};
 struct timeval preprune_local_start_tv = {0,0}, preprune_local_end_tv = {0,0};
+struct timeval preprune_global_start_tv = {0,0}, preprune_global_output_done_tv = {0,0}, preprune_global_address_done_tv = {0,0}, preprune_global_send_done_tv = {0,0}, preprune_global_end_tv = {0,0};
 
 static long ms_diff (struct timeval tv1, struct timeval tv2)
 {
@@ -865,6 +866,11 @@ do_outputs_seq (void* pdata)
 	for (uint32_t i = 0; i < buf_size; i++) {
 	    plog += sizeof(uint32_t);
 	    taint_t value = *((taint_t *) plog);
+#ifdef DEBUG
+	    if (DEBUG(output_token)) {
+		fprintf (debugfile, "output %x has value %lx\n", output_token, (long) value);
+	    }
+#endif
 	    plog += sizeof(taint_t);
 	    if (value) {
 		if (value < 0xe0000001) {
@@ -1230,6 +1236,10 @@ do_addresses (void* pdata)
 			 iter->second);
 	    }
 #endif
+	    if (iter->second == 0xffffffff) {
+		fprintf (stderr, "Bogus address in map - value = %x\n", value);
+		assert (0);
+	    }
 	    if (iter->second < 0xc0000000 && !start_flag) {
 		if (iter->second) {
 #ifdef STATS
@@ -1390,6 +1400,11 @@ print_stats (const char* dirname, u_long mdatasize, u_long odatasize, u_long ida
     fprintf (statsfile, "Total time:              %6ld ms\n", ms_diff (end_tv, start_tv));
     fprintf (statsfile, "Receive time:            %6ld ms\n", ms_diff (recv_done_tv, start_tv));
     fprintf (statsfile, "Preprune local time:     %6ld ms\n", ms_diff (preprune_local_end_tv, preprune_local_start_tv));
+    fprintf (statsfile, "Preprune global time:    %6ld ms\n", ms_diff (preprune_global_end_tv, preprune_global_start_tv));
+    fprintf (statsfile, "Preprune g output time:  %6ld ms\n", ms_diff (preprune_global_output_done_tv, preprune_global_start_tv));
+    fprintf (statsfile, "Preprune g address time: %6ld ms\n", ms_diff (preprune_global_address_done_tv, preprune_global_output_done_tv));
+    fprintf (statsfile, "Preprune g send time:    %6ld ms\n", ms_diff (preprune_global_send_done_tv, preprune_global_address_done_tv));
+    fprintf (statsfile, "Preprune g resize time:  %6ld ms\n", ms_diff (preprune_global_end_tv, preprune_global_send_done_tv));
     fprintf (statsfile, "Receive live set time:   %6ld ms\n", ms_diff (live_receive_end_tv, live_receive_start_tv));
     fprintf (statsfile, "Prune live set time:     %6ld ms\n", ms_diff (prune_2_end_tv, prune_1_start_tv));
     fprintf (statsfile, "Make live set time:      %6ld ms\n", ms_diff (new_live_end_tv, new_live_start_tv));
@@ -1793,6 +1808,11 @@ do_new_live_set (void* data)
 		results.push_back(addr);
 #ifdef STATS
 		linputs++;
+#endif
+	    } else if (val == 0xffffffff) {
+#ifdef STATS
+		// This is a result of the preprune global state
+		lmerge_zeros++;
 #endif
 	    } else {
 		taint_entry* pentry = &merge_log[val-0xe0000001];
@@ -2266,65 +2286,61 @@ preprune_local (u_long& mdatasize, char* output_log, u_long odatasize, taint_t* 
     return 0;
 }
 
-void preprune_global (u_long& mdatasize, char* output_log, u_long odatasize, unordered_map<taint_t,taint_t> address_map)
+// Binary search
+static inline taint_t*
+find_address_value (taint_t val, taint_entry* ts_log, u_long aentries)
 {
-    u_long mentries = mdatasize/sizeof(struct taint_entry);
-    taint_t* stack = astacks[0];
-    struct timeval tv1, tv2;
-
-    gettimeofday(&tv1, NULL);
-    unordered_set<u_long> output_set;
-    u_long* is_used = new u_long[mentries];
-    memset (is_used, 0, mentries);
-
-    // First process outputs 
-    char* plog = output_log;
-    char* outstop = output_log + odatasize;
-    while (plog < outstop) {
-	plog += sizeof(struct taint_creation_info) + sizeof(uint32_t);
-	uint32_t buf_size = *((uint32_t *) plog);
-	plog += sizeof(uint32_t);
-	for (uint32_t i = 0; i < buf_size; i++) {
-	    plog += sizeof(uint32_t);
-	    taint_t value = *((taint_t *) plog);
-	    plog += sizeof(taint_t);
-	    if (value > 0xe0000000) {
-		if (!is_used[value-0xe0000001]) {
-		    is_used[value-0xe0000001] = 1;
-		    int stack_depth = 0;
-		    struct taint_entry* pentry = &merge_log[value-0xe0000001];
-		    stack[stack_depth++] = pentry->p1;
-		    stack[stack_depth++] = pentry->p2;
-		    do {
-			assert (stack_depth < STACK_SIZE);
-			value = stack[--stack_depth];
-			
-			if (value > 0xe0000000) {
-			    if (!is_used[value-0xe0000001]) {
-				is_used[value-0xe0000001] = 1;
-				pentry = &merge_log[value-0xe0000001];
-				stack[stack_depth++] = pentry->p1;
-				stack[stack_depth++] = pentry->p2;
-			    }
-			} else if (value < 0xc0000000) {
-			    output_set.insert(value);
-			}
-		    } while (stack_depth);
-		}
-	    } else if (value < 0xc0000000) {
-		output_set.insert(value);
-	    }
+    u_long min = 0;
+    u_long max = aentries;
+    while (max > min) {
+	u_long mid = (max+min)/2;
+	if (ts_log[mid].p1 < val) {
+	    min = mid + 1;
+	} else if (ts_log[mid].p1 > val) {
+	    max = mid;
+	} else {
+	    return &ts_log[mid].p2;
 	}
     }
+    return NULL;
+}
 
-    // Next process addresses as they are received
-    if (!finish_flag) {
-	uint32_t val, rbucket_cnt = 0, rbucket_stop = 0;
-	GET_QVALUEB(val, inputq_hdr, inputq_buf, iqfd, rbucket_cnt, rbucket_stop);
-	while (val != TERM_VAL) {
-	    auto iter = address_map.find(val);
-	    if (iter != address_map.end()) {
-		taint_t value = iter->second;
+static long
+preprune_global (u_long& mdatasize, char* output_log, u_long odatasize, taint_t* ts_log, u_long adatasize)
+{
+    u_long mentries = mdatasize/sizeof(struct taint_entry);
+    char* outstop = output_log + odatasize;
+    taint_t* stack = astacks[0];
+
+#ifdef STATS
+    gettimeofday(&preprune_global_start_tv, NULL);
+    preprune_prior_mdatasize = mdatasize;
+#endif
+
+    u_char* is_used;
+    try {
+	is_used = new u_char[mentries];
+	memset (is_used, 0, mentries);
+
+	unordered_set<u_long> output_set;
+	uint32_t write_cnt = 0, write_stop = 0;
+
+	// First process outputs 
+	char* plog = output_log;
+#ifdef DEBUG 
+	u_long ocnt = 0;
+#endif
+	while (plog < outstop) {
+	    plog += sizeof(struct taint_creation_info) + sizeof(uint32_t);
+	    uint32_t buf_size = *((uint32_t *) plog);
+	    plog += sizeof(uint32_t);
+	    for (uint32_t i = 0; i < buf_size; i++) {
+		plog += sizeof(uint32_t);
+		taint_t value = *((taint_t *) plog);
+#ifdef DEBUG
+		if (DEBUG(ocnt)) fprintf (debugfile, "preprune global: output %lx has value %x\n", ocnt, value);
+#endif
+		plog += sizeof(taint_t);
 		if (value > 0xe0000000) {
 		    if (!is_used[value-0xe0000001]) {
 			is_used[value-0xe0000001] = 1;
@@ -2335,7 +2351,7 @@ void preprune_global (u_long& mdatasize, char* output_log, u_long odatasize, uno
 			do {
 			    assert (stack_depth < STACK_SIZE);
 			    value = stack[--stack_depth];
-			
+			    
 			    if (value > 0xe0000000) {
 				if (!is_used[value-0xe0000001]) {
 				    is_used[value-0xe0000001] = 1;
@@ -2344,58 +2360,129 @@ void preprune_global (u_long& mdatasize, char* output_log, u_long odatasize, uno
 				    stack[stack_depth++] = pentry->p2;
 				}
 			    } else if (value < 0xc0000000) {
-				output_set.insert(value);
+				if (!start_flag) {
+				    if (output_set.insert(value).second) {
+					PUT_QVALUEB(value, outputq_hdr, outputq_buf, oqfd, write_cnt, write_stop);			
+				    }
+				}
 			    }
 			} while (stack_depth);
 		    }
 		} else if (value < 0xc0000000) {
-		    output_set.insert(value);
+		    if (!start_flag) {
+			if (output_set.insert(value).second) {
+			    PUT_QVALUEB(value, outputq_hdr, outputq_buf, oqfd, write_cnt, write_stop);			
+			}
+		    }
 		}
-	    } else {
-		output_set.insert(val);
+#ifdef DEBUG
+		ocnt++;
+#endif
 	    }
-	    GET_QVALUEB(val, inputq_hdr, inputq_buf, iqfd, rbucket_cnt, rbucket_stop);
-	} 
-
-	// Done reading data - reset queue and wait on sender
-	inputq_hdr->read_index = inputq_hdr->write_index = 0;
-	UP_QSEM (inputq_hdr);
-    }
-
-    // Spit out the outputs 
-    if (!start_flag) {
-	u_long ocnt = 0;
-	uint32_t write_cnt = 0, write_stop = 0;
-	for (auto iter = output_set.begin(); iter != output_set.end(); iter++) {
-	    PUT_QVALUEB(*iter, outputq_hdr, outputq_buf, oqfd, write_cnt, write_stop);
-	    ocnt++;
 	}
-	PUT_QVALUEB(TERM_VAL, outputq_hdr, outputq_buf, oqfd, write_cnt, write_stop);
-	bucket_term (outputq_hdr, outputq_buf, oqfd, write_cnt, write_stop);
-	fprintf (stderr, "%lu values in new output set\n", ocnt);
+	
+#ifdef STATS
+     gettimeofday(&preprune_global_output_done_tv, NULL);
+#endif
+	// Next process addresses as they are received
+	u_long aentries = adatasize/sizeof(taint_entry);
+	if (!finish_flag) {
+	    uint32_t val, rbucket_cnt = 0, rbucket_stop = 0;
+	    GET_QVALUEB(val, inputq_hdr, inputq_buf, iqfd, rbucket_cnt, rbucket_stop);
+	    while (val != TERM_VAL) {
+		taint_t* addr = find_address_value (val, (taint_entry *) ts_log, aentries);
+		if (addr) {
+		    taint_t value = *addr;
+		    if (value > 0xe0000000) {
+			if (!is_used[value-0xe0000001]) {
+			    is_used[value-0xe0000001] = 1;
+			    int stack_depth = 0;
+			    struct taint_entry* pentry = &merge_log[value-0xe0000001];
+			    stack[stack_depth++] = pentry->p1;
+			    stack[stack_depth++] = pentry->p2;
+			    do {
+				assert (stack_depth < STACK_SIZE);
+				value = stack[--stack_depth];
+				
+				if (value > 0xe0000000) {
+				    if (!is_used[value-0xe0000001]) {
+					is_used[value-0xe0000001] = 1;
+					pentry = &merge_log[value-0xe0000001];
+					stack[stack_depth++] = pentry->p1;
+					stack[stack_depth++] = pentry->p2;
+				    }
+				} else if (value < 0xc0000000) {
+				    if (!start_flag) {
+					if (output_set.insert(value).second) {
+					    PUT_QVALUEB(value, outputq_hdr, outputq_buf, oqfd, write_cnt, write_stop);			
+					}
+				    }
+				}
+			    } while (stack_depth);
+			}
+		    } else if (value < 0xc0000000) {
+			if (!start_flag) {
+			    if (output_set.insert(value).second) {
+				PUT_QVALUEB(value, outputq_hdr, outputq_buf, oqfd, write_cnt, write_stop);			
+			    }
+			}
+		    }
+		} else {
+		    if (!start_flag) {
+			if (output_set.insert(val).second) {
+			    PUT_QVALUEB(val, outputq_hdr, outputq_buf, oqfd, write_cnt, write_stop);			
+			}
+		    }
+		}
+		GET_QVALUEB(val, inputq_hdr, inputq_buf, iqfd, rbucket_cnt, rbucket_stop);
+	    } 
+	    
+	    // Done reading data - reset queue and wait on sender
+	    inputq_hdr->read_index = inputq_hdr->write_index = 0;
+	    UP_QSEM (inputq_hdr);
+	}
+	
+#ifdef STATS
+	gettimeofday(&preprune_global_address_done_tv, NULL);
+#endif
+	// Spit out the outputs 
+	if (!start_flag) {
+	    PUT_QVALUEB(TERM_VAL, outputq_hdr, outputq_buf, oqfd, write_cnt, write_stop);
+	    bucket_term (outputq_hdr, outputq_buf, oqfd, write_cnt, write_stop);
+	    
+	    // Wait until the data has been acknowledged
+	    DOWN_QSEM(outputq_hdr);
+	}
 
-	// Wait until the data has been acknowledged
-	DOWN_QSEM(outputq_hdr);
+#ifdef STATS
+	gettimeofday(&preprune_global_send_done_tv, NULL);
+#endif
+	
+    } catch (bad_alloc& ba) {
+	fprintf (stderr, "Cannot preprune due to lack of memory\n");
+	return -1;
     }
-    gettimeofday(&tv2, NULL);
+
+    u_long* redirects = new u_long[mentries];
+    memset (redirects, 0, mentries*sizeof(u_long));
 
     u_long new_index = 0;
     for (u_long i = 0; i < mentries; i++) {
 	if (is_used[i]) {
-	    is_used[i] = new_index;
+	    redirects[i] = new_index;
 	    struct taint_entry* pentry = &merge_log[new_index];
 	    merge_log[new_index++] = merge_log[i];
 	    if (pentry->p1 > 0xe0000001) {
-		pentry->p1 = 0xe0000001 + is_used[pentry->p1-0xe0000001];
+		pentry->p1 = 0xe0000001 + redirects[pentry->p1-0xe0000001];
 	    } 
 	    if (pentry->p2 > 0xe0000001) {
-		pentry->p2 = 0xe0000001 + is_used[pentry->p2-0xe0000001];
+		pentry->p2 = 0xe0000001 + redirects[pentry->p2-0xe0000001];
 	    } 
-	}
+	} 
     }
     mdatasize = new_index*sizeof(struct taint_entry);
     
-    plog = output_log;
+    char* plog = output_log;
     while (plog < outstop) {
 	plog += sizeof(struct taint_creation_info) + sizeof(uint32_t);
 	uint32_t buf_size = *((uint32_t *) plog);
@@ -2403,23 +2490,34 @@ void preprune_global (u_long& mdatasize, char* output_log, u_long odatasize, uno
 	for (uint32_t i = 0; i < buf_size; i++) {
 	    plog += sizeof(uint32_t);
 	    if (*((taint_t *) plog) > 0xe0000000) {
-		*((taint_t *) plog) = 0xe0000001 + is_used[*((taint_t *) plog)-0xe0000001];
+		*((taint_t *) plog) = 0xe0000001 + redirects[*((taint_t *) plog)-0xe0000001];
 	    }
 	    plog += sizeof(taint_t);
 	}
     }
 
-    for (auto iter = address_map.begin(); iter != address_map.end(); iter++) {
-	if (iter->second > 0xe0000000) {
-	    iter->second = 0xe0000001 + is_used[iter->second-0xe0000001];
+    taint_t* paptr = ts_log;
+    taint_t* pastop = ts_log + adatasize/sizeof(taint_t);
+    while (paptr < pastop) {
+	paptr++;
+	if (*paptr > 0xe0000000) {
+	    if (is_used[*paptr-0xe0000001]) {
+		*paptr = 0xe0000001 + redirects[*paptr-0xe0000001];
+	    } else {
+		*paptr = 0xffffffff; // check - should never be dereferenced
+	    }
 	}
+	paptr++;
     }
 
-    u_long cnt = 0;
-    for (u_long i = 0; i < mentries; i++) {
-	if (is_used[i]) cnt++;
-    }
-    fprintf (stderr, "%lu merge log entries used out of %lu in %ld ms\n", cnt, mentries, ms_diff(tv2,tv1));
+    delete [] is_used;
+    delete [] redirects;
+
+#ifdef STATS
+	gettimeofday(&preprune_global_end_tv, NULL);
+#endif
+	
+    return 0;
 }
 
 // Process one epoch for sequential forward strategy 
@@ -2449,30 +2547,16 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 
     bucket_init();
 
-#if 0
-    {
-	unordered_set<taint_entry,TEHash> uniques;
-	u_long i;
-	for (i = 0; i < mdatasize/sizeof(struct taint_entry); i++) {
-	    uniques.insert(merge_log[i]);
-	}
-	fprintf (stderr, "%d unique entries out of %lu total entries in merge log\n", uniques.size(), i);
-    }
-#endif
-
     if (do_preprune == PREPRUNE_LOCAL) {
 	if (preprune_local (mdatasize, output_log, odatasize, ts_log, adatasize) < 0) {
 	    preprune_local_lowmem (mdatasize, output_log, odatasize, ts_log, adatasize);
 	}
-    }
-
-    if (do_preprune == PREPRUNE_GLOBAL) {
-	build_address_map (address_map, ts_log, adatasize);
-	preprune_global (mdatasize, output_log, odatasize, address_map);
+    } else if (do_preprune == PREPRUNE_GLOBAL) {
+	preprune_global (mdatasize, output_log, odatasize, ts_log, adatasize);
 	bucket_init();
-    } else {
-	if (!finish_flag) build_map_tid = spawn_map_thread (&address_map, ts_log, adatasize);
     }
+	
+    if (!finish_flag) build_map_tid = spawn_map_thread (&address_map, ts_log, adatasize);
 
     if (!start_flag) {
 	// Wait for preceding epoch to send list of live addresses
@@ -2529,10 +2613,8 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	gettimeofday(&index_wait_start_tv, NULL);
 #endif
 
-	if (do_preprune != PREPRUNE_GLOBAL) {
-	    rc = pthread_join(build_map_tid, NULL);
-	    if (rc < 0) return rc;
-	}
+	rc = pthread_join(build_map_tid, NULL);
+	if (rc < 0) return rc;
 
 #ifdef STATS
 	gettimeofday(&index_wait_end_tv, NULL);
@@ -2772,6 +2854,7 @@ int recv_input_queue (struct recvdata* data)
 	    DOWN_QSEM(inputq_hdr);
 	}
 	send_stream (s, inputq_hdr, inputq_buf); // First we send filters downstream	
+	shutdown (s, SHUT_WR);
 	inputq_hdr->read_index = inputq_hdr->write_index = 0;
 	UP_QSEM(inputq_hdr);
     }
