@@ -128,6 +128,8 @@ u_long prune_lookup = 0, prune_indirect = 0;
 u_long total_address_ms = 0, longest_address_ms = 0, total_output_ms = 0, longest_output_ms = 0, total_new_live_set_ms = 0, longest_new_live_set_ms = 0, total_prune_1_ms = 0, longest_prune_1_ms = 0, total_prune_2_ms = 0;
 u_long preprune_prior_mdatasize = 0;
 
+u_long most_prune_lookups = 0, most_prune_cnt = 0, first_pass_prune_cnt = 0, most_simplify_cnt = 0, first_pass_simplify_cnt = 0;
+
 struct timeval start_tv, recv_done_tv, finish_start_tv, end_tv;
 struct timeval live_receive_start_tv = {0,0}, live_receive_end_tv = {0,0};
 struct timeval prune_1_start_tv = {0,0}, prune_1_end_tv = {0,0};
@@ -1435,7 +1437,12 @@ print_stats (const char* dirname, u_long mdatasize, u_long odatasize, u_long ida
 
     fprintf (statsfile, "Received %ld values in live set\n", (long) live_set_size);
     fprintf (statsfile, "Output directs %lu indirects %lu values %lu quashed %lu merges %lu\n", directs, indirects, values, quashed, output_merges);
-    fprintf (statsfile, "Prune lookups %ld indirects %ld\n", prune_lookup, prune_indirect);
+    fprintf (statsfile, "Prune lookups %ld Most %ld\n", prune_lookup, most_prune_lookups);
+    fprintf (statsfile, "FP Prune Cnt %ld, Most %ld\n", most_prune_cnt, first_pass_prune_cnt);
+    fprintf (statsfile, "FP Simplify Cnt %ld, Most %ld\n", most_prune_cnt, first_pass_prune_cnt);
+
+
+most_simplify_cnt = 0, first_pass_simplify_cnt = 0;
     fprintf (statsfile, "Pruned %ld simplified %ld unchanged %ld of %ld merge values using live set\n", 
 	     prune_cnt, simplify_cnt, mdatasize/sizeof(struct taint_entry)-prune_cnt-simplify_cnt,
 	     mdatasize/sizeof(struct taint_entry));
@@ -1446,6 +1453,10 @@ print_stats (const char* dirname, u_long mdatasize, u_long odatasize, u_long ida
 	     new_live_inputs, new_live_merges, new_live_merge_zeros, new_live_notlive);
     fprintf (statsfile, "Unique indirects %ld\n", (long) resolved.size());
     fprintf (statsfile, "Values rcvd %lu sent %lu\n", values_rcvd, values_sent);
+
+
+
+
     if (preprune_prior_mdatasize) {
 	fprintf (statsfile, "Local preprune reduced merge data size from %lu to %lu (%.3lf%%)\n", preprune_prior_mdatasize, mdatasize, 
 		 (double)(preprune_prior_mdatasize-mdatasize)*100.0/(double)(preprune_prior_mdatasize));
@@ -1585,8 +1596,11 @@ struct prune_pass_1 {
     taint_entry*             mend; 
     unordered_set<uint32_t>* live_set;
 #ifdef STATS
-  struct timeval             start_tv;
-  struct timeval             end_tv;
+    struct timeval           start_tv;
+    struct timeval           end_tv;
+    u_long                   prune_cnt;
+    u_long                   simplify_cnt;
+    u_long                   prune_lookups;
 #endif
 };
 
@@ -1603,18 +1617,29 @@ prune_range_pass_1 (void* data)
 #endif
     while (mptr < mend) {
 	if (mptr->p1 < 0xc0000000) {
+#ifdef STATS
+	    pp1->prune_lookups++;
+#endif	    
 	    if (live_set->count(mptr->p1) == 0) {
 		mptr->p1 = 0;
 	    } 
 	}
 	if (mptr->p2 < 0xc0000000) {
+#ifdef STATS
+	    pp1->prune_lookups++;
+#endif	    
 	    if (live_set->count(mptr->p2) == 0) {
 		mptr->p2 = 0;
 	    } 
 	}
+#ifdef STATS
+	if (mptr->p1 == 0 && mptr->p2 == 0) pp1->prune_cnt++;
+	else if (mptr->p1 == 0 || mptr->p2 == 0) pp1->simplify_cnt++;
+#endif
 	mptr++;
     }
 #ifdef STATS
+
     gettimeofday(&pp1->end_tv, NULL);
 #endif
 
@@ -1702,6 +1727,17 @@ prune_merge_log (u_long mdatasize, unordered_set<uint32_t>& live_set)
 	long rc = pthread_join(pp[i].tid, NULL);
 	if (rc < 0) fprintf (stderr, "Cannot join prune thread, rc=%ld\n", rc); 
 #ifdef STATS
+	if (pp[i].prune_lookups > most_prune_lookups) most_prune_lookups = pp[i].prune_lookups;
+	prune_lookup  += pp[i].prune_lookups;
+
+	if (pp[i].prune_cnt > most_prune_cnt) most_prune_cnt = pp[i].prune_cnt;
+	first_pass_prune_cnt  += pp[i].prune_cnt;
+	
+	if (pp[i].simplify_cnt > most_simplify_cnt) most_simplify_cnt = pp[i].simplify_cnt;
+	first_pass_simplify_cnt += pp[i].simplify_cnt;
+
+
+	
 	u_long ms = ms_diff(pp[i].end_tv, pp[i].start_tv);
 	total_prune_1_ms += ms;
 	if (ms > longest_prune_1_ms) longest_prune_1_ms = ms;
