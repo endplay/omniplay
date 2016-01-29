@@ -771,40 +771,54 @@ static void map_iter_par (taint_t value, uint32_t output_token, taint_t* stack, 
     }
 }
 
-long setup_aggregation (const char* dirname, int& outputfd, int& inputfd, int& addrsfd)
+static long 
+setup_aggregation (const char* dirname, int& outputfd, int& inputfd, int& addrsfd)
 {
     char outputfile[256], inputfile[256], addrsfile[256];
-    
+
+#ifdef STATS
+    gettimeofday(&start_tv, NULL);
+#endif
+
     astacks = new stacktype[parallelize];
 
-    long rc = mkdir(dirname, 0755);
-    if (rc < 0 && errno != EEXIST) {
-	fprintf (stderr, "Cannot create output dir %s, errno=%d\n", dirname, errno);
-	return rc;
-    }
-
     sprintf (outputfile, "%s/dataflow.results", dirname);
-    outputfd = open (outputfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    for (u_int i = 1; i < strlen(outputfile); i++) {
+	if (outputfile[i] == '/') outputfile[i] = '.';
+    }
+    outputfd = shm_open (outputfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
     if (outputfd < 0) {
-	fprintf (stderr, "Cannot create dataflow.results file, errno=%d\n", errno);
+	fprintf (stderr, "Cannot create output file, errno=%d\n", errno);
 	return -1;
     }
 
     sprintf (addrsfile, "%s/merge-addrs", dirname);
-    addrsfd = open (addrsfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    for (u_int i = 1; i < strlen(addrsfile); i++) {
+	if (addrsfile[i] == '/') addrsfile[i] = '.';
+    }
+    addrsfd = shm_open (addrsfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
     if (addrsfd < 0) {
 	fprintf (stderr, "Cannot create merge-addrs file, errno=%d\n", errno);
 	return -1;
     }
 
     sprintf (inputfile, "%s/tokens", dirname);
-    inputfd = open (inputfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    for (u_int i = 1; i < strlen(inputfile); i++) {
+	if (inputfile[i] == '/') inputfile[i] = '.';
+    }
+    inputfd = shm_open (inputfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
     if (inputfd < 0) {
 	fprintf (stderr, "Cannot create tokens file, errno=%d\n", errno);
 	return -1;
     }
 
 #ifdef DEBUG
+    long rc = mkdir(dirname, 0755);
+    if (rc < 0 && errno != EEXIST) {
+	fprintf (stderr, "Cannot create output dir %s, errno=%d\n", dirname, errno);
+	return rc;
+    }
+
     char debugname[256];
     sprintf (debugname, "%s/stream-debug", dirname);
     debugfile = fopen (debugname, "w");
@@ -814,9 +828,81 @@ long setup_aggregation (const char* dirname, int& outputfd, int& inputfd, int& a
     }
 #endif
 
-#ifdef STATS
-    gettimeofday(&start_tv, NULL);
-#endif
+    return 0;
+}
+
+static long
+finish_aggregation (int addrsfd, int inputfd, int outputfd, uint32_t output_token, uint32_t tokens, 
+		    char* token_log, u_long idatasize, char* output_log, u_long odatasize)
+{
+    // First write out the token counts
+    long rc = ftruncate (addrsfd, sizeof(output_token) + sizeof(token));
+    if (rc < 0) {
+	fprintf (stderr, "Cannot ftruncate addrs file,errno=%d\n", errno);
+	return rc;
+    }
+    rc = write (addrsfd, &output_token, sizeof(output_token));
+    if (rc != sizeof(output_token)) {
+	fprintf (stderr, "Unable to write output token, rc=%ld, errno=%d\n", rc, errno);
+	return rc;
+    }
+    rc = write (addrsfd, &tokens, sizeof(tokens));
+    if (rc != sizeof(tokens)) {
+	fprintf (stderr, "Unable to write input token , rc=%ld, errno=%d\n", rc, errno);
+	return rc;
+    }
+    close(addrsfd);
+    
+    // Then the input tokens
+    rc = ftruncate (inputfd, idatasize);
+    if (rc < 0) {
+	fprintf (stderr, "Cannot ftruncate tokens file,errno=%d\n", errno);
+	return rc;
+    }
+    u_long bytes_written = 0;
+    while (bytes_written < idatasize) {
+	rc = write (inputfd, token_log+bytes_written, idatasize-bytes_written);
+	if (rc <= 0) {
+	    fprintf (stderr, "Write of tokens data returns %ld\n", rc);
+	    return -1;
+	} 
+	bytes_written += idatasize;
+    }
+    close (inputfd);
+
+    // Then the output tokens 
+    char* optr = output_log;
+    u_long osize = 0;
+    while ((u_long) optr < (u_long) output_log + odatasize) {
+	osize += sizeof(struct taint_creation_info);
+	optr += sizeof(struct taint_creation_info) + sizeof(uint32_t);
+	uint32_t buf_size = *((uint32_t *) optr);
+	osize += sizeof(uint32_t);
+	optr += sizeof(uint32_t) + buf_size*(sizeof(uint32_t)+sizeof(taint_t));
+    }
+    rc = ftruncate (outputfd, osize);
+    if (rc < 0) {
+	fprintf (stderr, "Cannot ftruncate output tokens file, errno=%d\n", errno);
+	return rc;
+    }
+    optr = output_log;
+    while ((u_long) optr < (u_long) output_log + odatasize) {
+	rc = write (outputfd, optr, sizeof(struct taint_creation_info));
+	if (rc != sizeof(struct taint_creation_info)) {
+	    fprintf (stderr, "Write of output token returns %ld\n", rc);
+	    return -1;
+	} 
+	optr += sizeof(struct taint_creation_info) + sizeof(uint32_t);
+	uint32_t buf_size = *((uint32_t *) optr);
+	rc = write (outputfd, optr, sizeof(uint32_t));
+	if (rc != sizeof(uint32_t)) {
+	    fprintf (stderr, "Write of output size returns %ld\n", rc);
+	    return -1;
+	} 
+	optr += sizeof(uint32_t) + buf_size*(sizeof(uint32_t)+sizeof(taint_t));
+    }
+    close (outputfd);
+
 
     return 0;
 }
@@ -1464,7 +1550,7 @@ long stream_epoch (const char* dirname, int port)
     char* output_log, *token_log;
     taint_t *ts_log;
     u_long idatasize = 0, odatasize = 0, mdatasize = 0, adatasize = 0;
-    uint32_t buf_size, tokens, output_token = 0;
+    uint32_t tokens, output_token = 0;
     int outputfd, inputfd, addrsfd;
     unordered_map<taint_t,taint_t> address_map;
     pthread_t build_map_tid = 0;
@@ -1530,47 +1616,7 @@ long stream_epoch (const char* dirname, int port)
 	}
     }
 
-    rc = write (addrsfd, &output_token, sizeof(output_token));
-    if (rc != sizeof(output_token)) {
-	fprintf (stderr, "Unable to write output token, rc=%ld, errno=%d\n", rc, errno);
-	return rc;
-    }
-    rc = write (addrsfd, &tokens, sizeof(tokens));
-    if (rc != sizeof(tokens)) {
-	fprintf (stderr, "Unable to write input token , rc=%ld, errno=%d\n", rc, errno);
-	return rc;
-    }
-    close(addrsfd);
-
-    // Need to persist the input and output token data
-    u_long bytes_written = 0;
-    while (bytes_written < idatasize) {
-	rc = write (inputfd, token_log+bytes_written, idatasize-bytes_written);
-	if (rc <= 0) {
-	    fprintf (stderr, "Write of tokens data returns %ld\n", rc);
-	    return -1;
-	} 
-	bytes_written += idatasize;
-    }
-    close (inputfd);
-
-    char* optr = output_log;
-    while ((u_long) optr < (u_long) output_log + odatasize) {
-	rc = write (outputfd, optr, sizeof(struct taint_creation_info));
-	if (rc != sizeof(struct taint_creation_info)) {
-	    fprintf (stderr, "Write of output token returns %ld\n", rc);
-	    return -1;
-	} 
-	optr += sizeof(struct taint_creation_info) + sizeof(uint32_t);
-	buf_size = *((uint32_t *) optr);
-	rc = write (outputfd, optr, sizeof(uint32_t));
-	if (rc != sizeof(uint32_t)) {
-	    fprintf (stderr, "Write of output size returns %ld\n", rc);
-	    return -1;
-	} 
-	optr += sizeof(uint32_t) + buf_size*(sizeof(uint32_t)+sizeof(taint_t));
-    }
-    close (outputfd);
+    finish_aggregation (addrsfd, inputfd, outputfd, output_token, tokens, token_log, idatasize, output_log, odatasize);
 
 #ifdef STATS
     gettimeofday (&end_tv, NULL);
@@ -2529,7 +2575,7 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
     char* output_log, *token_log;
     taint_t *ts_log;
     u_long idatasize = 0, odatasize = 0, mdatasize = 0, adatasize = 0;
-    uint32_t buf_size, tokens, output_token = 0;
+    uint32_t tokens, output_token = 0;
     int outputfd, inputfd, addrsfd;
     unordered_set<uint32_t> live_set;
     unordered_map<taint_t,taint_t> address_map;
@@ -2659,47 +2705,7 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	}
     }
 
-    rc = write (addrsfd, &output_token, sizeof(output_token));
-    if (rc != sizeof(output_token)) {
-	fprintf (stderr, "Unable to write output token, rc=%ld, errno=%d\n", rc, errno);
-	return rc;
-    }
-    rc = write (addrsfd, &tokens, sizeof(tokens));
-    if (rc != sizeof(tokens)) {
-	fprintf (stderr, "Unable to write input token , rc=%ld, errno=%d\n", rc, errno);
-	return rc;
-    }
-    close(addrsfd);
-
-    // Need to persist the input and output token data
-    u_long bytes_written = 0;
-    while (bytes_written < idatasize) {
-	rc = write (inputfd, token_log+bytes_written, idatasize-bytes_written);
-	if (rc <= 0) {
-	    fprintf (stderr, "Write of tokens data returns %ld\n", rc);
-	    return -1;
-	} 
-	bytes_written += idatasize;
-    }
-    close (inputfd);
-
-    char* optr = output_log;
-    while ((u_long) optr < (u_long) output_log + odatasize) {
-	rc = write (outputfd, optr, sizeof(struct taint_creation_info));
-	if (rc != sizeof(struct taint_creation_info)) {
-	    fprintf (stderr, "Write of output token returns %ld\n", rc);
-	    return -1;
-	} 
-	optr += sizeof(struct taint_creation_info) + sizeof(uint32_t);
-	buf_size = *((uint32_t *) optr);
-	rc = write (outputfd, optr, sizeof(uint32_t));
-	if (rc != sizeof(uint32_t)) {
-	    fprintf (stderr, "Write of output size returns %ld\n", rc);
-	    return -1;
-	} 
-	optr += sizeof(uint32_t) + buf_size*(sizeof(uint32_t)+sizeof(taint_t));
-    }
-    close (outputfd);
+    finish_aggregation (addrsfd, inputfd, outputfd, output_token, tokens, token_log, idatasize, output_log, odatasize);
 
 #ifdef STATS
     gettimeofday(&end_tv, NULL);

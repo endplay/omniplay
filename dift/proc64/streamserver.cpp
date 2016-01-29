@@ -600,7 +600,7 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	for (u_long i = 0; i < epochs; i++) {
 	    char pathname[PATHLEN];
 	    sprintf (pathname, "/tmp/%ld/merge-addrs", i);
-	    send_file (s, pathname, "merge-addrs");
+	    send_shmem (s, pathname, "merge-addrs");
 	    for (int j = 0; j < ehdr.parallelize; j++) {
 		char filename[256];
 		sprintf (pathname, "/tmp/%ld/merge-outputs-resolved-%d", i, j);
@@ -608,9 +608,9 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 		send_shmem (s, pathname, filename);
 	    }
 	    sprintf (pathname, "/tmp/%ld/tokens", i);
-	    send_file (s, pathname, "tokens");
+	    send_shmem (s, pathname, "tokens");
 	    sprintf (pathname, "/tmp/%ld/dataflow.results", i);
-	    send_file (s, pathname, "dataflow.results");
+	    send_shmem (s, pathname, "dataflow.results");
 	}
     }
     
