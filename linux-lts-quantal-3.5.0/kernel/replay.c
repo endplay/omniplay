@@ -2404,9 +2404,8 @@ void ret_from_fork_replay (void)
 	}
 
 	MPRINT("Pid %d sleeping after returning from fork call.\n", current->pid);
-	ret = wait_event_interruptible_timeout (prept->rp_waitq, prept->rp_status == REPLAY_STATUS_RUNNING, SCHED_TO);
-
-
+	//I have no idea why, but on multi-proc replays the processes don't seem to wakeup without that prg->rp_try_to_exit flag being there...? 
+	ret = wait_event_interruptible_timeout (prept->rp_waitq, prg->rg_try_to_exit || prept->rp_status == REPLAY_STATUS_RUNNING, SCHED_TO);
 
 	if (ret == 0) printk ("Replay pid %d timed out waiting for cloned thread to go, status \n", current->pid);
 	if (prg->rg_try_to_exit) {
@@ -5117,13 +5116,19 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 		while (!(prt->rp_status == REPLAY_STATUS_RUNNING || (prt->rp_replay_exit && prect->rp_in_ptr == prt->rp_out_ptr+1))) {	
 			MPRINT ("Replay pid %d waiting for clock value %ld on syscall entry but current clock value is %ld\n", current->pid, start_clock, *(prt->rp_preplay_clock));
 			rg_unlock (prg->rg_rec_group);
-			ret = wait_event_interruptible_timeout (prt->rp_waitq, prt->rp_status == REPLAY_STATUS_RUNNING || prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && prect->rp_in_ptr == prt->rp_out_ptr+1), SCHED_TO);
+			//I have no idea why, but on multi-proc replays the processes don't seem to wakeup without that prg->rp_try_to_exit flag being there...? 
+			ret = wait_event_interruptible_timeout (prt->rp_waitq, prg->rg_try_to_exit || prt->rp_status == REPLAY_STATUS_RUNNING || prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && prect->rp_in_ptr == prt->rp_out_ptr+1), SCHED_TO);
 			rg_lock (prg->rg_rec_group);
 			if (ret == 0) printk ("Replay pid %d timed out waiting for clock value %ld on syscall entry but current clock value is %ld\n", current->pid, start_clock, *(prt->rp_preplay_clock));
 			if (prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && (prect->rp_in_ptr == prt->rp_out_ptr+1))) {
 				MPRINT ("Replay pid %d woken up to die on entrance in_ptr %lu out_ptr %lu\n", current->pid, prect->rp_in_ptr, prt->rp_out_ptr);
 				rg_unlock (prg->rg_rec_group);
 				sys_exit (0);
+			}
+			if (prg->rg_try_to_exit) {
+			    printk ("Trying to exit (signal fatal? %d) - so just proceed\n", fatal_signal_pending(current));
+			    rg_unlock (prg->rg_rec_group);
+			    sys_exit_group (0);
 			}
 			if (ret == -ERESTARTSYS) {
 				if (prg->rg_try_to_exit) {
@@ -5297,9 +5302,9 @@ get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, stru
 		while (!(prt->rp_status == REPLAY_STATUS_RUNNING || (prt->rp_replay_exit && prect->rp_in_ptr == prt->rp_out_ptr+1))) {   
 			MPRINT ("Replay pid %d waiting for clock value %ld on syscall exit but current clock value is %ld\n", current->pid, stop_clock, *(prt->rp_preplay_clock));
 
-
 			rg_unlock (prg->rg_rec_group);
-			ret = wait_event_interruptible_timeout (prt->rp_waitq, prt->rp_status == REPLAY_STATUS_RUNNING || prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && prect->rp_in_ptr == prt->rp_out_ptr+1), SCHED_TO);
+			//I have no idea why, but on multi-proc replays the processes don't seem to wakeup without that prg->rp_try_to_exit flag being there...? 
+			ret = wait_event_interruptible_timeout (prt->rp_waitq, prg->rg_try_to_exit || prt->rp_status == REPLAY_STATUS_RUNNING || prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && prect->rp_in_ptr == prt->rp_out_ptr+1), SCHED_TO);
 			rg_lock (prg->rg_rec_group);
 
 
@@ -5308,6 +5313,11 @@ get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, stru
 				rg_unlock (prg->rg_rec_group);
 				MPRINT ("Replay pid %d woken up to die on exit\n", current->pid);
 				sys_exit (0);
+			}
+			if (prg->rg_try_to_exit) {
+			    printk ("Trying to exit (signal fatal? %d) - so just proceed\n", fatal_signal_pending(current));
+			    rg_unlock (prg->rg_rec_group);
+			    sys_exit_group (0);
 			}
 			if (ret == -ERESTARTSYS) {
 				if (prg->rg_try_to_exit) {
@@ -6015,7 +6025,8 @@ sys_pthread_block (u_long clock)
 			MPRINT ("Replay pid %d waiting for user clock value %ld\n", current->pid, clock);
 			
 			rg_unlock (prg->rg_rec_group);
-			ret = wait_event_interruptible_timeout (prt->rp_waitq, prt->rp_status == REPLAY_STATUS_RUNNING || prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && prt->rp_record_thread->rp_in_ptr == prt->rp_out_ptr), SCHED_TO);
+			//I have no idea why, but on multi-proc replays the processes don't seem to wakeup without that prg->rp_try_to_exit flag being there...? 
+			ret = wait_event_interruptible_timeout (prt->rp_waitq,prg->rg_try_to_exit || prt->rp_status == REPLAY_STATUS_RUNNING || prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && prt->rp_record_thread->rp_in_ptr == prt->rp_out_ptr), SCHED_TO);
 			rg_lock (prg->rg_rec_group);
 			if (ret == 0) printk ("Replay pid %d timed out waiting for user clock value %ld\n", current->pid, clock);
 			if (prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && (prt->rp_record_thread->rp_in_ptr == prt->rp_out_ptr))) break; // exit condition below
@@ -6034,6 +6045,12 @@ sys_pthread_block (u_long clock)
 				rg_unlock (prg->rg_rec_group);
 				msleep (1000);
 				rg_lock (prg->rg_rec_group);
+			}
+			//see above, for some reason the ERESTARTSYS doesn't get called in our multi-process case
+			if (prg->rg_try_to_exit) {
+			    printk ("Trying to exit (signal fatal? %d) - so just proceed\n", fatal_signal_pending(current));
+			    rg_unlock (prg->rg_rec_group);
+			    sys_exit_group (0);
 			}
 		}
 		if (prg->rg_rec_group->rg_mismatch_flag || (prt->rp_replay_exit && (prt->rp_record_thread->rp_in_ptr == prt->rp_out_ptr))) {
@@ -6078,7 +6095,7 @@ long try_to_exit (u_long pid)
 		    original = rpt;
 		    do {
 			printk("waking up the waitq for task %d\n", rpt->rp_replay_pid);
-			wake_up(&(rpt->rp_waitq));
+			wake_up_interruptible(&(rpt->rp_waitq));
 			rpt = rpt->rp_next_thread;
 		    } while (rpt != original);
 		    rg_unlock(rpt->rp_group->rg_rec_group);
