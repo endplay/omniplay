@@ -61,6 +61,19 @@ struct epoch_ctl {
     pid_t wait_pid;
 };
 
+bool test_and_set(vector<struct cache_info> &cfiles, struct cache_info &cinfo){
+    bool found = false;
+    for(struct cache_info c : cfiles) { 	
+	if (c.dev == cinfo.dev && c.ino == cinfo.ino && 
+	    c.mtime.tv_sec == cinfo.mtime.tv_sec &&
+	    c.mtime.tv_nsec == cinfo.mtime.tv_nsec) 
+	    found = true;
+    }
+    if (!found) cfiles.push_back(cinfo);
+    return found;
+}
+
+
 int connect_to_server (const char* hostname, int port)
 {
     // Connect to streamserver
@@ -276,6 +289,8 @@ int main (int argc, char* argv[])
 	    fprintf (stderr, "Cannot open replay dir %s\n", dirname);
 	    return -1;
 	}
+	//unordered set of already seen cache files (optimizatino for nginx, which stinks because there are like, 100k files)
+
 	while ((de = readdir(dir)) != NULL) {
 	    if (!strcmp(de->d_name, "ckpt") || !strcmp(de->d_name, "mlog") || !strncmp(de->d_name, "ulog", 4)) {
 		struct replay_path pathname;
@@ -302,7 +317,8 @@ int main (int argc, char* argv[])
 			    cinfo.dev = pretvals->dev;
 			    cinfo.ino = pretvals->ino;
 			    cinfo.mtime = pretvals->mtime;
-			    cache_files.push_back(cinfo);
+			    test_and_set(cache_files, cinfo);
+			    //cache_files.push_back(cinfo);
 			}
 		    } else if (res->psr.sysnum == 11) {
 			struct execve_retvals* pretvals = (struct execve_retvals *) res->retparams;
@@ -310,7 +326,8 @@ int main (int argc, char* argv[])
 			    cinfo.dev = pretvals->data.same_group.dev;
 			    cinfo.ino = pretvals->data.same_group.ino;
 			    cinfo.mtime = pretvals->data.same_group.mtime;
-			    cache_files.push_back(cinfo);
+			    test_and_set(cache_files, cinfo);
+//			    cache_files.push_back(cinfo);
 			}
 		    } else if (res->psr.sysnum == 86 || res->psr.sysnum == 192) {
 			struct mmap_pgoff_retvals* pretvals = (struct mmap_pgoff_retvals *) res->retparams;
@@ -318,7 +335,8 @@ int main (int argc, char* argv[])
 			    cinfo.dev = pretvals->dev;
 			    cinfo.ino = pretvals->ino;
 			    cinfo.mtime = pretvals->mtime;
-			    cache_files.push_back(cinfo);
+			    test_and_set(cache_files, cinfo);
+//			    cache_files.push_back(cinfo);
 			}
 		    }
 		}
@@ -327,6 +345,9 @@ int main (int argc, char* argv[])
 	}
 	closedir(dir);
     }        
+
+    fprintf(stderr, "found that we need %d files\n", cache_files.size());
+    
 
     // Set up the aggregators first
     for (u_int i = 0; i < conf.aggregators.size(); i++) {
