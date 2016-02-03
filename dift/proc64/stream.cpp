@@ -23,8 +23,15 @@ using namespace std;
 #include "../token.h"
 #include "../taint_nw.h"
 #include "../../test/streamserver.h"
+#include "util.h" //David's PagedBitset
 
-#define DEBUG(x) ((x)==0x3ab)
+#define MAX_TAINTS 0xc0000000
+#define PAGE_BITS 4096
+
+typedef PagedBitmap<MAX_TAINTS, PAGE_BITS> bitmap;
+
+
+#define DEBUG(x) ((x)==0x7e5751)
 #define STATS
 
 #define PREPRUNE_NONE   0
@@ -128,6 +135,8 @@ u_long prune_lookup = 0, prune_indirect = 0;
 u_long total_address_ms = 0, longest_address_ms = 0, total_output_ms = 0, longest_output_ms = 0, total_new_live_set_ms = 0, longest_new_live_set_ms = 0, total_prune_1_ms = 0, longest_prune_1_ms = 0, total_prune_2_ms = 0;
 u_long preprune_prior_mdatasize = 0;
 
+u_long most_prune_lookups = 0, first_pass_prune_lookups = 0, most_prune_cnt = 0, first_pass_prune_cnt = 0, most_simplify_cnt = 0, first_pass_simplify_cnt = 0;
+
 struct timeval start_tv, recv_done_tv, finish_start_tv, end_tv;
 struct timeval live_receive_start_tv = {0,0}, live_receive_end_tv = {0,0};
 struct timeval prune_1_start_tv = {0,0}, prune_1_end_tv = {0,0};
@@ -138,6 +147,7 @@ struct timeval output_start_tv = {0,0}, output_end_tv = {0,0};
 struct timeval address_start_tv = {0,0}, address_end_tv = {0,0};
 struct timeval new_live_start_tv = {0,0}, new_live_end_tv = {0,0}, live_done_tv = {0,0}, new_live_send_tv = {0,0};
 struct timeval preprune_local_start_tv = {0,0}, preprune_local_end_tv = {0,0};
+struct timeval preprune_global_start_tv = {0,0}, preprune_global_output_done_tv = {0,0}, preprune_global_address_done_tv = {0,0}, preprune_global_send_done_tv = {0,0}, preprune_global_end_tv = {0,0};
 
 static long ms_diff (struct timeval tv1, struct timeval tv2)
 {
@@ -480,7 +490,7 @@ init_socket (int port)
     addr.sin_port = htons(port);
     addr.sin_addr.s_addr = INADDR_ANY;
 
-    rc = bind (c, (struct sockaddr *) &addr, sizeof(addr));
+    rc = ::bind (c, (struct sockaddr *) &addr, sizeof(addr));
     if (rc < 0) {
 	fprintf (stderr, "Cannot bind socket, errno=%d\n", errno);
 	return rc;
@@ -615,10 +625,10 @@ unlink_buffer (const char* prefix, const char* group_directory)
 	if (filename[i] == '/') filename[i] = '.';
     }
 
-    long rc = shm_unlink (filename);
-    if (rc < 0) {
-	fprintf (stderr, "shm_unlink of %s failed, rc=%ld, errno=%d\n", filename, rc, errno);
-    }
+//    long rc = shm_unlink (filename);
+//    if (rc < 0) {
+//	fprintf (stderr, "shm_unlink of %s failed, rc=%ld, errno=%d\n", filename, rc, errno);
+//    }
 }
 
 static void*
@@ -653,7 +663,29 @@ map_buffer (const char* prefix, const char* group_directory, u_long& datasize, u
 	fprintf (stderr, "Cannot map input data for %s, errno=%d\n", filename, errno);
 	return NULL;
     }
-    close (fd);
+
+#ifdef DEBUG
+    fprintf (debugfile, "map_buffer: mapsize %d datasize %lu \n",mapsize, datasize);
+#endif 
+    #ifdef DEBUG
+
+    if (!strncmp(prefix, "tokens", 256)){
+	struct token* curr_tok = (struct token *) ptr; // first cast the token_log to a struct token *
+	u_int num_entries  = datasize / sizeof(struct token); 
+	fprintf(debugfile, "idata %lu, num_entries %u\n",datasize, num_entries);
+
+	for (u_int i = 0; i < num_entries; i ++) {
+	    curr_tok++;
+	    fprintf (debugfile, "%u: record_pid %d, tok_num %d, syscall_cnt %d, size %d\n",i,curr_tok->record_pid,curr_tok->token_num, curr_tok->syscall_cnt, curr_tok->size);
+
+	}
+	fprintf (debugfile, "finished with first read\n\n\n\n");
+    }
+#endif
+
+
+
+    close (fd); //does this do something weird? lets print out a bunch of stuff RIGHT here. 
     unlink_buffer (prefix, group_directory);
 
     return ptr;
@@ -691,7 +723,10 @@ read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, ta
     output_log = (char *) map_buffer ("dataflow.results", group_directory, odatasize, 0);
     ts_log = (taint_t *) map_buffer ("taint_structures", group_directory, adatasize, 0);
     merge_log = (taint_entry *) map_buffer ("node_nums", group_directory, mdatasize, 0);
-    //printf ("%s: i %ld o %ld a %ld m %ld\n", group_directory, idatasize, odatasize, adatasize, mdatasize);
+#ifdef DEBUG
+    fprintf (debugfile, "i %ld o %ld a %ld m %ld\n", idatasize, odatasize, adatasize, mdatasize);	       
+#endif
+
     return 0;
 }
 #endif
@@ -823,7 +858,8 @@ struct output_par_data {
     uint32_t                 output_token;
     char*                    plog;
     char*                    outstop;
-    unordered_set<uint32_t>* plive_set;
+//    unordered_set<uint32_t>* plive_set;
+    bitmap*                 plive_set;
     stacktype*               stack;
     uint32_t**               resolvedptr;
     uint32_t**               resolvedstop;
@@ -847,7 +883,10 @@ do_outputs_seq (void* pdata)
     uint32_t  output_token = opdata->output_token;
     char*     plog = opdata->plog;
     char*     outstop = opdata->outstop;
-    unordered_set<uint32_t>* plive_set = opdata->plive_set;
+//    unordered_set<uint32_t>* plive_set = opdata->plive_set;
+    bitmap *plive_set= opdata->plive_set;
+
+
     stacktype* stack = opdata->stack;
     uint32_t*& resolvedptr = *opdata->resolvedptr;
     uint32_t*& resolvedstop = *opdata->resolvedstop;
@@ -865,6 +904,11 @@ do_outputs_seq (void* pdata)
 	for (uint32_t i = 0; i < buf_size; i++) {
 	    plog += sizeof(uint32_t);
 	    taint_t value = *((taint_t *) plog);
+#ifdef DEBUG
+	    if (DEBUG(output_token)) {
+		fprintf (debugfile, "output %x has value %lx\n", output_token, (long) value);
+	    }
+#endif
 	    plog += sizeof(taint_t);
 	    if (value) {
 		if (value < 0xe0000001) {
@@ -872,7 +916,7 @@ do_outputs_seq (void* pdata)
 		    ldirects++;
 #endif
 		    if (value < 0xc0000000 && !start_flag) {
-			if (plive_set->count(value)) {
+			if (plive_set->test(value)) {
 			    PUT_QVALUEB (output_token,outputq_hdr,outputq_buf,oqfd,wbucket_cnt, wbucket_stop);
 			    PUT_QVALUEB (value,outputq_hdr,outputq_buf,oqfd, wbucket_cnt, wbucket_stop);
 #ifdef STATS
@@ -1061,7 +1105,7 @@ do_outputs_stream (void* pdata)
 }
 
 static uint32_t
-process_outputs (char* plog, char* outstop, unordered_set<uint32_t>* plive_set, const char* dirname, void *(*do_outputs)(void *))
+process_outputs (char* plog, char* outstop, bitmap* plive_set, const char* dirname, void *(*do_outputs)(void *))
 {
     struct output_par_data output_data[parallelize];
     uint32_t output_tokens = 0, last_output_tokens = 0;
@@ -1230,6 +1274,10 @@ do_addresses (void* pdata)
 			 iter->second);
 	    }
 #endif
+	    if (iter->second == 0xffffffff) {
+		fprintf (stderr, "Bogus address in map - value = %x\n", value);
+		assert (0);
+	    }
 	    if (iter->second < 0xc0000000 && !start_flag) {
 		if (iter->second) {
 #ifdef STATS
@@ -1390,6 +1438,11 @@ print_stats (const char* dirname, u_long mdatasize, u_long odatasize, u_long ida
     fprintf (statsfile, "Total time:              %6ld ms\n", ms_diff (end_tv, start_tv));
     fprintf (statsfile, "Receive time:            %6ld ms\n", ms_diff (recv_done_tv, start_tv));
     fprintf (statsfile, "Preprune local time:     %6ld ms\n", ms_diff (preprune_local_end_tv, preprune_local_start_tv));
+    fprintf (statsfile, "Preprune global time:    %6ld ms\n", ms_diff (preprune_global_end_tv, preprune_global_start_tv));
+    fprintf (statsfile, "Preprune g output time:  %6ld ms\n", ms_diff (preprune_global_output_done_tv, preprune_global_start_tv));
+    fprintf (statsfile, "Preprune g address time: %6ld ms\n", ms_diff (preprune_global_address_done_tv, preprune_global_output_done_tv));
+    fprintf (statsfile, "Preprune g send time:    %6ld ms\n", ms_diff (preprune_global_send_done_tv, preprune_global_address_done_tv));
+    fprintf (statsfile, "Preprune g resize time:  %6ld ms\n", ms_diff (preprune_global_end_tv, preprune_global_send_done_tv));
     fprintf (statsfile, "Receive live set time:   %6ld ms\n", ms_diff (live_receive_end_tv, live_receive_start_tv));
     fprintf (statsfile, "Prune live set time:     %6ld ms\n", ms_diff (prune_2_end_tv, prune_1_start_tv));
     fprintf (statsfile, "Make live set time:      %6ld ms\n", ms_diff (new_live_end_tv, new_live_start_tv));
@@ -1420,7 +1473,10 @@ print_stats (const char* dirname, u_long mdatasize, u_long odatasize, u_long ida
 
     fprintf (statsfile, "Received %ld values in live set\n", (long) live_set_size);
     fprintf (statsfile, "Output directs %lu indirects %lu values %lu quashed %lu merges %lu\n", directs, indirects, values, quashed, output_merges);
-    fprintf (statsfile, "Prune lookups %ld indirects %ld\n", prune_lookup, prune_indirect);
+    fprintf (statsfile, "Prune lookup %lu\n", prune_lookup);
+    fprintf (statsfile, "FP Prune lookups %lu, Most %lu\n", first_pass_prune_lookups, most_prune_lookups);
+    fprintf (statsfile, "FP Prune Cnt %lu, Most %lu\n", first_pass_prune_cnt, most_prune_cnt);
+    fprintf (statsfile, "FP Simplify Cnt %lu, Most %lu\n", first_pass_simplify_cnt, most_simplify_cnt);
     fprintf (statsfile, "Pruned %ld simplified %ld unchanged %ld of %ld merge values using live set\n", 
 	     prune_cnt, simplify_cnt, mdatasize/sizeof(struct taint_entry)-prune_cnt-simplify_cnt,
 	     mdatasize/sizeof(struct taint_entry));
@@ -1431,6 +1487,10 @@ print_stats (const char* dirname, u_long mdatasize, u_long odatasize, u_long ida
 	     new_live_inputs, new_live_merges, new_live_merge_zeros, new_live_notlive);
     fprintf (statsfile, "Unique indirects %ld\n", (long) resolved.size());
     fprintf (statsfile, "Values rcvd %lu sent %lu\n", values_rcvd, values_sent);
+
+
+
+
     if (preprune_prior_mdatasize) {
 	fprintf (statsfile, "Local preprune reduced merge data size from %lu to %lu (%.3lf%%)\n", preprune_prior_mdatasize, mdatasize, 
 		 (double)(preprune_prior_mdatasize-mdatasize)*100.0/(double)(preprune_prior_mdatasize));
@@ -1482,6 +1542,11 @@ long stream_epoch (const char* dirname, int port)
 	rc = pthread_join(build_map_tid, NULL);
 	if (rc < 0) return rc;
 
+#ifdef DEBUG
+	fprintf (debugfile, "finished building address_map, size %u\n", address_map.size());
+#endif
+
+
 #ifdef STATS
 	gettimeofday(&index_wait_end_tv, NULL);
 #endif
@@ -1505,6 +1570,20 @@ long stream_epoch (const char* dirname, int port)
     if (idatasize > 0) {
 	struct token* ptoken = (struct token *) &token_log[idatasize-sizeof(struct token)];
 	tokens = ptoken->token_num+ptoken->size-1;
+
+#ifdef DEBUG
+	struct token* curr_tok = (struct token *) token_log; // first cast the token_log to a struct token *
+	u_int num_entries  = idatasize / sizeof(struct token); 
+	fprintf(debugfile, "idata %lu, num_entries %u\n",idatasize, num_entries);
+
+	for (u_int i = 0; i < num_entries; i ++) {
+	    curr_tok++;
+	    fprintf (debugfile, "%u: record_pid %d, tok_num %d, syscall_cnt %d\n",i,curr_tok->record_pid,curr_tok->token_num, curr_tok->syscall_cnt);
+
+	}
+#endif
+
+	
     } else {
 	if (start_flag) {
 	    tokens = 0;
@@ -1568,10 +1647,14 @@ struct prune_pass_1 {
     pthread_t                tid;
     taint_entry*             mptr; 
     taint_entry*             mend; 
-    unordered_set<uint32_t>* live_set;
+    //unordered_set<uint32_t>* live_set;
+    bitmap*                  live_set;
 #ifdef STATS
-  struct timeval             start_tv;
-  struct timeval             end_tv;
+    struct timeval           start_tv;
+    struct timeval           end_tv;
+    u_long                   prune_cnt;
+    u_long                   simplify_cnt;
+    u_long                   prune_lookups;
 #endif
 };
 
@@ -1581,19 +1664,19 @@ prune_range_pass_1 (void* data)
     prune_pass_1* pp1 = (prune_pass_1 *) data;
     taint_entry* mptr = pp1->mptr;
     taint_entry* mend = pp1->mend;
-    unordered_set<uint32_t>* live_set = pp1->live_set;
-
+//    unordered_set<uint32_t>* live_set = pp1->live_set;
+    bitmap *live_set = pp1->live_set;
 #ifdef STATS
     gettimeofday(&pp1->start_tv, NULL);
 #endif
     while (mptr < mend) {
 	if (mptr->p1 < 0xc0000000) {
-	    if (live_set->count(mptr->p1) == 0) {
+	    if (live_set->test(mptr->p1) == 0) {
 		mptr->p1 = 0;
 	    } 
 	}
 	if (mptr->p2 < 0xc0000000) {
-	    if (live_set->count(mptr->p2) == 0) {
+	    if (live_set->test(mptr->p2) == 0) {
 		mptr->p2 = 0;
 	    } 
 	}
@@ -1608,11 +1691,11 @@ prune_range_pass_1 (void* data)
 
 // This is for the first pass or non-parallel version
 static void 
-prune_range_pass_both (taint_entry* mptr, taint_entry* mend, unordered_set<uint32_t>& live_set)
+prune_range_pass_both (taint_entry* mptr, taint_entry* mend, bitmap& live_set)
 {
     while (mptr < mend) {
 	if (mptr->p1 < 0xc0000000) {
-	    if (live_set.count(mptr->p1) == 0) {
+	    if (live_set.test(mptr->p1)) {
 		mptr->p1 = 0;
 	    } 
 	} else if (mptr->p1 > 0xe0000000) {
@@ -1624,7 +1707,7 @@ prune_range_pass_both (taint_entry* mptr, taint_entry* mend, unordered_set<uint3
 	    }
 	}
 	if (mptr->p2 < 0xc0000000) {
-	    if (live_set.count(mptr->p2) == 0) {
+	    if (live_set.test(mptr->p2)) {
 		mptr->p2 = 0;
 	    } 
 	} else if (mptr->p2 > 0xe0000000) {
@@ -1636,7 +1719,7 @@ prune_range_pass_both (taint_entry* mptr, taint_entry* mend, unordered_set<uint3
 	    }
 	}
 #ifdef STATS
-	if (mptr->p1 == 0 && mptr->p2 == 0) prune_cnt++;
+	if (mptr->p1 == 0 && mptr->p2 == 0) prune_cnt++; 
 	else if (mptr->p1 == 0 || mptr->p2 == 0) simplify_cnt++;
 #endif
 	mptr++;
@@ -1644,7 +1727,7 @@ prune_range_pass_both (taint_entry* mptr, taint_entry* mend, unordered_set<uint3
 }
 
 static void 
-prune_merge_log (u_long mdatasize, unordered_set<uint32_t>& live_set) 
+prune_merge_log (u_long mdatasize, bitmap& live_set) 
 {
     u_long entries = mdatasize/sizeof(taint_entry);
     u_long incr = entries/parallelize;
@@ -1665,6 +1748,9 @@ prune_merge_log (u_long mdatasize, unordered_set<uint32_t>& live_set)
 	} else {
 	    pp[i].mend = pp[i].mptr + incr;
 	}
+	pp[i].simplify_cnt = 0;
+	pp[i].prune_cnt = 0;
+	pp[i].prune_lookups = 0;
 	pp[i].live_set = &live_set;
 	if (i > 0) {	
 	    long rc = pthread_create (&pp[i].tid, NULL, prune_range_pass_1, &pp[i]);
@@ -1686,7 +1772,7 @@ prune_merge_log (u_long mdatasize, unordered_set<uint32_t>& live_set)
     for (int i = 1; i < parallelize; i++) {
 	long rc = pthread_join(pp[i].tid, NULL);
 	if (rc < 0) fprintf (stderr, "Cannot join prune thread, rc=%ld\n", rc); 
-#ifdef STATS
+#ifdef STATS       
 	u_long ms = ms_diff(pp[i].end_tv, pp[i].start_tv);
 	total_prune_1_ms += ms;
 	if (ms > longest_prune_1_ms) longest_prune_1_ms = ms;
@@ -1731,7 +1817,8 @@ struct new_live_set_data {
     taint_t*                 pend;
     taint_t*                 pls;
     taint_t*                 plsend;
-    unordered_set<uint32_t>* plive_set;
+    //unordered_set<uint32_t>* plive_set;
+    bitmap*                  plive_set;
     vector<taint_t>          results;
 #ifdef STATS
     u_long                   lno_changes;
@@ -1754,7 +1841,8 @@ do_new_live_set (void* data)
     taint_t* pend = pnlsd->pend;
     taint_t* pls = pnlsd->pls;
     taint_t* plsend = pnlsd->plsend;
-    unordered_set<uint32_t>* plive_set = pnlsd->plive_set;
+//    unordered_set<uint32_t>* plive_set = pnlsd->plive_set;
+    bitmap *plive_set = pnlsd->plive_set;
     vector<taint_t>& results = pnlsd->results;
 
 #ifdef STATS
@@ -1779,7 +1867,7 @@ do_new_live_set (void* data)
 		lzeros++;
 #endif
 	    } else if (val < 0xc0000000) {
-		if (start_flag || plive_set->count(val)) {
+		if (start_flag || plive_set->test(val)) {
 		    results.push_back(addr);
 #ifdef STATS
 		    linputs++;
@@ -1793,6 +1881,11 @@ do_new_live_set (void* data)
 		results.push_back(addr);
 #ifdef STATS
 		linputs++;
+#endif
+	    } else if (val == 0xffffffff) {
+#ifdef STATS
+		// This is a result of the preprune global state
+		lmerge_zeros++;
 #endif
 	    } else {
 		taint_entry* pentry = &merge_log[val-0xe0000001];
@@ -1821,7 +1914,7 @@ do_new_live_set (void* data)
 		lzeros++;
 #endif
 	    } else if (val < 0xc0000000) {
-		if (start_flag || plive_set->count(val)) {
+		if (start_flag || plive_set->test(val)) {
 		    results.push_back(addr);
 #ifdef STATS
 		    linputs++;
@@ -1886,7 +1979,7 @@ static taint_t* find_split (taint_t* start, taint_t* end, taint_t val)
 }
 
 static void
-make_new_live_set (taint_t* p, taint_t* pend, taint_t* pls, taint_t* plsend, unordered_set<uint32_t>& live_set)
+make_new_live_set (taint_t* p, taint_t* pend, taint_t* pls, taint_t* plsend, bitmap &live_set)
 {
     struct new_live_set_data new_live_set_data[parallelize];
 
@@ -2266,65 +2359,61 @@ preprune_local (u_long& mdatasize, char* output_log, u_long odatasize, taint_t* 
     return 0;
 }
 
-void preprune_global (u_long& mdatasize, char* output_log, u_long odatasize, unordered_map<taint_t,taint_t> address_map)
+// Binary search
+static inline taint_t*
+find_address_value (taint_t val, taint_entry* ts_log, u_long aentries)
 {
-    u_long mentries = mdatasize/sizeof(struct taint_entry);
-    taint_t* stack = astacks[0];
-    struct timeval tv1, tv2;
-
-    gettimeofday(&tv1, NULL);
-    unordered_set<u_long> output_set;
-    u_long* is_used = new u_long[mentries];
-    memset (is_used, 0, mentries);
-
-    // First process outputs 
-    char* plog = output_log;
-    char* outstop = output_log + odatasize;
-    while (plog < outstop) {
-	plog += sizeof(struct taint_creation_info) + sizeof(uint32_t);
-	uint32_t buf_size = *((uint32_t *) plog);
-	plog += sizeof(uint32_t);
-	for (uint32_t i = 0; i < buf_size; i++) {
-	    plog += sizeof(uint32_t);
-	    taint_t value = *((taint_t *) plog);
-	    plog += sizeof(taint_t);
-	    if (value > 0xe0000000) {
-		if (!is_used[value-0xe0000001]) {
-		    is_used[value-0xe0000001] = 1;
-		    int stack_depth = 0;
-		    struct taint_entry* pentry = &merge_log[value-0xe0000001];
-		    stack[stack_depth++] = pentry->p1;
-		    stack[stack_depth++] = pentry->p2;
-		    do {
-			assert (stack_depth < STACK_SIZE);
-			value = stack[--stack_depth];
-			
-			if (value > 0xe0000000) {
-			    if (!is_used[value-0xe0000001]) {
-				is_used[value-0xe0000001] = 1;
-				pentry = &merge_log[value-0xe0000001];
-				stack[stack_depth++] = pentry->p1;
-				stack[stack_depth++] = pentry->p2;
-			    }
-			} else if (value < 0xc0000000) {
-			    output_set.insert(value);
-			}
-		    } while (stack_depth);
-		}
-	    } else if (value < 0xc0000000) {
-		output_set.insert(value);
-	    }
+    u_long min = 0;
+    u_long max = aentries;
+    while (max > min) {
+	u_long mid = (max+min)/2;
+	if (ts_log[mid].p1 < val) {
+	    min = mid + 1;
+	} else if (ts_log[mid].p1 > val) {
+	    max = mid;
+	} else {
+	    return &ts_log[mid].p2;
 	}
     }
+    return NULL;
+}
 
-    // Next process addresses as they are received
-    if (!finish_flag) {
-	uint32_t val, rbucket_cnt = 0, rbucket_stop = 0;
-	GET_QVALUEB(val, inputq_hdr, inputq_buf, iqfd, rbucket_cnt, rbucket_stop);
-	while (val != TERM_VAL) {
-	    auto iter = address_map.find(val);
-	    if (iter != address_map.end()) {
-		taint_t value = iter->second;
+static long
+preprune_global (u_long& mdatasize, char* output_log, u_long odatasize, taint_t* ts_log, u_long adatasize)
+{
+    u_long mentries = mdatasize/sizeof(struct taint_entry);
+    char* outstop = output_log + odatasize;
+    taint_t* stack = astacks[0];
+
+#ifdef STATS
+    gettimeofday(&preprune_global_start_tv, NULL);
+    preprune_prior_mdatasize = mdatasize;
+#endif
+
+    u_char* is_used;
+    try {
+	is_used = new u_char[mentries];
+	memset (is_used, 0, mentries);
+
+	unordered_set<u_long> output_set;
+	uint32_t write_cnt = 0, write_stop = 0;
+
+	// First process outputs 
+	char* plog = output_log;
+#ifdef DEBUG 
+	u_long ocnt = 0;
+#endif
+	while (plog < outstop) {
+	    plog += sizeof(struct taint_creation_info) + sizeof(uint32_t);
+	    uint32_t buf_size = *((uint32_t *) plog);
+	    plog += sizeof(uint32_t);
+	    for (uint32_t i = 0; i < buf_size; i++) {
+		plog += sizeof(uint32_t);
+		taint_t value = *((taint_t *) plog);
+#ifdef DEBUG
+		if (DEBUG(ocnt)) fprintf (debugfile, "preprune global: output %lx has value %x\n", ocnt, value);
+#endif
+		plog += sizeof(taint_t);
 		if (value > 0xe0000000) {
 		    if (!is_used[value-0xe0000001]) {
 			is_used[value-0xe0000001] = 1;
@@ -2335,7 +2424,7 @@ void preprune_global (u_long& mdatasize, char* output_log, u_long odatasize, uno
 			do {
 			    assert (stack_depth < STACK_SIZE);
 			    value = stack[--stack_depth];
-			
+			    
 			    if (value > 0xe0000000) {
 				if (!is_used[value-0xe0000001]) {
 				    is_used[value-0xe0000001] = 1;
@@ -2344,58 +2433,129 @@ void preprune_global (u_long& mdatasize, char* output_log, u_long odatasize, uno
 				    stack[stack_depth++] = pentry->p2;
 				}
 			    } else if (value < 0xc0000000) {
-				output_set.insert(value);
+				if (!start_flag) {
+				    if (output_set.insert(value).second) {
+					PUT_QVALUEB(value, outputq_hdr, outputq_buf, oqfd, write_cnt, write_stop);			
+				    }
+				}
 			    }
 			} while (stack_depth);
 		    }
 		} else if (value < 0xc0000000) {
-		    output_set.insert(value);
+		    if (!start_flag) {
+			if (output_set.insert(value).second) {
+			    PUT_QVALUEB(value, outputq_hdr, outputq_buf, oqfd, write_cnt, write_stop);			
+			}
+		    }
 		}
-	    } else {
-		output_set.insert(val);
+#ifdef DEBUG
+		ocnt++;
+#endif
 	    }
-	    GET_QVALUEB(val, inputq_hdr, inputq_buf, iqfd, rbucket_cnt, rbucket_stop);
-	} 
-
-	// Done reading data - reset queue and wait on sender
-	inputq_hdr->read_index = inputq_hdr->write_index = 0;
-	UP_QSEM (inputq_hdr);
-    }
-
-    // Spit out the outputs 
-    if (!start_flag) {
-	u_long ocnt = 0;
-	uint32_t write_cnt = 0, write_stop = 0;
-	for (auto iter = output_set.begin(); iter != output_set.end(); iter++) {
-	    PUT_QVALUEB(*iter, outputq_hdr, outputq_buf, oqfd, write_cnt, write_stop);
-	    ocnt++;
 	}
-	PUT_QVALUEB(TERM_VAL, outputq_hdr, outputq_buf, oqfd, write_cnt, write_stop);
-	bucket_term (outputq_hdr, outputq_buf, oqfd, write_cnt, write_stop);
-	fprintf (stderr, "%lu values in new output set\n", ocnt);
+	
+#ifdef STATS
+     gettimeofday(&preprune_global_output_done_tv, NULL);
+#endif
+	// Next process addresses as they are received
+	u_long aentries = adatasize/sizeof(taint_entry);
+	if (!finish_flag) {
+	    uint32_t val, rbucket_cnt = 0, rbucket_stop = 0;
+	    GET_QVALUEB(val, inputq_hdr, inputq_buf, iqfd, rbucket_cnt, rbucket_stop);
+	    while (val != TERM_VAL) {
+		taint_t* addr = find_address_value (val, (taint_entry *) ts_log, aentries);
+		if (addr) {
+		    taint_t value = *addr;
+		    if (value > 0xe0000000) {
+			if (!is_used[value-0xe0000001]) {
+			    is_used[value-0xe0000001] = 1;
+			    int stack_depth = 0;
+			    struct taint_entry* pentry = &merge_log[value-0xe0000001];
+			    stack[stack_depth++] = pentry->p1;
+			    stack[stack_depth++] = pentry->p2;
+			    do {
+				assert (stack_depth < STACK_SIZE);
+				value = stack[--stack_depth];
+				
+				if (value > 0xe0000000) {
+				    if (!is_used[value-0xe0000001]) {
+					is_used[value-0xe0000001] = 1;
+					pentry = &merge_log[value-0xe0000001];
+					stack[stack_depth++] = pentry->p1;
+					stack[stack_depth++] = pentry->p2;
+				    }
+				} else if (value < 0xc0000000) {
+				    if (!start_flag) {
+					if (output_set.insert(value).second) {
+					    PUT_QVALUEB(value, outputq_hdr, outputq_buf, oqfd, write_cnt, write_stop);			
+					}
+				    }
+				}
+			    } while (stack_depth);
+			}
+		    } else if (value < 0xc0000000) {
+			if (!start_flag) {
+			    if (output_set.insert(value).second) {
+				PUT_QVALUEB(value, outputq_hdr, outputq_buf, oqfd, write_cnt, write_stop);			
+			    }
+			}
+		    }
+		} else {
+		    if (!start_flag) {
+			if (output_set.insert(val).second) {
+			    PUT_QVALUEB(val, outputq_hdr, outputq_buf, oqfd, write_cnt, write_stop);			
+			}
+		    }
+		}
+		GET_QVALUEB(val, inputq_hdr, inputq_buf, iqfd, rbucket_cnt, rbucket_stop);
+	    } 
+	    
+	    // Done reading data - reset queue and wait on sender
+	    inputq_hdr->read_index = inputq_hdr->write_index = 0;
+	    UP_QSEM (inputq_hdr);
+	}
+	
+#ifdef STATS
+	gettimeofday(&preprune_global_address_done_tv, NULL);
+#endif
+	// Spit out the outputs 
+	if (!start_flag) {
+	    PUT_QVALUEB(TERM_VAL, outputq_hdr, outputq_buf, oqfd, write_cnt, write_stop);
+	    bucket_term (outputq_hdr, outputq_buf, oqfd, write_cnt, write_stop);
+	    
+	    // Wait until the data has been acknowledged
+	    DOWN_QSEM(outputq_hdr);
+	}
 
-	// Wait until the data has been acknowledged
-	DOWN_QSEM(outputq_hdr);
+#ifdef STATS
+	gettimeofday(&preprune_global_send_done_tv, NULL);
+#endif
+	
+    } catch (bad_alloc& ba) {
+	fprintf (stderr, "Cannot preprune due to lack of memory\n");
+	return -1;
     }
-    gettimeofday(&tv2, NULL);
+
+    u_long* redirects = new u_long[mentries];
+    memset (redirects, 0, mentries*sizeof(u_long));
 
     u_long new_index = 0;
     for (u_long i = 0; i < mentries; i++) {
 	if (is_used[i]) {
-	    is_used[i] = new_index;
+	    redirects[i] = new_index;
 	    struct taint_entry* pentry = &merge_log[new_index];
 	    merge_log[new_index++] = merge_log[i];
 	    if (pentry->p1 > 0xe0000001) {
-		pentry->p1 = 0xe0000001 + is_used[pentry->p1-0xe0000001];
+		pentry->p1 = 0xe0000001 + redirects[pentry->p1-0xe0000001];
 	    } 
 	    if (pentry->p2 > 0xe0000001) {
-		pentry->p2 = 0xe0000001 + is_used[pentry->p2-0xe0000001];
+		pentry->p2 = 0xe0000001 + redirects[pentry->p2-0xe0000001];
 	    } 
-	}
+	} 
     }
     mdatasize = new_index*sizeof(struct taint_entry);
     
-    plog = output_log;
+    char* plog = output_log;
     while (plog < outstop) {
 	plog += sizeof(struct taint_creation_info) + sizeof(uint32_t);
 	uint32_t buf_size = *((uint32_t *) plog);
@@ -2403,23 +2563,34 @@ void preprune_global (u_long& mdatasize, char* output_log, u_long odatasize, uno
 	for (uint32_t i = 0; i < buf_size; i++) {
 	    plog += sizeof(uint32_t);
 	    if (*((taint_t *) plog) > 0xe0000000) {
-		*((taint_t *) plog) = 0xe0000001 + is_used[*((taint_t *) plog)-0xe0000001];
+		*((taint_t *) plog) = 0xe0000001 + redirects[*((taint_t *) plog)-0xe0000001];
 	    }
 	    plog += sizeof(taint_t);
 	}
     }
 
-    for (auto iter = address_map.begin(); iter != address_map.end(); iter++) {
-	if (iter->second > 0xe0000000) {
-	    iter->second = 0xe0000001 + is_used[iter->second-0xe0000001];
+    taint_t* paptr = ts_log;
+    taint_t* pastop = ts_log + adatasize/sizeof(taint_t);
+    while (paptr < pastop) {
+	paptr++;
+	if (*paptr > 0xe0000000) {
+	    if (is_used[*paptr-0xe0000001]) {
+		*paptr = 0xe0000001 + redirects[*paptr-0xe0000001];
+	    } else {
+		*paptr = 0xffffffff; // check - should never be dereferenced
+	    }
 	}
+	paptr++;
     }
 
-    u_long cnt = 0;
-    for (u_long i = 0; i < mentries; i++) {
-	if (is_used[i]) cnt++;
-    }
-    fprintf (stderr, "%lu merge log entries used out of %lu in %ld ms\n", cnt, mentries, ms_diff(tv2,tv1));
+    delete [] is_used;
+    delete [] redirects;
+
+#ifdef STATS
+	gettimeofday(&preprune_global_end_tv, NULL);
+#endif
+	
+    return 0;
 }
 
 // Process one epoch for sequential forward strategy 
@@ -2431,7 +2602,8 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
     u_long idatasize = 0, odatasize = 0, mdatasize = 0, adatasize = 0;
     uint32_t buf_size, tokens, output_token = 0;
     int outputfd, inputfd, addrsfd;
-    unordered_set<uint32_t> live_set;
+    //unordered_set<uint32_t> live_set;
+    bitmap live_set;
     unordered_map<taint_t,taint_t> address_map;
     pthread_t build_map_tid = 0;
 
@@ -2449,31 +2621,18 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 
     bucket_init();
 
-#if 0
-    {
-	unordered_set<taint_entry,TEHash> uniques;
-	u_long i;
-	for (i = 0; i < mdatasize/sizeof(struct taint_entry); i++) {
-	    uniques.insert(merge_log[i]);
-	}
-	fprintf (stderr, "%d unique entries out of %lu total entries in merge log\n", uniques.size(), i);
-    }
-#endif
-
     if (do_preprune == PREPRUNE_LOCAL) {
 	if (preprune_local (mdatasize, output_log, odatasize, ts_log, adatasize) < 0) {
 	    preprune_local_lowmem (mdatasize, output_log, odatasize, ts_log, adatasize);
 	}
-    }
-
-    if (do_preprune == PREPRUNE_GLOBAL) {
-	build_address_map (address_map, ts_log, adatasize);
-	preprune_global (mdatasize, output_log, odatasize, address_map);
+    } else if (do_preprune == PREPRUNE_GLOBAL) {
+	preprune_global (mdatasize, output_log, odatasize, ts_log, adatasize);
 	bucket_init();
-    } else {
-	if (!finish_flag) build_map_tid = spawn_map_thread (&address_map, ts_log, adatasize);
     }
+	
+    if (!finish_flag) build_map_tid = spawn_map_thread (&address_map, ts_log, adatasize);
 
+    uint32_t curr_count = 0;
     if (!start_flag) {
 	// Wait for preceding epoch to send list of live addresses
 #ifdef STATS
@@ -2483,13 +2642,14 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	uint32_t rbucket_cnt = 0, rbucket_stop = 0;
 	GET_QVALUEB(val, outputq_hdr, outputq_buf, oqfd, rbucket_cnt, rbucket_stop);
 	while (val != TERM_VAL) {
-	    live_set.insert(val);
+	    curr_count += 1;
+	    live_set.set(val);
 	    GET_QVALUEB(val, outputq_hdr, outputq_buf, oqfd, rbucket_cnt, rbucket_stop);
 	} 
 
 #ifdef STATS
 	gettimeofday(&live_receive_end_tv, NULL);
-	live_set_size = live_set.size();
+	live_set_size = live_set.size(); 
 	live_set_send_idle = send_idle;
 	live_set_recv_idle = recv_idle;
 #endif
@@ -2503,7 +2663,7 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	uint32_t* pls = outputq_buf;
 	uint32_t* plsend = outputq_buf + live_set.size();
 	if (live_set.size() > TAINTENTRIES) {
-	    fprintf (stderr, "Oops: live set is %x\n", live_set.size());
+	    fprintf (stderr, "Oops: live set is %x, curr_count %x\n", live_set.size(), curr_count);
 	    return -1;
 	}
 	make_new_live_set(ts_log, ts_log + adatasize/sizeof(taint_t), pls, plsend, live_set);
@@ -2529,10 +2689,8 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	gettimeofday(&index_wait_start_tv, NULL);
 #endif
 
-	if (do_preprune != PREPRUNE_GLOBAL) {
-	    rc = pthread_join(build_map_tid, NULL);
-	    if (rc < 0) return rc;
-	}
+	rc = pthread_join(build_map_tid, NULL);
+	if (rc < 0) return rc;
 
 #ifdef STATS
 	gettimeofday(&index_wait_end_tv, NULL);
@@ -2684,7 +2842,7 @@ int connect_input_queue (struct recvdata* data)
     addr.sin_port = htons(data->port);
     addr.sin_addr.s_addr = INADDR_ANY;
 
-    rc = bind (c, (struct sockaddr *) &addr, sizeof(addr));
+    rc = ::bind (c, (struct sockaddr *) &addr, sizeof(addr));
     if (rc < 0) {
 	fprintf (stderr, "Cannot bind socket, errno=%d\n", errno);
 	return rc;
@@ -2772,6 +2930,7 @@ int recv_input_queue (struct recvdata* data)
 	    DOWN_QSEM(inputq_hdr);
 	}
 	send_stream (s, inputq_hdr, inputq_buf); // First we send filters downstream	
+	shutdown (s, SHUT_WR);
 	inputq_hdr->read_index = inputq_hdr->write_index = 0;
 	UP_QSEM(inputq_hdr);
     }
