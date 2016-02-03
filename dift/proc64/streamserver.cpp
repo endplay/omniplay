@@ -38,7 +38,7 @@ struct epoch_ctl {
     char   inputqbname[256];
     pid_t  cpid;
     pid_t  spid;
-    pid_t  tracked_pid;
+    pid_t  attach_pid;
     pid_t  waiting_on_rp_group; //ARQUINN -> added
 
     // For timings
@@ -259,7 +259,6 @@ void do_dift (int s, struct epoch_hdr& ehdr)
     // Start all the epochs at once
     for (u_long i = 0; i < epochs; i++) {
 	ectl[i].cpid = fork ();
-	ectl[i].tracked_pid = -1; //needs to start off as some value? 
 	if (ectl[i].cpid == 0) {
 	    if (i > 0 || !ehdr.start_flag) {
 		char attach[80];
@@ -298,6 +297,11 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 		
 		rc = get_attach_status (fd, ectl[i].cpid);
 		if (rc > 0) {
+		    //sometimes we attach pin to a different process. 
+		    //When we do this, we need to save the rc in case we are getting stats		   		    
+		    ectl[i].attach_pid = rc; 
+
+
 		    pid_t mpid = fork();
 		    if (mpid == 0) {
 			char cpids[80], syscalls[80], output_filter[80], port[80], fork_flags[80], epoch_index[80];
@@ -391,9 +395,15 @@ void do_dift (int s, struct epoch_hdr& ehdr)
     // send stats if requested
     if (ehdr.flags&SEND_STATS) {
 	for (u_long i = 0; i < epochs; i++) {
-	    char pathname[PATHLEN];
+	    char pathname[PATHLEN]; 
+//some logic to figure out the right group dir right there vvv
+	    
 	    sprintf (pathname, "/tmp/%d/taint_stats", ectl[i].cpid);
-	    send_file (s, pathname, "taint-stats");
+	    if (send_file (s, pathname, "taint-stats") < 0) { 
+		printf ("couldn't find /tmp/%d, howabout /tmp/%d?\n",ectl[i].cpid, ectl[i].attach_pid);
+		sprintf (pathname, "/tmp/%d/taint_stats", ectl[i].attach_pid);
+		send_file (s, pathname, "taint-stats");
+	    }
 	}
     }
 
