@@ -23,8 +23,15 @@ using namespace std;
 #include "../token.h"
 #include "../taint_nw.h"
 #include "../../test/streamserver.h"
+#include "util.h" //David's PagedBitset
 
-//#define DEBUG(x) ((x)==0x192f89 || (x)==0x192f89-0x192dc3 || (x)==0x192f89-0x16db75)
+#define MAX_TAINTS 0xc0000000
+#define PAGE_BITS 4096
+
+typedef PagedBitmap<MAX_TAINTS, PAGE_BITS> bitmap;
+
+
+#define DEBUG(x) ((x)==0x7e5751)
 #define STATS
 
 #define PREPRUNE_NONE   0
@@ -128,7 +135,7 @@ u_long prune_lookup = 0, prune_indirect = 0;
 u_long total_address_ms = 0, longest_address_ms = 0, total_output_ms = 0, longest_output_ms = 0, total_new_live_set_ms = 0, longest_new_live_set_ms = 0, total_prune_1_ms = 0, longest_prune_1_ms = 0, total_prune_2_ms = 0;
 u_long preprune_prior_mdatasize = 0;
 
-u_long most_prune_lookups = 0, most_prune_cnt = 0, first_pass_prune_cnt = 0, most_simplify_cnt = 0, first_pass_simplify_cnt = 0;
+u_long most_prune_lookups = 0, first_pass_prune_lookups = 0, most_prune_cnt = 0, first_pass_prune_cnt = 0, most_simplify_cnt = 0, first_pass_simplify_cnt = 0;
 
 struct timeval start_tv, recv_done_tv, finish_start_tv, end_tv;
 struct timeval live_receive_start_tv = {0,0}, live_receive_end_tv = {0,0};
@@ -483,7 +490,7 @@ init_socket (int port)
     addr.sin_port = htons(port);
     addr.sin_addr.s_addr = INADDR_ANY;
 
-    rc = bind (c, (struct sockaddr *) &addr, sizeof(addr));
+    rc = ::bind (c, (struct sockaddr *) &addr, sizeof(addr));
     if (rc < 0) {
 	fprintf (stderr, "Cannot bind socket, errno=%d\n", errno);
 	return rc;
@@ -618,10 +625,10 @@ unlink_buffer (const char* prefix, const char* group_directory)
 	if (filename[i] == '/') filename[i] = '.';
     }
 
-    long rc = shm_unlink (filename);
-    if (rc < 0) {
-	fprintf (stderr, "shm_unlink of %s failed, rc=%ld, errno=%d\n", filename, rc, errno);
-    }
+//    long rc = shm_unlink (filename);
+//    if (rc < 0) {
+//	fprintf (stderr, "shm_unlink of %s failed, rc=%ld, errno=%d\n", filename, rc, errno);
+//    }
 }
 
 static void*
@@ -656,7 +663,29 @@ map_buffer (const char* prefix, const char* group_directory, u_long& datasize, u
 	fprintf (stderr, "Cannot map input data for %s, errno=%d\n", filename, errno);
 	return NULL;
     }
-    close (fd);
+
+#ifdef DEBUG
+    fprintf (debugfile, "map_buffer: mapsize %d datasize %lu \n",mapsize, datasize);
+#endif 
+    #ifdef DEBUG
+
+    if (!strncmp(prefix, "tokens", 256)){
+	struct token* curr_tok = (struct token *) ptr; // first cast the token_log to a struct token *
+	u_int num_entries  = datasize / sizeof(struct token); 
+	fprintf(debugfile, "idata %lu, num_entries %u\n",datasize, num_entries);
+
+	for (u_int i = 0; i < num_entries; i ++) {
+	    curr_tok++;
+	    fprintf (debugfile, "%u: record_pid %d, tok_num %d, syscall_cnt %d, size %d\n",i,curr_tok->record_pid,curr_tok->token_num, curr_tok->syscall_cnt, curr_tok->size);
+
+	}
+	fprintf (debugfile, "finished with first read\n\n\n\n");
+    }
+#endif
+
+
+
+    close (fd); //does this do something weird? lets print out a bunch of stuff RIGHT here. 
     unlink_buffer (prefix, group_directory);
 
     return ptr;
@@ -694,7 +723,10 @@ read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, ta
     output_log = (char *) map_buffer ("dataflow.results", group_directory, odatasize, 0);
     ts_log = (taint_t *) map_buffer ("taint_structures", group_directory, adatasize, 0);
     merge_log = (taint_entry *) map_buffer ("node_nums", group_directory, mdatasize, 0);
-    //printf ("%s: i %ld o %ld a %ld m %ld\n", group_directory, idatasize, odatasize, adatasize, mdatasize);
+#ifdef DEBUG
+    fprintf (debugfile, "i %ld o %ld a %ld m %ld\n", idatasize, odatasize, adatasize, mdatasize);	       
+#endif
+
     return 0;
 }
 #endif
@@ -826,7 +858,8 @@ struct output_par_data {
     uint32_t                 output_token;
     char*                    plog;
     char*                    outstop;
-    unordered_set<uint32_t>* plive_set;
+//    unordered_set<uint32_t>* plive_set;
+    bitmap*                 plive_set;
     stacktype*               stack;
     uint32_t**               resolvedptr;
     uint32_t**               resolvedstop;
@@ -850,7 +883,10 @@ do_outputs_seq (void* pdata)
     uint32_t  output_token = opdata->output_token;
     char*     plog = opdata->plog;
     char*     outstop = opdata->outstop;
-    unordered_set<uint32_t>* plive_set = opdata->plive_set;
+//    unordered_set<uint32_t>* plive_set = opdata->plive_set;
+    bitmap *plive_set= opdata->plive_set;
+
+
     stacktype* stack = opdata->stack;
     uint32_t*& resolvedptr = *opdata->resolvedptr;
     uint32_t*& resolvedstop = *opdata->resolvedstop;
@@ -880,7 +916,7 @@ do_outputs_seq (void* pdata)
 		    ldirects++;
 #endif
 		    if (value < 0xc0000000 && !start_flag) {
-			if (plive_set->count(value)) {
+			if (plive_set->test(value)) {
 			    PUT_QVALUEB (output_token,outputq_hdr,outputq_buf,oqfd,wbucket_cnt, wbucket_stop);
 			    PUT_QVALUEB (value,outputq_hdr,outputq_buf,oqfd, wbucket_cnt, wbucket_stop);
 #ifdef STATS
@@ -1069,7 +1105,7 @@ do_outputs_stream (void* pdata)
 }
 
 static uint32_t
-process_outputs (char* plog, char* outstop, unordered_set<uint32_t>* plive_set, const char* dirname, void *(*do_outputs)(void *))
+process_outputs (char* plog, char* outstop, bitmap* plive_set, const char* dirname, void *(*do_outputs)(void *))
 {
     struct output_par_data output_data[parallelize];
     uint32_t output_tokens = 0, last_output_tokens = 0;
@@ -1437,12 +1473,10 @@ print_stats (const char* dirname, u_long mdatasize, u_long odatasize, u_long ida
 
     fprintf (statsfile, "Received %ld values in live set\n", (long) live_set_size);
     fprintf (statsfile, "Output directs %lu indirects %lu values %lu quashed %lu merges %lu\n", directs, indirects, values, quashed, output_merges);
-    fprintf (statsfile, "Prune lookups %ld Most %ld\n", prune_lookup, most_prune_lookups);
-    fprintf (statsfile, "FP Prune Cnt %ld, Most %ld\n", most_prune_cnt, first_pass_prune_cnt);
-    fprintf (statsfile, "FP Simplify Cnt %ld, Most %ld\n", most_prune_cnt, first_pass_prune_cnt);
-
-
-most_simplify_cnt = 0, first_pass_simplify_cnt = 0;
+    fprintf (statsfile, "Prune lookup %lu\n", prune_lookup);
+    fprintf (statsfile, "FP Prune lookups %lu, Most %lu\n", first_pass_prune_lookups, most_prune_lookups);
+    fprintf (statsfile, "FP Prune Cnt %lu, Most %lu\n", first_pass_prune_cnt, most_prune_cnt);
+    fprintf (statsfile, "FP Simplify Cnt %lu, Most %lu\n", first_pass_simplify_cnt, most_simplify_cnt);
     fprintf (statsfile, "Pruned %ld simplified %ld unchanged %ld of %ld merge values using live set\n", 
 	     prune_cnt, simplify_cnt, mdatasize/sizeof(struct taint_entry)-prune_cnt-simplify_cnt,
 	     mdatasize/sizeof(struct taint_entry));
@@ -1508,6 +1542,11 @@ long stream_epoch (const char* dirname, int port)
 	rc = pthread_join(build_map_tid, NULL);
 	if (rc < 0) return rc;
 
+#ifdef DEBUG
+	fprintf (debugfile, "finished building address_map, size %u\n", address_map.size());
+#endif
+
+
 #ifdef STATS
 	gettimeofday(&index_wait_end_tv, NULL);
 #endif
@@ -1531,6 +1570,20 @@ long stream_epoch (const char* dirname, int port)
     if (idatasize > 0) {
 	struct token* ptoken = (struct token *) &token_log[idatasize-sizeof(struct token)];
 	tokens = ptoken->token_num+ptoken->size-1;
+
+#ifdef DEBUG
+	struct token* curr_tok = (struct token *) token_log; // first cast the token_log to a struct token *
+	u_int num_entries  = idatasize / sizeof(struct token); 
+	fprintf(debugfile, "idata %lu, num_entries %u\n",idatasize, num_entries);
+
+	for (u_int i = 0; i < num_entries; i ++) {
+	    curr_tok++;
+	    fprintf (debugfile, "%u: record_pid %d, tok_num %d, syscall_cnt %d\n",i,curr_tok->record_pid,curr_tok->token_num, curr_tok->syscall_cnt);
+
+	}
+#endif
+
+	
     } else {
 	if (start_flag) {
 	    tokens = 0;
@@ -1594,7 +1647,8 @@ struct prune_pass_1 {
     pthread_t                tid;
     taint_entry*             mptr; 
     taint_entry*             mend; 
-    unordered_set<uint32_t>* live_set;
+    //unordered_set<uint32_t>* live_set;
+    bitmap*                  live_set;
 #ifdef STATS
     struct timeval           start_tv;
     struct timeval           end_tv;
@@ -1610,36 +1664,25 @@ prune_range_pass_1 (void* data)
     prune_pass_1* pp1 = (prune_pass_1 *) data;
     taint_entry* mptr = pp1->mptr;
     taint_entry* mend = pp1->mend;
-    unordered_set<uint32_t>* live_set = pp1->live_set;
-
+//    unordered_set<uint32_t>* live_set = pp1->live_set;
+    bitmap *live_set = pp1->live_set;
 #ifdef STATS
     gettimeofday(&pp1->start_tv, NULL);
 #endif
     while (mptr < mend) {
 	if (mptr->p1 < 0xc0000000) {
-#ifdef STATS
-	    pp1->prune_lookups++;
-#endif	    
-	    if (live_set->count(mptr->p1) == 0) {
+	    if (live_set->test(mptr->p1) == 0) {
 		mptr->p1 = 0;
 	    } 
 	}
 	if (mptr->p2 < 0xc0000000) {
-#ifdef STATS
-	    pp1->prune_lookups++;
-#endif	    
-	    if (live_set->count(mptr->p2) == 0) {
+	    if (live_set->test(mptr->p2) == 0) {
 		mptr->p2 = 0;
 	    } 
 	}
-#ifdef STATS
-	if (mptr->p1 == 0 && mptr->p2 == 0) pp1->prune_cnt++;
-	else if (mptr->p1 == 0 || mptr->p2 == 0) pp1->simplify_cnt++;
-#endif
 	mptr++;
     }
 #ifdef STATS
-
     gettimeofday(&pp1->end_tv, NULL);
 #endif
 
@@ -1648,11 +1691,11 @@ prune_range_pass_1 (void* data)
 
 // This is for the first pass or non-parallel version
 static void 
-prune_range_pass_both (taint_entry* mptr, taint_entry* mend, unordered_set<uint32_t>& live_set)
+prune_range_pass_both (taint_entry* mptr, taint_entry* mend, bitmap& live_set)
 {
     while (mptr < mend) {
 	if (mptr->p1 < 0xc0000000) {
-	    if (live_set.count(mptr->p1) == 0) {
+	    if (live_set.test(mptr->p1)) {
 		mptr->p1 = 0;
 	    } 
 	} else if (mptr->p1 > 0xe0000000) {
@@ -1664,7 +1707,7 @@ prune_range_pass_both (taint_entry* mptr, taint_entry* mend, unordered_set<uint3
 	    }
 	}
 	if (mptr->p2 < 0xc0000000) {
-	    if (live_set.count(mptr->p2) == 0) {
+	    if (live_set.test(mptr->p2)) {
 		mptr->p2 = 0;
 	    } 
 	} else if (mptr->p2 > 0xe0000000) {
@@ -1676,7 +1719,7 @@ prune_range_pass_both (taint_entry* mptr, taint_entry* mend, unordered_set<uint3
 	    }
 	}
 #ifdef STATS
-	if (mptr->p1 == 0 && mptr->p2 == 0) prune_cnt++;
+	if (mptr->p1 == 0 && mptr->p2 == 0) prune_cnt++; 
 	else if (mptr->p1 == 0 || mptr->p2 == 0) simplify_cnt++;
 #endif
 	mptr++;
@@ -1684,7 +1727,7 @@ prune_range_pass_both (taint_entry* mptr, taint_entry* mend, unordered_set<uint3
 }
 
 static void 
-prune_merge_log (u_long mdatasize, unordered_set<uint32_t>& live_set) 
+prune_merge_log (u_long mdatasize, bitmap& live_set) 
 {
     u_long entries = mdatasize/sizeof(taint_entry);
     u_long incr = entries/parallelize;
@@ -1705,6 +1748,9 @@ prune_merge_log (u_long mdatasize, unordered_set<uint32_t>& live_set)
 	} else {
 	    pp[i].mend = pp[i].mptr + incr;
 	}
+	pp[i].simplify_cnt = 0;
+	pp[i].prune_cnt = 0;
+	pp[i].prune_lookups = 0;
 	pp[i].live_set = &live_set;
 	if (i > 0) {	
 	    long rc = pthread_create (&pp[i].tid, NULL, prune_range_pass_1, &pp[i]);
@@ -1726,18 +1772,7 @@ prune_merge_log (u_long mdatasize, unordered_set<uint32_t>& live_set)
     for (int i = 1; i < parallelize; i++) {
 	long rc = pthread_join(pp[i].tid, NULL);
 	if (rc < 0) fprintf (stderr, "Cannot join prune thread, rc=%ld\n", rc); 
-#ifdef STATS
-	if (pp[i].prune_lookups > most_prune_lookups) most_prune_lookups = pp[i].prune_lookups;
-	prune_lookup  += pp[i].prune_lookups;
-
-	if (pp[i].prune_cnt > most_prune_cnt) most_prune_cnt = pp[i].prune_cnt;
-	first_pass_prune_cnt  += pp[i].prune_cnt;
-	
-	if (pp[i].simplify_cnt > most_simplify_cnt) most_simplify_cnt = pp[i].simplify_cnt;
-	first_pass_simplify_cnt += pp[i].simplify_cnt;
-
-
-	
+#ifdef STATS       
 	u_long ms = ms_diff(pp[i].end_tv, pp[i].start_tv);
 	total_prune_1_ms += ms;
 	if (ms > longest_prune_1_ms) longest_prune_1_ms = ms;
@@ -1782,7 +1817,8 @@ struct new_live_set_data {
     taint_t*                 pend;
     taint_t*                 pls;
     taint_t*                 plsend;
-    unordered_set<uint32_t>* plive_set;
+    //unordered_set<uint32_t>* plive_set;
+    bitmap*                  plive_set;
     vector<taint_t>          results;
 #ifdef STATS
     u_long                   lno_changes;
@@ -1805,7 +1841,8 @@ do_new_live_set (void* data)
     taint_t* pend = pnlsd->pend;
     taint_t* pls = pnlsd->pls;
     taint_t* plsend = pnlsd->plsend;
-    unordered_set<uint32_t>* plive_set = pnlsd->plive_set;
+//    unordered_set<uint32_t>* plive_set = pnlsd->plive_set;
+    bitmap *plive_set = pnlsd->plive_set;
     vector<taint_t>& results = pnlsd->results;
 
 #ifdef STATS
@@ -1830,7 +1867,7 @@ do_new_live_set (void* data)
 		lzeros++;
 #endif
 	    } else if (val < 0xc0000000) {
-		if (start_flag || plive_set->count(val)) {
+		if (start_flag || plive_set->test(val)) {
 		    results.push_back(addr);
 #ifdef STATS
 		    linputs++;
@@ -1877,7 +1914,7 @@ do_new_live_set (void* data)
 		lzeros++;
 #endif
 	    } else if (val < 0xc0000000) {
-		if (start_flag || plive_set->count(val)) {
+		if (start_flag || plive_set->test(val)) {
 		    results.push_back(addr);
 #ifdef STATS
 		    linputs++;
@@ -1942,7 +1979,7 @@ static taint_t* find_split (taint_t* start, taint_t* end, taint_t val)
 }
 
 static void
-make_new_live_set (taint_t* p, taint_t* pend, taint_t* pls, taint_t* plsend, unordered_set<uint32_t>& live_set)
+make_new_live_set (taint_t* p, taint_t* pend, taint_t* pls, taint_t* plsend, bitmap &live_set)
 {
     struct new_live_set_data new_live_set_data[parallelize];
 
@@ -2565,7 +2602,8 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
     u_long idatasize = 0, odatasize = 0, mdatasize = 0, adatasize = 0;
     uint32_t buf_size, tokens, output_token = 0;
     int outputfd, inputfd, addrsfd;
-    unordered_set<uint32_t> live_set;
+    //unordered_set<uint32_t> live_set;
+    bitmap live_set;
     unordered_map<taint_t,taint_t> address_map;
     pthread_t build_map_tid = 0;
 
@@ -2594,6 +2632,7 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	
     if (!finish_flag) build_map_tid = spawn_map_thread (&address_map, ts_log, adatasize);
 
+    uint32_t curr_count = 0;
     if (!start_flag) {
 	// Wait for preceding epoch to send list of live addresses
 #ifdef STATS
@@ -2603,13 +2642,14 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	uint32_t rbucket_cnt = 0, rbucket_stop = 0;
 	GET_QVALUEB(val, outputq_hdr, outputq_buf, oqfd, rbucket_cnt, rbucket_stop);
 	while (val != TERM_VAL) {
-	    live_set.insert(val);
+	    curr_count += 1;
+	    live_set.set(val);
 	    GET_QVALUEB(val, outputq_hdr, outputq_buf, oqfd, rbucket_cnt, rbucket_stop);
 	} 
 
 #ifdef STATS
 	gettimeofday(&live_receive_end_tv, NULL);
-	live_set_size = live_set.size();
+	live_set_size = live_set.size(); 
 	live_set_send_idle = send_idle;
 	live_set_recv_idle = recv_idle;
 #endif
@@ -2623,7 +2663,7 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	uint32_t* pls = outputq_buf;
 	uint32_t* plsend = outputq_buf + live_set.size();
 	if (live_set.size() > TAINTENTRIES) {
-	    fprintf (stderr, "Oops: live set is %x\n", live_set.size());
+	    fprintf (stderr, "Oops: live set is %x, curr_count %x\n", live_set.size(), curr_count);
 	    return -1;
 	}
 	make_new_live_set(ts_log, ts_log + adatasize/sizeof(taint_t), pls, plsend, live_set);
@@ -2802,7 +2842,7 @@ int connect_input_queue (struct recvdata* data)
     addr.sin_port = htons(data->port);
     addr.sin_addr.s_addr = INADDR_ANY;
 
-    rc = bind (c, (struct sockaddr *) &addr, sizeof(addr));
+    rc = ::bind (c, (struct sockaddr *) &addr, sizeof(addr));
     if (rc < 0) {
 	fprintf (stderr, "Cannot bind socket, errno=%d\n", errno);
 	return rc;

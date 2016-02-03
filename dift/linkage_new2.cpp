@@ -25,7 +25,7 @@
 #include <map>
 using namespace std;
 
-#include "util.h"
+#include "util.h" //why doesn't this fail? 
 #include "list.h"
 #include "linkage_common.h"
 #include "taint_interface/taint_interface.h"
@@ -229,13 +229,11 @@ void instrument_before_badmemcpy(void) {
 }
 #endif
 
-//ARQUINN: added helper methods
-#ifndef USE_NW
+//ARQUINN: added helper methods for copying tokens from the file
+#ifdef USE_FILE
 static void copy_file(int src, int dest) { 
     char buff[COPY_BUFFER_SIZE]; 
     int read_bytes, written_bytes,rc;
-
-//    fprintf(stderr, "copy_file src %d, dest %d\n",src, dest);
 
     rc = lseek(src,0, SEEK_SET);
     if(rc < 0) 
@@ -247,7 +245,6 @@ static void copy_file(int src, int dest) {
 	while(written_bytes < read_bytes) { 
 	    written_bytes += write(dest,buff,read_bytes - written_bytes);
 	}
-//	fprintf(stderr, "\t wrote another %d bytes\n",written_bytes);
     }
     if(read_bytes < 0) { 
 	fprintf(stderr, "There was an error reading file (int) rc %d, errno %d\n",read_bytes,errno);
@@ -262,7 +259,6 @@ static void copy_file(FILE* src, FILE* dest) {
     if(rc < 0) 
 	fprintf(stderr, "There was an error using lseek rc %d, errno %d\n",rc,errno);
 
-//    fprintf(stderr, "\t copy_file for filepointers\n");
     while((read_chars = fread(buff,sizeof(char),COPY_BUFFER_SIZE,src)) > 0) 
     { 
 	written_chars = 0;
@@ -304,8 +300,9 @@ FILE* stats_f;
 extern void write_token_finish (int fd);
 extern void output_finish (int fd);
 
+//In here we need to mess with stuff for if we are no longer following this process
 static void dift_done ()
-{
+{    
     if (terminated) return;  // Only do this once
     terminated = 1;
 
@@ -366,19 +363,28 @@ static void dift_done ()
     write_token_finish (s);
 #endif
 #ifdef USE_SHMEM
-    write_token_finish (tokens_fd);
-    output_finish (outfd);
+    //sential for not following
+    if (tokens_fd != -99999 && outfd != -99999) { 
+	write_token_finish (tokens_fd);
+	output_finish (outfd);
+    }
 #endif
 
 #ifdef TAINT_STATS
-    gettimeofday(&end_tv, NULL);
-    fprintf (stats_f, "Instructions instrumented: %ld\n", inst_instrumented);
-    fprintf (stats_f, "Traces instrumented: %ld\n", traces_instrumented);
-    fprintf (stats_f, "Instrument time: %lld us\n", instrument_time);
-    fprintf (stats_f, "DIFT began at %ld.%06ld\n", begin_tv.tv_sec, begin_tv.tv_usec);
-    fprintf (stats_f, "DIFT ended at %ld.%06ld\n", end_tv.tv_sec, end_tv.tv_usec);
-    finish_and_print_taint_stats(stats_f);
-    fclose (stats_f);
+#ifndef USE_FILE
+    if (tokens_fd != -99999 && outfd != -99999 && s != -99999) { 
+#else
+    if (tokens_fd != -99999 && outfd != -99999) { 
+#endif
+	gettimeofday(&end_tv, NULL);
+	fprintf (stats_f, "Instructions instrumented: %ld\n", inst_instrumented);
+	fprintf (stats_f, "Traces instrumented: %ld\n", traces_instrumented);
+	fprintf (stats_f, "Instrument time: %lld us\n", instrument_time);
+	fprintf (stats_f, "DIFT began at %ld.%06ld\n", begin_tv.tv_sec, begin_tv.tv_usec);
+	fprintf (stats_f, "DIFT ended at %ld.%06ld\n", end_tv.tv_sec, end_tv.tv_usec);
+	finish_and_print_taint_stats(stats_f);
+	fclose (stats_f);
+    }
 #else
     finish_and_print_taint_stats(stdout);
 #endif
@@ -390,9 +396,11 @@ static void dift_done ()
 
 #ifdef USE_SHMEM
     // Send "done" message to aggregator
-    int rc = write (s, &group_directory, sizeof(group_directory));
-    if (rc != sizeof(group_directory)) {
-	fprintf (stderr, "write of directory failed, rc=%d, errno=%d\n", rc, errno);
+    if (s != -99999) {
+	int rc = write (s, &group_directory, sizeof(group_directory));
+	if (rc != sizeof(group_directory)) {
+	    fprintf (stderr, "write of directory failed, rc=%d, errno=%d\n", rc, errno);
+	}
     }
 #endif
 }
@@ -436,9 +444,12 @@ static inline void increment_syscall_cnt (int syscall_num)
             global_syscall_cnt++;
             current_thread->syscall_cnt++;
         }
+#if 0
 #ifdef TAINT_DEBUG
 	fprintf (debug_f, "pid %d syscall %d global syscall cnt %lu num %d clock %ld\n", current_thread->record_pid, 
 		 current_thread->syscall_cnt, global_syscall_cnt, syscall_num, *ppthread_log_clock);
+//	fflush(debug_f);
+#endif
 #endif
     }
 }
@@ -1294,7 +1305,7 @@ void instrument_syscall(ADDRINT syscall_num,
 #endif
 	dift_done ();
 	try_to_exit(dev_fd, PIN_GetPid());
-        PIN_ExitApplication(0);
+        PIN_ExitApplication(0);  //not working? 
     }
 	
     syscall_start(tdata, sysnum, syscallarg0, syscallarg1, syscallarg2, 
@@ -14103,7 +14114,7 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
 #endif
 
     //for now there is no change for not using the network
-#ifdef USE_NW 
+#ifndef USE_FILE
     //we use the fork_flags to determine which path to follow: 
     //means that the fork_flag was a 0... so we need to make the outfd's all our bs value:
     PRINTX(stderr, "\t fork_flags %s\n",fork_flags);
@@ -14114,12 +14125,7 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
 	//close the sockets and assign them to some garbage. 
 	close(outfd);
 	close(tokens_fd);
-
-	//null out the pin_addr stuffs
-//	fprintf(stderr, "\t calling set_pin_addr and Pin_detach\n");
-//	int thread_ndx;
-//	set_pin_addr (dev_fd, 2, current_thread, (void **) &current_thread, &thread_ndx);
-//	PIN_Detach(); //detach pind...
+//	close(s); //should I close this? Why wouldn't I? 
 	  	    
 	outfd = -99999;
 	tokens_fd = -99999;
@@ -14185,11 +14191,10 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
     current_thread->syscall_cnt = 0; //not ceratin that this is right anymore.. 
 }
 
-#ifdef USE_NW
+#ifndef USE_FILE
 void AfterForkInParent(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
 {
     PRINTX(stderr, "%d,%d:AfterForkInParent\n", PIN_GetPid(),get_record_pid());
-
 
     //we use the fork_flags to determine which path to follow: 
     //means that the fork_flag was a 1... so we need to make the outfd's all our bs value:
@@ -14198,19 +14203,14 @@ void AfterForkInParent(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
     PRINTX(stderr, "\t fork_flags char %d\n",fork_flags[fork_flags_index] - '0');
     if(fork_flags && fork_flags[fork_flags_index++] - '0' ) { 
 	PRINTX(stderr, "\t not following parent\n");
+
+#ifdef USE_NW      
 	//close the sockets and assign them to some garbage. 
 	close(outfd);
 	close(tokens_fd);
-
-	//null out the pin_addr stuffs
-//	fprintf(stderr, "\t calling set_pin_addr and Pin_detach\n");
-	//doesn't even matter
-//	int thread_ndx;
-//	set_pin_addr (dev_fd, 2, current_thread, (void **) &current_thread, &thread_ndx);
-//	PIN_Detach(); //detach pind...
-
-	    
-	outfd = -99999;
+#endif 
+//	close(s); //shouldn't I close this? 
+	outfd = -99999; //wait a minute... how? 
 	tokens_fd = -99999;
 	s = -99999;
     }
@@ -14645,6 +14645,9 @@ int main(int argc, char** argv)
     // Register a notification handler that is called when the application
     // forks a new process
     PIN_AddForkFunction(FPOINT_AFTER_IN_CHILD, AfterForkInChild, 0);
+#ifndef USE_FILE
+    PIN_AddForkFunction(FPOINT_AFTER_IN_PARENT, AfterForkInParent, 0);
+#endif
     //TRACE_AddInstrumentFunction (track_trace, 0);
     RTN_AddInstrumentFunction(track_function, 0);
 

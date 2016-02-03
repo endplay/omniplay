@@ -302,7 +302,13 @@ void write_token_finish (int s)
 #ifdef USE_SHMEM
 static void flush_tokenbuf(int tokenfd)
 {
-    token_total_count += tokenindex*sizeof(taint_t);
+    			       
+    token_total_count += tokenindex;//*sizeof(taint_t);woah, I think this was my bug? 
+
+#ifdef TAINT_DEBUG
+    fprintf (debug_f,"updated token_total_count to %lu\n", token_total_count);
+#endif
+
 
     // Check for overflow
     if (token_total_count >= MAX_TOKENS_SIZE/sizeof(struct token)) {
@@ -318,7 +324,7 @@ static void flush_tokenbuf(int tokenfd)
 
     // Map in the next region
     tokenbuf = (struct token *) mmap (0, TOKENBUFSIZE*sizeof(struct token), PROT_READ|PROT_WRITE, MAP_SHARED, 
-				      tokenfd, token_total_count*sizeof(taint_t));
+				      tokenfd, token_total_count*sizeof(struct token));
     if (tokenbuf == MAP_FAILED) {
 	fprintf (stderr, "could not map token buffer, errno=%d\n", errno);
 	assert (0);
@@ -328,6 +334,11 @@ static void flush_tokenbuf(int tokenfd)
 
 static void write_token_to_shmem (int tokenfd, struct token* ptoken)
 {
+#ifdef TAINT_DEBUG
+    fprintf (debug_f,"write_token_to_shm, index %lu, record_pid %d, syscall_cnt %d\n", token_total_count + tokenindex, ptoken->record_pid, ptoken->syscall_cnt);
+
+#endif    
+
     if (tokenbuf == NULL) {
 	tokenbuf = (struct token *) mmap (0, TOKENBUFSIZE*sizeof(struct token), PROT_READ|PROT_WRITE, MAP_SHARED, tokenfd, 0);
 	if (tokenbuf == MAP_FAILED) {
@@ -342,6 +353,11 @@ static void write_token_to_shmem (int tokenfd, struct token* ptoken)
 
 void write_token_finish (int tokenfd) 
 {
+
+#ifdef TAINT_DEBUG
+    fprintf (debug_f, "write_token_finish: token_total_count %lu, curr_offset %lu, total bytes %lu \n", token_total_count, tokenindex, (token_total_count + tokenindex)*sizeof(struct token));
+#endif
+
     int rc = ftruncate (tokenfd, (token_total_count+tokenindex)*sizeof(struct token));
     if (rc < 0) {
 	fprintf (stderr, "Unable to truncate token shmem, rc=%d, errno=%d\n", rc, errno);
@@ -431,6 +447,10 @@ void create_taints_from_buffer(void* buf, int size,
 void create_fd_taints(int nfds, fd_set* fds, struct taint_creation_info* tci,
         int outfd)
 {
+    //void out the untracked process
+    if (outfd == -99999) { 
+	return;
+    }
     taint_t t = create_and_taint_fdset(nfds, fds);
     write_tokens_info(outfd, t, tci, 1);
 }
