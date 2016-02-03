@@ -1876,7 +1876,7 @@ do_new_live_set (void* data)
 		lzeros++;
 #endif
 	    } else if (val < 0xc0000000) {
-		if (start_flag || !plive_set->test(val)) {
+		if (start_flag || plive_set->test(val)) {
 		    results.push_back(addr);
 #ifdef STATS
 		    linputs++;
