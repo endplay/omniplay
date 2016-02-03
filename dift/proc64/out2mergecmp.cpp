@@ -17,8 +17,8 @@ using namespace std;
 #include "../taint_interface/taint_creation.h"
 #include "../../test/streamserver.h"
 
-
-//#define TARGET(x) ((x)==0x9f993)
+#define TARGET(x) ((x)==0||(x)==0x7e5751)
+#define ITARGET(x) ((x)==0||(x)==0x7e5751)
 #define ALLOW_DUPS
 
 #define BUFSIZE 100000
@@ -69,7 +69,7 @@ int main (int argc, char* argv[])
 	return -1;
     }
     
-    if (!strcmp(argv[2], "-p")) {
+    if (!strcmp(argv[3], "-p")) {
 	dir_start = 5;
 	sprintf (mfile, "%s/mergeout.%s", argv[2], argv[4]);
 	sprintf (dfile, "%s/dataflow.result.%s", argv[2], argv[4]);
@@ -79,6 +79,9 @@ int main (int argc, char* argv[])
 	sprintf (dfile, "%s/dataflow.result", argv[2]);
     }
     int parallelize = atoi(argv[1]);
+
+
+    fprintf(stderr, "dfile %s\n",dfile);
 
     rc = map_file (mfile, &mfd, &mdatasize, &mmapsize, &mbuf);
     if (rc < 0) return rc;
