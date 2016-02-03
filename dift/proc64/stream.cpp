@@ -1647,7 +1647,7 @@ struct prune_pass_1 {
     pthread_t                tid;
     taint_entry*             mptr; 
     taint_entry*             mend; 
-    //unordered_set<uint32_t>* live_set;
+//    unordered_set<uint32_t>* ulive_set;
     bitmap*                  live_set;
 #ifdef STATS
     struct timeval           start_tv;
@@ -1664,21 +1664,30 @@ prune_range_pass_1 (void* data)
     prune_pass_1* pp1 = (prune_pass_1 *) data;
     taint_entry* mptr = pp1->mptr;
     taint_entry* mend = pp1->mend;
-//    unordered_set<uint32_t>* live_set = pp1->live_set;
     bitmap *live_set = pp1->live_set;
 #ifdef STATS
     gettimeofday(&pp1->start_tv, NULL);
 #endif
     while (mptr < mend) {
 	if (mptr->p1 < 0xc0000000) {
-	    if (live_set->test(mptr->p1) == 0) {
+	    if (!live_set->test(mptr->p1)) {
 		mptr->p1 = 0;
 	    } 
+#ifdef DEBUG
+	    else { 
+		fprintf(debugfile, "%x in liveset\n",mptr->p1);
+	    }
+#endif
 	}
 	if (mptr->p2 < 0xc0000000) {
-	    if (live_set->test(mptr->p2) == 0) {
+	    if (!live_set->test(mptr->p2)) {
 		mptr->p2 = 0;
 	    } 
+#ifdef DEBUG 
+	    else { 
+		fprintf(debugfile, "%x  in liveset\n",mptr->p2);
+	    }
+#endif
 	}
 	mptr++;
     }
@@ -1695,7 +1704,7 @@ prune_range_pass_both (taint_entry* mptr, taint_entry* mend, bitmap& live_set)
 {
     while (mptr < mend) {
 	if (mptr->p1 < 0xc0000000) {
-	    if (live_set.test(mptr->p1)) {
+	    if (!live_set.test(mptr->p1)) {
 		mptr->p1 = 0;
 	    } 
 	} else if (mptr->p1 > 0xe0000000) {
@@ -1707,7 +1716,7 @@ prune_range_pass_both (taint_entry* mptr, taint_entry* mend, bitmap& live_set)
 	    }
 	}
 	if (mptr->p2 < 0xc0000000) {
-	    if (live_set.test(mptr->p2)) {
+	    if (!live_set.test(mptr->p2)) {
 		mptr->p2 = 0;
 	    } 
 	} else if (mptr->p2 > 0xe0000000) {
@@ -1867,7 +1876,7 @@ do_new_live_set (void* data)
 		lzeros++;
 #endif
 	    } else if (val < 0xc0000000) {
-		if (start_flag || plive_set->test(val)) {
+		if (start_flag || !plive_set->test(val)) {
 		    results.push_back(addr);
 #ifdef STATS
 		    linputs++;
@@ -1914,7 +1923,7 @@ do_new_live_set (void* data)
 		lzeros++;
 #endif
 	    } else if (val < 0xc0000000) {
-		if (start_flag || plive_set->test(val)) {
+		if (start_flag || !plive_set->test(val)) {
 		    results.push_back(addr);
 #ifdef STATS
 		    linputs++;
@@ -2640,10 +2649,17 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 #endif
 	uint32_t val;
 	uint32_t rbucket_cnt = 0, rbucket_stop = 0;
+	uint32_t count = 0;
+
 	GET_QVALUEB(val, outputq_hdr, outputq_buf, oqfd, rbucket_cnt, rbucket_stop);
 	while (val != TERM_VAL) {
 	    curr_count += 1;
 	    live_set.set(val);
+#ifdef DEBUG
+            fprintf(debugfile, "%d, val %u\n",count, val);
+#endif
+	    count++;
+
 	    GET_QVALUEB(val, outputq_hdr, outputq_buf, oqfd, rbucket_cnt, rbucket_stop);
 	} 
 
