@@ -31,7 +31,7 @@ using namespace std;
 typedef PagedBitmap<MAX_TAINTS, PAGE_BITS> bitmap;
 
 
-#define DEBUG(x) ((x)==0x7e5751)
+//#define DEBUG(x) ((x)==0x7e5751)
 #define STATS
 
 #define PREPRUNE_NONE   0
@@ -2638,9 +2638,6 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	while (val != TERM_VAL) {
 	    curr_count += 1;
 	    live_set.set(val);
-#ifdef DEBUG
-            fprintf(debugfile, "%d, val %u\n",count, val);
-#endif
 	    count++;
 
 	    GET_QVALUEB(val, outputq_hdr, outputq_buf, oqfd, rbucket_cnt, rbucket_stop);
