@@ -625,10 +625,10 @@ unlink_buffer (const char* prefix, const char* group_directory)
 	if (filename[i] == '/') filename[i] = '.';
     }
 
-//    long rc = shm_unlink (filename);
-//    if (rc < 0) {
-//	fprintf (stderr, "shm_unlink of %s failed, rc=%ld, errno=%d\n", filename, rc, errno);
-//    }
+    long rc = shm_unlink (filename);
+    if (rc < 0) {
+	fprintf (stderr, "shm_unlink of %s failed, rc=%ld, errno=%d\n", filename, rc, errno);
+    }
 }
 
 static void*
@@ -666,26 +666,9 @@ map_buffer (const char* prefix, const char* group_directory, u_long& datasize, u
 
 #ifdef DEBUG
     fprintf (debugfile, "map_buffer: mapsize %d datasize %lu \n",mapsize, datasize);
-#endif 
-    #ifdef DEBUG
-
-    if (!strncmp(prefix, "tokens", 256)){
-	struct token* curr_tok = (struct token *) ptr; // first cast the token_log to a struct token *
-	u_int num_entries  = datasize / sizeof(struct token); 
-	fprintf(debugfile, "idata %lu, num_entries %u\n",datasize, num_entries);
-
-	for (u_int i = 0; i < num_entries; i ++) {
-	    curr_tok++;
-	    fprintf (debugfile, "%u: record_pid %d, tok_num %d, syscall_cnt %d, size %d\n",i,curr_tok->record_pid,curr_tok->token_num, curr_tok->syscall_cnt, curr_tok->size);
-
-	}
-	fprintf (debugfile, "finished with first read\n\n\n\n");
-    }
-#endif
 
 
-
-    close (fd); //does this do something weird? lets print out a bunch of stuff RIGHT here. 
+    close (fd);
     unlink_buffer (prefix, group_directory);
 
     return ptr;
