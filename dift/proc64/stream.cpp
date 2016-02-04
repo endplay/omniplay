@@ -666,7 +666,7 @@ map_buffer (const char* prefix, const char* group_directory, u_long& datasize, u
 
 #ifdef DEBUG
     fprintf (debugfile, "map_buffer: mapsize %d datasize %lu \n",mapsize, datasize);
-
+#endif
 
     close (fd);
     unlink_buffer (prefix, group_directory);
