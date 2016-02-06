@@ -50,12 +50,12 @@ struct ckpt {
 struct ckpt ckpts[MAX_CKPT_CNT];
 int ckpt_cnt = 0;
 
-static int group_by = 0, filter_syscall = 0, details = 0, use_ckpt = 0;
+static int group_by = 0, filter_syscall = 0, details = 0, use_ckpt = 0, do_split = 0;
 
 
 void format ()
 {
-    fprintf (stderr, "Format: mkpartition <timing dir> <# of partitions> [-g group_by] [-f filter syscall]\n");
+    fprintf (stderr, "Format: mkpartition <timing dir> <# of partitions> [-g group_by] [-f filter syscall] [-s split at user-level] [-v verbose]\n");
     exit (22);
 }
 
@@ -107,10 +107,22 @@ long read_ckpts (char* dirname)
     return 0;
 }
 
+void print_utimings (struct replay_timing* timings, struct extra_data* edata, int start, int end, u_int split, int intvl)
+{ 
+    u_long ndx = edata[start].start_clock;
+    u_long next_ndx = ndx + intvl;
+    printf ("%5d k %6lu u %6lu       0       0\n", timings[start].pid, ndx, next_ndx);
+    for (u_int i = 0; i < split-2; i++) {
+	ndx = next_ndx;
+	next_ndx = ndx+intvl;
+	printf ("%5d u %6lu u %6lu       0       0\n", timings[start].pid, ndx, next_ndx);
+    }
+    printf ("%5d u %6lu k %6lu       0       0\n", timings[start].pid, next_ndx, edata[end].start_clock);
+}
+
 void print_timing (struct replay_timing* timings, struct extra_data* edata, int start, int end)
 { 
-    //printf ("--- %5d %6lu (%6u) %6lu (%6u) ---\n", timings[start].pid, timings[start].index, start, timings[end].index, end);
-    printf ("%5d %6lu %6lu ", timings[start].pid, timings[start].index, edata[end].start_clock);
+    printf ("%5d k %6lu k %6lu ", timings[start].pid, edata[start].start_clock, edata[end].start_clock);
 
     if (filter_syscall > 0) {
 	if ((long) filter_syscall > timings[start].index && (long) filter_syscall <= timings[end].index) {
@@ -185,10 +197,27 @@ int gen_timings (struct replay_timing* timings, struct extra_data* edata, int st
     }
     if (partitions > 2 && biggest_gap >= total_time/partitions) {
 	// Pivot on this gap
+	u_int split = 1;
+	int intvl = 1;
+	if (do_split && biggest_gap >= 2*total_time/partitions) {
+	    split = biggest_gap*partitions/total_time-1;
+	    if (partitions-split < 2) {
+		split = partitions-2;
+	    }
+	    printf ("would like to split this gap into %d partitions\n", split);
+	    printf ("begins at clock %lu ends at clock %lu\n", edata[gap_start].start_clock, edata[gap_end].start_clock);
+	    if (edata[gap_end].start_clock-edata[gap_start].start_clock < split) split = edata[gap_end].start_clock - edata[gap_start].start_clock;
+	    intvl = (edata[gap_end].start_clock-edata[gap_start].start_clock)/split;
+	    printf ("Interval is %d\n", intvl);
+	} 
 	total_time -= (edata[gap_end].dtiming - edata[gap_start].dtiming);
-	partitions--;
+	partitions -= split;
 	if (gap_start == start) {
-	    print_timing (timings, edata, gap_start, gap_end);
+	    if (split > 1) {
+		print_utimings (timings, edata, gap_start, gap_end, split, intvl);
+	    } else {
+		print_timing (timings, edata, gap_start, gap_end);
+	    }
 	    return gen_timings (timings, edata, gap_end, end, partitions);
 	}
 
@@ -207,7 +236,11 @@ int gen_timings (struct replay_timing* timings, struct extra_data* edata, int st
 	    printf ("gap - new part %d\n", new_part);
 	}
 	gen_timings (timings, edata, start, gap_start, new_part);
-	print_timing (timings, edata, gap_start, gap_end);
+	if (split > 1) {
+	    print_utimings (timings, edata, gap_start, gap_end, split, intvl);
+	} else {
+	    print_timing (timings, edata, gap_start, gap_end);
+	}
 	return gen_timings (timings, edata, gap_end, end, partitions - new_part);
     } else {
 	// Allocate first interval
@@ -264,6 +297,9 @@ int main (int argc, char* argv[])
 	}
 	if (!strcmp(argv[i], "-v")) {
 	    details = 1;
+	}
+	if (!strcmp(argv[i], "-s")) {
+	    do_split = 1;
 	}
 	if (!strcmp(argv[i], "-c")) {
 	    use_ckpt = 1;

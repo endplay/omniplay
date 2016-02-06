@@ -46,8 +46,10 @@ struct epoch_hdr {
 
 struct epoch_data {
     pid_t    start_pid;
-    uint32_t start_syscall;
-    uint32_t stop_syscall;
+    char     start_level;
+    uint32_t start_clock;
+    char     stop_level;
+    uint32_t stop_clock;
     uint32_t filter_syscall;
     uint32_t ckpt;
     uint32_t port;              // Aggregation port

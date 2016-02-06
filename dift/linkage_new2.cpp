@@ -354,8 +354,8 @@ static inline void increment_syscall_cnt (int syscall_num)
     if (!(syscall_num == 17 || syscall_num == 31 || syscall_num == 32 || 
 	  syscall_num == 35 || syscall_num == 44 || syscall_num == 53 || 
 	  syscall_num == 56 || syscall_num == 58 || syscall_num == 98 || 
-	  syscall_num == 119 || syscall_num == 123 || syscall_num == 186 ||
-	  syscall_num == 243 || syscall_num == 244)) {
+	  syscall_num == 119 || syscall_num == 123 || syscall_num == 127 ||
+	  syscall_num == 186 || syscall_num == 243 || syscall_num == 244)) {
         if (current_thread->ignore_flag) {
             if (!(*(int *)(current_thread->ignore_flag))) {
                 global_syscall_cnt++;

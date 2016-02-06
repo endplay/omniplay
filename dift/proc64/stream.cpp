@@ -812,13 +812,15 @@ setup_aggregation (const char* dirname, int& outputfd, int& inputfd, int& addrsf
 	return -1;
     }
 
-#ifdef DEBUG
+#if defined(DEBUG) || defined(STATS)
     long rc = mkdir(dirname, 0755);
     if (rc < 0 && errno != EEXIST) {
 	fprintf (stderr, "Cannot create output dir %s, errno=%d\n", dirname, errno);
 	return rc;
     }
+#endif
 
+#ifdef DEBUF
     char debugname[256];
     sprintf (debugname, "%s/stream-debug", dirname);
     debugfile = fopen (debugname, "w");
@@ -2114,15 +2116,6 @@ preprune_local_lowmem (u_long& mdatasize, char* output_log, u_long odatasize, ta
 	pentry--;
     }
 
-    u_long ucnt = 0, tcnt = 0;
-    for (u_long i = 0; i < mentries; i++) {
-	if (is_used[i/8] & (1 << i%8)) {
-	    ucnt++;
-	}
-	tcnt++;
-    }
-    fprintf (stderr, "%lu out of %lu entries are used\n", ucnt, tcnt);
-    
     // Compress first half of log
     u_long split = mentries/2;
     u_long new_index = 0;
@@ -2238,7 +2231,6 @@ preprune_local (u_long& mdatasize, char* output_log, u_long odatasize, taint_t* 
 	is_used = new u_long[mentries];
 	memset (is_used, 0, mentries*sizeof(u_long));
     } catch (bad_alloc& ba) {
-	fprintf (stderr, "Cannot preprune due to lack of memory\n");
 #ifdef STATS
 	gettimeofday(&preprune_local_end_tv, NULL);
 #endif
