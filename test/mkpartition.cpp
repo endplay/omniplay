@@ -204,11 +204,15 @@ int gen_timings (struct replay_timing* timings, struct extra_data* edata, int st
 	    if (partitions-split < 2) {
 		split = partitions-2;
 	    }
-	    printf ("would like to split this gap into %d partitions\n", split);
-	    printf ("begins at clock %lu ends at clock %lu\n", edata[gap_start].start_clock, edata[gap_end].start_clock);
+	    if (details) {
+		printf ("would like to split this gap into %d partitions\n", split);
+		printf ("begins at clock %lu ends at clock %lu\n", edata[gap_start].start_clock, edata[gap_end].start_clock);
+	    }
 	    if (edata[gap_end].start_clock-edata[gap_start].start_clock < split) split = edata[gap_end].start_clock - edata[gap_start].start_clock;
 	    intvl = (edata[gap_end].start_clock-edata[gap_start].start_clock)/split;
-	    printf ("Interval is %d\n", intvl);
+	    if (details) {
+		printf ("Interval is %d\n", intvl);
+	    }
 	} 
 	total_time -= (edata[gap_end].dtiming - edata[gap_start].dtiming);
 	partitions -= split;

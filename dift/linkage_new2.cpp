@@ -14445,14 +14445,16 @@ int main(int argc, char** argv)
 
     main_prev_argv = argv;
 
-    //INS_AddInstrumentFunction(instruction_instrumentation, 0);
     TRACE_AddInstrumentFunction (trace_instrumentation, 0);
 
     // Register a notification handler that is called when the application
     // forks a new process
     PIN_AddForkFunction(FPOINT_AFTER_IN_CHILD, AfterForkInChild, 0);
-    //TRACE_AddInstrumentFunction (track_trace, 0);
-    RTN_AddInstrumentFunction(track_function, 0);
+
+    if (trace_x) {
+	// Right now, only used when this config variable set
+	RTN_AddInstrumentFunction(track_function, 0);
+    }
 
 #if 0
     IMG_AddInstrumentFunction (ImageLoad, 0);
