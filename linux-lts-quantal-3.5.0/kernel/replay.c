@@ -3388,7 +3388,6 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 		atomic_set(precg->rg_pkrecord_clock+1,fake_call_points[0]);        
 	}
 	if (record_timing) {
-		printk ("Recording timings\n");
 		prepg->rg_timebuf = KMALLOC(sizeof(struct replay_timing)*REPLAY_TIMEBUF_ENTRIES, GFP_KERNEL);
 		if (prepg->rg_timebuf == NULL) printk ("Cannot allocate timing buffer\n");
 	}
@@ -5728,20 +5727,26 @@ sys_pthread_fake_call (void)
 		struct replay_group* prepg = current->replay_thrd->rp_group;
 		if (current->replay_thrd->rp_pin_attaching == PIN_ATTACHING_FF || current->replay_thrd->rp_pin_attaching == PIN_ATTACHING_RESTART) {
 			current->replay_thrd->rp_pin_attaching = PIN_ATTACHING_NONE;
-			printk ("Pid %d: Fake call attach re-entry at %lu\n", current->pid, *(current->replay_thrd->rp_preplay_clock));
+			MPRINT ("Pid %d: Fake call attach re-entry at %lu\n", current->pid, *(current->replay_thrd->rp_preplay_clock));
+			prepg->rg_fake_calls_made++;
+			if (prepg->rg_fake_calls_made < prepg->rg_nfake_calls) {
+				MPRINT ("Pid %d: next fake call is at %lu\n", current->pid, prepg->rg_fake_calls[prepg->rg_fake_calls_made]);
+				atomic_set(prepg->rg_rec_group->rg_pkrecord_clock+1,prepg->rg_fake_calls[prepg->rg_fake_calls_made]); 
+			}
 			return 0;
 		}
 		rc = test_pin_attach (current->replay_thrd, 0);	    
 		if (rc < 0) {
 			// We attached PIN at this syscall 
-			printk ("Pid %d: Attach at fake call made at clock value %lu\n", current->pid, *(current->replay_thrd->rp_preplay_clock));
+			MPRINT ("Pid %d: Attach at fake call made at clock value %lu\n", current->pid, *(current->replay_thrd->rp_preplay_clock));
 			return rc;		
 		}			       
-		printk ("Pid %d: Fake call at clock value %lu attaching %d\n", current->pid, *(current->replay_thrd->rp_preplay_clock),
+		MPRINT ("Pid %d: Fake call at clock value %lu attaching %d\n", current->pid, *(current->replay_thrd->rp_preplay_clock),
 			current->replay_thrd->rp_pin_attaching);
 
 		prepg->rg_fake_calls_made++;
 		if (prepg->rg_fake_calls_made < prepg->rg_nfake_calls) {
+			MPRINT ("Pid %d: next fake call is at %lu\n", current->pid, prepg->rg_fake_calls[prepg->rg_fake_calls_made]);
 			atomic_set(prepg->rg_rec_group->rg_pkrecord_clock+1,prepg->rg_fake_calls[prepg->rg_fake_calls_made]); 
 		}
 		return 0;

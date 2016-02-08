@@ -315,7 +315,7 @@ static void dift_done ()
     fclose (debug_f);
 #endif
 
-    printf("DIFT done at %ld\n", global_syscall_cnt);
+    printf("DIFT done at %ld\n", *ppthread_log_clock);
 
 #ifdef USE_SHMEM
     // Send "done" message to aggregator

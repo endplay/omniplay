@@ -15,8 +15,6 @@
 //#define DPRINT pthread_log_debug
 #define DPRINT(x,...)
 
-#define DO_FAKE_CALLS
-
 // Globals for user-level replay
 int pthread_log_status = PTHREAD_LOG_NONE;
 unsigned long* ppthread_log_clock = 0;
@@ -133,6 +131,35 @@ void pthread_fake_call (void)
 }
 #endif
 
+#ifdef DO_FAKE_CALLS
+void pthread_log_do_tick_rec (void)
+{
+  pthread_log_record (0, LIBC_TICK, 0, 0); 
+}
+
+void pthread_log_do_tick_rep (void)
+{
+  pthread_log_replay (LIBC_TICK, 0);
+}
+
+void pthread_log_do_tick (void)
+{
+    if (is_recording()) { 
+	struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+	GET_OLD_STACKP();
+	SET_NEW_STACKP();
+	pthread_log_do_tick_rec ();
+	RESET_OLD_STACKP(); 
+    } else if (is_replaying()) {
+	struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+	GET_OLD_STACKP();
+	SET_NEW_STACKP();
+	pthread_log_do_tick_rep ();
+	RESET_OLD_STACKP(); 
+    }
+}
+#endif
+
 #include <bits/libc-lock.h>
 
 void pthread_log_mutex_lock_rec (__libc_lock_t* lock)
@@ -238,10 +265,15 @@ void pthread_log_mutex_unlock (__libc_lock_t* lock)
 void (*pthread_log_lock)(int *);
 int (*pthread_log_trylock)(int *);
 void (*pthread_log_unlock)(int *);
+void (*pthread_log_tick)(void);
 
 extern void malloc_setup (void (*__pthread_log_lock)(int *),
 			  int (*__pthread_log_trylock)(int *),
 			  void (*__pthread_log_unlock)(int *));
+
+#ifdef DO_FAKE_CALLS
+extern void memcpy_setup (void (*__pthread_log_tick)(void));
+#endif
 
 // For debugging malloc issues - comment out for now
 //extern void malloc_extra_setup (void (*__pthread_log_msg)(char *, int));
@@ -300,6 +332,9 @@ int check_recording (void)
     head->ignore_flag = 0;
     DPRINT ("Kernel sets log status to %d\n", pthread_log_status);
     malloc_setup(pthread_log_mutex_lock, pthread_log_mutex_trylock, pthread_log_mutex_unlock);
+#ifdef DO_FAKE_CALLS
+    memcpy_setup(pthread_log_do_tick);
+#endif
 #ifdef USE_EXTRA_DEBUG_LOG
     malloc_extra_setup(pthread_log_msg);
 #endif
