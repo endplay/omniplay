@@ -26,13 +26,17 @@ $ source $HOME/.omniplay_setup
 
 3.1) Build the Omniplay kernel 
 
-Two method:
+Two methods:
 Option 1:
 $ cd $OMNIPLAY_DIR/linux-lts-quantal-3.5.0
 $ # The following two setps need be done only once
 $ wget http://web.eecs.umich.edu/~ddevec/omniplay.config
 $ mv omniplay.config .config
 $ # End once only steps
+$ ./compile
+$ # The modules_install is required only if modules were rebult (for example, on your first build)
+$ make modules_install
+$ # Must be re-run after a modules_install
 $ ./compile
 $ sudo reboot
 
