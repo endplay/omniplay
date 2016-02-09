@@ -31,7 +31,7 @@ using namespace std;
 typedef PagedBitmap<MAX_TAINTS, PAGE_BITS> bitmap;
 
 
-//#define DEBUG(x) ((x)==0x7e5751)
+//#define DEBUG(x) ((x)==0x59 || (x) == 0xc7)
 #define STATS
 
 #define PREPRUNE_NONE   0
@@ -229,8 +229,11 @@ bucket_push (uint32_t val, struct taintq_hdr* qh, uint32_t*& qb, int qfd, uint32
 static void inline bucket_term (struct taintq_hdr* qh, uint32_t*& qb, int qfd, uint32_t& bucket_cnt, uint32_t& bucket_stop)
 {
     if (bucket_cnt == bucket_stop) return;  // Have not grabbed a bucket yet - so nothing to do
-    if (bucket_cnt && QEND(qb[bucket_cnt-1])) {
+    if (bucket_cnt && QEND(qb[bucket_cnt-1])) { 
 	qb[bucket_stop-1] = TERM_VAL; // Mark last bucket for network processing
+    }
+    else {
+	qb[bucket_stop-1] = 0; // Mark as *NOT* last bucket for network processing
     }
     qb[bucket_cnt++] = BUCKET_TERM_VAL;  // Mark bucket as done
     bucket_stop = bucket_cnt;  // Force new bucket
@@ -863,7 +866,7 @@ do_outputs_seq (void* pdata)
 {
     // Unpack arguments
     struct output_par_data* opdata = (struct output_par_data *) pdata;
-    uint32_t  output_token = opdata->output_token;
+    uint32_t  output_token = opdata->output_token; 
     char*     plog = opdata->plog;
     char*     outstop = opdata->outstop;
 //    unordered_set<uint32_t>* plive_set = opdata->plive_set;
@@ -886,7 +889,7 @@ do_outputs_seq (void* pdata)
 	plog += sizeof(uint32_t);
 	for (uint32_t i = 0; i < buf_size; i++) {
 	    plog += sizeof(uint32_t);
-	    taint_t value = *((taint_t *) plog);
+	    taint_t value = *((taint_t *) plog);  
 #ifdef DEBUG
 	    if (DEBUG(output_token)) {
 		fprintf (debugfile, "output %x has value %lx\n", output_token, (long) value);
@@ -1630,7 +1633,6 @@ struct prune_pass_1 {
     pthread_t                tid;
     taint_entry*             mptr; 
     taint_entry*             mend; 
-//    unordered_set<uint32_t>* ulive_set;
     bitmap*                  live_set;
 #ifdef STATS
     struct timeval           start_tv;
@@ -1656,21 +1658,11 @@ prune_range_pass_1 (void* data)
 	    if (!live_set->test(mptr->p1)) {
 		mptr->p1 = 0;
 	    } 
-#ifdef DEBUG
-	    else { 
-		fprintf(debugfile, "%x in liveset\n",mptr->p1);
-	    }
-#endif
 	}
 	if (mptr->p2 < 0xc0000000) {
 	    if (!live_set->test(mptr->p2)) {
 		mptr->p2 = 0;
 	    } 
-#ifdef DEBUG 
-	    else { 
-		fprintf(debugfile, "%x  in liveset\n",mptr->p2);
-	    }
-#endif
 	}
 	mptr++;
     }
@@ -2624,7 +2616,6 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	
     if (!finish_flag) build_map_tid = spawn_map_thread (&address_map, ts_log, adatasize);
 
-    uint32_t curr_count = 0;
     if (!start_flag) {
 	// Wait for preceding epoch to send list of live addresses
 #ifdef STATS
@@ -2632,13 +2623,10 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 #endif
 	uint32_t val;
 	uint32_t rbucket_cnt = 0, rbucket_stop = 0;
-	uint32_t count = 0;
 
 	GET_QVALUEB(val, outputq_hdr, outputq_buf, oqfd, rbucket_cnt, rbucket_stop);
 	while (val != TERM_VAL) {
-	    curr_count += 1;
 	    live_set.set(val);
-	    count++;
 
 	    GET_QVALUEB(val, outputq_hdr, outputq_buf, oqfd, rbucket_cnt, rbucket_stop);
 	} 
@@ -2659,7 +2647,7 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	uint32_t* pls = outputq_buf;
 	uint32_t* plsend = outputq_buf + live_set.size();
 	if (live_set.size() > TAINTENTRIES) {
-	    fprintf (stderr, "Oops: live set is %x, curr_count %x\n", live_set.size(), curr_count);
+	    fprintf (stderr, "Oops: live set is %x\n", live_set.size());
 	    return -1;
 	}
 	make_new_live_set(ts_log, ts_log + adatasize/sizeof(taint_t), pls, plsend, live_set);
@@ -2677,7 +2665,11 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 
     // Wait until live set has been completely read
     bucket_write_init();
+
     output_token = process_outputs (output_log, output_log + odatasize, &live_set, dirname, do_outputs_seq);
+
+
+
 
     if (!finish_flag) {
 
@@ -2902,10 +2894,12 @@ void recv_stream (int s, struct taintq_hdr* qh, uint32_t* qb)
 	pthread_mutex_unlock(&(qh->lock));
 
 	long rc = safe_read (s, qb + (qh->write_index*TAINTBUCKETENTRIES), TAINTBUCKETSIZE);
-	if (rc != (long)TAINTBUCKETSIZE) return; // Error sending the data
+	if (rc != (long)TAINTBUCKETSIZE) {
+	    fprintf(stderr,"error receiving the data");
+	    return; // Error sending the data
+	}
 
 	bytes_rcvd += TAINTBUCKETENTRIES;
-
 	if (qb[qh->write_index*TAINTBUCKETENTRIES+TAINTBUCKETENTRIES-1] == TERM_VAL) done = true;
 
 	pthread_mutex_lock(&(qh->lock));
