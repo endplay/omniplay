@@ -30,7 +30,6 @@ struct wakeup_data {
 	int	      save_mmap;
 	int           ckpt_at;
 	int           record_timing;
-	char __user * cache_dir;
 };
 
 struct wakeup_ckpt_data {
@@ -44,7 +43,6 @@ struct wakeup_ckpt_data {
 	loff_t        attach_index;
 	int           attach_pid;
 	int	      save_mmap;
-	char __user * cache_dir;
 };
 
 struct get_used_addr_data {

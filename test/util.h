@@ -36,13 +36,12 @@ struct filemap_entry {
 int devspec_init (int* fd_spec);
 int replay_fork (int fd_spec, const char** args, const char** env, char* linkpath, char* logdir, int save_mmap, int output_fd);
 int resume(int fd_spec, int attach_pin, int attach_gdb, int follow_splits, int save_mmap,
-	   char* logdir, char* linker, loff_t attach_index, int attach_pid, int record_timing, char* cache_dir);
+	   char* logdir, char* linker, loff_t attach_index, int attach_pid, int record_timing);
 int resume_with_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int save_mmap, 
-		      char* logdir, char* linker, loff_t attach_index, int attach_pid, int ckpt_at, int record_timing,
-		      char* cache_dir);
+		      char* logdir, char* linker, loff_t attach_index, int attach_pid, int ckpt_at, int record_timing);
 
 int resume_after_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int save_mmap, 
-		       char* logdir, char* linker, char* filename, loff_t attach_index, int attach_pid, char* cache_dir);
+		       char* logdir, char* linker, char* filename, loff_t attach_index, int attach_pid);
 int resume_proc_after_ckpt (int fd_spec, char* logdir, char* filename);
 int set_pin_addr (int fd_spec, u_long app_syscall_addr, void* pthread_data, void** pcurthread, int* pattach_ndx);
 int check_clock_before_syscall (int fd_spec, int syscall);

@@ -32,7 +32,6 @@ int main (int argc, char* argv[])
 	int record_timing = 0;
 	char filename[4096], pathname[4096];
 	u_long proc_count, i;
-	char* cache_dir = NULL;
 
 	struct option long_options[] = {
 		{"pthread", required_argument, 0, 0},
@@ -40,7 +39,6 @@ int main (int argc, char* argv[])
 		{"attach_offset", optional_argument, 0, 0},
 		{"ckpt_at", required_argument, 0, 0},
 		{"from_ckpt", required_argument, 0, 0},
-		{"cache_dir", required_argument, 0, 0},
 		{0, 0, 0, 0}
 	};
 
@@ -85,12 +83,7 @@ int main (int argc, char* argv[])
 				break;
 			case 4:
 				from_ckpt = atoi(optarg);
-				break;	
-			case 5:
-				cache_dir = optarg;
-				printf("cache_dir is %s\n",cache_dir);
-				break;
-					
+				break;						
 			default:
 				assert(0);
 			}
@@ -152,10 +145,6 @@ int main (int argc, char* argv[])
 		libdir = ldpath;
 	}
 	
-	if(!cache_dir) {
-		cache_dir = "";
-	}
-
 	fd = open ("/dev/spec0", O_RDWR);
 	if (fd < 0) {
 		perror("open /dev/spec0");
@@ -195,10 +184,10 @@ int main (int argc, char* argv[])
 			}
 		}
 		rc = resume_after_ckpt (fd, attach_pin, attach_gdb, follow_splits, save_mmap, argv[base], libdir, filename,
-					attach_index, attach_pid, cache_dir);
+					attach_index, attach_pid);
 	} else {
 	    rc = resume_with_ckpt (fd, attach_pin, attach_gdb, follow_splits, save_mmap, argv[base], libdir,
-				   attach_index, attach_pid, ckpt_at, record_timing, cache_dir);
+				   attach_index, attach_pid, ckpt_at, record_timing);
 	}
 	if (rc < 0) {
 		perror("resume");
