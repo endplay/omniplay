@@ -36,9 +36,11 @@ struct filemap_entry {
 int devspec_init (int* fd_spec);
 int replay_fork (int fd_spec, const char** args, const char** env, char* linkpath, char* logdir, int save_mmap, int output_fd);
 int resume(int fd_spec, int attach_pin, int attach_gdb, int follow_splits, int save_mmap,
-	   char* logdir, char* linker, loff_t attach_index, int attach_pid, int record_timing);
+	   char* logdir, char* linker, loff_t attach_index, int attach_pid, int record_timing,
+	   u_long nfake_calls, u_long* fake_calls);
 int resume_with_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int save_mmap, 
-		      char* logdir, char* linker, loff_t attach_index, int attach_pid, int ckpt_at, int record_timing);
+		      char* logdir, char* linker, loff_t attach_index, int attach_pid, int ckpt_at, int record_timing,
+		      u_long nfake_calls, u_long* fake_calls);
 
 int resume_after_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int save_mmap, 
 		       char* logdir, char* linker, char* filename, loff_t attach_index, int attach_pid);

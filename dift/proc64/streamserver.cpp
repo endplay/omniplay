@@ -260,13 +260,33 @@ void do_dift (int s, struct epoch_hdr& ehdr)
     for (u_long i = 0; i < epochs; i++) {
 	ectl[i].cpid = fork ();
 	if (ectl[i].cpid == 0) {
+	    const char* args[256];
+	    char attach[80];
+	    char fake[80];
+	    int argcnt = 0;
+	    
+	    args[argcnt++] = "resume";
+	    args[argcnt++] = "-p";
+	    args[argcnt++] = ehdr.dirname;
+	    args[argcnt++] = "--pthread";
+	    args[argcnt++] = "../../eglibc-2.15/prefix/lib";
 	    if (i > 0 || !ehdr.start_flag) {
-		char attach[80];
-		sprintf (attach, "--attach_offset=%d,%u", edata[i].start_pid, edata[i].start_syscall);
-		rc = execl("../../test/resume", "resume", "-p", ehdr.dirname, "--pthread", "../../eglibc-2.15/prefix/lib", attach, NULL);
-	    } else {
-		rc = execl("../../test/resume", "resume", "-p", ehdr.dirname, "--pthread", "../../eglibc-2.15/prefix/lib", NULL);
+		sprintf (attach, "--attach_offset=%d,%u", edata[i].start_pid, edata[i].start_clock);
+		args[argcnt++] = attach;
 	    }
+	    if (edata[i].start_level == 'u' && edata[i].stop_level == 'u') {
+		sprintf (fake, "--fake_calls=%u,%u", edata[i].start_clock, edata[i].stop_clock);
+		args[argcnt++] = fake;
+	    } else if (edata[i].start_level == 'u') {
+		sprintf (fake, "--fake_calls=%u", edata[i].start_clock);
+		args[argcnt++] = fake;
+	    } else if (edata[i].stop_level == 'u') {
+		sprintf (fake, "--fake_calls=%u", edata[i].stop_clock);
+		args[argcnt++] = fake;
+	    }
+	    args[argcnt++] = NULL;
+		
+	    rc = execv ("../../test/resume", (char **) args);
 	    fprintf (stderr, "execl of resume failed, rc=%d, errno=%d\n", rc, errno);
 	    return;
 	} else {
@@ -304,7 +324,7 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 
 		    pid_t mpid = fork();
 		    if (mpid == 0) {
-			char cpids[80], syscalls[80], output_filter[80], port[80], fork_flags[80], epoch_index[80];
+			char cpids[80], syscalls[80], output_filter[80], port[80], fork_flags[80];
 			const char* args[256];
 			int argcnt = 0;
 			
@@ -315,20 +335,18 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 			args[argcnt++] = "-t";
 			args[argcnt++] = "../obj-ia32/linkage_data.so";
 
-			sprintf (syscalls, "%d", edata[i].stop_syscall);
+			/*
+			 * I pulled this out b/c in multiproc case we might be 
+			 * tracing a process that doesn't go all the way to the end
+			 */
+			sprintf (syscalls, "%d", edata[i].stop_clock);
 			args[argcnt++] = "-l";
 			args[argcnt++] = syscalls;
 
 			sprintf (fork_flags, "%d", edata[i].fork_flags);
 			args[argcnt++] = "-fork_flags";
-			args[argcnt++] = fork_flags;
-			
-			sprintf (epoch_index, "%lu",i);
-			args[argcnt++] = "-epoch_index";
-			args[argcnt++] = epoch_index;
-			     
+			args[argcnt++] = fork_flags;		       			     
 			  
-
 			if (i < epochs-1 || !ehdr.finish_flag) {
 			    args[argcnt++] = "-ao"; // Last epoch does not need to trace to final addresses
 			}
@@ -649,19 +667,8 @@ void do_stream (int s, struct epoch_hdr& ehdr)
     if (ehdr.flags&SEND_RESULTS) {
 	for (u_long i = 0; i < epochs; i++) {
 	    char pathname[PATHLEN];
-
-//  Changes so that we can have a separate agg_port... not sure that we need these. 
-
-	    sprintf (pathname, "/tmp/%d.%d/merge-addrs", agg_port, ectl[i].cpid);
-	    send_file (s, pathname, "merge-addrs");
-	    sprintf (pathname, "/tmp/%d.%d/merge-outputs-resolved", agg_port, ectl[i].cpid);
-	    send_file (s, pathname, "merge-outputs-resolved");
-	    sprintf (pathname, "/tmp/%d.%d/tokens", agg_port, ectl[i].cpid);
-	    send_file (s, pathname, "tokens");
-	    sprintf (pathname, "/tmp/%d.%d/dataflow.result", agg_port,ectl[i].cpid);
-/*
 	    sprintf (pathname, "/tmp/%ld/merge-addrs", i);
-	    send_file (s, pathname, "merge-addrs");
+	    send_shmem (s, pathname, "merge-addrs");
 	    for (int j = 0; j < ehdr.parallelize; j++) {
 		char filename[256];
 		sprintf (pathname, "/tmp/%ld/merge-outputs-resolved-%d", i, j);
@@ -669,10 +676,9 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 		send_shmem (s, pathname, filename);
 	    }
 	    sprintf (pathname, "/tmp/%ld/tokens", i);
-	    send_file (s, pathname, "tokens");
+	    send_shmem (s, pathname, "tokens");
 	    sprintf (pathname, "/tmp/%ld/dataflow.results", i);
-	    send_file (s, pathname, "dataflow.results");	    
-*/
+	    send_shmem (s, pathname, "dataflow.results");
 	}
     }
     

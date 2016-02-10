@@ -59,6 +59,7 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 	long rc;
 	int device;
 	pid_t pid;
+	u_long* fake_calls = NULL;
 
 	pckpt_proc = new_ckpt_proc = NULL;
 	DPRINT ("pid %d cmd number 0x%08x\n", current->pid, cmd);
@@ -125,9 +126,19 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 			device = 0; //NONE
 		}
 
+		if (wdata.nfake_calls) {
+		    fake_calls = kmalloc (wdata.nfake_calls*sizeof(u_long), GFP_KERNEL);
+		    if (fake_calls == NULL) return -ENOMEM;
+		    if (copy_from_user (fake_calls, wdata.fake_calls, wdata.nfake_calls*sizeof(u_long))) {
+			kfree (fake_calls);
+			return -EFAULT;
+		    }
+		}
+
 		rc = replay_ckpt_wakeup(device, logdir, tmp, wdata.fd,
 					wdata.follow_splits, wdata.save_mmap, wdata.attach_index,
-					wdata.attach_pid, wdata.ckpt_at, wdata.record_timing);
+					wdata.attach_pid, wdata.ckpt_at, wdata.record_timing,
+					wdata.nfake_calls, fake_calls);
 
 		if (tmp) putname (tmp);
 		return rc;

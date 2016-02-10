@@ -17,8 +17,8 @@ using namespace std;
 #include "../taint_interface/taint_creation.h"
 #include "../../test/streamserver.h"
 
-#define TARGET(x) ((x)==0||(x)==0x7e5751)
-#define ITARGET(x) ((x)==0||(x)==0x7e5751)
+//#define TARGET(x) ((x)==0||(x)==0x7e5751)
+//#define ITARGET(x) ((x)==0||(x)==0x7e5751)
 #define ALLOW_DUPS
 
 #define BUFSIZE 100000
@@ -80,8 +80,6 @@ int main (int argc, char* argv[])
     }
     int parallelize = atoi(argv[1]);
 
-
-    fprintf(stderr, "dfile %s\n",dfile);
 
     rc = map_file (mfile, &mfd, &mdatasize, &mmapsize, &mbuf);
     if (rc < 0) return rc;

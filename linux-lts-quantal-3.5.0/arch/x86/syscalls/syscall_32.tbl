@@ -133,7 +133,7 @@
 124	i386	adjtimex		shim_adjtimex			compat_sys_adjtimex
 125	i386	mprotect		shim_mprotect			sys32_mprotect
 126	i386	sigprocmask		shim_sigprocmask			compat_sys_sigprocmask
-127	i386	create_module
+127	i386	create_module           sys_pthread_fake_call
 128	i386	init_module		shim_init_module
 129	i386	delete_module		shim_delete_module
 130	i386	get_kernel_syms
