@@ -114,13 +114,29 @@ void print_utimings (struct replay_timing* timings, struct extra_data* edata, in
 { 
     u_long ndx = edata[start].start_clock;
     u_long next_ndx = ndx + intvl;
-    printf ("%5d k %6lu u %6lu       0       0 %s\n", timings[start].pid, ndx, next_ndx, fork_flags);
+    printf ("%5d k %6lu u %6lu       0       0\n", timings[start].pid, ndx, next_ndx);
+    if (strnlen(fork_flags, 128) > 0)
+	printf (" %s\n", fork_flags);
+    else {
+	printf (" 0\n");
+    }
     for (u_int i = 0; i < split-2; i++) {
 	ndx = next_ndx;
 	next_ndx = ndx+intvl;
-	printf ("%5d u %6lu u %6lu       0       0 %s\n", timings[start].pid, ndx, next_ndx, fork_flags);
+	printf ("%5d u %6lu u %6lu       0       0 ", timings[start].pid, ndx, next_ndx);
+	if (strnlen(fork_flags, 128) > 0)
+	    printf (" %s\n", fork_flags);
+	else {
+	    printf (" 0\n");
+	}
     }
-    printf ("%5d u %6lu k %6lu       0       0 %s\n", timings[start].pid, next_ndx, edata[end].start_clock, fork_flags);
+    printf ("%5d u %6lu k %6lu       0       0\n", timings[start].pid, next_ndx, edata[end].start_clock);
+    if (strnlen(fork_flags, 128) > 0)
+	printf (" %s\n", fork_flags);
+    else {
+	printf (" 0\n");
+    }
+
 }
 
 void print_timing (struct replay_timing* timings, struct extra_data* edata, int start, int end, char* fork_flags)
@@ -152,7 +168,11 @@ void print_timing (struct replay_timing* timings, struct extra_data* edata, int 
     } else {
 	printf ("       0");
     }
-    printf ("  %s\n", fork_flags);
+    if (strnlen(fork_flags, 128) > 0)
+	printf (" %s\n", fork_flags);
+    else {
+	printf (" 0\n");
+    }
 }
 
 static int can_attach (map<u_int, short> *syscalls) 
@@ -350,7 +370,7 @@ int find_processes(map<u_int,u_int> &pid_to_index,
 		}
 		else 
 		{ 		 
-		    //we're assuming it is a thread_fork in this case: 
+		    //this is a thread_fork:
 		    pid_to_index[res->retval] = pid_to_index[pid_iter->first];
 		    pid_found[res->retval] = true;
 		}
@@ -500,7 +520,6 @@ int build_intervals(map<u_int, u_int> &fork_process,
 		    map<u_int, u_int> &pid_to_index,
 		    map<u_int, map<u_int, u_int>> &index_inclusions)
 {
-    //fill index_inclusions with default values:  
     for(auto proc_iter = fork_process.begin(); proc_iter != fork_process.end(); proc_iter++) 
     {
 	map<u_int,u_int> intervals;
@@ -657,18 +676,37 @@ int populate_ret_val(vector<struct replay_timing *> &timings_vect,
 int build_fork_flags(vector<char*> &fork_flags,
 		     map<u_int,u_int> &pid_to_index,
 		     map<u_int,map<u_int,u_int>> &index_interval_inclusions,
+		     map<u_int,u_int> &fork_process,
+		     map<u_int,u_int> &fork_offset,
 		     const struct replay_timing *timings,
-		     const int num){ 
+		     const int num){
     for(int i = 0; i < num; i++) { 
 	struct replay_timing curr_timing = timings[i];
 	if (curr_timing.syscall == 120) { 
 	    //we might have a fork, so iterate through all indexes and see if any
 	    //procs stop including this proc at exactly this point in time
 	    for(auto proc_gp : index_interval_inclusions) {
+
+		bool is_fork = false; 
+		//see if this is a fork
+		for(auto proc : fork_process) { 
+		    if (proc.second == (u_long)curr_timing.pid) { 
+			if (fork_offset[proc.first] == curr_timing.index) { 
+			    is_fork = true;
+			}
+		    }		    
+		}
+
+		if (!is_fork) { 
+		    continue;
+		}
+	       
+		//I'm not sure what the rationality is behind this if conditional? 
 		if(proc_gp.first == (u_int)curr_timing.pid) { 
 		    int index = pid_to_index[proc_gp.first];
 		    strcat(fork_flags[index],"0");		    
 		}
+
 		for(auto interval : proc_gp.second){
 		    if(interval.first == (u_int)curr_timing.pid &&
 		       interval.second == curr_timing.index) { 
@@ -684,13 +722,6 @@ int build_fork_flags(vector<char*> &fork_flags,
 	    }	    
 	}
     }	
-
-    for (auto flag : fork_flags) { 
-	//append a 0 to any zero length flags
-	if (strlen(flag) == 0) { 
-	    strcat(flag, "0");
-	}
-    }
     return 0;
 }
 //right now we have three parallel vectors... these could conceivably be structs. (probably should)
@@ -736,7 +767,7 @@ int create_multiprocess_ds(vector<u_int> &num_el,
 	return rc;
     }
 
-    rc = build_fork_flags(fork_flags, pid_to_index, index_interval_inclusions, timings, num);
+    rc = build_fork_flags(fork_flags, pid_to_index, index_interval_inclusions, fork_process, fork_offset, timings, num);
     if(rc) { 
 	printf("could not build fork_flags, rc %d\n",rc);
 	return rc;
