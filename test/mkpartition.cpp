@@ -26,7 +26,7 @@ struct extra_data {
     u_long   aindex;
     u_long   start_clock;
     u_long   rtn_value; //the return value of the syscall.. used entirely for fork. 
-    map<u_int, short> rpg_syscalls;
+    map<u_int, short> *rpg_syscalls;
 };
 
 struct ckpt_data {
@@ -113,12 +113,7 @@ long read_ckpts (char* dirname)
 
 void print_timing (struct replay_timing* timings, struct extra_data* edata, int start, int end, char* fork_flags)
 { 
-    //printf ("%d %5d %6lu %5d %6d ", process_index, timings[start].pid, timings[start].index, timings[end].pid, end-start);
-    if(!strncmp("", fork_flags,0)) 
-	printf ("%5d %6lu %6lu 0", timings[start].pid, timings[start].index, edata[end].start_clock);
-    else
-	printf ("%5d %6lu %6lu %s", timings[start].pid, timings[start].index, edata[end].start_clock, fork_flags);
-
+	printf ("%5d %6lu %6lu ", timings[start].pid, timings[start].index, edata[end].start_clock);
 
     if (filter_syscall > 0) {
 	if ((u_long) filter_syscall > timings[start].index && (u_long) filter_syscall <= timings[end].index) {
@@ -134,24 +129,26 @@ void print_timing (struct replay_timing* timings, struct extra_data* edata, int 
 	for (i = 0; i < ckpt_cnt; i++) {
 	    if (timings[start].index <= ckpts[i].clock) {
 		if (i > 0) {
-		    printf (" %6s\n", ckpts[i-1].name);
+		    printf (" %6s", ckpts[i-1].name);
 		} else {
-		    printf ("      0\n");
+		    printf ("      0");
 		}
 		return;
 	    }
 	}
-	printf (" %6s\n", ckpts[i-1].name);
+	printf (" %6s", ckpts[i-1].name);
     } else {
-	printf ("       0\n");
+	printf ("       0");
     }
+    printf ("  %s\n", fork_flags);
 }
 
-static int can_attach (map<u_int, short> syscalls) 
+static int can_attach (map<u_int, short> *syscalls) 
 {
     bool attach = true;
-    for (auto iter : syscalls){ 
-	if (iter.second == 192 || iter.second == 91 || iter.second == 120 || iter.second == -1){
+    for (auto iter = syscalls->begin(); iter != syscalls->end(); ++iter){ 
+	auto val = iter->second;
+	if (val == 192 || val == 91 || val == 120 || val == -1){
 	    attach = false;
 	}	
     }
@@ -160,7 +157,17 @@ static int can_attach (map<u_int, short> syscalls)
 
 static int cnt_interval (struct extra_data* edata, int start, int end)
 {
-    return edata[end].aindex - edata[start].aindex;
+//    printf ("cnt_interval, %d, %lu, %d, %lu\n",start, edata[start].aindex, end, edata[end].aindex);
+    int last_aindex = 0;
+    for (int i = end; i > start; --i) { 
+	if (edata[i].aindex > 0) {
+	    last_aindex = edata[i].aindex;
+	    break;
+	}
+    }
+    return last_aindex - edata[start].aindex;//
+    
+
 }
 
 
@@ -295,7 +302,7 @@ int find_processes(map<u_int,u_int> &pid_to_index,
 
 		if(procs.count(res->retval) > 0) 
 		{ 
-		    printf("found a fork! res->retval %ld from pid %d, index %lld \n", res->retval, pid_iter->first, res->index);
+//		    printf("found a fork! res->retval %ld from pid %d, index %lld \n", res->retval, pid_iter->first, res->index);
 		    //this is a fork! 
 		    pid_found[res->retval] = true; 
 		    pid_to_index[res->retval] = timings_map_index; 
@@ -319,15 +326,12 @@ int find_processes(map<u_int,u_int> &pid_to_index,
 
 int get_num_per_process(vector<u_int> &num_el,
 			map<u_int,u_int> &pid_index,
-			vector<u_int> &num_parts,			
 			map<u_int, map<u_int,u_int>> pid_intervals,
 			const struct replay_timing *timings,
-			const int parts,
 			const int num) { 
 
     //first initialize the num_el to 0
     u_int max = 0;
-    double sum_of_times = 0;
     vector<u_int> total_time_proc;
     map<u_int,u_int> last_time;        
 
@@ -372,48 +376,6 @@ int get_num_per_process(vector<u_int> &num_el,
 	last_time[timings_pid] = timings[i].ut;		
     }
 
-    /* we assume that each partition takes 1 additional ut that was originally calculated 
-     * this is the assumption that seems to be built into our calculation of edata (check generate_*)
-     * and also makes it so that we have no negative sized partitions
-     */
-
-    for(auto iter = total_time_proc.begin(); iter != total_time_proc.end(); iter++) 
-    { 
-	(*iter)++;
-	sum_of_times += *iter;
-    }
-    
-    /*
-     * The algorithm works as follows: we start by assigning each process 1 partition. Then, for each 
-     * of the remaing partions (extra_parts), we assign partitions based upon a processes' weight,
-     * which is just the process_time / total_time. We take the floor (int division), so any remaining
-     * partions are assigned to the first however many processes. This isn't perfect, but it works
-     */
-
-    int extra_parts = parts - total_time_proc.size();
-    int parts_left = extra_parts;
-
-    for(auto iter = total_time_proc.begin(); iter != total_time_proc.end(); iter++) 
-    {
-	int curr_parts = (*iter / sum_of_times) * extra_parts;
-
-	num_parts.push_back(1 + curr_parts);
-	parts_left -= curr_parts;
-    }
-
-    /*
-     * There is probably a much better way to do this here. We could do a priority queue 
-     * which would give the bigger epochs even more weight. This might matter esp. at low 
-     * numbers of partitions. 
-     */
-    for(auto iter = num_parts.begin(); iter != num_parts.end(); iter++) 
-    {
-	if(parts_left == 0) break;
-	(*iter) += 1;
-	parts_left --;
-    }
-
-
     return 0;
 }
 
@@ -427,9 +389,8 @@ int allocate_multiprocess_ds(vector<struct replay_timing *> &timings_vect,
 
 	//add in a spot for the fork_flags!
 	char* fork_flag = (char *) malloc(sizeof(char) * 128);
-	fork_flag = strdup("");
-	fork_flags.push_back(fork_flag);
-	
+	fork_flag[0] = 0;//add a null terminator to the beginning
+	fork_flags.push_back(fork_flag);	
 
 	timings_vect.push_back((struct replay_timing *) malloc(sizeof(replay_timing) * (*index_iter)));
 	if (timings_vect.back() == NULL) {
@@ -686,37 +647,16 @@ int build_fork_flags(vector<char*> &fork_flags,
 		}		
 	    }	    
 	}
-    }	
-
-/*
-    for(auto it :index_interval_inclusions)
-    {
-	printf("intervals for %d\n",it.first);
-	for(auto it2 : it.second)
-	{
-	    printf("(%d,%d),",it2.first,it2.second);
-	}
-	printf("\n");
     }
-    printf("fork_flags size %d\n", fork_flags.size());
-    for(auto fork: fork_flags){ 
-	printf("fork flag %s\n", fork);
-    }
-
-*/
-
     return 0;
-
 }
 //right now we have three parallel vectors... these could conceivably be structs. (probably should)
 int create_multiprocess_ds(vector<u_int> &num_el,
 			   vector<struct replay_timing *> &timings_vect,
 			   vector<struct extra_data *> &edata_vect,			      
-			   vector<u_int> &num_parts,
 			   vector<char*> &fork_flags,
 			   const struct replay_timing *timings,
 			   const char* dir,
-			   const int parts,
 			   const int num,
 			   const set<int> procs){
     
@@ -741,7 +681,7 @@ int create_multiprocess_ds(vector<u_int> &num_el,
 	return rc;
     }
 
-    rc = get_num_per_process(num_el, pid_to_index, num_parts, index_interval_inclusions, timings, parts, num);
+    rc = get_num_per_process(num_el, pid_to_index,  index_interval_inclusions, timings, num);
     if(rc) { 
 	printf("could not get_num_per_process, rc %d\n", rc);
 	return rc;
@@ -753,12 +693,12 @@ int create_multiprocess_ds(vector<u_int> &num_el,
 	return rc;
     }
 
-
     rc = build_fork_flags(fork_flags, pid_to_index, index_interval_inclusions, timings, num);
     if(rc) { 
 	printf("could not build fork_flags, rc %d\n",rc);
 	return rc;
     }
+
 
     rc = split_timings(timings_vect, pid_to_index, index_interval_inclusions, timings, num);
     if(rc) { 
@@ -820,7 +760,12 @@ void generate_timings_for_process(struct replay_timing *timings,
 	}
 
 	latest_syscall[pid] = timings[i].syscall;  //update the latest_syscall of this pid to be this syscall
-	edata[i].rpg_syscalls = latest_syscall; //keep track of the latest syscall for each thread
+	for (auto pair : latest_syscall) { 
+	    edata[i].rpg_syscalls = new map<u_int, short>();
+	    (*edata[i].rpg_syscalls)[pair.first] = pair.second;
+	}
+
+//	edata[i].rpg_syscalls = latest_syscall; //keep track of the latest syscall for each thread
     }
 
     // Next interpolate values where increment is small
@@ -860,18 +805,15 @@ int main (int argc, char* argv[])
     struct extra_data* edata;
     struct stat st;
     int fd, rc, num, i, parts;
+    char following[256];   
     set<int> procs;
 
     if (argc < 3) {
 	format ();
     }
-
+    following[0] = 0; 
     sprintf (filename, "%s/timings", argv[1]);
     parts = atoi(argv[2]);
-//    if (parts < 2) {
-//	fprintf (stderr, "Number of partitions must be greater than 1\n");
-//	return -1;
-//    }
     for (i = 3; i < argc; i++) {
 	if (!strcmp(argv[i], "-g")) {
 	    i++;
@@ -880,6 +822,15 @@ int main (int argc, char* argv[])
 	    } else {
 		format();
 	    }
+	}
+	else if(!strcmp(argv[i], "-fork")) { 
+	    i++;
+	    if (i < argc) {
+		strcpy(following,argv[i]);
+	    } else {
+		format();
+	    }
+	
 	}
 	else if (!strcmp(argv[i], "-f")) {
 	    i++;
@@ -900,7 +851,6 @@ int main (int argc, char* argv[])
 	    procs.insert(atoi(argv[i]));
 	}
     }
-		
     if (use_ckpt) read_ckpts(argv[1]);
     
     fd = open (filename, O_RDONLY);
@@ -942,22 +892,22 @@ int main (int argc, char* argv[])
      */
 
     vector<u_int> num_el;
-    vector<u_int> num_parts;
     vector<struct replay_timing *> timings_vect;
     vector<struct extra_data *> edata_vect;
     vector<char*> fork_flags;
 
 
     num = st.st_size/sizeof(struct replay_timing); 
-    create_multiprocess_ds(num_el, timings_vect, edata_vect, num_parts, fork_flags,timings, argv[1], parts, num, procs);
+    create_multiprocess_ds(num_el, timings_vect, edata_vect, fork_flags,timings, argv[1], num, procs);
   
+
+
     if(details) { 
 	for(u_int i = 0; i < num_el.size(); i++ ) 
 	{	
 	    struct replay_timing* curr_timings = timings_vect[i];
 	    struct extra_data* curr_edata = edata_vect[i];
 	
-	    printf("num_parts %d\n", num_parts[i]);
 	    printf("num_el %d\n", num_el[i]);
 	    printf("timing info (edata has not yet been determined)\n");
 
@@ -976,7 +926,8 @@ int main (int argc, char* argv[])
     if (group_by > 0) printf ("group by %d\n", group_by);
 
     for(u_int i = 0; i < num_el.size(); i++ ) {
-	generate_timings_for_process(timings_vect[i], edata_vect[i], num_parts[i], num_el[i], argv[1], fork_flags[i]);
+	if (strlen(following) == 0 || !strcmp(fork_flags[i],following))
+	    generate_timings_for_process(timings_vect[i], edata_vect[i], parts, num_el[i], argv[1], fork_flags[i]);
     }
     
     
