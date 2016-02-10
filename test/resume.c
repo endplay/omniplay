@@ -12,7 +12,7 @@
 #include <sys/types.h>
 
 void print_help(const char *program) {
-	fprintf (stderr, "format: %s <logdir> [-p] [-f] [-m] [-g] [--pthread libdir] [--attach_offset=pid,sysnum] \n",
+	fprintf (stderr, "format: %s <logdir> [-p] [-f] [-m] [-g] [--pthread libdir] [--attach_offset=pid,sysnum] [--fake_calls=c1,c2...\n",
 			program);
 }
 
@@ -32,7 +32,8 @@ int main (int argc, char* argv[])
 	int record_timing = 0;
 	char filename[4096], pathname[4096];
 	u_long proc_count, i;
-	char* cache_dir = NULL;
+	u_long nfake_calls = 0;
+	u_long* fake_calls = NULL;
 
 	struct option long_options[] = {
 		{"pthread", required_argument, 0, 0},
@@ -40,18 +41,9 @@ int main (int argc, char* argv[])
 		{"attach_offset", optional_argument, 0, 0},
 		{"ckpt_at", required_argument, 0, 0},
 		{"from_ckpt", required_argument, 0, 0},
-		{"cache_dir", required_argument, 0, 0},
+		{"fake_calls", required_argument, 0, 0},
 		{0, 0, 0, 0}
 	};
-
-	/*
-	   do {
-	   int i;
-	   for (i = 0; i < argc; i++) {
-	   printf("Got input arg of %s\n", argv[i]);
-	   }
-	   } while (0);
-	   */
 
 	while (1) {
 		char opt;
@@ -87,10 +79,30 @@ int main (int argc, char* argv[])
 				from_ckpt = atoi(optarg);
 				break;	
 			case 5:
-				cache_dir = optarg;
-				printf("cache_dir is %s\n",cache_dir);
+			{
+				char* p, *last;
+				u_long i = 0;
+
+				nfake_calls = 1;
+				for (p = optarg; *p != '\0'; p++) {
+					if (*p == ',') nfake_calls++;
+				}
+				fake_calls = malloc(nfake_calls*sizeof(u_long));
+				if (fake_calls == NULL) {
+					fprintf (stderr, "Cannot allocate fake calls\n");
+					return -1;
+				}
+				last = optarg;
+				for (p = optarg; *p != '\0'; p++) {
+					if (*p == ',') {
+						*p++ = '\0';
+						fake_calls[i++] = atoi(last);
+						last = p;
+					}
+				}
+				fake_calls[i++] = atoi(last);
 				break;
-					
+			}
 			default:
 				assert(0);
 			}
@@ -152,10 +164,6 @@ int main (int argc, char* argv[])
 		libdir = ldpath;
 	}
 	
-	if(!cache_dir) {
-		cache_dir = "";
-	}
-
 	fd = open ("/dev/spec0", O_RDWR);
 	if (fd < 0) {
 		perror("open /dev/spec0");
@@ -195,10 +203,10 @@ int main (int argc, char* argv[])
 			}
 		}
 		rc = resume_after_ckpt (fd, attach_pin, attach_gdb, follow_splits, save_mmap, argv[base], libdir, filename,
-					attach_index, attach_pid, cache_dir);
+					attach_index, attach_pid);
 	} else {
-	    rc = resume_with_ckpt (fd, attach_pin, attach_gdb, follow_splits, save_mmap, argv[base], libdir,
-				   attach_index, attach_pid, ckpt_at, record_timing, cache_dir);
+		rc = resume_with_ckpt (fd, attach_pin, attach_gdb, follow_splits, save_mmap, argv[base], libdir,
+				       attach_index, attach_pid, ckpt_at, record_timing, nfake_calls, fake_calls);
 	}
 	if (rc < 0) {
 		perror("resume");

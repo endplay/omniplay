@@ -47,7 +47,7 @@ class PagedBitmap {
     auto &pmap = pages_[page_num];
 
     if (pmap == nullptr) {
-      return nullptr;
+      return false;
     }
 
     uint32_t bit_num = bit % page_size_bits;

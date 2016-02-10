@@ -31,7 +31,7 @@ using namespace std;
 typedef PagedBitmap<MAX_TAINTS, PAGE_BITS> bitmap;
 
 
-#define DEBUG(x) ((x)==0x7e5751)
+//#define DEBUG(x) ((x)==0x59 || (x) == 0xc7)
 #define STATS
 
 #define PREPRUNE_NONE   0
@@ -229,8 +229,11 @@ bucket_push (uint32_t val, struct taintq_hdr* qh, uint32_t*& qb, int qfd, uint32
 static void inline bucket_term (struct taintq_hdr* qh, uint32_t*& qb, int qfd, uint32_t& bucket_cnt, uint32_t& bucket_stop)
 {
     if (bucket_cnt == bucket_stop) return;  // Have not grabbed a bucket yet - so nothing to do
-    if (bucket_cnt && QEND(qb[bucket_cnt-1])) {
+    if (bucket_cnt && QEND(qb[bucket_cnt-1])) { 
 	qb[bucket_stop-1] = TERM_VAL; // Mark last bucket for network processing
+    }
+    else {
+	qb[bucket_stop-1] = 0; // Mark as *NOT* last bucket for network processing
     }
     qb[bucket_cnt++] = BUCKET_TERM_VAL;  // Mark bucket as done
     bucket_stop = bucket_cnt;  // Force new bucket
@@ -625,10 +628,10 @@ unlink_buffer (const char* prefix, const char* group_directory)
 	if (filename[i] == '/') filename[i] = '.';
     }
 
-//    long rc = shm_unlink (filename);
-//    if (rc < 0) {
-//	fprintf (stderr, "shm_unlink of %s failed, rc=%ld, errno=%d\n", filename, rc, errno);
-//    }
+    long rc = shm_unlink (filename);
+    if (rc < 0) {
+	fprintf (stderr, "shm_unlink of %s failed, rc=%ld, errno=%d\n", filename, rc, errno);
+    }
 }
 
 static void*
@@ -666,26 +669,9 @@ map_buffer (const char* prefix, const char* group_directory, u_long& datasize, u
 
 #ifdef DEBUG
     fprintf (debugfile, "map_buffer: mapsize %d datasize %lu \n",mapsize, datasize);
-#endif 
-    #ifdef DEBUG
-
-    if (!strncmp(prefix, "tokens", 256)){
-	struct token* curr_tok = (struct token *) ptr; // first cast the token_log to a struct token *
-	u_int num_entries  = datasize / sizeof(struct token); 
-	fprintf(debugfile, "idata %lu, num_entries %u\n",datasize, num_entries);
-
-	for (u_int i = 0; i < num_entries; i ++) {
-	    curr_tok++;
-	    fprintf (debugfile, "%u: record_pid %d, tok_num %d, syscall_cnt %d, size %d\n",i,curr_tok->record_pid,curr_tok->token_num, curr_tok->syscall_cnt, curr_tok->size);
-
-	}
-	fprintf (debugfile, "finished with first read\n\n\n\n");
-    }
 #endif
 
-
-
-    close (fd); //does this do something weird? lets print out a bunch of stuff RIGHT here. 
+    close (fd);
     unlink_buffer (prefix, group_directory);
 
     return ptr;
@@ -803,40 +789,56 @@ static void map_iter_par (taint_t value, uint32_t output_token, taint_t* stack, 
     }
 }
 
-long setup_aggregation (const char* dirname, int& outputfd, int& inputfd, int& addrsfd)
+static long 
+setup_aggregation (const char* dirname, int& outputfd, int& inputfd, int& addrsfd)
 {
     char outputfile[256], inputfile[256], addrsfile[256];
-    
+
+#ifdef STATS
+    gettimeofday(&start_tv, NULL);
+#endif
+
     astacks = new stacktype[parallelize];
 
-    long rc = mkdir(dirname, 0755);
-    if (rc < 0 && errno != EEXIST) {
-	fprintf (stderr, "Cannot create output dir %s, errno=%d\n", dirname, errno);
-	return rc;
-    }
-
     sprintf (outputfile, "%s/dataflow.results", dirname);
-    outputfd = open (outputfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    for (u_int i = 1; i < strlen(outputfile); i++) {
+	if (outputfile[i] == '/') outputfile[i] = '.';
+    }
+    outputfd = shm_open (outputfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
     if (outputfd < 0) {
-	fprintf (stderr, "Cannot create dataflow.results file, errno=%d\n", errno);
+	fprintf (stderr, "Cannot create output file, errno=%d\n", errno);
 	return -1;
     }
 
     sprintf (addrsfile, "%s/merge-addrs", dirname);
-    addrsfd = open (addrsfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    for (u_int i = 1; i < strlen(addrsfile); i++) {
+	if (addrsfile[i] == '/') addrsfile[i] = '.';
+    }
+    addrsfd = shm_open (addrsfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
     if (addrsfd < 0) {
 	fprintf (stderr, "Cannot create merge-addrs file, errno=%d\n", errno);
 	return -1;
     }
 
     sprintf (inputfile, "%s/tokens", dirname);
-    inputfd = open (inputfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    for (u_int i = 1; i < strlen(inputfile); i++) {
+	if (inputfile[i] == '/') inputfile[i] = '.';
+    }
+    inputfd = shm_open (inputfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
     if (inputfd < 0) {
 	fprintf (stderr, "Cannot create tokens file, errno=%d\n", errno);
 	return -1;
     }
 
-#ifdef DEBUG
+#if defined(DEBUG) || defined(STATS)
+    long rc = mkdir(dirname, 0755);
+    if (rc < 0 && errno != EEXIST) {
+	fprintf (stderr, "Cannot create output dir %s, errno=%d\n", dirname, errno);
+	return rc;
+    }
+#endif
+
+#ifdef DEBUF
     char debugname[256];
     sprintf (debugname, "%s/stream-debug", dirname);
     debugfile = fopen (debugname, "w");
@@ -846,9 +848,81 @@ long setup_aggregation (const char* dirname, int& outputfd, int& inputfd, int& a
     }
 #endif
 
-#ifdef STATS
-    gettimeofday(&start_tv, NULL);
-#endif
+    return 0;
+}
+
+static long
+finish_aggregation (int addrsfd, int inputfd, int outputfd, uint32_t output_token, uint32_t tokens, 
+		    char* token_log, u_long idatasize, char* output_log, u_long odatasize)
+{
+    // First write out the token counts
+    long rc = ftruncate (addrsfd, sizeof(output_token) + sizeof(token));
+    if (rc < 0) {
+	fprintf (stderr, "Cannot ftruncate addrs file,errno=%d\n", errno);
+	return rc;
+    }
+    rc = write (addrsfd, &output_token, sizeof(output_token));
+    if (rc != sizeof(output_token)) {
+	fprintf (stderr, "Unable to write output token, rc=%ld, errno=%d\n", rc, errno);
+	return rc;
+    }
+    rc = write (addrsfd, &tokens, sizeof(tokens));
+    if (rc != sizeof(tokens)) {
+	fprintf (stderr, "Unable to write input token , rc=%ld, errno=%d\n", rc, errno);
+	return rc;
+    }
+    close(addrsfd);
+    
+    // Then the input tokens
+    rc = ftruncate (inputfd, idatasize);
+    if (rc < 0) {
+	fprintf (stderr, "Cannot ftruncate tokens file,errno=%d\n", errno);
+	return rc;
+    }
+    u_long bytes_written = 0;
+    while (bytes_written < idatasize) {
+	rc = write (inputfd, token_log+bytes_written, idatasize-bytes_written);
+	if (rc <= 0) {
+	    fprintf (stderr, "Write of tokens data returns %ld\n", rc);
+	    return -1;
+	} 
+	bytes_written += idatasize;
+    }
+    close (inputfd);
+
+    // Then the output tokens 
+    char* optr = output_log;
+    u_long osize = 0;
+    while ((u_long) optr < (u_long) output_log + odatasize) {
+	osize += sizeof(struct taint_creation_info);
+	optr += sizeof(struct taint_creation_info) + sizeof(uint32_t);
+	uint32_t buf_size = *((uint32_t *) optr);
+	osize += sizeof(uint32_t);
+	optr += sizeof(uint32_t) + buf_size*(sizeof(uint32_t)+sizeof(taint_t));
+    }
+    rc = ftruncate (outputfd, osize);
+    if (rc < 0) {
+	fprintf (stderr, "Cannot ftruncate output tokens file, errno=%d\n", errno);
+	return rc;
+    }
+    optr = output_log;
+    while ((u_long) optr < (u_long) output_log + odatasize) {
+	rc = write (outputfd, optr, sizeof(struct taint_creation_info));
+	if (rc != sizeof(struct taint_creation_info)) {
+	    fprintf (stderr, "Write of output token returns %ld\n", rc);
+	    return -1;
+	} 
+	optr += sizeof(struct taint_creation_info) + sizeof(uint32_t);
+	uint32_t buf_size = *((uint32_t *) optr);
+	rc = write (outputfd, optr, sizeof(uint32_t));
+	if (rc != sizeof(uint32_t)) {
+	    fprintf (stderr, "Write of output size returns %ld\n", rc);
+	    return -1;
+	} 
+	optr += sizeof(uint32_t) + buf_size*(sizeof(uint32_t)+sizeof(taint_t));
+    }
+    close (outputfd);
+
 
     return 0;
 }
@@ -880,7 +954,7 @@ do_outputs_seq (void* pdata)
 {
     // Unpack arguments
     struct output_par_data* opdata = (struct output_par_data *) pdata;
-    uint32_t  output_token = opdata->output_token;
+    uint32_t  output_token = opdata->output_token; 
     char*     plog = opdata->plog;
     char*     outstop = opdata->outstop;
 //    unordered_set<uint32_t>* plive_set = opdata->plive_set;
@@ -903,7 +977,7 @@ do_outputs_seq (void* pdata)
 	plog += sizeof(uint32_t);
 	for (uint32_t i = 0; i < buf_size; i++) {
 	    plog += sizeof(uint32_t);
-	    taint_t value = *((taint_t *) plog);
+	    taint_t value = *((taint_t *) plog);  
 #ifdef DEBUG
 	    if (DEBUG(output_token)) {
 		fprintf (debugfile, "output %x has value %lx\n", output_token, (long) value);
@@ -1507,7 +1581,7 @@ long stream_epoch (const char* dirname, int port)
     char* output_log, *token_log;
     taint_t *ts_log;
     u_long idatasize = 0, odatasize = 0, mdatasize = 0, adatasize = 0;
-    uint32_t buf_size, tokens, output_token = 0;
+    uint32_t tokens, output_token = 0;
     int outputfd, inputfd, addrsfd;
     unordered_map<taint_t,taint_t> address_map;
     pthread_t build_map_tid = 0;
@@ -1592,47 +1666,7 @@ long stream_epoch (const char* dirname, int port)
 	}
     }
 
-    rc = write (addrsfd, &output_token, sizeof(output_token));
-    if (rc != sizeof(output_token)) {
-	fprintf (stderr, "Unable to write output token, rc=%ld, errno=%d\n", rc, errno);
-	return rc;
-    }
-    rc = write (addrsfd, &tokens, sizeof(tokens));
-    if (rc != sizeof(tokens)) {
-	fprintf (stderr, "Unable to write input token , rc=%ld, errno=%d\n", rc, errno);
-	return rc;
-    }
-    close(addrsfd);
-
-    // Need to persist the input and output token data
-    u_long bytes_written = 0;
-    while (bytes_written < idatasize) {
-	rc = write (inputfd, token_log+bytes_written, idatasize-bytes_written);
-	if (rc <= 0) {
-	    fprintf (stderr, "Write of tokens data returns %ld\n", rc);
-	    return -1;
-	} 
-	bytes_written += idatasize;
-    }
-    close (inputfd);
-
-    char* optr = output_log;
-    while ((u_long) optr < (u_long) output_log + odatasize) {
-	rc = write (outputfd, optr, sizeof(struct taint_creation_info));
-	if (rc != sizeof(struct taint_creation_info)) {
-	    fprintf (stderr, "Write of output token returns %ld\n", rc);
-	    return -1;
-	} 
-	optr += sizeof(struct taint_creation_info) + sizeof(uint32_t);
-	buf_size = *((uint32_t *) optr);
-	rc = write (outputfd, optr, sizeof(uint32_t));
-	if (rc != sizeof(uint32_t)) {
-	    fprintf (stderr, "Write of output size returns %ld\n", rc);
-	    return -1;
-	} 
-	optr += sizeof(uint32_t) + buf_size*(sizeof(uint32_t)+sizeof(taint_t));
-    }
-    close (outputfd);
+    finish_aggregation (addrsfd, inputfd, outputfd, output_token, tokens, token_log, idatasize, output_log, odatasize);
 
 #ifdef STATS
     gettimeofday (&end_tv, NULL);
@@ -1647,7 +1681,6 @@ struct prune_pass_1 {
     pthread_t                tid;
     taint_entry*             mptr; 
     taint_entry*             mend; 
-//    unordered_set<uint32_t>* ulive_set;
     bitmap*                  live_set;
 #ifdef STATS
     struct timeval           start_tv;
@@ -1673,21 +1706,11 @@ prune_range_pass_1 (void* data)
 	    if (!live_set->test(mptr->p1)) {
 		mptr->p1 = 0;
 	    } 
-#ifdef DEBUG
-	    else { 
-		fprintf(debugfile, "%x in liveset\n",mptr->p1);
-	    }
-#endif
 	}
 	if (mptr->p2 < 0xc0000000) {
 	    if (!live_set->test(mptr->p2)) {
 		mptr->p2 = 0;
 	    } 
-#ifdef DEBUG 
-	    else { 
-		fprintf(debugfile, "%x  in liveset\n",mptr->p2);
-	    }
-#endif
 	}
 	mptr++;
     }
@@ -2148,15 +2171,6 @@ preprune_local_lowmem (u_long& mdatasize, char* output_log, u_long odatasize, ta
 	pentry--;
     }
 
-    u_long ucnt = 0, tcnt = 0;
-    for (u_long i = 0; i < mentries; i++) {
-	if (is_used[i/8] & (1 << i%8)) {
-	    ucnt++;
-	}
-	tcnt++;
-    }
-    fprintf (stderr, "%lu out of %lu entries are used\n", ucnt, tcnt);
-    
     // Compress first half of log
     u_long split = mentries/2;
     u_long new_index = 0;
@@ -2272,7 +2286,6 @@ preprune_local (u_long& mdatasize, char* output_log, u_long odatasize, taint_t* 
 	is_used = new u_long[mentries];
 	memset (is_used, 0, mentries*sizeof(u_long));
     } catch (bad_alloc& ba) {
-	fprintf (stderr, "Cannot preprune due to lack of memory\n");
 #ifdef STATS
 	gettimeofday(&preprune_local_end_tv, NULL);
 #endif
@@ -2609,7 +2622,7 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
     char* output_log, *token_log;
     taint_t *ts_log;
     u_long idatasize = 0, odatasize = 0, mdatasize = 0, adatasize = 0;
-    uint32_t buf_size, tokens, output_token = 0;
+    uint32_t tokens, output_token = 0;
     int outputfd, inputfd, addrsfd;
     //unordered_set<uint32_t> live_set;
     bitmap live_set;
@@ -2641,7 +2654,6 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	
     if (!finish_flag) build_map_tid = spawn_map_thread (&address_map, ts_log, adatasize);
 
-    uint32_t curr_count = 0;
     if (!start_flag) {
 	// Wait for preceding epoch to send list of live addresses
 #ifdef STATS
@@ -2649,16 +2661,10 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 #endif
 	uint32_t val;
 	uint32_t rbucket_cnt = 0, rbucket_stop = 0;
-	uint32_t count = 0;
 
 	GET_QVALUEB(val, outputq_hdr, outputq_buf, oqfd, rbucket_cnt, rbucket_stop);
 	while (val != TERM_VAL) {
-	    curr_count += 1;
 	    live_set.set(val);
-#ifdef DEBUG
-            fprintf(debugfile, "%d, val %u\n",count, val);
-#endif
-	    count++;
 
 	    GET_QVALUEB(val, outputq_hdr, outputq_buf, oqfd, rbucket_cnt, rbucket_stop);
 	} 
@@ -2679,7 +2685,7 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	uint32_t* pls = outputq_buf;
 	uint32_t* plsend = outputq_buf + live_set.size();
 	if (live_set.size() > TAINTENTRIES) {
-	    fprintf (stderr, "Oops: live set is %x, curr_count %x\n", live_set.size(), curr_count);
+	    fprintf (stderr, "Oops: live set is %x\n", live_set.size());
 	    return -1;
 	}
 	make_new_live_set(ts_log, ts_log + adatasize/sizeof(taint_t), pls, plsend, live_set);
@@ -2697,7 +2703,11 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 
     // Wait until live set has been completely read
     bucket_write_init();
+
     output_token = process_outputs (output_log, output_log + odatasize, &live_set, dirname, do_outputs_seq);
+
+
+
 
     if (!finish_flag) {
 
@@ -2749,47 +2759,7 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	}
     }
 
-    rc = write (addrsfd, &output_token, sizeof(output_token));
-    if (rc != sizeof(output_token)) {
-	fprintf (stderr, "Unable to write output token, rc=%ld, errno=%d\n", rc, errno);
-	return rc;
-    }
-    rc = write (addrsfd, &tokens, sizeof(tokens));
-    if (rc != sizeof(tokens)) {
-	fprintf (stderr, "Unable to write input token , rc=%ld, errno=%d\n", rc, errno);
-	return rc;
-    }
-    close(addrsfd);
-
-    // Need to persist the input and output token data
-    u_long bytes_written = 0;
-    while (bytes_written < idatasize) {
-	rc = write (inputfd, token_log+bytes_written, idatasize-bytes_written);
-	if (rc <= 0) {
-	    fprintf (stderr, "Write of tokens data returns %ld\n", rc);
-	    return -1;
-	} 
-	bytes_written += idatasize;
-    }
-    close (inputfd);
-
-    char* optr = output_log;
-    while ((u_long) optr < (u_long) output_log + odatasize) {
-	rc = write (outputfd, optr, sizeof(struct taint_creation_info));
-	if (rc != sizeof(struct taint_creation_info)) {
-	    fprintf (stderr, "Write of output token returns %ld\n", rc);
-	    return -1;
-	} 
-	optr += sizeof(struct taint_creation_info) + sizeof(uint32_t);
-	buf_size = *((uint32_t *) optr);
-	rc = write (outputfd, optr, sizeof(uint32_t));
-	if (rc != sizeof(uint32_t)) {
-	    fprintf (stderr, "Write of output size returns %ld\n", rc);
-	    return -1;
-	} 
-	optr += sizeof(uint32_t) + buf_size*(sizeof(uint32_t)+sizeof(taint_t));
-    }
-    close (outputfd);
+    finish_aggregation (addrsfd, inputfd, outputfd, output_token, tokens, token_log, idatasize, output_log, odatasize);
 
 #ifdef STATS
     gettimeofday(&end_tv, NULL);
@@ -2922,10 +2892,12 @@ void recv_stream (int s, struct taintq_hdr* qh, uint32_t* qb)
 	pthread_mutex_unlock(&(qh->lock));
 
 	long rc = safe_read (s, qb + (qh->write_index*TAINTBUCKETENTRIES), TAINTBUCKETSIZE);
-	if (rc != (long)TAINTBUCKETSIZE) return; // Error sending the data
+	if (rc != (long)TAINTBUCKETSIZE) {
+	    fprintf(stderr,"error receiving the data");
+	    return; // Error sending the data
+	}
 
 	bytes_rcvd += TAINTBUCKETENTRIES;
-
 	if (qb[qh->write_index*TAINTBUCKETENTRIES+TAINTBUCKETENTRIES-1] == TERM_VAL) done = true;
 
 	pthread_mutex_lock(&(qh->lock));

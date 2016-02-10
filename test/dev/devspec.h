@@ -19,18 +19,19 @@ struct record_data {
 };
 
 struct wakeup_data {
-	int           pin;
-	int           gdb;
-	char __user * logdir;
-	char __user * linker;
-	int           fd;
-	int           follow_splits;
-	loff_t        attach_index;
-	int           attach_pid;
-	int	      save_mmap;
-	int           ckpt_at;
-	int           record_timing;
-	char __user * cache_dir;
+	int             pin;
+	int             gdb;
+	char __user *   logdir;
+	char __user *   linker;
+	int             fd;
+	int             follow_splits;
+	loff_t          attach_index;
+	int             attach_pid;
+	int	        save_mmap;
+	int             ckpt_at;
+	int             record_timing;
+	u_long          nfake_calls;
+	u_long __user * fake_calls;
 };
 
 struct wakeup_ckpt_data {
@@ -44,7 +45,6 @@ struct wakeup_ckpt_data {
 	loff_t        attach_index;
 	int           attach_pid;
 	int	      save_mmap;
-	char __user * cache_dir;
 };
 
 struct get_used_addr_data {

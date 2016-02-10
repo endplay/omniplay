@@ -712,7 +712,7 @@ struct replay_group {
 	ds_list_t* rg_used_address_list; // List of addresses that will be used by the application (and hence, not by pin)
 	int rg_follow_splits;       // Ture if we should replay any split-off replay groups
 	int rg_checkpoint_at;       // Checkpoint at this system call
-	loff_t rg_attach_sysid;     // If Pin is being attached, will be set to the syscall id to attach to
+	u_long rg_attach_clock;     // If Pin is being attached, do it before this clock value
 	int rg_attach_pid;          // If Pin is being attached, set to the pid to attach to
 	int rg_attach_device;       // The device that is being attached
 	int rg_try_to_exit;         // Set to force an exit of the replay when killing it
@@ -721,8 +721,10 @@ struct replay_group {
 	u_long rg_timecnt;          // Number of entries in the buffer
 	loff_t rg_timepos;          // Write postition in timings file
 	u_long rg_pin_attach_clock; // This is the clock value when we did the reattach (if applicable) 
-
-        char rg_cache_dir[MAX_LOGDIR_STRLEN+1]; // added so that we can have multiple cache directories
+	
+	u_long rg_nfake_calls;      // Number of fake calls to make during this replay
+	u_long rg_fake_calls_made;  // Number of fake calls to make during this replay
+	u_long* rg_fake_calls;      // Make them at these points
 };
 
 struct argsalloc_node {
@@ -985,6 +987,7 @@ struct replay_thread {
 };
 
 /* Prototypes */
+static long test_pin_attach (struct replay_thread* prept, int is_syscall);
 struct file* init_log_write (struct record_thread* prect, loff_t* ppos, int* pfd);
 void term_log_write (struct file* file, int fd);
 int read_log_data (struct record_thread* prt);
@@ -1787,15 +1790,17 @@ new_replay_group (struct record_group* prec_group, int follow_splits)
 	prg->rg_checkpoint_at = -1;
 
 	prg->rg_attach_device = 0;
-	prg->rg_attach_sysid = -1;
+	prg->rg_attach_clock = -1; //changed to -1 b/c sometimes we actually want to have it be 0 in the multiprocess case
 	prg->rg_attach_pid = -1;
 
 	prg->rg_timebuf = NULL;
 	prg->rg_timecnt = 0;
 	prg->rg_timepos = 0;
 	prg->rg_try_to_exit = 0;
-	strncpy(prg->rg_cache_dir,"",MAX_LOGDIR_STRLEN);
 
+	prg->rg_nfake_calls = 0;
+	prg->rg_fake_calls_made = 0;
+	prg->rg_fake_calls = NULL;
 	// Record group should not be destroyed before replay group
 	get_record_group (prec_group);
 
@@ -1896,6 +1901,8 @@ destroy_replay_group (struct replay_group *prepg)
 		KFREE (pmapping);
 	}
 	ds_list_destroy (prepg->rg_reserved_mem_list);
+
+	if (prepg->rg_fake_calls) KFREE (prepg->rg_fake_calls);
 
 	if (is_pin_attached()) {
 		// And the used-address list (if it exists) 
@@ -2820,32 +2827,13 @@ static void delete_sysv_mappings (struct replay_thread* prt) {
 }
 
 
-const char* get_current_replay_cache_dir() { 
-	struct replay_group *prg;
-	struct replay_thread* prt = current->replay_thrd;
-//	printk("Pid %d starting current_replay_cache_dir \n", current->pid);
-	if(prt) { 
-		prg = prt->rp_group;
-		if(prg) { 
-
-//			printk("Pid %d cache_dir %s \n",current->pid, prg->rg_cache_dir);
-			return prg->rg_cache_dir;
-		}
-	}
-//	printk("Pid %d finished current_replay_cache_dir \n",current->pid);
-
-	return NULL;
-}
-
-
-
 /* A pintool uses this for specifying the start of the thread specific data structure.  The function returns the pid on success */
 int set_pin_address (u_long pin_address, u_long thread_data, u_long __user* curthread_ptr, int* attach_ndx)
 {
 	struct replay_thread* prept = current->replay_thrd;
 
 	if (prept) {
-		MPRINT ("set_pin_address: pin address for pid %d is %lx attaching %d status %d\n", 
+		printk ("set_pin_address: pin address for pid %d is %lx attaching %d status %d\n", 
 			current->pid, pin_address, prept->rp_pin_attaching, prept->rp_status);
 		prept->app_syscall_addr = pin_address;
 		prept->rp_pin_thread_data = thread_data;
@@ -3457,7 +3445,7 @@ get_linker (void)
 long
 replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 		    int follow_splits, int save_mmap, loff_t attach_index, int attach_pid, int ckpt_at, int record_timing,
-		    char* cache_dir)
+		    u_long nfake_calls, u_long* fake_call_points)
 {
 	struct record_group* precg; 
 	struct record_thread* prect;
@@ -3495,8 +3483,12 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 		destroy_record_group(precg);
 		return -ENOMEM;
 	}
+	if (nfake_calls) {
+		prepg->rg_nfake_calls = nfake_calls;
+		prepg->rg_fake_calls = fake_call_points;
+		atomic_set(precg->rg_pkrecord_clock+1,fake_call_points[0]);        
+	}
 	if (record_timing) {
-		printk ("Recording timings\n");
 		prepg->rg_timebuf = KMALLOC(sizeof(struct replay_timing)*REPLAY_TIMEBUF_ENTRIES, GFP_KERNEL);
 		if (prepg->rg_timebuf == NULL) printk ("Cannot allocate timing buffer\n");
 	}
@@ -3513,12 +3505,6 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 	// Since there is no recording going on, we need to dec record_thread's refcnt
 	atomic_dec(&prect->rp_refcnt);
 	
-	//Change the replay_cache dir: if its NULL we leave it the default value
-	if(cache_dir) {
-		strncpy (prepg->rg_cache_dir, cache_dir, MAX_LOGDIR_STRLEN);
-	}
-
-
 	// Restore the checkpoint
 	strcpy (ckpt, logdir);
 	strcat (ckpt, "/ckpt");
@@ -3558,7 +3544,7 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 		       current->pid, attach_device, attach_pid, attach_index);
 
 		rc = read_mmap_log(precg);
-		prepg->rg_attach_sysid = attach_index;
+		prepg->rg_attach_clock = attach_index;
 		prepg->rg_attach_pid = attach_pid;
 		if (rc) {
 			printk("replay_ckpt_wakeup: could not read memory log for Pin support\n");
@@ -3717,7 +3703,7 @@ __init_ckpt_waiters (void) // Requires ckpt_lock be locked
 
 long
 replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* linker, int fd, 
-			 int follow_splits, int save_mmap, loff_t attach_index, int attach_pid, char* cache_dir)
+			 int follow_splits, int save_mmap, loff_t attach_index, int attach_pid)
 {
 	struct ckpt_waiter* pckpt_waiter = NULL;
 	struct record_group* precg; 
@@ -3764,11 +3750,6 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* 
 	prept->rp_status = REPLAY_STATUS_RUNNING;
 	// Since there is no recording going on, we need to dec record_thread's refcnt
 	atomic_dec(&prect->rp_refcnt);
-	
-	//Change the replay_cache dir: if its NULL or empty than we leave it the defalt value
-	if(cache_dir){
-		strncpy (prepg->rg_cache_dir, cache_dir, MAX_LOGDIR_STRLEN);
-	}
 	
 
 	// Restore the checkpoint
@@ -3852,7 +3833,7 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* 
 			attach_device, attach_pid, attach_index);
 
 		rc = read_mmap_log(precg);
-		prepg->rg_attach_sysid = attach_index;
+		prepg->rg_attach_clock = attach_index;
 		prepg->rg_attach_pid = attach_pid;
 		prepg->rg_attach_device = attach_device;
 		if (rc) {
@@ -4925,9 +4906,6 @@ sys_wakeup_paused_process (pid_t pid)
 	return 1;
 }
 
-static long test_pin_attach (struct replay_thread* prept, short syscall);
-
-
 static inline long
 get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int syscall, char** ppretparams, struct syscall_result** ppsr)
 {
@@ -5199,9 +5177,9 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 		rg_lock (prg->rg_rec_group);
 	}
 #endif
-	// Try to pause for attach when we are actually executing and before syscall is done
+	// Try to pause for attach when we are actually executing and before syscall is done - called right before we increment replay clock
 	{
-	  long rc = test_pin_attach (current->replay_thrd, 0);	    
+	  long rc = test_pin_attach (current->replay_thrd, 1);	    
 	  if (rc < 0) {
 	      rg_unlock (prg->rg_rec_group);
 	      return rc;		
@@ -5461,7 +5439,7 @@ record_timings (struct replay_thread* prept, short syscall)
 }
 
 static long
-test_pin_attach (struct replay_thread* prept, short syscall)
+test_pin_attach (struct replay_thread* prept, int is_syscall)
 {
 	struct replay_group* prepg = prept->rp_group;
 	struct task_struct* task, *this_task;
@@ -5469,12 +5447,11 @@ test_pin_attach (struct replay_thread* prept, short syscall)
 
 	struct replay_thread* tmp, *tmp2;
        
-
 	//sysid can actually be 0.... 
-	if (prepg->rg_attach_sysid >= 0 && !is_pin_attached() && !is_gdb_attached() &&
-	    prept->rp_record_thread->rp_count == prepg->rg_attach_sysid &&
-	    prept->rp_record_thread->rp_record_pid == prepg->rg_attach_pid) {
-	    printk("Pid %d, rec_pid %d, about to sleep at index %llu, attch_device %d\n", current->pid, prept->rp_record_thread->rp_record_pid, prept->rp_record_thread->rp_count, prepg->rg_attach_device);
+	//right here he says
+	if (prepg->rg_attach_clock >= 0 && !is_pin_attached() && !is_gdb_attached() &&
+	    *(prept->rp_preplay_clock) == prepg->rg_attach_clock) { // Attach right before clock is incremented
+		printk("Pid %d about to sleep at index %lu\n", current->pid, prepg->rg_attach_clock);
 
 		if (prepg->rg_attach_device == ATTACH_PIN) {
 			prept->app_syscall_addr = 1;
@@ -5498,12 +5475,14 @@ test_pin_attach (struct replay_thread* prept, short syscall)
 		printk("Pid %d woken up - replay clock %ld\n", current->pid, *(current->replay_thrd->rp_preplay_clock));
 		prepg->rg_pin_attach_clock = *(current->replay_thrd->rp_preplay_clock);
 
-		// We expect to redo this syscall after we restart
-		prept->rp_expected_clock = prept->rp_ckpt_save_expected_clock;
-		if (prept->rp_out_ptr == 0) {
-			printk ("ERRROR: cannot backup outptr on PIN attach\n");
-		} else {
-			prept->rp_out_ptr--;
+		if (is_syscall) {
+			// We expect to redo this syscall after we restart
+			prept->rp_expected_clock = prept->rp_ckpt_save_expected_clock;
+			if (prept->rp_out_ptr == 0) {
+				printk ("ERRROR: cannot backup outptr on PIN attach\n");
+			} else {
+				prept->rp_out_ptr--;
+			}
 		}
 
 		if (prepg->rg_attach_device == ATTACH_PIN) {
@@ -5961,6 +5940,43 @@ sys_pthread_elog (int type, u_long addr)
 #endif
 }
 
+asmlinkage long
+sys_pthread_fake_call (void)
+{
+	long rc;
+
+	if (current->replay_thrd) {
+		struct replay_group* prepg = current->replay_thrd->rp_group;
+		if (current->replay_thrd->rp_pin_attaching == PIN_ATTACHING_FF || current->replay_thrd->rp_pin_attaching == PIN_ATTACHING_RESTART) {
+			current->replay_thrd->rp_pin_attaching = PIN_ATTACHING_NONE;
+			MPRINT ("Pid %d: Fake call attach re-entry at %lu\n", current->pid, *(current->replay_thrd->rp_preplay_clock));
+			prepg->rg_fake_calls_made++;
+			if (prepg->rg_fake_calls_made < prepg->rg_nfake_calls) {
+				MPRINT ("Pid %d: next fake call is at %lu\n", current->pid, prepg->rg_fake_calls[prepg->rg_fake_calls_made]);
+				atomic_set(prepg->rg_rec_group->rg_pkrecord_clock+1,prepg->rg_fake_calls[prepg->rg_fake_calls_made]); 
+			}
+			return 0;
+		}
+		rc = test_pin_attach (current->replay_thrd, 0);	    
+		if (rc < 0) {
+			// We attached PIN at this syscall 
+			MPRINT ("Pid %d: Attach at fake call made at clock value %lu\n", current->pid, *(current->replay_thrd->rp_preplay_clock));
+			return rc;		
+		}			       
+		MPRINT ("Pid %d: Fake call at clock value %lu attaching %d\n", current->pid, *(current->replay_thrd->rp_preplay_clock),
+			current->replay_thrd->rp_pin_attaching);
+
+		prepg->rg_fake_calls_made++;
+		if (prepg->rg_fake_calls_made < prepg->rg_nfake_calls) {
+			MPRINT ("Pid %d: next fake call is at %lu\n", current->pid, prepg->rg_fake_calls[prepg->rg_fake_calls_made]);
+			atomic_set(prepg->rg_rec_group->rg_pkrecord_clock+1,prepg->rg_fake_calls[prepg->rg_fake_calls_made]); 
+		}
+		return 0;
+	} else {
+		printk ("sys_pthread_fake_call: pid %d not a replay thread\n", current->pid);
+		return -EINVAL;
+	}
+}
 
 asmlinkage long
 sys_pthread_block (u_long clock)
@@ -8460,7 +8476,7 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 				get_logdir_for_replay_id(logid, logdir);
 				return replay_ckpt_wakeup(app_syscall_addr, logdir, linker, -1,
 							  follow_splits, prg->rg_rec_group->rg_save_mmap_flag, -1, -1, 0,
-							  (prg->rg_timebuf != NULL), NULL);
+							  (prg->rg_timebuf != NULL), 0, NULL);
 			} else {
 				DPRINT("Don't follow splits - so just exit\n");
 				sys_exit_group(0);

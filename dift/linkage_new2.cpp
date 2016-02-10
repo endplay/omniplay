@@ -147,7 +147,6 @@ u_long* ppthread_log_clock = NULL;
 //added for multi-process replay
 const char* fork_flags = NULL;
 int fork_flags_index = 0;
-int epoch_index = -1;
 
 #ifdef OUTPUT_FILENAMES
 FILE* filenames_f = NULL; // Mapping of all opened filenames
@@ -208,11 +207,6 @@ KNOB<int> KnobNWPort(KNOB_MODE_WRITEONCE,
 KNOB<string> KnobForkFlags(KNOB_MODE_WRITEONCE,
     "pintool", "fork_flags", "",
     "flags for which way to go on each fork");
-
-KNOB<int> KnobEpochIndex(KNOB_MODE_WRITEONCE,
-    "pintool", "epoch_index", "",
-    "epoch index, helps with printing stats");
-
 
 
 //FIXME: take into consideration offset of being attached later. Remember, this is to specify where to kill application.
@@ -393,6 +387,7 @@ static void dift_done ()
     fclose (debug_f);
 #endif
 
+    printf("DIFT done at %ld\n", *ppthread_log_clock);
 
 #ifdef USE_SHMEM
     // Send "done" message to aggregator
@@ -433,8 +428,8 @@ static inline void increment_syscall_cnt (int syscall_num)
     if (!(syscall_num == 17 || syscall_num == 31 || syscall_num == 32 || 
 	  syscall_num == 35 || syscall_num == 44 || syscall_num == 53 || 
 	  syscall_num == 56 || syscall_num == 58 || syscall_num == 98 || 
-	  syscall_num == 119 || syscall_num == 123 || syscall_num == 186 ||
-	  syscall_num == 243 || syscall_num == 244)) {
+	  syscall_num == 119 || syscall_num == 123 || syscall_num == 127 ||
+	  syscall_num == 186 || syscall_num == 243 || syscall_num == 244)) {
         if (current_thread->ignore_flag) {
             if (!(*(int *)(current_thread->ignore_flag))) {
                 global_syscall_cnt++;
@@ -14520,9 +14515,7 @@ int main(int argc, char** argv)
     splice_output = KnobSpliceOutput.Value();
     all_output = KnobAllOutput.Value();
     fork_flags = KnobForkFlags.Value().c_str();
-    fork_flags_index = 0;
-    
-    epoch_index = KnobEpochIndex.Value();
+    fork_flags_index = 0;   
     
 
     if (KnobMergeEntries.Value() > 0) {
@@ -14639,17 +14632,21 @@ int main(int argc, char** argv)
 
     main_prev_argv = argv;
 
-    //INS_AddInstrumentFunction(instruction_instrumentation, 0);
     TRACE_AddInstrumentFunction (trace_instrumentation, 0);
 
     // Register a notification handler that is called when the application
     // forks a new process
     PIN_AddForkFunction(FPOINT_AFTER_IN_CHILD, AfterForkInChild, 0);
+
+
 #ifndef USE_FILE
     PIN_AddForkFunction(FPOINT_AFTER_IN_PARENT, AfterForkInParent, 0);
 #endif
-    //TRACE_AddInstrumentFunction (track_trace, 0);
-    RTN_AddInstrumentFunction(track_function, 0);
+
+    if (trace_x) {
+	// Right now, only used when this config variable set
+	RTN_AddInstrumentFunction(track_function, 0);
+    }
 
 #if 0
     IMG_AddInstrumentFunction (ImageLoad, 0);
