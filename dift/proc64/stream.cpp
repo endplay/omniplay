@@ -139,6 +139,7 @@ u_long most_prune_lookups = 0, first_pass_prune_lookups = 0, most_prune_cnt = 0,
 
 struct timeval start_tv, recv_done_tv, finish_start_tv, end_tv;
 struct timeval live_receive_start_tv = {0,0}, live_receive_end_tv = {0,0};
+struct timeval live_insert_start_tv = {0,0}, live_first_byte_tv = {0,0};
 struct timeval prune_1_start_tv = {0,0}, prune_1_end_tv = {0,0};
 struct timeval prune_2_start_tv = {0,0}, prune_2_end_tv = {0,0};
 struct timeval send_wait_start_tv = {0,0}, send_wait_end_tv = {0,0};
@@ -1517,7 +1518,9 @@ print_stats (const char* dirname, u_long mdatasize, u_long odatasize, u_long ida
     fprintf (statsfile, "Preprune g address time: %6ld ms\n", ms_diff (preprune_global_address_done_tv, preprune_global_output_done_tv));
     fprintf (statsfile, "Preprune g send time:    %6ld ms\n", ms_diff (preprune_global_send_done_tv, preprune_global_address_done_tv));
     fprintf (statsfile, "Preprune g resize time:  %6ld ms\n", ms_diff (preprune_global_end_tv, preprune_global_send_done_tv));
-    fprintf (statsfile, "Receive live set time:   %6ld ms\n", ms_diff (live_receive_end_tv, live_receive_start_tv));
+    fprintf (statsfile, "Receive fb set time:     %6ld ms\n", ms_diff (live_first_byte_tv, live_receive_start_tv));
+    fprintf (statsfile, "Receive live set time:   %6ld ms\n", ms_diff (live_insert_start_tv, live_first_byte_tv));
+    fprintf (statsfile, "Insert live set time:    %6ld ms\n", ms_diff (live_receive_end_tv, live_insert_start_tv));
     fprintf (statsfile, "Prune live set time:     %6ld ms\n", ms_diff (prune_2_end_tv, prune_1_start_tv));
     fprintf (statsfile, "Make live set time:      %6ld ms\n", ms_diff (new_live_end_tv, new_live_start_tv));
     fprintf (statsfile, "Send live set wait time: %6ld ms\n", ms_diff (send_wait_end_tv, send_wait_start_tv));
@@ -2663,11 +2666,23 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	uint32_t rbucket_cnt = 0, rbucket_stop = 0;
 
 	GET_QVALUEB(val, outputq_hdr, outputq_buf, oqfd, rbucket_cnt, rbucket_stop);
+#ifdef STATS
+	gettimeofday(&live_first_byte_tv, NULL);
+	int cnt = 0;
 	while (val != TERM_VAL) {
-	    live_set.set(val);
-
+	    cnt++;
 	    GET_QVALUEB(val, outputq_hdr, outputq_buf, oqfd, rbucket_cnt, rbucket_stop);
 	} 
+	gettimeofday(&live_insert_start_tv, NULL);
+	for (int i = 0; i < cnt; i++) {
+	    live_set.set(outputq_buf[i]);
+	}
+#else
+	while (val != TERM_VAL) {
+	    live_set.set(val);
+	    GET_QVALUEB(val, outputq_hdr, outputq_buf, oqfd, rbucket_cnt, rbucket_stop);
+	} 
+#endif
 
 #ifdef STATS
 	gettimeofday(&live_receive_end_tv, NULL);

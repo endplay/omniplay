@@ -114,7 +114,7 @@ void print_utimings (struct replay_timing* timings, struct extra_data* edata, in
 { 
     u_long ndx = edata[start].start_clock;
     u_long next_ndx = ndx + intvl;
-    printf ("%5d k %6lu u %6lu       0       0\n", timings[start].pid, ndx, next_ndx);
+    printf ("%5d k %6lu u %6lu       0       0 ", timings[start].pid, ndx, next_ndx);
     if (strnlen(fork_flags, 128) > 0)
 	printf (" %s\n", fork_flags);
     else {
@@ -130,7 +130,7 @@ void print_utimings (struct replay_timing* timings, struct extra_data* edata, in
 	    printf (" 0\n");
 	}
     }
-    printf ("%5d u %6lu k %6lu       0       0\n", timings[start].pid, next_ndx, edata[end].start_clock);
+    printf ("%5d u %6lu k %6lu       0       0 ", timings[start].pid, next_ndx, edata[end].start_clock);
     if (strnlen(fork_flags, 128) > 0)
 	printf (" %s\n", fork_flags);
     else {
@@ -919,6 +919,9 @@ int main (int argc, char* argv[])
 	}
 	else if (!strcmp(argv[i], "-c")) {
 	    use_ckpt = 1;
+	}
+	else if (!strcmp(argv[i], "-s")) {
+	    do_split = 1;
 	}
 	else { 
 	    //the assumption is that if we get to this point that its listing of the procs now
