@@ -296,7 +296,6 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 	    if(ectl[i].waiting_on_rp_group == 0) { 
 		close(s);
 		s = -99999;
-		fprintf(stderr, "%lu(%d):waiting on replay_group for cpid %d\n",i,getpid(),ectl[i].cpid);
 		rc = -1;
 		while(rc < 0){
 		    rc = wait_for_replay_group(fd,ectl[i].cpid);
