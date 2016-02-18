@@ -73,8 +73,6 @@ long send_file (int s, const char* pathname, const char* filename)
 	return rc;
     }
 	
-    fprintf(stderr, "send_file filename %s, size %ld\n",filename, st.st_size);
-
     // Send file data
     u_long bytes_written = 0;
     while (bytes_written < (u_long) st.st_size) {
