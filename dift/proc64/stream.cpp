@@ -2742,17 +2742,35 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	GET_QVALUEB(val, outputq_hdr, outputq_buf, oqfd, rbucket_cnt, rbucket_stop);
 #ifdef STATS
 	gettimeofday(&live_first_byte_tv, NULL);
+#endif
 	int cnt = bucket_wait_term(outputq_hdr, outputq_buf);
+
+#ifdef STATS
 	gettimeofday(&live_insert_start_tv, NULL);
+	uint32_t last = outputq_buf[0];
+	uint32_t runs = 0;
+	uint32_t run_length = 1;
+	uint32_t max_run_length = 0;
+	for (int i = 1; i < cnt; i++) {
+	    if (outputq_buf[i] != last+1) {
+		runs++;
+		if (run_length > max_run_length) {
+		    max_run_length++;
+		}
+	    } else {
+		run_length++;
+	    }
+	    last = outputq_buf[i];
+	}
+	runs++;
+	if (run_length > max_run_length) {
+	    max_run_length++;
+	}
+	fprintf (stderr, "%u run in %u entries (max %u)\n", runs, cnt, max_run_length);
+#endif
 	for (int i = 0; i < cnt; i++) {
 	    live_set.set(outputq_buf[i]);
 	}
-#else
-	while (val != TERM_VAL) {
-	    live_set.set(val);
-	    GET_QVALUEB(val, outputq_hdr, outputq_buf, oqfd, rbucket_cnt, rbucket_stop);
-	} 
-#endif
 
 #ifdef STATS
 	gettimeofday(&live_receive_end_tv, NULL);
