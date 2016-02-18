@@ -58,7 +58,7 @@ static int group_by = 0, filter_syscall = 0, details = 0, use_ckpt = 0, do_split
 void format ()
 {
 
-    fprintf (stderr, "Format: mkpartition <timing dir> <# of partitions> [-g group_by] [-f filter syscall] [-s split at user-level] [-v verbose] <list of pids to track >\n");
+    fprintf (stderr, "Format: mkpartition <timing dir> <# of partitions> [-g group_by] [-f filter syscall] [-s split at user-level] [-v verbose] [-fork fork_flags]  <list of pids to track >\n");
     exit (22);
 }
 
