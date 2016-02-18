@@ -26,7 +26,7 @@ using namespace std;
 #include "util.h" //David's PagedBitset
 
 #define MAX_TAINTS 0xc0000000
-#define PAGE_BITS 4096*8
+#define PAGE_BITS 4096
 
 typedef PagedBitmap<MAX_TAINTS, PAGE_BITS> bitmap;
 
