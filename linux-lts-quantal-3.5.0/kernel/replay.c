@@ -700,6 +700,7 @@ struct replay_timing {
 	u_long    index;
 	short     syscall;
 	cputime_t ut;
+	__u64     cache_misses;  //added to track cache_misses
 };
 
 // This structure has task-specific replay data
@@ -724,7 +725,9 @@ struct replay_group {
 	
 	u_long rg_nfake_calls;      // Number of fake calls to make during this replay
 	u_long rg_fake_calls_made;  // Number of fake calls to make during this replay
-	u_long* rg_fake_calls;      // Make them at these points
+	u_long* rg_fake_calls;      // Make them at these points            
+        int rg_perf_fd;             // The file descriptor for our perf api
+
 };
 
 struct argsalloc_node {
@@ -1801,8 +1804,13 @@ new_replay_group (struct record_group* prec_group, int follow_splits)
 	prg->rg_nfake_calls = 0;
 	prg->rg_fake_calls_made = 0;
 	prg->rg_fake_calls = NULL;
+	prg->rg_perf_fd = -1;
 	// Record group should not be destroyed before replay group
 	get_record_group (prec_group);
+
+
+	//setup the replay_events performance counters callback. 
+
 
 #ifdef REPLAY_STATS
 	atomic_inc(&rstats.started);
@@ -3442,6 +3450,36 @@ get_linker (void)
 	}
 }
 
+
+/*
+ * get a perf_event_fd. Right now this only produces perf_event fds that grab 
+ * the HW_CACHE_MISSES, whichare supposed to be the misses to the last level 
+ * cache. For more detailed cache info, we'll have to slightly change how we 
+ * grab this info. 
+ */
+int 
+get_perf_event_fd(void)
+{
+	struct perf_event_attr pe;
+	int fd;
+	mm_segment_t old_fs = get_fs();
+
+	memset(&pe, 0, sizeof(struct perf_event_attr));
+	pe.type = PERF_TYPE_HARDWARE;
+	pe.size = sizeof(struct perf_event_attr);
+	pe.config = PERF_COUNT_HW_CACHE_MISSES; 
+	pe.disabled = 1;
+	pe.exclude_kernel = 1;
+	pe.exclude_hv = 1;
+
+
+	set_fs(KERNEL_DS);
+	fd = sys_perf_event_open(&pe, current->pid, -1, -1, 0);
+	set_fs(old_fs);
+	return fd;
+}
+
+
 long
 replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 		    int follow_splits, int save_mmap, loff_t attach_index, int attach_pid, int ckpt_at, int record_timing,
@@ -3457,6 +3495,7 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 	char** env;
 	char* execname;
 	__u64 rg_id;
+	__u64 count;	
 	mm_segment_t old_fs = get_fs();
 
 	printk("Replay Start\n");
@@ -3491,6 +3530,18 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 	if (record_timing) {
 		prepg->rg_timebuf = KMALLOC(sizeof(struct replay_timing)*REPLAY_TIMEBUF_ENTRIES, GFP_KERNEL);
 		if (prepg->rg_timebuf == NULL) printk ("Cannot allocate timing buffer\n");
+		
+
+		prepg->rg_perf_fd = get_perf_event_fd();
+		if (prepg->rg_perf_fd < 0) printk ("Cannot setup perf_events_fd\n");
+		set_fs(KERNEL_DS);
+	
+		rc = sys_ioctl(prepg->rg_perf_fd, PERF_EVENT_IOC_RESET, 0);
+		if (rc < 0) printk("cannot PERF_EVENT_IOC_RESET!\n");
+		rc = sys_ioctl(prepg->rg_perf_fd, PERF_EVENT_IOC_ENABLE, 0);
+		if (rc < 0) printk("cannot PERF_EVENT_IOC_ENABLE!\n");
+		set_fs(old_fs);
+
 	}
 
 	if (ckpt_at > 0) prepg->rg_checkpoint_at = ckpt_at;
@@ -5427,13 +5478,36 @@ static void
 record_timings (struct replay_thread* prept, short syscall)
 {
 	cputime_t ut, st;
+	__u64 count;
+	int rc; 
+ 	mm_segment_t old_fs;
 	struct replay_group* prepg = prept->rp_group;
+	
+	old_fs = get_fs();
+	set_fs(KERNEL_DS);
+
+	rc = sys_ioctl(prepg->rg_perf_fd, PERF_EVENT_IOC_DISABLE, 0);
+	if (rc < 0) printk("cannot PERF_EVENT_IOC_DISABLE!\n");
+	rc = sys_read(prepg->rg_perf_fd, &count, sizeof(__u64));	
+
+	printk("record_timings %llu\n", count);
+/*	if (rc != sizeof(__u64)) {
+		printk("record_timings read %d bytes, val %llu\n", rc, count);
+	}
+*/
+	rc = sys_ioctl(prepg->rg_perf_fd, PERF_EVENT_IOC_RESET, 0);
+	if (rc < 0) printk("cannot PERF_EVENT_IOC_RESET!\n");
+	rc = sys_ioctl(prepg->rg_perf_fd, PERF_EVENT_IOC_ENABLE, 0);
+	if (rc < 0) printk("cannot PERF_EVENT_IOC_ENABLE!\n");
+
+	set_fs(old_fs);
 	
 	task_times (current, &ut, &st);
 	prepg->rg_timebuf[prepg->rg_timecnt].pid = prept->rp_record_thread->rp_record_pid;
 	prepg->rg_timebuf[prepg->rg_timecnt].index = prept->rp_record_thread->rp_count;
 	prepg->rg_timebuf[prepg->rg_timecnt].syscall = syscall;
-	prepg->rg_timebuf[prepg->rg_timecnt++].ut = ut;
+	prepg->rg_timebuf[prepg->rg_timecnt].ut = ut;		
+	prepg->rg_timebuf[prepg->rg_timecnt++].cache_misses = count;		
 
 	if (prepg->rg_timecnt == REPLAY_TIMEBUF_ENTRIES) write_timings (prepg);
 }
