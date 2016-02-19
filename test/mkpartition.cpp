@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <assert.h>
 #include <dirent.h>
+#include <cstdint>
 
 #include "parseklib.h"
 #include <map>
@@ -19,13 +20,16 @@ struct replay_timing {
     u_long    index;
     short     syscall;
     u_int     ut;
+    uint64_t  cache_misses;
 };
 
 struct extra_data {
     double   dtiming;
     u_long   aindex;
     u_long   start_clock;
-    u_long   rtn_value; //the return value of the syscall.. used entirely for fork. 
+    u_long   retval; //the return value of the syscall.. used entirely for fork. 
+    u_long   taint_in; //the amount of taint that we've gotten in at this point
+    u_long   taint_out; //the amount of taint that we've output at this point
     map<u_int, short> *rpg_syscalls;
 };
 
@@ -58,7 +62,7 @@ static int group_by = 0, filter_syscall = 0, details = 0, use_ckpt = 0, do_split
 void format ()
 {
 
-    fprintf (stderr, "Format: mkpartition <timing dir> <# of partitions> [-g group_by] [-f filter syscall] [-s split at user-level] [-v verbose] [-fork fork_flags]  <list of pids to track >\n");
+    fprintf (stderr, "Format: mkpartition <timing dir> <# of partitions> [-g group_by] [-f filter syscall] [-s split at user-level] [-v verbose] <list of pids to track >\n");
     exit (22);
 }
 
@@ -180,7 +184,7 @@ static int can_attach (map<u_int, short> *syscalls)
     bool attach = true;
     for (auto iter = syscalls->begin(); iter != syscalls->end(); ++iter){ 
 	auto val = iter->second;
-	if (val == 192 || val == 91 || val == 120 || val == -1){
+	if (val == 192 || val == 91 || val == 120 || val == -1 || val == 174){
 	    attach = false;
 	}	
     }
@@ -202,8 +206,19 @@ static int cnt_interval (struct extra_data* edata, int start, int end)
 
 }
 
+//model created by correlation analysis
+inline static double estimate_gap(struct replay_timing* timings, struct extra_data* edata, int i, int j) 
+{ 
+    int utime = edata[j].dtiming - edata[i].dtiming;
+    int taint_in = edata[j].taint_in - edata[i].taint_in;
+    int taint_out = edata[j].taint_out - edata[i].taint_out; 
+    int cache_misses = timings[j].cache_misses - timings[i].cache_misses; 
 
-//right here I need to include the fork_flags parameter!
+    return (250 * utime) - (0.00124 * taint_in) + ( 0.000939 * taint_out) + (.501 * cache_misses) + (1514);
+
+}
+
+
 int gen_timings (struct replay_timing* timings, 
 		 struct extra_data* edata, 
 		 int start, 
@@ -222,7 +237,10 @@ int gen_timings (struct replay_timing* timings,
 	return 0;
     }
 
-    double total_time = edata[end].dtiming - edata[start].dtiming;
+
+
+    double total_time = estimate_gap(timings, edata, start, end);
+//    double total_time = edata[end].dtiming - edata[start].dtiming;
 
     // find the largest gap
     if (details) {
@@ -232,7 +250,8 @@ int gen_timings (struct replay_timing* timings,
     last = start;
     for (i = start+1; i < end; i++) {
 	if (can_attach(edata[i].rpg_syscalls)) {
-	    double gap = edata[i].dtiming - edata[last].dtiming;
+//	    double gap = edata[i].dtiming - edata[last].dtiming;
+	    double gap = estimate_gap(timings, edata, i, last);
 	    if (gap > biggest_gap) {
 		gap_start = last;
 		gap_end = i;
@@ -241,8 +260,11 @@ int gen_timings (struct replay_timing* timings,
 	    last = i;
 	}
     }
+    double gap = estimate_gap(timings, edata, gap_start, gap_end);
+
     if (details) {
-	printf ("Biggest gap from %d to %d is %.3f\n", gap_start, gap_end, edata[gap_end].dtiming - edata[gap_start].dtiming);
+//	printf ("Biggest gap from %d to %d is %.3f\n", gap_start, gap_end, edata[gap_end].dtiming - edata[gap_start].dtiming);
+	printf ("Biggest gap from %d to %d is %.3f\n", gap_start, gap_end, gap);
     }
     if (partitions > 2 && biggest_gap >= total_time/partitions) {
 	// Pivot on this gap
@@ -263,7 +285,8 @@ int gen_timings (struct replay_timing* timings,
 		printf ("Interval is %d\n", intvl);
 	    }
 	} 
-	total_time -= (edata[gap_end].dtiming - edata[gap_start].dtiming);
+//	total_time -= (edata[gap_end].dtiming - edata[gap_start].dtiming);
+	total_time -= gap;
 	partitions -= split;
 	if (gap_start == start) {
 	    if (split > 1) {
@@ -273,8 +296,9 @@ int gen_timings (struct replay_timing* timings,
 	    }
 	    return gen_timings (timings, edata, gap_end, end, partitions, fork_flags);
 	}
-
-	new_part = 0.5 + (partitions * (edata[gap_start].dtiming - edata[start].dtiming)) / total_time;
+//here
+//	new_part = 0.5 + (partitions * (edata[gap_start].dtiming - edata[start].dtiming)) / total_time;
+	new_part = 0.5 + (partitions * gap) / total_time;
 	if (details) {
 	    printf ("gap - new part %d\n", new_part);
 	}
@@ -304,7 +328,9 @@ int gen_timings (struct replay_timing* timings,
 	}
 	for (i = start+1; i < end; i++) {
 	    if (can_attach(edata[i].rpg_syscalls)) {
-		if (edata[i].dtiming-edata[start].dtiming > goal || cnt_interval(edata, i, end) == partitions-1) {
+		double gap = estimate_gap(timings, edata, start, i);
+//		if (edata[i].dtiming-edata[start].dtiming > goal || cnt_interval(edata, i, end) == partitions-1) {
+		if (gap > goal || cnt_interval(edata, i, end) == partitions-1) {		
 		    print_timing (timings, edata,  start, i, fork_flags);
 		    return gen_timings(timings, edata, i, end, partitions-1, fork_flags);
 		}
@@ -317,7 +343,9 @@ int gen_timings (struct replay_timing* timings,
 int find_processes(map<u_int,u_int> &pid_to_index, 
 		   map<u_int,u_int> &fork_process,
 		   map<u_int,u_int> &fork_offset,
-		   map<pair<u_int,u_int>, u_int> &clone_retvals,
+		   map<pair<u_int,u_int>, u_int> &forks,
+		   map<pair<u_int,u_int>, u_int> &taint_in,
+		   map<pair<u_int,u_int>, u_int> &taint_out,
 		   const char* dir, 
 		   const struct replay_timing* timings,
 		   const u_int num, 
@@ -345,20 +373,47 @@ int find_processes(map<u_int,u_int> &pid_to_index,
      * 3 if the record is a clone then we update the datastructures
     */
     for(auto pid_iter = pid_found.begin(); pid_iter != pid_found.end(); pid_iter++) {
-	
 	sprintf (klog_filename, "%s/klog.id.%d", dir, pid_iter->first);	
 	struct klogfile *log = parseklog_open(klog_filename);
 	struct klog_result *res = NULL;
 
-	//we're searching for calls to the clone() syscall
 	while((res = parseklog_get_next_psr(log)) != NULL) {
-	    if(res->psr.sysnum == 120 ) { 
+            //input syscalls
+	    if(res->psr.sysnum == 3 || res->psr.sysnum == 180) { 
 		auto p = make_pair(pid_iter->first, res->index);
-		clone_retvals[p] = res->retval;
+		taint_in[p] = res->retval;
+	    }
 
+            //output syscalls 
+	    if (res->psr.sysnum == 4 || res->psr.sysnum == 146) { 
+		auto p = make_pair(pid_iter->first, res->index);
+		taint_out[p] = res->retval;
+	    }
+
+	    //socketcall a special case b/c its very complicated
+	    if (res->psr.sysnum == 102) { 
+		char *retparams = (char *) res->retparams; 
+		if (retparams) { 
+		    int call = *((int *)retparams);
+		    if (call == SYS_RECV || call == SYS_RECVFROM || 
+			call == SYS_RECVMSG){
+			
+			auto p = make_pair(pid_iter->first, res->index);
+			taint_in[p] = res->retval;			
+		    }		    
+		    else if (call == SYS_SENDMSG) { 
+			auto p = make_pair(pid_iter->first, res->index);
+			taint_out[p] = res->retval;			
+		    }	
+		}
+	    }
+
+	    if(res->psr.sysnum == 120 ) {           
+		auto p = make_pair(pid_iter->first, res->index);
+		forks[p] = res->retval;
+ 	       
 		if(procs.count(res->retval) > 0) 
 		{ 
-//		    printf("found a fork! res->retval %ld from pid %d, index %lld \n", res->retval, pid_iter->first, res->index);
 		    //this is a fork! 
 		    pid_found[res->retval] = true; 
 		    pid_to_index[res->retval] = timings_map_index; 
@@ -652,10 +707,12 @@ int populate_start_clock(vector<struct replay_timing *> &timings_vect,
     }
     return 0;
 }
-int populate_ret_val(vector<struct replay_timing *> &timings_vect, 
+int populate_retval(vector<struct replay_timing *> &timings_vect, 
 		     vector<struct extra_data*> &edata_vect, 
 		     vector<u_int> &num_el, 
-		     map<pair<u_int,u_int>,u_int> &clone_retvals) { 
+		     map<pair<u_int,u_int>,u_int> &forks,
+		     map<pair<u_int,u_int>,u_int> &taint_in,
+		     map<pair<u_int,u_int>,u_int> &taint_out) { 
 
     for (u_int i = 0; i < timings_vect.size(); ++i) { 
 	auto timings = timings_vect[i];
@@ -664,9 +721,36 @@ int populate_ret_val(vector<struct replay_timing *> &timings_vect,
 
 	for (u_int j = 0; j < num; ++j) { 
 	    auto curr_timing = timings[j];
-	    if (curr_timing.syscall == 120) { 
+	    if(curr_timing.syscall == 120) { 
 		auto p = make_pair(curr_timing.pid, curr_timing.index);
-		edata[j].rtn_value = clone_retvals[p];
+		edata[j].retval = forks[p];
+	    }
+
+	    //input syscalls
+	    else if(curr_timing.syscall == 3   || curr_timing.syscall == 180) { 
+		auto p = make_pair(curr_timing.pid, curr_timing.index);
+		edata[j].taint_in = taint_in[p];
+	
+	    }
+
+            //output syscalls 
+	    else if (curr_timing.syscall == 4   || curr_timing.syscall == 146) {  
+		auto p = make_pair(curr_timing.pid, curr_timing.index);
+		edata[j].taint_out = taint_out[p];
+	
+	    }	
+
+	    //socketcall
+	    else if (curr_timing.syscall == 102) { 
+		auto p = make_pair(curr_timing.pid, curr_timing.index);
+		if (taint_out.count(p) > 0) { 
+		    edata[j].taint_out = taint_out[p];		    
+		    edata[j].taint_in = 0;
+		}
+		else { 
+		    edata[j].taint_in = taint_in[p];
+		    edata[j].taint_out = 0;
+		}
 	    }
 	}
     }
@@ -740,10 +824,12 @@ int create_multiprocess_ds(vector<u_int> &num_el,
     map<u_int, u_int> fork_offset; //maps from index to fork offset
     map<u_int, map<u_int,u_int>> index_interval_inclusions;
 
-    map<pair<u_int,u_int>, u_int> clone_retvals; //an index from (proc,index) -> child_pid
+    map<pair<u_int,u_int>, u_int> retvals; //an index from (proc,index) -> child_pid
+    map<pair<u_int,u_int>, u_int> taint_in; //an index from (proc,index) -> child_pid
+    map<pair<u_int,u_int>, u_int> taint_out; //an index from (proc,index) -> child_pid
 
 
-    rc = find_processes(pid_to_index, fork_process, fork_offset, clone_retvals, dir, timings, num, procs);
+    rc = find_processes(pid_to_index, fork_process, fork_offset, retvals, taint_in, taint_out, dir, timings, num, procs);
     if(rc) { 
 	printf("could not find_processes, rc %d\n", rc);
 	return rc;
@@ -786,7 +872,7 @@ int create_multiprocess_ds(vector<u_int> &num_el,
 	return rc;
     }
 
-    rc = populate_ret_val(timings_vect, edata_vect, num_el,clone_retvals);
+    rc = populate_retval(timings_vect, edata_vect, num_el,retvals, taint_in, taint_out);
     if(rc) { 
 	printf("could not split_timings, rc %d\n", rc);
 	return rc;
@@ -810,8 +896,11 @@ void generate_timings_for_process(struct replay_timing *timings,
      */
 
     int total_time = 0;
+    int total_taint_in = 0; 
+    int total_taint_out = 0;
     int child_pid;
     u_int i, j, k; 
+    uint64_t total_cache_misses = 0;
     map<u_int,u_int> last_time;    
     map<u_int,short> latest_syscall;    
 
@@ -826,10 +915,49 @@ void generate_timings_for_process(struct replay_timing *timings,
 	}
 	last_time[pid] = timings[i].ut;
 	timings[i].ut = total_time;
+
+	//update the number of cache misses
+	total_cache_misses += timings[i].cache_misses;
+	timings[i].cache_misses = total_cache_misses;
+
+	if(total_cache_misses > UINTMAX_MAX) { 
+	    fprintf(stderr, "holy shit, way to many cache_misses\n");
+	}
+
 	
+	/*
+	 * since we associate taint_in and taint_out ops with reads and writes, the taint they 
+	 * create is actually added AFTER the syscall. For this reason, we assign the current 
+	 * total_in and total_out to the current syscall, and incremenet the totals for subsequent
+	 * syscalls
+	 */
+
+	int curr_total_in = total_taint_in;
+	int curr_total_out = total_taint_out; 
+	
+        //input syscalls
+	if(timings[i].syscall == 3 || timings[i].syscall == 180) { 
+	    total_taint_in += edata[i].taint_in;	    
+	}
+
+        //output syscalls
+	if(timings[i].syscall == 4 || timings[i].syscall == 146) { 
+	    total_taint_out += edata[i].taint_out;	    
+	}
+	
+	//socketcall a special case b/c its very complicated
+	if (timings[i].syscall == 102) { 
+	    total_taint_in += edata[i].taint_in;
+	    total_taint_out += edata[i].taint_out;
+	}
+
+	edata[i].taint_in = curr_total_in;
+	edata[i].taint_out = curr_total_out;
+
+
 	//when we see a fork, we need to add the child to the list right?  
 	if (timings[i].syscall == 120) { 
-	    child_pid = edata[i].rtn_value;
+	    child_pid = edata[i].retval;
 	    latest_syscall[child_pid] = -1; //to indicate that the child just started
 	}
 
@@ -838,8 +966,6 @@ void generate_timings_for_process(struct replay_timing *timings,
 	    edata[i].rpg_syscalls = new map<u_int, short>();
 	    (*edata[i].rpg_syscalls)[pair.first] = pair.second;
 	}
-
-//	edata[i].rpg_syscalls = latest_syscall; //keep track of the latest syscall for each thread
     }
 
     // Next interpolate values where increment is small
@@ -869,6 +995,12 @@ void generate_timings_for_process(struct replay_timing *timings,
 	}
 	printf ("----------------------------------------\n");
     }
+/*
+    for (i = 0; i < num; i++) {
+	fprintf (stderr, "%d %lu %.3f %lu %lu %llu\n", timings[i].pid, edata[i].start_clock, edata[i].dtiming, edata[i].taint_in, edata[i].taint_out, timings[i].cache_misses);
+    }
+*/
+	
     gen_timings (timings, edata, 0, num-1, num_partitions, fork_flags);
 }
 
@@ -985,12 +1117,10 @@ int main (int argc, char* argv[])
 	    printf("num_el %d\n", num_el[i]);
 	    printf("timing info (edata has not yet been determined)\n");
 
-	    if(details) {
-		for (u_int j = 0; j < num_el[i]; j++) {
-		    printf ("%d: pid %d syscall %lu type %d ut %u %.3f\n",j,
-			    curr_timings[j].pid, curr_timings[j].index, curr_timings[j].syscall, 
-			    curr_timings[j].ut, curr_edata[j].dtiming);
-		}
+	    for (u_int j = 0; j < num_el[i]; j++) {
+		printf ("%d: pid %d syscall %lu type %d ut %u misses %llu %.3f\n",j,
+			curr_timings[j].pid, curr_timings[j].index, curr_timings[j].syscall, 
+			curr_timings[j].ut, curr_timings[j].cache_misses, curr_edata[j].dtiming);
 	    }
 	    printf ("----------------------------------------\n");
 	}
