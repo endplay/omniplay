@@ -132,7 +132,7 @@ int main (int argc, char* argv[])
 {
     int rc;
     char dirname[80];
-    int wait_for_response = 0, validate = 0, get_stats = 0, sync_files = 0;
+    int wait_for_response = 0, validate = 0, get_stats = 0, sync_files = 0, nw_compress = 0;
     char* dest_dir, *cmp_dir;
     struct vector<struct replay_path> log_files;
     struct vector<struct cache_info> cache_files;
@@ -152,6 +152,8 @@ int main (int argc, char* argv[])
 	    wait_for_response = 1;
 	} else if (!strcmp (argv[i], "-s")) {
 	    sync_files = 1;
+	} else if (!strcmp (argv[i], "-c")) {
+	    nw_compress = 1;
 	} else if (!strcmp (argv[i], "-stats")) {
 	    get_stats = 1;
 	} else if (!strcmp (argv[i], "-v")) {
@@ -396,6 +398,7 @@ int main (int argc, char* argv[])
 	ehdr.flags = 0;
 	if (sync_files) ehdr.flags |= SYNC_LOGFILES;
 	if (get_stats) ehdr.flags |= SEND_STATS;
+	if (nw_compress) ehdr.flags |= NW_COMPRESS;
 	strcpy (ehdr.dirname, dirname);
 	ehdr.epochs = conf.difts[i]->num_epochs;
 	if (i == 0) {

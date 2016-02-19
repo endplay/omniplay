@@ -531,6 +531,9 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 		args[argcnt++] = "-seq";
 		args[argcnt++] = "-ppg";
 	    }
+	    if (ehdr.flags&NW_COMPRESS) {
+		args[argcnt++] = "-compress";
+	    }
 	    args[argcnt++] = NULL;
 	    
 	    rc = execv ("./stream", (char **) args);

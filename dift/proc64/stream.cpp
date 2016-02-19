@@ -71,12 +71,14 @@ struct senddata {
     short  port;
     bool   do_sequential;
     bool   do_preprune_global;
+    bool   compress;
 };
 
 struct recvdata {
     short  port;
     bool   do_sequential;
     bool   do_preprune_global;
+    bool   compress;
 };
 
 struct taint_entry {
@@ -2747,27 +2749,6 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 
 #ifdef STATS
 	gettimeofday(&live_insert_start_tv, NULL);
-	uint32_t last = outputq_buf[0];
-	uint32_t runs = 0;
-	uint32_t run_length = 1;
-	uint32_t max_run_length = 0;
-	for (int i = 1; i < cnt; i++) {
-	    if (outputq_buf[i] != last+1) {
-		runs++;
-		if (run_length > max_run_length) {
-		    max_run_length = run_length;
-		}
-		run_length = 0;
-	    } else {
-		run_length++;
-	    }
-	    last = outputq_buf[i];
-	}
-	runs++;
-	if (run_length > max_run_length) {
-	    max_run_length++;
-	}
-	fprintf (stderr, "%u run in %u entries (max %u)\n", runs, cnt, max_run_length);
 #endif
 	for (int i = 0; i < cnt; i++) {
 	    live_set.set(outputq_buf[i]);
@@ -3093,7 +3074,11 @@ int recv_input_queue (struct recvdata* data)
 	    recv_stream (s, inputq_hdr, inputq_buf);
 	    DOWN_QSEM(inputq_hdr);
 	}
-	send_stream_compress (s, inputq_hdr, inputq_buf); // First we send filters downstream	
+	if (data->compress) {
+	    send_stream_compress (s, inputq_hdr, inputq_buf); // First we send filters downstream	
+	} else {
+	    send_stream (s, inputq_hdr, inputq_buf);
+	}
 	shutdown (s, SHUT_WR);
 	inputq_hdr->read_index = inputq_hdr->write_index = 0;
 	UP_QSEM(inputq_hdr);
@@ -3116,7 +3101,11 @@ int send_output_queue (struct senddata* data)
 	   outputq_hdr->read_index = outputq_hdr->write_index = 0;
 	   UP_QSEM(outputq_hdr);
        }
-       recv_stream_compress (s, outputq_hdr, outputq_buf); // First we read data from upstream
+       if (data->compress) {
+	   recv_stream_compress (s, outputq_hdr, outputq_buf); // First we read data from upstream
+       } else {
+	   recv_stream (s, outputq_hdr, outputq_buf); // First we read data from upstream
+       }
        DOWN_QSEM(outputq_hdr);
    }
 
@@ -3143,6 +3132,7 @@ int main (int argc, char* argv[])
     struct recvdata rd;
     bool do_sequential = false;
     int do_preprune = PREPRUNE_NONE;
+    bool do_compress = false;
 
     if (argc < 3) format();
 
@@ -3191,6 +3181,8 @@ int main (int argc, char* argv[])
 	    input_host = true;
 	} else if (!strcmp (argv[i], "-seq")) {
 	    do_sequential = true;
+	} else if (!strcmp (argv[i], "-compress")) {
+	    do_compress = true;
 	} else if (!strcmp (argv[i], "-ppl")) {
 	    do_preprune = PREPRUNE_LOCAL;
 	} else if (!strcmp (argv[i], "-ppg")) {
@@ -3225,6 +3217,7 @@ int main (int argc, char* argv[])
 	sd.port = STREAM_PORT;
 	sd.do_sequential = do_sequential;
 	sd.do_preprune_global = (do_preprune == PREPRUNE_GLOBAL);
+	sd.compress = do_compress;
 	return (send_output_queue (&sd));
     }
 
@@ -3252,6 +3245,7 @@ int main (int argc, char* argv[])
 	rd.port = STREAM_PORT;
 	rd.do_sequential = do_sequential;
 	rd.do_preprune_global = (do_preprune == PREPRUNE_GLOBAL);
+	rd.compress = do_compress;
 	return recv_input_queue (&rd);
     }
 
