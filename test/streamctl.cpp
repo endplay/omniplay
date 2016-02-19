@@ -356,6 +356,7 @@ int main (int argc, char* argv[])
 	if (wait_for_response) ehdr.flags |= SEND_ACK;
 	if (validate) ehdr.flags |= SEND_RESULTS;
 	if (get_stats) ehdr.flags |= SEND_STATS;
+	if (nw_compress) ehdr.flags |= NW_COMPRESS;
 	strcpy (ehdr.dirname, dirname);
 	ehdr.epochs = conf.aggregators[i]->num_epochs;
 	if (i == 0) {
@@ -398,7 +399,6 @@ int main (int argc, char* argv[])
 	ehdr.flags = 0;
 	if (sync_files) ehdr.flags |= SYNC_LOGFILES;
 	if (get_stats) ehdr.flags |= SEND_STATS;
-	if (nw_compress) ehdr.flags |= NW_COMPRESS;
 	strcpy (ehdr.dirname, dirname);
 	ehdr.epochs = conf.difts[i]->num_epochs;
 	if (i == 0) {
