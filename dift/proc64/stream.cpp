@@ -228,6 +228,51 @@ bucket_push (uint32_t val, struct taintq_hdr* qh, uint32_t*& qb, int qfd, uint32
     }
 }
 
+static void inline 
+bucket_push2 (uint32_t val1, uint32_t val2, struct taintq_hdr* qh, uint32_t*& qb, uint32_t& bucket_cnt, uint32_t& bucket_stop)
+{
+    if (bucket_cnt == bucket_stop) {
+	// Get next bucket 
+	pthread_mutex_lock(&(qh->lock));
+	while ((next_write_index+1)%TAINTBUCKETS == qh->read_index) {
+#ifdef STATS
+	    struct timeval tv1, tv2;	       
+	    gettimeofday(&tv1, NULL);	       
+#endif
+	    pthread_cond_wait(&(qh->full), &(qh->lock));
+#ifdef STATS
+	    gettimeofday(&tv2, NULL);		
+	    send_idle += ms_diff (tv2,tv1);
+#endif
+	}
+	bucket_cnt = next_write_index * TAINTBUCKETENTRIES;
+	bucket_stop = bucket_cnt + TAINTBUCKETENTRIES;
+	next_write_index = (next_write_index+1)%TAINTBUCKETS;
+	pthread_mutex_unlock(&(qh->lock));
+    } 
+    qb[bucket_cnt++] = val1;
+    qb[bucket_cnt++] = val2;
+    
+    if (bucket_cnt == bucket_stop) {
+
+	// This bucket is done
+	pthread_mutex_lock(&(qh->lock));
+	uint32_t bucket_index = (bucket_cnt-1)/TAINTBUCKETENTRIES;
+	if (bucket_index == qh->write_index) {
+	    // Mark this and any following emptied buckets as writable
+	    qh->write_index = (qh->write_index+1)%TAINTBUCKETS;
+	    while (bucket_filled[qh->write_index]) {
+		bucket_filled[qh->write_index] = 0;
+		qh->write_index = (qh->write_index+1)%TAINTBUCKETS;
+	    }
+	    pthread_cond_broadcast(&(qh->empty));
+	} else {
+	    bucket_filled[bucket_index] = 1;
+	}
+	pthread_mutex_unlock(&(qh->lock));
+    }
+}
+
 // Pushes the bucket even if it is half-full - append sentinel to show this
 static void inline bucket_term (struct taintq_hdr* qh, uint32_t*& qb, int qfd, uint32_t& bucket_cnt, uint32_t& bucket_stop)
 {
@@ -349,6 +394,7 @@ static void bucket_complete_write (struct taintq_hdr* qh, uint32_t*& qb, uint32_
 }
 
 #define PUT_QVALUEB(val,q,qb,qfd,bc,bs) bucket_push (val,q,qb,qfd,bc,bs);
+#define PUT_QVALUE2(val1,val2,q,qb,bc,bs) bucket_push2 (val1,val2,q,qb,bc,bs);
 #define GET_QVALUEB(val,q,qb,qfd,bc,bs) bucket_pull (val,q,qb,qfd,bc,bs);
 
 #define DOWN_QSEM(qh) sem_wait(&(qh)->epoch_sem);
@@ -791,8 +837,7 @@ static void map_iter_par (taint_t value, uint32_t output_token, taint_t* stack, 
     pset.erase(0);
     for (auto iter2 = pset.begin(); iter2 != pset.end(); iter2++) {
 	if (*iter2 < 0xc0000000 && !start_flag) {
-	    PUT_QVALUEB (output_token,outputq_hdr,outputq_buf,oqfd, bucket_cnt, bucket_stop);
-	    PUT_QVALUEB (*iter2,outputq_hdr,outputq_buf,oqfd,bucket_cnt, bucket_stop);
+	    PUT_QVALUE2 (output_token,*iter2,outputq_hdr,outputq_buf,bucket_cnt, bucket_stop);
 #ifdef STATS
 	    lvalues_sent += 2;
 #endif
@@ -964,8 +1009,7 @@ struct output_par_data {
     uint32_t                 output_token;
     char*                    plog;
     char*                    outstop;
-//    unordered_set<uint32_t>* plive_set;
-    bitmap*                 plive_set;
+    bitmap*                  plive_set;
     stacktype*               stack;
     uint32_t**               resolvedptr;
     uint32_t**               resolvedstop;
@@ -989,7 +1033,6 @@ do_outputs_seq (void* pdata)
     uint32_t  output_token = opdata->output_token; 
     char*     plog = opdata->plog;
     char*     outstop = opdata->outstop;
-//    unordered_set<uint32_t>* plive_set = opdata->plive_set;
     bitmap *plive_set= opdata->plive_set;
 
 
@@ -1023,8 +1066,7 @@ do_outputs_seq (void* pdata)
 #endif
 		    if (value < 0xc0000000 && !start_flag) {
 			if (plive_set->test(value)) {
-			    PUT_QVALUEB (output_token,outputq_hdr,outputq_buf,oqfd,wbucket_cnt, wbucket_stop);
-			    PUT_QVALUEB (value,outputq_hdr,outputq_buf,oqfd, wbucket_cnt, wbucket_stop);
+			    PUT_QVALUE2 (output_token,value,outputq_hdr,outputq_buf,wbucket_cnt, wbucket_stop);
 #ifdef STATS
 			    lvalues_sent += 2;
 #endif
@@ -1135,8 +1177,7 @@ do_outputs_stream (void* pdata)
 		    ldirects++;
 #endif
 		    if (value < 0xc0000000 && !start_flag) {
-			PUT_QVALUEB (output_token,outputq_hdr,outputq_buf,oqfd,wbucket_cnt, wbucket_stop);
-			PUT_QVALUEB (value,outputq_hdr,outputq_buf,oqfd, wbucket_cnt, wbucket_stop);
+			PUT_QVALUE2 (output_token,value,outputq_hdr,outputq_buf,wbucket_cnt, wbucket_stop);
 #ifdef STATS
 			lvalues_sent += 2;
 #endif
@@ -1361,8 +1402,7 @@ do_addresses (void* pdata)
 		lpassthrus++;
 #endif
 		// Not in this epoch - so pass through to next
-		PUT_QVALUEB(otoken+output_token,outputq_hdr,outputq_buf,oqfd,wbucket_cnt,wbucket_stop);
-		PUT_QVALUEB(value,outputq_hdr,outputq_buf,oqfd,wbucket_cnt,wbucket_stop);
+		PUT_QVALUE2(otoken+output_token,value,outputq_hdr,outputq_buf,wbucket_cnt,wbucket_stop);
 #ifdef STATS
 		lvalues_sent += 2;
 #endif
@@ -1390,8 +1430,7 @@ do_addresses (void* pdata)
 		    lunmodified++;
 #endif
 		    // Not in this epoch - so pass through to next
-		    PUT_QVALUEB(otoken+output_token,outputq_hdr,outputq_buf,oqfd,wbucket_cnt,wbucket_stop);
-		    PUT_QVALUEB(iter->second,outputq_hdr,outputq_buf,oqfd,wbucket_cnt,wbucket_stop);
+		    PUT_QVALUE2(otoken+output_token,iter->second,outputq_hdr,outputq_buf,wbucket_cnt,wbucket_stop);
 #ifdef STATS
 		    lvalues_sent += 2;
 #endif
