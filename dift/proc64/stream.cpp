@@ -2988,7 +2988,6 @@ void send_stream_compress (int s, struct taintq_hdr* qh, uint32_t* qb)
 
     // Wait until bytes are ready to send
     u_long cnt = bucket_wait_term (qh, qb);
-    printf ("Compressing %lu bytes\n", cnt);
     if (cnt) {
 	// Do run length encoding
 	uint32_t last = qb[0];
@@ -2999,7 +2998,6 @@ void send_stream_compress (int s, struct taintq_hdr* qh, uint32_t* qb)
 		outbuf[outndx++] = run_length;
 		if (outndx == outentries) {
 		    long rc = safe_write (s, outbuf, sizeof(outbuf));
-		    printf ("rc=%ld\n", rc);
 		    if (rc != sizeof(outbuf)) {
 			fprintf (stderr, "Compressed send returns %ld, errno=%d\n", rc, errno);
 			return;
@@ -3008,6 +3006,7 @@ void send_stream_compress (int s, struct taintq_hdr* qh, uint32_t* qb)
 		    outndx = 0;
 		}
 		outbuf[outndx++] = qb[i];
+		run_length = 1;
 	    } else {
 		run_length++;
 	    }
@@ -3023,7 +3022,7 @@ void send_stream_compress (int s, struct taintq_hdr* qh, uint32_t* qb)
     outbuf[outndx++] = 0;
     assert (safe_write (s, outbuf, sizeof(outbuf)) == sizeof(outbuf));
     bytes_sent += sizeof(outbuf);
-    printf ("Bytes sent %u queue size %lu\n", bytes_sent, cnt);
+    printf ("Bytes sent %u queue size %lu\n", bytes_sent, cnt*sizeof(uint32_t));
 }
     
 void recv_stream (int s, struct taintq_hdr* qh, uint32_t* qb)
@@ -3065,8 +3064,7 @@ void recv_stream_compress (int s, struct taintq_hdr* qh, uint32_t* qb)
     while (1) {
 
 	long rc = safe_read (s, outbuf, sizeof(outbuf));
-	printf ("Recv %ld\n", rc);
-	if (rc == sizeof(outbuf)) {
+	if (rc != sizeof(outbuf)) {
 	    fprintf (stderr, "Compressed recv returns %ld, errno=%d\n", rc, errno);
 	    return;
 	}
