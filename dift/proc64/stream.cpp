@@ -2755,8 +2755,9 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	    if (outputq_buf[i] != last+1) {
 		runs++;
 		if (run_length > max_run_length) {
-		    max_run_length++;
+		    max_run_length = run_length;
 		}
+		run_length = 0;
 	    } else {
 		run_length++;
 	    }
@@ -2987,6 +2988,7 @@ void send_stream_compress (int s, struct taintq_hdr* qh, uint32_t* qb)
 
     // Wait until bytes are ready to send
     u_long cnt = bucket_wait_term (qh, qb);
+    printf ("Compressing %lu bytes\n", cnt);
     if (cnt) {
 	// Do run length encoding
 	uint32_t last = qb[0];
@@ -2996,8 +2998,14 @@ void send_stream_compress (int s, struct taintq_hdr* qh, uint32_t* qb)
 	    if (qb[i] != last+1) {
 		outbuf[outndx++] = run_length;
 		if (outndx == outentries) {
-		    assert (safe_write (s, outbuf, sizeof(outbuf)) == sizeof(outbuf));
+		    long rc = safe_write (s, outbuf, sizeof(outbuf));
+		    printf ("rc=%ld\n", rc);
+		    if (rc != sizeof(outbuf)) {
+			fprintf (stderr, "Compressed send returns %ld, errno=%d\n", rc, errno);
+			return;
+		    }
 		    bytes_sent += sizeof(outbuf);
+		    outndx = 0;
 		}
 		outbuf[outndx++] = qb[i];
 	    } else {
@@ -3009,6 +3017,7 @@ void send_stream_compress (int s, struct taintq_hdr* qh, uint32_t* qb)
 	if (outndx == outentries) {
 	    assert (safe_write (s, outbuf, sizeof(outbuf)) == sizeof(outbuf));
 	    bytes_sent += sizeof(outbuf);
+	    outndx = 0;
 	}
     }
     outbuf[outndx++] = 0;
@@ -3055,7 +3064,12 @@ void recv_stream_compress (int s, struct taintq_hdr* qh, uint32_t* qb)
 
     while (1) {
 
-	assert (safe_read (s, outbuf, sizeof(outbuf)) == sizeof(outbuf));
+	long rc = safe_read (s, outbuf, sizeof(outbuf));
+	printf ("Recv %ld\n", rc);
+	if (rc == sizeof(outbuf)) {
+	    fprintf (stderr, "Compressed recv returns %ld, errno=%d\n", rc, errno);
+	    return;
+	}
 	for (uint32_t i = 0; i < outentries; i += 2) {
 	    if (outbuf[i] == 0) {
 		bucket_complete_write (qh, qb, ndx);
