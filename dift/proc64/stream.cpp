@@ -2978,6 +2978,45 @@ void send_stream (int s, struct taintq_hdr* qh, uint32_t* qb)
     }
 }
 
+void send_stream_compress (int s, struct taintq_hdr* qh, uint32_t* qb)
+{
+    const uint32_t outentries = 4096;
+    uint32_t outbuf[outentries];
+    uint32_t outndx = 0;
+    uint32_t bytes_sent = 0;
+
+    // Wait until bytes are ready to send
+    u_long cnt = bucket_wait_term (qh, qb);
+    if (cnt) {
+	// Do run length encoding
+	uint32_t last = qb[0];
+	outbuf[outndx++] = last;
+	uint32_t run_length = 1;
+	for (uint32_t i = 1; i < cnt; i++) {
+	    if (qb[i] != last+1) {
+		outbuf[outndx++] = run_length;
+		if (outndx == outentries) {
+		    assert (safe_write (s, outbuf, sizeof(outbuf)) == sizeof(outbuf));
+		    bytes_sent += sizeof(outbuf);
+		}
+		outbuf[outndx++] = qb[i];
+	    } else {
+		run_length++;
+	    }
+	    last = qb[i];
+	}
+	outbuf[outndx++] = run_length;
+	if (outndx == outentries) {
+	    assert (safe_write (s, outbuf, sizeof(outbuf)) == sizeof(outbuf));
+	    bytes_sent += sizeof(outbuf);
+	}
+    }
+    outbuf[outndx++] = 0;
+    assert (safe_write (s, outbuf, sizeof(outbuf)) == sizeof(outbuf));
+    bytes_sent += sizeof(outbuf);
+    printf ("Bytes sent %u queue size %lu\n", bytes_sent, cnt);
+}
+    
 void recv_stream (int s, struct taintq_hdr* qh, uint32_t* qb)
 {
     // Get data and put on the inputq
@@ -3008,6 +3047,30 @@ void recv_stream (int s, struct taintq_hdr* qh, uint32_t* qb)
     }
 }
 
+void recv_stream_compress (int s, struct taintq_hdr* qh, uint32_t* qb)
+{
+    const uint32_t outentries = 4096;
+    uint32_t outbuf[outentries];
+    uint32_t ndx = 0;
+
+    while (1) {
+
+	assert (safe_read (s, outbuf, sizeof(outbuf)) == sizeof(outbuf));
+	for (uint32_t i = 0; i < outentries; i += 2) {
+	    if (outbuf[i] == 0) {
+		bucket_complete_write (qh, qb, ndx);
+		return; // Last entry - we are done
+	    }
+
+	    uint32_t val = outbuf[i];
+	    uint32_t len = outbuf[i+1];
+	    for (uint32_t j = 0; j < len; j++) {
+		qb[ndx++] = val++;
+	    }
+	}
+    }
+}
+
 int recv_input_queue (struct recvdata* data)
 {
     int s = connect_input_queue (data);
@@ -3018,7 +3081,7 @@ int recv_input_queue (struct recvdata* data)
 	    recv_stream (s, inputq_hdr, inputq_buf);
 	    DOWN_QSEM(inputq_hdr);
 	}
-	send_stream (s, inputq_hdr, inputq_buf); // First we send filters downstream	
+	send_stream_compress (s, inputq_hdr, inputq_buf); // First we send filters downstream	
 	shutdown (s, SHUT_WR);
 	inputq_hdr->read_index = inputq_hdr->write_index = 0;
 	UP_QSEM(inputq_hdr);
@@ -3041,7 +3104,7 @@ int send_output_queue (struct senddata* data)
 	   outputq_hdr->read_index = outputq_hdr->write_index = 0;
 	   UP_QSEM(outputq_hdr);
        }
-       recv_stream (s, outputq_hdr, outputq_buf); // First we read data from upstream
+       recv_stream_compress (s, outputq_hdr, outputq_buf); // First we read data from upstream
        DOWN_QSEM(outputq_hdr);
    }
 
