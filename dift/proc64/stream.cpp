@@ -325,7 +325,7 @@ static u_long bucket_wait_term (struct taintq_hdr* qh, uint32_t*& qb)
     }
     pthread_mutex_unlock(&(qh->lock));
     u_long ndx = (qh->write_index-1)*TAINTBUCKETENTRIES;
-    while (QSTOP(qb[ndx])) ndx -= TAINTBUCKETENTRIES;
+    while (QSTOP(qb[ndx])) ndx -= TAINTBUCKETENTRIES; //why is this a while loop? 
     do {
 	ndx++;
     } while (!QSTOP(qb[ndx]));
@@ -2394,20 +2394,21 @@ preprune_local (u_long& mdatasize, char* output_log, u_long odatasize, taint_t* 
 	}
 	paptr++;
     }
-
-    struct taint_entry* pentry = merge_log + mentries - 1;
-    u_long* pused = is_used + mentries - 1;
-    while (pentry >= merge_log) {
-	if (*pused) {
-	    if (pentry->p1 > 0xe0000000) {
-		is_used[pentry->p1-0xe0000001] = 1;
+    if (merge_log + mentries > 0 ) { 
+	struct taint_entry* pentry = merge_log + mentries - 1;
+	u_long* pused = is_used + mentries - 1;
+	while (pentry >= merge_log) {
+	    if (*pused) {
+		if (pentry->p1 > 0xe0000000) {
+		    is_used[pentry->p1-0xe0000001] = 1;
+		}
+		if (pentry->p2 > 0xe0000000) {
+		    is_used[pentry->p2-0xe0000001] = 1;
+		}
 	    }
-	    if (pentry->p2 > 0xe0000000) {
-		is_used[pentry->p2-0xe0000001] = 1;
-	    }
+	    pused--;
+	    pentry--;
 	}
-	pused--;
-	pentry--;
     }
 
     u_long new_index = 0;

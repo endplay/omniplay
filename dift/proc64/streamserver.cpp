@@ -263,6 +263,7 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 	    const char* args[256];
 	    char attach[80];
 	    char fake[80];
+	    char ckpt[80];
 	    int argcnt = 0;
 	    
 	    args[argcnt++] = "resume";
@@ -273,6 +274,11 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 	    if (i > 0 || !ehdr.start_flag) {
 		sprintf (attach, "--attach_offset=%d,%u", edata[i].start_pid, edata[i].start_clock);
 		args[argcnt++] = attach;
+	    }
+
+	    if (edata[i].ckpt != 0) { 
+		sprintf (ckpt, "--from_ckpt=%u", edata[i].ckpt);
+		args[argcnt++] = ckpt;
 	    }
 	    if (edata[i].start_level == 'u' && edata[i].stop_level == 'u') {
 		sprintf (fake, "--fake_calls=%u,%u", edata[i].start_clock, edata[i].stop_clock);
@@ -417,7 +423,7 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 	    
 	    sprintf (pathname, "/tmp/%d/taint_stats", ectl[i].cpid);
 	    if (send_file (s, pathname, "taint-stats") < 0) { 
-		printf ("couldn't find /tmp/%d, howabout /tmp/%d?\n",ectl[i].cpid, ectl[i].attach_pid);
+		fprintf (stderr,"couldn't find /tmp/%d, howabout /tmp/%d?\n",ectl[i].cpid, ectl[i].attach_pid);
 		sprintf (pathname, "/tmp/%d/taint_stats", ectl[i].attach_pid);
 		send_file (s, pathname, "taint-stats");
 	    }
