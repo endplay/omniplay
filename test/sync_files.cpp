@@ -77,7 +77,7 @@ int get_needed_files(struct vector<struct replay_path> &log_files,
 	return -1;
     }
     while ((de = readdir(dir)) != NULL) {
-	if (!strcmp(de->d_name, "ckpt") || !strcmp(de->d_name, "mlog") || !strncmp(de->d_name, "ulog", 4)) {
+	if (!strncmp(de->d_name, "ckpt",4) || !strcmp(de->d_name, "mlog") || !strncmp(de->d_name, "ulog", 4)) {
 	    struct replay_path pathname;
 	    sprintf (pathname.path, "%s/%s", dirname, de->d_name);
 	    log_files.push_back(pathname);

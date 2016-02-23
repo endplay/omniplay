@@ -165,7 +165,7 @@ void print_timing (struct replay_timing* timings, struct extra_data* edata, int 
 		} else {
 		    printf ("      0");
 		}
-		return;
+		break;
 	    }
 	}
 	printf (" %6s", ckpts[i-1].name);
@@ -177,6 +177,9 @@ void print_timing (struct replay_timing* timings, struct extra_data* edata, int 
     else {
 	printf (" 0\n");
     }
+
+
+
 }
 
 static int can_attach (map<u_int, short> *syscalls) 
@@ -207,14 +210,18 @@ static int cnt_interval (struct extra_data* edata, int start, int end)
 }
 
 //model created by correlation analysis
-inline static double estimate_gap(struct replay_timing* timings, struct extra_data* edata, int i, int j) 
+inline static double estimate_gap(struct replay_timing* timings, struct extra_data* edata, int i, int j)
 { 
-    int utime = edata[j].dtiming - edata[i].dtiming;
-    int taint_in = edata[j].taint_in - edata[i].taint_in;
-    int taint_out = edata[j].taint_out - edata[i].taint_out; 
-    int cache_misses = timings[j].cache_misses - timings[i].cache_misses; 
+    double utime = edata[j].dtiming - edata[i].dtiming;
+//    int taint_in = edata[j].taint_in - edata[i].taint_in;
+    u_long taint_out = edata[j].taint_out - edata[i].taint_out; 
+    u_long cache_misses = timings[j].cache_misses - timings[i].cache_misses; 
 
-    return (250 * utime) - (0.00124 * taint_in) + ( 0.000939 * taint_out) + (.501 * cache_misses) + (1514);
+//    int rtn_val = (261 * utime) - (0.00121 * taint_in) + ( 0.000932 * taint_out) + (.531 * cache_misses) ;
+//    fprintf(stderr, "\t %lf %lu %lu\n", utime, taint_out, cache_misses);
+    int rtn_val = (220 * utime) + ( 0.000241 * taint_out) + (.594 * cache_misses) ;
+
+    return rtn_val;
 
 }
 
@@ -233,13 +240,15 @@ int gen_timings (struct replay_timing* timings,
     assert (partitions <= cnt_interval(edata, start, end));
 
     if (partitions == 1) {
+//	double gap = estimate_gap(timings, edata, start, end);
+//	fprintf(stderr,"2:s %d, i %d, gap %lf\n",start, end, gap);	
+
 	print_timing (timings, edata, start, end, fork_flags);
 	return 0;
     }
 
-
-
     double total_time = estimate_gap(timings, edata, start, end);
+//    fprintf(stderr,"2:s %d, i %d tt %lf\n",start, end,total_time);
 //    double total_time = edata[end].dtiming - edata[start].dtiming;
 
     // find the largest gap
@@ -251,7 +260,8 @@ int gen_timings (struct replay_timing* timings,
     for (i = start+1; i < end; i++) {
 	if (can_attach(edata[i].rpg_syscalls)) {
 //	    double gap = edata[i].dtiming - edata[last].dtiming;
-	    double gap = estimate_gap(timings, edata, i, last);
+//	    fprintf(stderr, "calling eg w/ %d %d\n", last , i);
+	    double gap = estimate_gap(timings, edata, last, i);
 	    if (gap > biggest_gap) {
 		gap_start = last;
 		gap_end = i;
@@ -330,7 +340,34 @@ int gen_timings (struct replay_timing* timings,
 	    if (can_attach(edata[i].rpg_syscalls)) {
 		double gap = estimate_gap(timings, edata, start, i);
 //		if (edata[i].dtiming-edata[start].dtiming > goal || cnt_interval(edata, i, end) == partitions-1) {
-		if (gap > goal || cnt_interval(edata, i, end) == partitions-1) {		
+		if (gap > goal || cnt_interval(edata, i, end) == partitions-1) {	
+		    /*
+		     * this means that we've gone *just* past our goal. If we follow this policy in the 
+		     * long run we wind up having shorted epochs at the end of our replay. we can do two things: 
+		     * 1. Since we have seq passes, we acutally want later epochs to be slightly longer, so 
+		     *    we can instead favor slightly smaller epochs 
+		     * 2. we can just try to pick epochs that get us closest to our goal here. 
+
+		     * I opt for the 1st, but we should probably look into it more. 
+		     */
+
+		    double act_gap; 
+		    int new_i = i - 1; //start one behind, go until you can attach. stop if you went too far
+		    while (new_i > start + 1 && !can_attach(edata[new_i].rpg_syscalls)) { 
+			new_i --;			
+		    }
+
+		    if (new_i > start + 1) {
+			i = new_i;
+			act_gap = estimate_gap(timings, edata, start, i); 
+		    }
+		    else {
+			act_gap = gap;
+		    }
+
+		    (void) act_gap;
+//		    fprintf(stderr,"2:s %d, i %d tt %lf, part %d, goal %lf, gap %lf, act_gap %lf\n",start, i,total_time, partitions, goal, gap, act_gap);	
+
 		    print_timing (timings, edata,  start, i, fork_flags);
 		    return gen_timings(timings, edata, i, end, partitions-1, fork_flags);
 		}

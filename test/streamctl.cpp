@@ -290,7 +290,7 @@ int main (int argc, char* argv[])
 	//unordered set of already seen cache files (optimizatino for nginx, which stinks because there are like, 100k files)
 
 	while ((de = readdir(dir)) != NULL) {
-	    if (!strcmp(de->d_name, "ckpt") || !strcmp(de->d_name, "mlog") || !strncmp(de->d_name, "ulog", 4)) {
+	    if (!strncmp(de->d_name, "ckpt",4) || !strcmp(de->d_name, "mlog") || !strncmp(de->d_name, "ulog", 4)) {
 		struct replay_path pathname;
 		sprintf (pathname.path, "%s/%s", dirname, de->d_name);
 		log_files.push_back(pathname);
@@ -343,7 +343,6 @@ int main (int argc, char* argv[])
 	}
 	closedir(dir);
     }        
-
     fprintf(stderr, "found that we need %d files\n", cache_files.size());
     
 
