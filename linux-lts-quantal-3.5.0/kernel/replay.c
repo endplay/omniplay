@@ -3711,8 +3711,8 @@ replay_full_ckpt (long rc)
 		tsk = pid_task (find_vpid(tmp->rp_replay_pid), PIDTYPE_PID);
 		if (tsk && tsk != current) {
 			struct replay_thread* prt = tsk->replay_thrd;
-			printk ("Checkpointing task %d status %d exp clock %lu argshead %ld\n", tsk->pid, prt->rp_status, prt->rp_ckpt_save_expected_clock,
-				prt->rp_ckpt_save_args_head);
+			printk ("Checkpointing task %d status %d exp clock %lu argshead %ld read_log_pos %lu\n", tsk->pid, prt->rp_status, prt->rp_ckpt_save_expected_clock,
+				prt->rp_ckpt_save_args_head, prt->rp_record_thread->rp_read_log_pos);
 			retval = replay_full_checkpoint_proc_to_disk (ckpt, tsk, prt->rp_record_thread->rp_record_pid, 0,
 								      prt->rp_record_thread->rp_read_log_pos, prt->rp_out_ptr, 
 								      prt->rp_ckpt_save_args_head, prt->rp_ckpt_save_expected_clock, &pos);
@@ -3821,7 +3821,7 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* 
 
 	MPRINT ("Number of checkpoint processes %lu\n", num_procs);
 	if (num_procs > 1) {
-		mutex_lock(&ckpt_mutex); 
+	        mutex_lock(&ckpt_mutex);
 		__init_ckpt_waiters();
 
 		pckpt_waiter = KMALLOC(sizeof(struct ckpt_waiter), GFP_KERNEL);
@@ -4010,9 +4010,14 @@ replay_full_ckpt_proc_wakeup (char* logdir, char* filename, int fd)
 
 	set_thread_flag (TIF_IRET);  // We are updating registers
 	prept->rp_status = REPLAY_STATUS_RESTART_CKPT;
-	prept->rp_ckpt_restart_sem = &pckpt_waiter->sem2;
+	prept->rp_ckpt_restart_sem = &pckpt_waiter->sem2; 
 	prept->rp_out_ptr--;
+
+	MPRINT("pid %d consumed is %lu, read_log_pos %lu\n",current->pid,consumed, prect->rp_read_log_pos);
+
 	if (consumed > 0) argsconsume(prect, consumed);
+
+	MPRINT("pid %d consumed is %lu, argsconsumed %lu\n", current->pid, consumed, argsconsumed(prect));
 
 	if (fd >= 0) {
 		rc = sys_close (fd);
@@ -4969,6 +4974,9 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 	int ret, is_restart = 0;
 	int original_status = -1;
 
+	char* head = NULL;
+	int i = 0;
+
 #ifdef REPLAY_PARANOID
 	if (current->replay_thrd == NULL) {
 		printk ("Pid %d replaying but no log\n", current->pid);
@@ -5010,6 +5018,7 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 
 
 	MPRINT ("Replay Pid %d, index %ld sys %d\n", current->pid, prt->rp_out_ptr, psr->sysnum);
+
 	if (prt->rp_pin_attaching == PIN_ATTACHING_FF || prt->rp_pin_attaching == PIN_ATTACHING_RESTART) {
 		// Since we are redoing this system call, we need to go roll back to the beginnning
 	        u_long clock_adj = argsconsumed(prt->rp_record_thread)-prt->rp_ckpt_save_args_head;
@@ -5019,11 +5028,19 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 		if (prt->rp_pin_attaching == PIN_ATTACHING_RESTART) prt->rp_pin_attaching = PIN_ATTACHING_NONE; 
 	}
 
+	//becuase of the way all we store the records, we are sometimes off sizeof(u_long)
+	if (prt->rp_status == REPLAY_STATUS_RESTART_CKPT && psr->flags & SR_HAS_START_CLOCK_SKIP) { 
+		argsrestore (prt->rp_record_thread, sizeof(u_long)); 
+		MPRINT ("Replay Pid %d, checkpointed consumed offset was off by the start_clock offset\n", current->pid);
+	}
+	MPRINT ("Replay Pid %d, flags %x argsconsumed %lu\n", current->pid, psr->flags, argsconsumed(prect));
+
 	start_clock = prt->rp_expected_clock;
 	if (psr->flags & SR_HAS_START_CLOCK_SKIP) {
 		pclock = (u_long *) argshead(prect);
 		argsconsume(prect, sizeof(u_long));
-		start_clock += *pclock;
+		start_clock += *pclock;		
+		MPRINT("Replay pid %d, argsconsumed %lu, pclock %lu, start_clock %lu\n", current->pid, argsconsumed(prect) - sizeof(u_long), *pclock, start_clock);
 		if (start_clock > 100000000) {
 			printk("start_clock %ld, pclock %ld, prt->rp_expected_clock %ld\n", start_clock, *pclock, prt->rp_expected_clock); 
 		}
@@ -5038,6 +5055,7 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 	} else {
 		retval = *((long *) argshead(prect));
 		argsconsume(prect, sizeof(long));
+		MPRINT("Replay pid %d, argsconsumed %lu, retval %lu\n", current->pid, argsconsumed(prect) - sizeof(long), retval);
 	}
 
 	prt->rp_expected_clock = start_clock + 1;
@@ -5067,6 +5085,7 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 		MPRINT ("Stop clock skip is %lu\n", prt->rp_stop_clock_skip);
 		argsconsume(prect, sizeof(u_long));
 		prt->rp_stop_clock_save += prt->rp_stop_clock_skip;
+		MPRINT("Replay pid %d, argsconsumed %lu, stop_clock_skip %lu, new_stop_clock_save %lu", current->pid, argsconsumed(prect) - sizeof(u_long), prt->rp_stop_clock_skip, prt->rp_stop_clock_save);
 	}
 
 	if (ppretparams) {
@@ -5254,7 +5273,7 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 	if (prt->rp_status != REPLAY_STATUS_RESTART_CKPT && prt->rp_pin_attaching != PIN_ATTACHING_FF) (*prt->rp_preplay_clock)++;
 	rg_unlock (prg->rg_rec_group);
 
-	if (prt->rp_pin_attaching != PIN_ATTACHING_FF) {
+	if (prt->rp_status != REPLAY_STATUS_RESTART_CKPT && prt->rp_pin_attaching != PIN_ATTACHING_FF) {
 		MPRINT ("Pid %d incremented replay clock on syscall %d entry to %ld\n", current->pid, psr->sysnum, *(prt->rp_preplay_clock));
 	}
 	*ppsr = psr;
@@ -5275,6 +5294,8 @@ get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, stru
 	stop_clock = prt->rp_expected_clock;
 	if (psr->flags & SR_HAS_STOP_CLOCK_SKIP) stop_clock += prt->rp_stop_clock_skip;
 	prt->rp_expected_clock = stop_clock + 1;
+
+	MPRINT("syscall_exit: preplay_clock %lu, expected_clock %lu, stop_clock_skip %lu, stop_clock %lu\n",*(prt->rp_preplay_clock), prt->rp_expected_clock, prt->rp_stop_clock_skip, stop_clock);
 
 	rg_lock (prg->rg_rec_group);
 	while (*(prt->rp_preplay_clock) < stop_clock) {
@@ -14590,7 +14611,7 @@ int read_log_data_internal (struct record_thread* prect, struct syscall_result* 
 	sprintf (filename, "%s/klog.id.%d", prect->rp_group->rg_logdir, logid);
 	MPRINT ("Opening %s\n", filename);
 	fd = sys_open(filename, O_RDONLY|O_LARGEFILE, 0644);
-	MPRINT ("Open returns %d\n", fd);
+	MPRINT ("Open returns  %d\n", fd);
 	if (fd < 0) {
 		printk ("read_log_data: cannot open log file %s\n", filename);
 		return -EINVAL;
