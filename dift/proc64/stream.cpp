@@ -336,11 +336,14 @@ static void bucket_complete_write (struct taintq_hdr* qh, uint32_t*& qb, uint32_
 {
     pthread_mutex_lock(&(qh->lock));
     qb[bucket_cnt] = TERM_VAL;
+/*
     if (bucket_cnt%TAINTBUCKETENTRIES) {
 	qh->write_index = bucket_cnt/TAINTBUCKETENTRIES + 1;
     } else {
 	qh->write_index = bucket_cnt/TAINTBUCKETENTRIES + 2;
     }
+*/
+    qh->write_index = bucket_cnt / TAINTBUCKETENTRIES + 1;
     qb[qh->write_index*TAINTBUCKETENTRIES-1] = TERM_VAL; // For network processing
     pthread_cond_broadcast(&(qh->empty));
     pthread_mutex_unlock(&(qh->lock));
