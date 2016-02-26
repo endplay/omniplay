@@ -71,12 +71,14 @@ struct senddata {
     short  port;
     bool   do_sequential;
     bool   do_preprune_global;
+    bool   compress;
 };
 
 struct recvdata {
     short  port;
     bool   do_sequential;
     bool   do_preprune_global;
+    bool   compress;
 };
 
 struct taint_entry {
@@ -226,6 +228,51 @@ bucket_push (uint32_t val, struct taintq_hdr* qh, uint32_t*& qb, int qfd, uint32
     }
 }
 
+static void inline 
+bucket_push2 (uint32_t val1, uint32_t val2, struct taintq_hdr* qh, uint32_t*& qb, uint32_t& bucket_cnt, uint32_t& bucket_stop)
+{
+    if (bucket_cnt == bucket_stop) {
+	// Get next bucket 
+	pthread_mutex_lock(&(qh->lock));
+	while ((next_write_index+1)%TAINTBUCKETS == qh->read_index) {
+#ifdef STATS
+	    struct timeval tv1, tv2;	       
+	    gettimeofday(&tv1, NULL);	       
+#endif
+	    pthread_cond_wait(&(qh->full), &(qh->lock));
+#ifdef STATS
+	    gettimeofday(&tv2, NULL);		
+	    send_idle += ms_diff (tv2,tv1);
+#endif
+	}
+	bucket_cnt = next_write_index * TAINTBUCKETENTRIES;
+	bucket_stop = bucket_cnt + TAINTBUCKETENTRIES;
+	next_write_index = (next_write_index+1)%TAINTBUCKETS;
+	pthread_mutex_unlock(&(qh->lock));
+    } 
+    qb[bucket_cnt++] = val1;
+    qb[bucket_cnt++] = val2;
+    
+    if (bucket_cnt == bucket_stop) {
+
+	// This bucket is done
+	pthread_mutex_lock(&(qh->lock));
+	uint32_t bucket_index = (bucket_cnt-1)/TAINTBUCKETENTRIES;
+	if (bucket_index == qh->write_index) {
+	    // Mark this and any following emptied buckets as writable
+	    qh->write_index = (qh->write_index+1)%TAINTBUCKETS;
+	    while (bucket_filled[qh->write_index]) {
+		bucket_filled[qh->write_index] = 0;
+		qh->write_index = (qh->write_index+1)%TAINTBUCKETS;
+	    }
+	    pthread_cond_broadcast(&(qh->empty));
+	} else {
+	    bucket_filled[bucket_index] = 1;
+	}
+	pthread_mutex_unlock(&(qh->lock));
+    }
+}
+
 // Pushes the bucket even if it is half-full - append sentinel to show this
 static void inline bucket_term (struct taintq_hdr* qh, uint32_t*& qb, int qfd, uint32_t& bucket_cnt, uint32_t& bucket_stop)
 {
@@ -350,6 +397,7 @@ static void bucket_complete_write (struct taintq_hdr* qh, uint32_t*& qb, uint32_
 }
 
 #define PUT_QVALUEB(val,q,qb,qfd,bc,bs) bucket_push (val,q,qb,qfd,bc,bs);
+#define PUT_QVALUE2(val1,val2,q,qb,bc,bs) bucket_push2 (val1,val2,q,qb,bc,bs);
 #define GET_QVALUEB(val,q,qb,qfd,bc,bs) bucket_pull (val,q,qb,qfd,bc,bs);
 
 #define DOWN_QSEM(qh) sem_wait(&(qh)->epoch_sem);
@@ -792,8 +840,7 @@ static void map_iter_par (taint_t value, uint32_t output_token, taint_t* stack, 
     pset.erase(0);
     for (auto iter2 = pset.begin(); iter2 != pset.end(); iter2++) {
 	if (*iter2 < 0xc0000000 && !start_flag) {
-	    PUT_QVALUEB (output_token,outputq_hdr,outputq_buf,oqfd, bucket_cnt, bucket_stop);
-	    PUT_QVALUEB (*iter2,outputq_hdr,outputq_buf,oqfd,bucket_cnt, bucket_stop);
+	    PUT_QVALUE2 (output_token,*iter2,outputq_hdr,outputq_buf,bucket_cnt, bucket_stop);
 #ifdef STATS
 	    lvalues_sent += 2;
 #endif
@@ -965,8 +1012,7 @@ struct output_par_data {
     uint32_t                 output_token;
     char*                    plog;
     char*                    outstop;
-//    unordered_set<uint32_t>* plive_set;
-    bitmap*                 plive_set;
+    bitmap*                  plive_set;
     stacktype*               stack;
     uint32_t**               resolvedptr;
     uint32_t**               resolvedstop;
@@ -990,7 +1036,6 @@ do_outputs_seq (void* pdata)
     uint32_t  output_token = opdata->output_token; 
     char*     plog = opdata->plog;
     char*     outstop = opdata->outstop;
-//    unordered_set<uint32_t>* plive_set = opdata->plive_set;
     bitmap *plive_set= opdata->plive_set;
 
 
@@ -1024,8 +1069,7 @@ do_outputs_seq (void* pdata)
 #endif
 		    if (value < 0xc0000000 && !start_flag) {
 			if (plive_set->test(value)) {
-			    PUT_QVALUEB (output_token,outputq_hdr,outputq_buf,oqfd,wbucket_cnt, wbucket_stop);
-			    PUT_QVALUEB (value,outputq_hdr,outputq_buf,oqfd, wbucket_cnt, wbucket_stop);
+			    PUT_QVALUE2 (output_token,value,outputq_hdr,outputq_buf,wbucket_cnt, wbucket_stop);
 #ifdef STATS
 			    lvalues_sent += 2;
 #endif
@@ -1136,8 +1180,7 @@ do_outputs_stream (void* pdata)
 		    ldirects++;
 #endif
 		    if (value < 0xc0000000 && !start_flag) {
-			PUT_QVALUEB (output_token,outputq_hdr,outputq_buf,oqfd,wbucket_cnt, wbucket_stop);
-			PUT_QVALUEB (value,outputq_hdr,outputq_buf,oqfd, wbucket_cnt, wbucket_stop);
+			PUT_QVALUE2 (output_token,value,outputq_hdr,outputq_buf,wbucket_cnt, wbucket_stop);
 #ifdef STATS
 			lvalues_sent += 2;
 #endif
@@ -1362,8 +1405,7 @@ do_addresses (void* pdata)
 		lpassthrus++;
 #endif
 		// Not in this epoch - so pass through to next
-		PUT_QVALUEB(otoken+output_token,outputq_hdr,outputq_buf,oqfd,wbucket_cnt,wbucket_stop);
-		PUT_QVALUEB(value,outputq_hdr,outputq_buf,oqfd,wbucket_cnt,wbucket_stop);
+		PUT_QVALUE2(otoken+output_token,value,outputq_hdr,outputq_buf,wbucket_cnt,wbucket_stop);
 #ifdef STATS
 		lvalues_sent += 2;
 #endif
@@ -1391,8 +1433,7 @@ do_addresses (void* pdata)
 		    lunmodified++;
 #endif
 		    // Not in this epoch - so pass through to next
-		    PUT_QVALUEB(otoken+output_token,outputq_hdr,outputq_buf,oqfd,wbucket_cnt,wbucket_stop);
-		    PUT_QVALUEB(iter->second,outputq_hdr,outputq_buf,oqfd,wbucket_cnt,wbucket_stop);
+		    PUT_QVALUE2(otoken+output_token,iter->second,outputq_hdr,outputq_buf,wbucket_cnt,wbucket_stop);
 #ifdef STATS
 		    lvalues_sent += 2;
 #endif
@@ -2746,17 +2787,15 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	GET_QVALUEB(val, outputq_hdr, outputq_buf, oqfd, rbucket_cnt, rbucket_stop);
 #ifdef STATS
 	gettimeofday(&live_first_byte_tv, NULL);
+#endif
 	int cnt = bucket_wait_term(outputq_hdr, outputq_buf);
+
+#ifdef STATS
 	gettimeofday(&live_insert_start_tv, NULL);
+#endif
 	for (int i = 0; i < cnt; i++) {
 	    live_set.set(outputq_buf[i]);
 	}
-#else
-	while (val != TERM_VAL) {
-	    live_set.set(val);
-	    GET_QVALUEB(val, outputq_hdr, outputq_buf, oqfd, rbucket_cnt, rbucket_stop);
-	} 
-#endif
 
 #ifdef STATS
 	gettimeofday(&live_receive_end_tv, NULL);
@@ -2964,6 +3003,52 @@ void send_stream (int s, struct taintq_hdr* qh, uint32_t* qb)
     }
 }
 
+void send_stream_compress (int s, struct taintq_hdr* qh, uint32_t* qb)
+{
+    const uint32_t outentries = 4096;
+    uint32_t outbuf[outentries];
+    uint32_t outndx = 0;
+    uint32_t bytes_sent = 0;
+
+    // Wait until bytes are ready to send
+    u_long cnt = bucket_wait_term (qh, qb);
+    if (cnt) {
+	// Do run length encoding
+	uint32_t last = qb[0];
+	outbuf[outndx++] = last;
+	uint32_t run_length = 1;
+	for (uint32_t i = 1; i < cnt; i++) {
+	    if (qb[i] != last+1) {
+		outbuf[outndx++] = run_length;
+		if (outndx == outentries) {
+		    long rc = safe_write (s, outbuf, sizeof(outbuf));
+		    if (rc != sizeof(outbuf)) {
+			fprintf (stderr, "Compressed send returns %ld, errno=%d\n", rc, errno);
+			return;
+		    }
+		    bytes_sent += sizeof(outbuf);
+		    outndx = 0;
+		}
+		outbuf[outndx++] = qb[i];
+		run_length = 1;
+	    } else {
+		run_length++;
+	    }
+	    last = qb[i];
+	}
+	outbuf[outndx++] = run_length;
+	if (outndx == outentries) {
+	    assert (safe_write (s, outbuf, sizeof(outbuf)) == sizeof(outbuf));
+	    bytes_sent += sizeof(outbuf);
+	    outndx = 0;
+	}
+    }
+    outbuf[outndx++] = 0;
+    assert (safe_write (s, outbuf, sizeof(outbuf)) == sizeof(outbuf));
+    bytes_sent += sizeof(outbuf);
+    printf ("Bytes sent %u queue size %lu\n", bytes_sent, cnt*sizeof(uint32_t));
+}
+    
 void recv_stream (int s, struct taintq_hdr* qh, uint32_t* qb)
 {
     // Get data and put on the inputq
@@ -2994,6 +3079,34 @@ void recv_stream (int s, struct taintq_hdr* qh, uint32_t* qb)
     }
 }
 
+void recv_stream_compress (int s, struct taintq_hdr* qh, uint32_t* qb)
+{
+    const uint32_t outentries = 4096;
+    uint32_t outbuf[outentries];
+    uint32_t ndx = 0;
+
+    while (1) {
+
+	long rc = safe_read (s, outbuf, sizeof(outbuf));
+	if (rc != sizeof(outbuf)) {
+	    fprintf (stderr, "Compressed recv returns %ld, errno=%d\n", rc, errno);
+	    return;
+	}
+	for (uint32_t i = 0; i < outentries; i += 2) {
+	    if (outbuf[i] == 0) {
+		bucket_complete_write (qh, qb, ndx);
+		return; // Last entry - we are done
+	    }
+
+	    uint32_t val = outbuf[i];
+	    uint32_t len = outbuf[i+1];
+	    for (uint32_t j = 0; j < len; j++) {
+		qb[ndx++] = val++;
+	    }
+	}
+    }
+}
+
 int recv_input_queue (struct recvdata* data)
 {
     int s = connect_input_queue (data);
@@ -3004,7 +3117,11 @@ int recv_input_queue (struct recvdata* data)
 	    recv_stream (s, inputq_hdr, inputq_buf);
 	    DOWN_QSEM(inputq_hdr);
 	}
-	send_stream (s, inputq_hdr, inputq_buf); // First we send filters downstream	
+	if (data->compress) {
+	    send_stream_compress (s, inputq_hdr, inputq_buf); // First we send filters downstream	
+	} else {
+	    send_stream (s, inputq_hdr, inputq_buf);
+	}
 	shutdown (s, SHUT_WR);
 	inputq_hdr->read_index = inputq_hdr->write_index = 0;
 	UP_QSEM(inputq_hdr);
@@ -3027,7 +3144,11 @@ int send_output_queue (struct senddata* data)
 	   outputq_hdr->read_index = outputq_hdr->write_index = 0;
 	   UP_QSEM(outputq_hdr);
        }
-       recv_stream (s, outputq_hdr, outputq_buf); // First we read data from upstream
+       if (data->compress) {
+	   recv_stream_compress (s, outputq_hdr, outputq_buf); // First we read data from upstream
+       } else {
+	   recv_stream (s, outputq_hdr, outputq_buf); // First we read data from upstream
+       }
        DOWN_QSEM(outputq_hdr);
    }
 
@@ -3054,6 +3175,7 @@ int main (int argc, char* argv[])
     struct recvdata rd;
     bool do_sequential = false;
     int do_preprune = PREPRUNE_NONE;
+    bool do_compress = false;
 
     if (argc < 3) format();
 
@@ -3102,6 +3224,8 @@ int main (int argc, char* argv[])
 	    input_host = true;
 	} else if (!strcmp (argv[i], "-seq")) {
 	    do_sequential = true;
+	} else if (!strcmp (argv[i], "-compress")) {
+	    do_compress = true;
 	} else if (!strcmp (argv[i], "-ppl")) {
 	    do_preprune = PREPRUNE_LOCAL;
 	} else if (!strcmp (argv[i], "-ppg")) {
@@ -3136,6 +3260,7 @@ int main (int argc, char* argv[])
 	sd.port = STREAM_PORT;
 	sd.do_sequential = do_sequential;
 	sd.do_preprune_global = (do_preprune == PREPRUNE_GLOBAL);
+	sd.compress = do_compress;
 	return (send_output_queue (&sd));
     }
 
@@ -3163,6 +3288,7 @@ int main (int argc, char* argv[])
 	rd.port = STREAM_PORT;
 	rd.do_sequential = do_sequential;
 	rd.do_preprune_global = (do_preprune == PREPRUNE_GLOBAL);
+	rd.compress = do_compress;
 	return recv_input_queue (&rd);
     }
 

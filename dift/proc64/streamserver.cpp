@@ -231,7 +231,6 @@ void do_dift (int s, struct epoch_hdr& ehdr)
     struct timeval tv_start;
     gettimeofday (&tv_start, NULL);
 
-    fprintf(stderr, "do_dift started \n");
     int fd = open ("/dev/spec0", O_RDWR);
     if (fd < 0) {
 	perror("open /dev/spec0");
@@ -441,7 +440,6 @@ void do_stream (int s, struct epoch_hdr& ehdr)
     struct timeval tv_start, tv_done;
     gettimeofday (&tv_start, NULL);
 
-    fprintf(stderr,"do_stream started \n");
     u_long epochs = ehdr.epochs;
     struct epoch_ctl ectl[epochs];
 
@@ -537,6 +535,9 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 		args[argcnt++] = "-seq";
 		args[argcnt++] = "-ppg";
 	    }
+	    if (ehdr.flags&NW_COMPRESS) {
+		args[argcnt++] = "-compress";
+	    }
 	    args[argcnt++] = NULL;
 	    
 	    rc = execv ("./stream", (char **) args);
@@ -567,6 +568,9 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 		args[argcnt++] = "-seq";
 		args[argcnt++] = "-ppg";
 	    }
+	    if (ehdr.flags&NW_COMPRESS) {
+		args[argcnt++] = "-compress";
+	    }
 	    args[argcnt++] = NULL;
 	    
 	    rc = execv ("./stream", (char **) args);
@@ -574,8 +578,6 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	    return;
 	}
     }
-    printf ("Starting %ld epochs\n", epochs);
-    printf ("dir %s\n", ehdr.dirname);
     for (u_long i = 0; i < epochs; i++) {
 	
 	ectl[i].spid = fork ();
@@ -711,10 +713,8 @@ void* do_request (void* arg)
 	return NULL;
     }
     if (ehdr.cmd_type == DO_DIFT) {
-	printf ("Recevied command %d, is dift\n", ehdr.cmd_type);
 	do_dift (s, ehdr);
     } else {
-	printf ("Recevied command %d, is stream\n", ehdr.cmd_type);
 	do_stream (s, ehdr);
     }
     return NULL;
