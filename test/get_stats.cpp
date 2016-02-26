@@ -57,8 +57,6 @@ int main(int argc, char* argv[]) {
     sprintf (filename, "%s", argv[1]);
     sprintf (partsfile, "%s", argv[2]);
 
-    printf ("filename %s partsfile %s\n", filename, partsfile);
-
     file = fopen (filename, "r");
     if (file == NULL) { 
 	fprintf (stderr, "unable to open file %s, errno %d\n", filename, errno);

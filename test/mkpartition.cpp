@@ -8,6 +8,8 @@
 #include <assert.h>
 #include <dirent.h>
 #include <cstdint>
+#include <math.h>
+#include <limits>
 
 #include "parseklib.h"
 #include <map>
@@ -34,9 +36,9 @@ struct extra_data {
 };
 
 struct ckpt_data {
-	u_long proc_count;
-	unsigned long long  rg_id;
-	int    clock;
+    u_long proc_count;
+    unsigned long long  rg_id;
+    int    clock;
 };
 
 struct ckpt_proc_data {
@@ -143,8 +145,27 @@ void print_utimings (struct replay_timing* timings, struct extra_data* edata, in
 
 }
 
+//model created by correlation analysis
+inline static double estimate_gap(struct replay_timing* timings, struct extra_data* edata, int i, int j)
+{ 
+    double utime = edata[j].dtiming - edata[i].dtiming;
+//    int taint_in = edata[j].taint_in - edata[i].taint_in;
+    u_long taint_out = edata[j].taint_out - edata[i].taint_out; 
+    u_long cache_misses = timings[j].cache_misses - timings[i].cache_misses; 
+
+//    int rtn_val = (261 * utime) - (0.00121 * taint_in) + ( 0.000932 * taint_out) + (.531 * cache_misses) ;
+//    fprintf(stderr, "\t %lf %lu %lu\n", utime, taint_out, cache_misses);
+    int rtn_val = (220 * utime) + ( 0.000241 * taint_out) + (.594 * cache_misses) ;
+
+    return rtn_val;
+
+}
+
 void print_timing (struct replay_timing* timings, struct extra_data* edata, int start, int end, char* fork_flags)
 { 
+//    double gap = estimate_gap(timings, edata, start, end);
+//    fprintf(stderr,"pt:s %d, i %d, gap %lf, ss %d fs %d\n",start, end, gap, timings[start].syscall, timings[end].syscall);	
+
     printf ("%5d k %6lu k %6lu ", timings[start].pid, edata[start].start_clock, edata[end].start_clock);
 
     if (filter_syscall > 0) {
@@ -187,7 +208,7 @@ static int can_attach (map<u_int, short> *syscalls)
     bool attach = true;
     for (auto iter = syscalls->begin(); iter != syscalls->end(); ++iter){ 
 	auto val = iter->second;
-	if (val == 192 || val == 91 || val == 120 || val == -1 || val == 174){
+	if (val == 192 || val == 91 || val == 120 || val == -1 || val == 174 || val == 125){
 	    attach = false;
 	}	
     }
@@ -206,22 +227,6 @@ static int cnt_interval (struct extra_data* edata, int start, int end)
     }
     return last_aindex - edata[start].aindex;//
     
-
-}
-
-//model created by correlation analysis
-inline static double estimate_gap(struct replay_timing* timings, struct extra_data* edata, int i, int j)
-{ 
-    double utime = edata[j].dtiming - edata[i].dtiming;
-//    int taint_in = edata[j].taint_in - edata[i].taint_in;
-    u_long taint_out = edata[j].taint_out - edata[i].taint_out; 
-    u_long cache_misses = timings[j].cache_misses - timings[i].cache_misses; 
-
-//    int rtn_val = (261 * utime) - (0.00121 * taint_in) + ( 0.000932 * taint_out) + (.531 * cache_misses) ;
-//    fprintf(stderr, "\t %lf %lu %lu\n", utime, taint_out, cache_misses);
-    int rtn_val = (220 * utime) + ( 0.000241 * taint_out) + (.594 * cache_misses) ;
-
-    return rtn_val;
 
 }
 
@@ -248,7 +253,6 @@ int gen_timings (struct replay_timing* timings,
     }
 
     double total_time = estimate_gap(timings, edata, start, end);
-//    fprintf(stderr,"2:s %d, i %d tt %lf\n",start, end,total_time);
 //    double total_time = edata[end].dtiming - edata[start].dtiming;
 
     // find the largest gap
@@ -271,9 +275,8 @@ int gen_timings (struct replay_timing* timings,
 	}
     }
     double gap = estimate_gap(timings, edata, gap_start, gap_end);
-
+//    fprintf(stderr,"gt: s %d, i %d, parts %d tt %lf, gap %lf, gs %lu, ge %lu\n",start, end, partitions, total_time, gap, edata[gap_start].start_clock, edata[gap_end].start_clock);
     if (details) {
-//	printf ("Biggest gap from %d to %d is %.3f\n", gap_start, gap_end, edata[gap_end].dtiming - edata[gap_start].dtiming);
 	printf ("Biggest gap from %d to %d is %.3f\n", gap_start, gap_end, gap);
     }
     if (partitions > 2 && biggest_gap >= total_time/partitions) {
@@ -295,7 +298,6 @@ int gen_timings (struct replay_timing* timings,
 		printf ("Interval is %d\n", intvl);
 	    }
 	} 
-//	total_time -= (edata[gap_end].dtiming - edata[gap_start].dtiming);
 	total_time -= gap;
 	partitions -= split;
 	if (gap_start == start) {
@@ -306,9 +308,10 @@ int gen_timings (struct replay_timing* timings,
 	    }
 	    return gen_timings (timings, edata, gap_end, end, partitions, fork_flags);
 	}
-//here
-//	new_part = 0.5 + (partitions * (edata[gap_start].dtiming - edata[start].dtiming)) / total_time;
-	new_part = 0.5 + (partitions * gap) / total_time;
+
+	double front_gap = estimate_gap(timings, edata, start, gap_start);
+
+	new_part = 0.5 + (partitions * front_gap) / total_time;
 	if (details) {
 	    printf ("gap - new part %d\n", new_part);
 	}
@@ -339,6 +342,8 @@ int gen_timings (struct replay_timing* timings,
 	for (i = start+1; i < end; i++) {
 	    if (can_attach(edata[i].rpg_syscalls)) {
 		double gap = estimate_gap(timings, edata, start, i);
+
+
 //		if (edata[i].dtiming-edata[start].dtiming > goal || cnt_interval(edata, i, end) == partitions-1) {
 		if (gap > goal || cnt_interval(edata, i, end) == partitions-1) {	
 		    /*
@@ -351,21 +356,24 @@ int gen_timings (struct replay_timing* timings,
 		     * I opt for the 1st, but we should probably look into it more. 
 		     */
 
-		    double act_gap; 
+		    double act_gap = numeric_limits<double>::max(); 
 		    int new_i = i - 1; //start one behind, go until you can attach. stop if you went too far
 		    while (new_i > start + 1 && !can_attach(edata[new_i].rpg_syscalls)) { 
 			new_i --;			
 		    }
 
 		    if (new_i > start + 1) {
-			i = new_i;
-			act_gap = estimate_gap(timings, edata, start, i); 
+			act_gap = estimate_gap(timings, edata, start, new_i); 
 		    }
 		    else {
 			act_gap = gap;
 		    }
 
-		    (void) act_gap;
+		    //if act_gap is closer to the goal than gap:
+//		    if(pow(goal - act_gap, 2) < pow(goal - gap, 2)) { 
+//			i = new_i; 
+//		    }
+		    (void)act_gap;
 //		    fprintf(stderr,"2:s %d, i %d tt %lf, part %d, goal %lf, gap %lf, act_gap %lf\n",start, i,total_time, partitions, goal, gap, act_gap);	
 
 		    print_timing (timings, edata,  start, i, fork_flags);
