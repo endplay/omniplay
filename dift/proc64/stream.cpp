@@ -373,7 +373,10 @@ static u_long bucket_wait_term (struct taintq_hdr* qh, uint32_t*& qb)
     }
     pthread_mutex_unlock(&(qh->lock));
     u_long ndx = (qh->write_index-1)*TAINTBUCKETENTRIES;
-    while (QSTOP(qb[ndx])) ndx -= TAINTBUCKETENTRIES;
+    while (QSTOP(qb[ndx])) {
+	if (ndx == 0) return 0;
+	ndx -= TAINTBUCKETENTRIES;
+    }
     do {
 	ndx++;
     } while (!QSTOP(qb[ndx]));
