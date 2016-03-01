@@ -124,7 +124,8 @@ int fetch_results (char* top_dir, struct epoch_ctl ectl)
 
 void format ()
 {
-    fprintf (stderr, "format: streamctl <epoch description file> <host config file> [-w] [-s] [-c] [-v dest_dir cmp_dir] [-stats] [-seq/-seqpp]\n");
+    fprintf (stderr, "format: streamctl <epoch description file> <host config file> [-w] [-s] [-c] [-lowmem]\n");
+    fprintf (stderr, "                  [-filter_inet] [-v dest_dir cmp_dir] [-stats] [-seq/-seqpp]\n");
     exit (0);
 }
 
@@ -132,7 +133,7 @@ int main (int argc, char* argv[])
 {
     int rc;
     char dirname[80];
-    int wait_for_response = 0, validate = 0, get_stats = 0, sync_files = 0, nw_compress = 0;
+    int wait_for_response = 0, validate = 0, get_stats = 0, sync_files = 0, nw_compress = 0, low_memory = 0, filter_inet = 0;
     char* dest_dir, *cmp_dir;
     struct vector<struct replay_path> log_files;
     struct vector<struct cache_info> cache_files;
@@ -154,6 +155,10 @@ int main (int argc, char* argv[])
 	    sync_files = 1;
 	} else if (!strcmp (argv[i], "-c")) {
 	    nw_compress = 1;
+	} else if (!strcmp (argv[i], "-lowmem")) {
+	    low_memory = 1;
+	} else if (!strcmp (argv[i], "-filter_inet")) {
+	    filter_inet = 1;
 	} else if (!strcmp (argv[i], "-stats")) {
 	    get_stats = 1;
 	} else if (!strcmp (argv[i], "-v")) {
@@ -208,6 +213,7 @@ int main (int argc, char* argv[])
 	    struct epoch e;
 
 	    rc = sscanf (line, "%d %c %u %c %u %u %u %u\n", &e.data.start_pid, &e.data.start_level, &e.data.start_clock, &e.data.stop_level, &e.data.stop_clock, &e.data.filter_syscall, &e.data.ckpt, &e.data.fork_flags);
+	    e.data.filter_inet = filter_inet;
 	    if (rc != 8) {
 		fprintf (stderr, "Unable to parse line of epoch descrtion file: %s\n", line);
 		return -1;
@@ -357,6 +363,7 @@ int main (int argc, char* argv[])
 	if (validate) ehdr.flags |= SEND_RESULTS;
 	if (get_stats) ehdr.flags |= SEND_STATS;
 	if (nw_compress) ehdr.flags |= NW_COMPRESS;
+	if (low_memory) ehdr.flags |= LOW_MEMORY;
 	strcpy (ehdr.dirname, dirname);
 	ehdr.epochs = conf.aggregators[i]->num_epochs;
 	if (i == 0) {

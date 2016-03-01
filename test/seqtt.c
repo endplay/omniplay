@@ -85,7 +85,8 @@ int main (int argc, char* argv[])
 	if (filter_syscall) {
 	    rc = execl ("../../../pin/pin", "pin", "-pid", cpids, "-t", "../dift/obj-ia32/linkage_data.so", "-ofs", argv[2], NULL);
 	} else {
-	    rc = execl ("../../../pin/pin", "pin", "-pid", cpids, "-t", "../dift/obj-ia32/linkage_data.so", NULL);
+	    rc = execl ("../../../pin/pin", "pin", "-pid", cpids, "-t", "../dift/obj-ia32/linkage_data.so", "-i", "-f", "inetsocket", "-l", "8655850", NULL);
+	  //	    rc = execl ("../../../pin/pin", "pin", "-pid", cpids, "-t", "../dift/obj-ia32/linkage_data.so", NULL);
 	}
 	fprintf (stderr, "execl of pin tool failed, rc=%d, errno=%d\n", rc, errno);
 	return -1;

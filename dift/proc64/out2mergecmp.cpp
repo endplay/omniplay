@@ -17,7 +17,7 @@ using namespace std;
 #include "../taint_interface/taint_creation.h"
 #include "../../test/streamserver.h"
 
-//#define TARGET(x) ((x)==0||(x)==0x7e5751)
+//#define TARGET(x) ((x)==0x32cc7d)
 //#define ITARGET(x) ((x)==0||(x)==0x7e5751)
 #define ALLOW_DUPS
 

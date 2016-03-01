@@ -152,4 +152,11 @@ long try_to_exit (u_long pid);
 /* Let's the PIN tool read the clock value too */
 long pthread_shm_path (void);
 
+/* For obtaining list of open sockets */
+struct monitor_data {
+	int fd;
+	int data;
+};
+long get_open_socks (struct monitor_data __user* entries, int num_entries);
+
 #endif

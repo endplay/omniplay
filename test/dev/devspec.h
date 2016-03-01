@@ -72,6 +72,11 @@ struct filemap_entry_data {
 	int num_entries;
 };
 
+struct open_sockets_data {
+	void __user* entries;
+	int num_entries;
+};
+
 struct get_record_pid_data {
 	pid_t nonrecordPid;
 };
@@ -112,5 +117,6 @@ struct set_pin_address_data {
 #define SPECI_TRY_TO_EXIT _IOR('u', 20, pid_t)
 #define SPECI_GET_REPLAY_PID _IOR('u', 21, struct get_replay_pid_data)
 #define SPECI_MAP_CLOCK _IO('u',22)
+#define SPECI_GET_OPEN_SOCKETS _IOR('u', 23, struct open_sockets_data)
 
 #endif

@@ -120,6 +120,7 @@ int                 iqfd = -1;
 u_char              parallelize = 1;
 bool                start_flag = false;
 bool                finish_flag = false;
+bool                low_memory = false;
 
 #ifdef DEBUG
 FILE* debugfile;
@@ -383,11 +384,7 @@ static void bucket_complete_write (struct taintq_hdr* qh, uint32_t*& qb, uint32_
 {
     pthread_mutex_lock(&(qh->lock));
     qb[bucket_cnt] = TERM_VAL;
-    if (bucket_cnt%TAINTBUCKETENTRIES) {
-	qh->write_index = bucket_cnt/TAINTBUCKETENTRIES + 1;
-    } else {
-	qh->write_index = bucket_cnt/TAINTBUCKETENTRIES + 2;
-    }
+    qh->write_index = bucket_cnt/TAINTBUCKETENTRIES + 1;
     qb[qh->write_index*TAINTBUCKETENTRIES-1] = TERM_VAL; // For network processing
     pthread_cond_broadcast(&(qh->empty));
     pthread_mutex_unlock(&(qh->lock));
@@ -1567,6 +1564,258 @@ void process_addresses (uint32_t output_token, unordered_map<taint_t,taint_t>& a
 #endif
 }
 
+struct address_binsearch_par_data {
+    pthread_t                       tid;
+    uint32_t                        output_token;
+    struct taint_entry*             paddresses;
+    u_long                          aentries;
+    stacktype*                      stack;
+    uint32_t**                      resolvedptr;
+    uint32_t**                      resolvedstop;
+#ifdef STATS
+    u_long                          lvalues_rcvd;
+    u_long                          latokens;
+    u_long                          lpassthrus;
+    u_long                          lvalues_sent;
+    u_long                          lunmodified;
+    u_long                          laresolved;
+    u_long                          laindirects;
+    u_long                          lmerges;
+    struct timeval                  tv_start;
+    struct timeval                  tv_end;
+#endif
+};
+
+static inline taint_t* binsearch (struct taint_entry* paddresses, u_long max, taint_t target)
+{
+    u_long min = 0;
+
+    while (max > min) {
+	u_long mid = (max+min)/2;
+	if (paddresses[mid].p1 < target) {
+	    min = mid + 1;
+	} else if (paddresses[mid].p1 > target) {
+	    max = mid;
+	} else {
+	    return &paddresses[mid].p2;
+	}
+    }
+
+    return NULL;
+}
+
+static void* 
+do_addresses_binsearch (void* pdata)
+{
+    uint32_t otoken, value;
+    uint32_t rbucket_cnt = 0, rbucket_stop = 0, wbucket_cnt = 0, wbucket_stop = 0;
+    
+    // Unpack arguments
+    struct address_binsearch_par_data* apdata = (struct address_binsearch_par_data *) pdata;
+    uint32_t  output_token = apdata->output_token;
+    struct taint_entry* paddresses = apdata->paddresses;
+    u_long aentries = apdata->aentries;
+    stacktype* stack = apdata->stack;
+    uint32_t*& resolvedptr = *apdata->resolvedptr;
+    uint32_t*& resolvedstop = *apdata->resolvedstop;
+
+#ifdef STATS
+    u_long lvalues_rcvd = 0, latokens = 0, lpassthrus = 0, lvalues_sent = 0, lunmodified = 0, laresolved = 0, laindirects = 0, lmerges = 0;
+    gettimeofday(&apdata->tv_start, NULL);
+#endif
+
+    // Now, process input queue of later epoch outputs
+    while (1) {
+	GET_QVALUEB(otoken, inputq_hdr, inputq_buf, iqfd, rbucket_cnt, rbucket_stop);
+	if (otoken == TERM_VAL) break;
+	GET_QVALUEB(value, inputq_hdr, inputq_buf, iqfd, rbucket_cnt, rbucket_stop);
+#ifdef STATS
+	latokens++;
+	lvalues_rcvd += 2;
+#endif
+#ifdef DEBUG
+	if (DEBUG(otoken+output_token)||DEBUG(otoken)||DEBUG(value)) {
+	    fprintf (debugfile, "otoken %x(%x/%x) to value %lx\n", otoken+output_token, otoken, output_token, (long) value);
+	}
+#endif
+	taint_t* result = binsearch (paddresses, aentries, value);
+	if (result == NULL) {
+#ifdef DEBUG
+	    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+		fprintf (debugfile, "otoken %x(%x/%x) not found in map\n", otoken+output_token, otoken, output_token);
+	    }
+#endif
+	    if (!start_flag) {
+#ifdef STATS
+		lpassthrus++;
+#endif
+		// Not in this epoch - so pass through to next
+		PUT_QVALUE2(otoken+output_token,value,outputq_hdr,outputq_buf,wbucket_cnt,wbucket_stop);
+#ifdef STATS
+		lvalues_sent += 2;
+#endif
+#ifdef DEBUG
+		if (DEBUG(otoken+output_token) || DEBUG(otoken)) {
+		    fprintf (debugfile, "output %x(%x/%x) pass through value %lx\n", otoken+output_token, otoken, output_token, 
+			     (long) value);
+		}
+#endif
+	    }
+	} else {
+#ifdef DEBUG
+	    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+		fprintf (debugfile, "otoken %x(%x/%x) found in map: %x\n", otoken+output_token, otoken, output_token, *result);
+	    }
+#endif
+	    if (*result == 0xffffffff) {
+		fprintf (stderr, "Bogus address in map - value = %x\n", value);
+		assert (0);
+	    }
+	    if (*result < 0xc0000000 && !start_flag) {
+		if (*result) {
+#ifdef STATS
+		    lunmodified++;
+#endif
+		    // Not in this epoch - so pass through to next
+		    PUT_QVALUE2(otoken+output_token,*result,outputq_hdr,outputq_buf,wbucket_cnt,wbucket_stop);
+#ifdef STATS
+		    lvalues_sent += 2;
+#endif
+#ifdef DEBUG
+		    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+			fprintf (debugfile, "output %x to unresolved value %lx via %lx\n", otoken+output_token, (long) *result, (long) value);
+		    }
+#endif
+#ifdef PARANOID
+		} else {
+		    fprintf (stderr, "value to cleared value\n");
+#endif
+		}
+	    } else if (*result < 0xe0000001) {
+		// Maps to input
+#ifdef STATS
+		laresolved++;
+#endif
+		if (start_flag) {
+#ifdef DEBUG
+		    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+			fprintf (debugfile, "output %x to resolved value %lx via %lx\n", otoken+output_token, (long) *result, (long) value);
+		    }
+#endif
+		    PRINT_RVALUE2(otoken+output_token,*result,resolvedptr,resolvedstop);
+		} else {
+#ifdef DEBUG
+		    if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+			fprintf (debugfile, "output %x to resolved value %lx via %lx\n", 
+				 otoken+output_token, (long) *result-0xc0000000, (long) value);
+		    }
+#endif
+		    PRINT_RVALUE2(otoken+output_token,*result-0xc0000000,resolvedptr,resolvedstop);
+		}
+	    } else {
+		// Maps to merge
+#ifdef STATS
+		laindirects++;
+#endif
+#ifdef DEBUG
+		if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
+		    fprintf (debugfile, "output %x to merge chain %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
+		}
+#endif
+#ifdef PARANOID
+		struct taint_entry* pentry = &merge_log[iter->second-0xe0000001];
+		if (pentry->p1 == 0 && pentry->p2 == 0) {
+		    fprintf (stderr, "NULL merge entry\n");
+		}
+#endif
+#ifdef STATS
+		map_iter_par (*result, otoken+output_token, *stack, wbucket_cnt, wbucket_stop, resolvedptr, resolvedstop, lvalues_sent, lmerges);
+#else
+		map_iter_par (*result, otoken+output_token, *stack, wbucket_cnt, wbucket_stop, resolvedptr, resolvedstop);
+#endif
+	    }
+	}
+    }
+    
+    bucket_term(outputq_hdr,outputq_buf,oqfd,wbucket_cnt,wbucket_stop); // Flush partial bucket
+    flush_outrbuf2 (resolvedptr, resolvedstop); // Finish file for this thread
+
+#ifdef STATS
+    gettimeofday(&apdata->tv_end, NULL);
+    apdata->lvalues_rcvd = lvalues_rcvd;
+    apdata->latokens = latokens;
+    apdata->lpassthrus = lpassthrus;
+    apdata->lvalues_sent = lvalues_sent;
+    apdata->lunmodified = lunmodified;
+    apdata->laresolved = laresolved;
+    apdata->laindirects = laindirects;
+    apdata->lmerges = lmerges;
+#endif
+    return NULL;
+}
+
+void process_addresses_binsearch (uint32_t output_token, taint_t* ts_log, u_long adatasize)
+{
+    struct address_binsearch_par_data address_data[parallelize];
+    int i;
+
+#ifdef STATS
+    gettimeofday(&address_start_tv, NULL);
+    send_idle = recv_idle = 0;
+    merges = 0;
+#endif
+
+    for (i = 0; i < parallelize-1; i++) {
+	address_data[i].output_token = output_token;
+	address_data[i].paddresses = (struct taint_entry *) ts_log;
+	address_data[i].aentries = adatasize/sizeof(struct taint_entry);
+	address_data[i].stack = &astacks[i];
+	address_data[i].resolvedptr = &outptrs[i];
+	address_data[i].resolvedstop = &outstops[i];
+	long rc = pthread_create (&address_data[i].tid, NULL, do_addresses_binsearch, &address_data[i]);
+	if (rc < 0) {
+	    fprintf (stderr, "Cannot create address thread, rc=%ld\n", rc);
+	    assert (0);
+	}
+    }
+
+    address_data[i].output_token = output_token;
+    address_data[i].paddresses = (struct taint_entry *) ts_log;
+    address_data[i].aentries = adatasize/sizeof(struct taint_entry);
+    address_data[i].stack = &astacks[i];
+    address_data[i].resolvedptr = &outptrs[i];
+    address_data[i].resolvedstop = &outstops[i];
+    do_addresses_binsearch (&address_data[i]);
+
+    for (i = 0; i < parallelize-1; i++) {
+	long rc = pthread_join(address_data[i].tid, NULL);
+	if (rc < 0) fprintf (stderr, "Cannot join address thread, rc=%ld\n", rc); 
+    }
+
+    if (!start_flag) {
+	// Put end-of-data sentinel in queue
+	uint32_t wbucket_cnt = 0, wbucket_stop = 0;
+	PUT_QVALUEB(TERM_VAL,outputq_hdr,outputq_buf,oqfd,wbucket_cnt,wbucket_stop);
+	bucket_term(outputq_hdr,outputq_buf,oqfd,wbucket_cnt,wbucket_stop);
+    }
+#ifdef STATS
+    gettimeofday(&address_end_tv, NULL);
+    for (i = 0; i < parallelize; i++) {
+	values_rcvd += address_data[i].lvalues_rcvd;
+	atokens += address_data[i].latokens;
+	passthrus += address_data[i].lpassthrus;
+	values_sent += address_data[i].lvalues_sent;
+	unmodified += address_data[i].lunmodified;
+	aresolved += address_data[i].laresolved;
+	aindirects += address_data[i].laindirects;
+	merges += address_data[i].lmerges;
+	u_long ms = ms_diff(address_data[i].tv_end, address_data[i].tv_start);
+	total_address_ms += ms;
+	if (ms > longest_address_ms) longest_address_ms = ms;
+    }
+#endif
+}
+
 #ifdef STATS
 static void
 print_stats (const char* dirname, u_long mdatasize, u_long odatasize, u_long idatasize, u_long adatasize)
@@ -2393,6 +2642,7 @@ static int
 preprune_local (u_long& mdatasize, char* output_log, u_long odatasize, taint_t* ts_log, u_long adatasize)
 {
     u_long mentries = mdatasize/sizeof(struct taint_entry);
+    if (mentries == 0) return 0;
 
 #ifdef STATS
     gettimeofday(&preprune_local_start_tv, NULL);
@@ -2742,7 +2992,6 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
     u_long idatasize = 0, odatasize = 0, mdatasize = 0, adatasize = 0;
     uint32_t tokens, output_token = 0;
     int outputfd, inputfd, addrsfd;
-    //unordered_set<uint32_t> live_set;
     bitmap live_set;
     unordered_map<taint_t,taint_t> address_map;
     pthread_t build_map_tid = 0;
@@ -2769,8 +3018,8 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	preprune_global (mdatasize, output_log, odatasize, ts_log, adatasize);
 	bucket_init();
     }
-	
-    if (!finish_flag) build_map_tid = spawn_map_thread (&address_map, ts_log, adatasize);
+
+    if (!low_memory && !finish_flag) build_map_tid = spawn_map_thread (&address_map, ts_log, adatasize);
 
     if (!start_flag) {
 	// Wait for preceding epoch to send list of live addresses
@@ -2823,13 +3072,10 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
     gettimeofday(&live_done_tv, NULL);
 #endif
 
-    // Wait until live set has been completely read
+    
     bucket_write_init();
 
     output_token = process_outputs (output_log, output_log + odatasize, &live_set, dirname, do_outputs_seq);
-
-
-
 
     if (!finish_flag) {
 
@@ -2837,8 +3083,10 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	gettimeofday(&index_wait_start_tv, NULL);
 #endif
 
-	rc = pthread_join(build_map_tid, NULL);
-	if (rc < 0) return rc;
+	if (!low_memory) {
+	    rc = pthread_join(build_map_tid, NULL);
+	    if (rc < 0) return rc;
+	}
 
 #ifdef STATS
 	gettimeofday(&index_wait_end_tv, NULL);
@@ -2854,7 +3102,12 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 #endif	    
 	}
 	bucket_read_init();
-	process_addresses (output_token, address_map);
+
+	if (low_memory) {
+	    process_addresses_binsearch (output_token, ts_log, adatasize);
+	} else {
+	    process_addresses (output_token, address_map);
+	}
 
     } else if (!start_flag) {
 	uint32_t write_cnt = 0, write_stop = 0;
@@ -3222,6 +3475,8 @@ int main (int argc, char* argv[])
 	    do_sequential = true;
 	} else if (!strcmp (argv[i], "-compress")) {
 	    do_compress = true;
+	} else if (!strcmp (argv[i], "-lowmem")) {
+	    low_memory = true;
 	} else if (!strcmp (argv[i], "-ppl")) {
 	    do_preprune = PREPRUNE_LOCAL;
 	} else if (!strcmp (argv[i], "-ppg")) {
