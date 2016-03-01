@@ -24,7 +24,7 @@ int main (int argc, char* argv[])
     char cache_dir[BUFFER_SIZE] = "";
 
     pid_t cpid, mpid, ppid;
-    int fd, rc, status, filter_syscall = 0;
+    int fd, rc, status, filter_syscall = 0, filter_inet = 0;
     int next_child = 0, i;
     size_t n = BUFFER_SIZE;
     FILE* fp; 
@@ -44,8 +44,9 @@ int main (int argc, char* argv[])
 	    if(!strncmp(argv[index],"--cache_dir",BUFFER_SIZE)) {
 		strncpy(cache_dir,argv[index + 1],BUFFER_SIZE); 
 		index++;
-	    }	   
-	    else { 
+	    } else if (!strncmp(argv[index],"-filter_inet",BUFFER_SIZE)) {
+		filter_inet = 1;
+	    } else { 
 		filter_syscall = atoi(argv[index]);
 	    }
 	    index++;
@@ -84,9 +85,10 @@ int main (int argc, char* argv[])
 	sprintf (cpids, "%d", cpid);
 	if (filter_syscall) {
 	    rc = execl ("../../../pin/pin", "pin", "-pid", cpids, "-t", "../dift/obj-ia32/linkage_data.so", "-ofs", argv[2], NULL);
+	} else if (filter_inet) {
+	    rc = execl ("../../../pin/pin", "pin", "-pid", cpids, "-t", "../dift/obj-ia32/linkage_data.so", "-i", "-f", "inetsocket", NULL);
 	} else {
-	    rc = execl ("../../../pin/pin", "pin", "-pid", cpids, "-t", "../dift/obj-ia32/linkage_data.so", "-i", "-f", "inetsocket", "-l", "8655850", NULL);
-	  //	    rc = execl ("../../../pin/pin", "pin", "-pid", cpids, "-t", "../dift/obj-ia32/linkage_data.so", NULL);
+	    rc = execl ("../../../pin/pin", "pin", "-pid", cpids, "-t", "../dift/obj-ia32/linkage_data.so", NULL);
 	}
 	fprintf (stderr, "execl of pin tool failed, rc=%d, errno=%d\n", rc, errno);
 	return -1;
