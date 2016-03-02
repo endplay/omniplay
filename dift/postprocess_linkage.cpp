@@ -1646,7 +1646,7 @@ int read_merge (char* group_dir, char* pid)
 	snprintf(taint_structures_filename, 256, "%s/node_nums", group_dir); //I don't know how this works w/ multiproc?
     }
 
-    outfd = open (out_filename, O_CREAT|O_WRONLY|O_TRUNC, 0644);
+    outfd = open (out_filename, O_CREAT|O_WRONLY|O_TRUNC|O_LARGEFILE, 0644);
     if (outfd < 0) {
         fprintf(stderr, "couldn't open: %s\n", out_filename);
         return outfd;

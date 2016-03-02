@@ -33,6 +33,11 @@ struct filemap_entry {
 	int num_entries;
 };
 
+struct open_socket {
+	int fd;
+	int data;
+};
+
 int devspec_init (int* fd_spec);
 int replay_fork (int fd_spec, const char** args, const char** env, char* linkpath, char* logdir, int save_mmap, int output_fd);
 int resume(int fd_spec, int attach_pin, int attach_gdb, int follow_splits, int save_mmap,
@@ -57,6 +62,7 @@ unsigned long get_env_vars (int fd_spec);
 int get_record_group_id (int fd_spec, uint64_t* rg_id);
 int get_num_filemap_entries (int fd_spec, int fd, loff_t offset, int size);
 int get_filemap(int fd_spec, int fd, loff_t offset, int size, void* entries, int num_entries);
+int get_open_sockets (int fd_spec, struct open_socket* entries, int num_entries);
 long reset_replay_ndx(int fd_spec);
 pid_t get_current_record_pid(int fd_spec, pid_t nonrecord_pid);
 long get_attach_status (int fd_spec, pid_t pid);

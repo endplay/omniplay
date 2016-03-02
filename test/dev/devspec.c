@@ -49,6 +49,7 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 	struct get_used_addr_data udata;
 	struct filemap_num_data fndata;
 	struct filemap_entry_data fedata;
+	struct open_sockets_data osdata;
 	struct get_record_pid_data recordpid_data;
 	struct set_pin_address_data pin_data;
 	struct get_replay_pid_data replay_pid_data;
@@ -270,6 +271,15 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 			return -EFAULT;
 		}
 		return get_filemap(fedata.fd, fedata.offset, fedata.size, fedata.entries, fedata.num_entries);
+	case SPECI_GET_OPEN_SOCKETS:
+		if (len != sizeof(osdata)) {
+			printk ("ioctl SPECI_GET_OPEN_SOCKETS fails, len %d\n", len);
+			return -EINVAL;
+		}
+		if (copy_from_user (&osdata, (void *) data, sizeof(osdata))) {
+			return -EFAULT;
+		}
+		return get_open_socks (osdata.entries, osdata.num_entries);
 	case SPECI_RESET_REPLAY_NDX:
 		return reset_replay_ndx();
 	case SPECI_GET_CURRENT_RECORD_PID:

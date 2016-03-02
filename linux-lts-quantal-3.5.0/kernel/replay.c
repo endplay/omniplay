@@ -76,6 +76,7 @@
 #include "../kernel/replay_graph/replayfs_filemap.h"
 #include "../kernel/replay_graph/replayfs_syscall_cache.h"
 #include "../kernel/replay_graph/replayfs_perftimer.h"
+#include "replay_monitor.h"
 
 /* For debugging failing fs operations */
 int debug_flag = 0;
@@ -727,6 +728,7 @@ struct replay_group {
 	u_long rg_fake_calls_made;  // Number of fake calls to make during this replay
 	u_long* rg_fake_calls;      // Make them at these points            
         int rg_perf_fd;             // The file descriptor for our perf api
+	struct xray_monitor* rg_open_socks; // Keeps track of open sockets for partitioned replay
 
 };
 
@@ -1822,7 +1824,7 @@ new_replay_group (struct record_group* prec_group, int follow_splits)
 	atomic_inc(&rstats.started);
 #endif
 
-
+	prg->rg_open_socks = new_xray_monitor ();
 
 	return prg;
 
@@ -1939,7 +1941,9 @@ destroy_replay_group (struct replay_group *prepg)
 	prepg->rg_rec_group->finished = 1;
 	printk ("waking up all sleepers on finished_queue for %d\n",current->pid);
 	wake_up_all(&(prepg->rg_rec_group->finished_queue));
- 
+
+	xray_monitor_destroy (prepg->rg_open_socks);
+
 	// Put record group so it can be destroyed
 	put_record_group (prepg->rg_rec_group);
 
@@ -3119,6 +3123,16 @@ long get_filemap(int fd, loff_t offset, int size, void __user* entries, int num_
 	return rc;
 }
 EXPORT_SYMBOL(get_filemap);
+
+long get_open_socks (struct monitor_data __user* entries, int num_entries)
+{
+	if (current->replay_thrd) {
+		return xray_monitor_fillbuf (current->replay_thrd->rp_group->rg_open_socks, entries, num_entries);
+	} else {
+		return -EINVAL;
+	}
+}
+EXPORT_SYMBOL (get_open_socks);
 
 // For glibc hack - allocate and return the LD_LIBRARY_PATH env variable
 static char* 
@@ -4950,7 +4964,7 @@ sys_wakeup_paused_process (pid_t pid)
 			}
 			tmp = tmp->rp_next_thread;
 			if (tmp == prt) {
-				printk ("Replay_pause: Pid %d (recpid %d): Crud! no eligible thread to run on syscall entry\n", current->pid, prt->rp_record_thread->rp_record_pid);
+				printk ("Replay_pause: Pid %d (recpid %d): Crud! no eligible thread to run on pause wakeup\n", current->pid, prt->rp_record_thread->rp_record_pid);
 				printk ("current clock value is %ld looking for %lu\n", *(prt->rp_preplay_clock), *(prt->rp_preplay_clock + 1));
 				dump_stack(); // how did we get here?
 				// cycle around again and print
@@ -5149,7 +5163,7 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 				}
 				tmp = tmp->rp_next_thread;
 				if (tmp == prt) {
-					printk ("Pid %d (recpid %d): Crud! no eligible thread to run on syscall entry\n", current->pid, prect->rp_record_pid);
+				  printk ("Pid %d (recpid %d): Crud! no eligible thread to run on syscall %d entry\n", current->pid, prect->rp_record_pid, syscall);
 					printk ("current clock value is %ld waiting for %lu\n", *(prt->rp_preplay_clock), start_clock);
 					dump_stack(); // how did we get here?
 					// cycle around again and print
@@ -5180,13 +5194,13 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 				sys_exit (0);
 			}
 			if (prg->rg_try_to_exit) {
-			    printk ("Trying to exit (signal fatal? %d) - so just proceed\n", fatal_signal_pending(current));
+			    MPRINT ("Trying to exit (signal fatal? %d) - so just proceed\n", fatal_signal_pending(current));
 			    rg_unlock (prg->rg_rec_group);
 			    sys_exit_group (0);
 			}
 			if (ret == -ERESTARTSYS) {
 				if (prg->rg_try_to_exit) {
-					printk ("Trying to exit (signal fatal? %d) - so just proceed\n", fatal_signal_pending(current));
+					MPRINT ("Trying to exit (signal fatal? %d) - so just proceed\n", fatal_signal_pending(current));
 					rg_unlock (prg->rg_rec_group);
 					sys_exit_group (0);
 				}
@@ -5372,13 +5386,13 @@ get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, stru
 				sys_exit (0);
 			}
 			if (prg->rg_try_to_exit) {
-			    printk ("Trying to exit (signal fatal? %d) - so just proceed\n", fatal_signal_pending(current));
+			    MPRINT ("Trying to exit (signal fatal? %d) - so just proceed\n", fatal_signal_pending(current));
 			    rg_unlock (prg->rg_rec_group);
 			    sys_exit_group (0);
 			}
 			if (ret == -ERESTARTSYS) {
 				if (prg->rg_try_to_exit) {
-					printk ("Trying to exit (signal fatal? %d) - so just proceed\n", fatal_signal_pending(current));
+					MPRINT ("Trying to exit (signal fatal? %d) - so just proceed\n", fatal_signal_pending(current));
 					rg_unlock (prg->rg_rec_group);
 					sys_exit_group (0);
 				}
@@ -5518,11 +5532,10 @@ record_timings (struct replay_thread* prept, short syscall)
 	if (rc < 0) printk("cannot PERF_EVENT_IOC_DISABLE!\n");
 	rc = sys_read(prepg->rg_perf_fd, &count, sizeof(__u64));	
 
-	printk("record_timings %llu\n", count);
-/*	if (rc != sizeof(__u64)) {
+	if (rc != sizeof(__u64)) {
 		printk("record_timings read %d bytes, val %llu\n", rc, count);
 	}
-*/
+
 	rc = sys_ioctl(prepg->rg_perf_fd, PERF_EVENT_IOC_RESET, 0);
 	if (rc < 0) printk("cannot PERF_EVENT_IOC_RESET!\n");
 	rc = sys_ioctl(prepg->rg_perf_fd, PERF_EVENT_IOC_ENABLE, 0);
@@ -6157,7 +6170,7 @@ sys_pthread_block (u_long clock)
 				}
 				printk ("Pid %d: blocking syscall cannot wait due to signal - try again (%d/%d)\n", current->pid, prg->rg_rec_group->rg_mismatch_flag, prg->rg_try_to_exit);
 				if (prg->rg_try_to_exit) {
-					printk ("Trying to exit (signal fatal? %d) - so just proceed\n", fatal_signal_pending(current));
+					MPRINT ("Trying to exit (signal fatal? %d) - so just proceed\n", fatal_signal_pending(current));
 					rg_unlock (prg->rg_rec_group);
 					sys_exit_group (0);
 				}
@@ -6167,7 +6180,7 @@ sys_pthread_block (u_long clock)
 			}
 			//see above, for some reason the ERESTARTSYS doesn't get called in our multi-process case
 			if (prg->rg_try_to_exit) {
-			    printk ("Trying to exit (signal fatal? %d) - so just proceed\n", fatal_signal_pending(current));
+			    MPRINT ("Trying to exit (signal fatal? %d) - so just proceed\n", fatal_signal_pending(current));
 			    rg_unlock (prg->rg_rec_group);
 			    sys_exit_group (0);
 			}
@@ -6205,7 +6218,7 @@ long try_to_exit (u_long pid)
     if (tsk) {
 	    if (tsk->replay_thrd) {
 
-   		    printk("called try_to_exit on %ld\n",pid);
+   		    MPRINT("called try_to_exit on %ld\n",pid);
 		    rpt = tsk->replay_thrd;
 		    rpt->rp_group->rg_try_to_exit = 1; 	    
 
@@ -6213,13 +6226,11 @@ long try_to_exit (u_long pid)
 		    rg_lock(rpt->rp_group->rg_rec_group);
 		    original = rpt;
 		    do {
-			printk("waking up the waitq for task %d\n", rpt->rp_replay_pid);
 			wake_up_interruptible(&(rpt->rp_waitq));
 			rpt = rpt->rp_next_thread;
 		    } while (rpt != original);
 		    rg_unlock(rpt->rp_group->rg_rec_group);
 		    
-		    printk("finished with try_to_exit %ld\n",pid);
 		    return 0;
 	    } else {
 		    printk ("try_to_exit: no replay thread for pid %ld\n", pid);
@@ -8273,6 +8284,9 @@ replay_close (int fd)
 		DPRINT ("pid %d about to close cache fd %d fd %d\n", current->pid, cache_fd, fd);
 		sys_close (cache_fd);
 	}
+	if (xray_monitor_has_fd(current->replay_thrd->rp_group->rg_open_socks, fd)) {
+		xray_monitor_remove_fd(current->replay_thrd->rp_group->rg_open_socks, fd);
+	}
 
 	return rc;
 }
@@ -10103,6 +10117,8 @@ replay_socketcall (int call, unsigned long __user *args)
 
 	switch (call) {
 	case SYS_SOCKET:
+		printk ("Socket domain %ld rc %ld\n", kargs[0], rc);
+		xray_monitor_add_fd(current->replay_thrd->rp_group->rg_open_socks, rc, kargs[0]);
 	case SYS_CONNECT:
 		if (retparams) argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct generic_socket_retvals));
 		return rc;

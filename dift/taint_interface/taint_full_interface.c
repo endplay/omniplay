@@ -2954,6 +2954,21 @@ TAINTSIGN taint_add3_dwmem2wreg_2wreg (u_long mem_loc,
 
 }
 
+TAINTSIGN taint_add2_hwregbreg_2breg (int src_reg1, int src_reg2,
+				      int dst_reg1, int dst_reg2)
+{
+    taint_t* shadow_reg_table = current_thread->shadow_reg_table;
+    taint_t merged_taints, final_merged_taint;
+
+    merged_taints = merge_taints(shadow_reg_table[src_reg1 * REG_SIZE],
+				 shadow_reg_table[src_reg1 * REG_SIZE + 1]);
+    final_merged_taint = merge_taints(merged_taints,
+				      shadow_reg_table[src_reg2 * REG_SIZE]);
+
+    shadow_reg_table[dst_reg1 * REG_SIZE] = final_merged_taint;
+    shadow_reg_table[dst_reg2 * REG_SIZE] = final_merged_taint;
+}
+
 TAINTSIGN taint_add2_2hwreg_2breg (int src_reg1, int src_reg2,
                                 int dst_reg1, int dst_reg2)
 {

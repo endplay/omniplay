@@ -12,6 +12,7 @@
 #define SYNC_LOGFILES 0x4
 #define SEND_STATS    0x8
 #define NW_COMPRESS   0x10
+#define LOW_MEMORY    0x20
 
 #define NAMELEN 256
 #define PATHLEN 512
@@ -43,7 +44,7 @@ struct epoch_hdr {
     bool     finish_flag;
     u_char   cmd_type;
     u_char   parallelize;
-    char     flags;
+    u_char   flags;
     char     dirname[NAMELEN];
     char     prev_host[NAMELEN];
     char     next_host[NAMELEN];
@@ -57,6 +58,7 @@ struct epoch_data {
     char     stop_level;
     uint32_t stop_clock;
     uint32_t filter_syscall;
+    bool     filter_inet;
     uint32_t ckpt;
     uint32_t fork_flags; //definitely needed
     uint32_t port;              // Aggregation port

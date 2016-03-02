@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
 #include <assert.h>
 #include <sys/types.h>
 #include <syscall.h>
@@ -447,7 +448,6 @@ static inline void increment_syscall_cnt (int syscall_num)
 #ifdef TAINT_DEBUG
 	fprintf (debug_f, "pid %d syscall %d global syscall cnt %lu num %d clock %ld\n", current_thread->record_pid, 
 		 current_thread->syscall_cnt, global_syscall_cnt, syscall_num, *ppthread_log_clock);
-//	fflush(debug_f);
 #endif
 #endif
     }
@@ -553,8 +553,6 @@ static inline void sys_close_stop(int rc)
 	    SYSCALL_DEBUG (stderr, "close: remove fd %d\n", fd);
         } 
 	if (monitor_has_fd(open_socks, fd)) {
-		struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, fd);
-		assert(si);
 		monitor_remove_fd(open_socks, fd);
 		SYSCALL_DEBUG (stderr, "close: remove sock fd %d\n", fd);
 	}
@@ -588,6 +586,18 @@ static inline void sys_read_stop(int rc)
             oi = (struct open_info *)monitor_get_fd_data(open_fds, ri->fd);
             read_fileno = oi->fileno;
             channel_name = oi->name;
+        } else if (monitor_has_fd(open_socks, ri->fd)) {
+            struct socket_info* si = (struct socket_info *) monitor_get_fd_data(open_socks, ri->fd);
+	    if (si) {
+		if (si->domain == AF_INET || si->domain == AF_INET6) {
+		    channel_name = (char *) "inetsocket";
+		    //fprintf (stderr, "Read inet rc %d from fd %d at clock %lu\n", rc, ri->fd, *ppthread_log_clock);
+		} else {
+		    channel_name = (char *) "recvsocket";
+		}
+	    } else {
+		fprintf (stderr, "read from socket no si, rc=%d\n", rc);
+	    }
         } else if(ri->fd == fileno(stdin)) {
             read_fileno = FILENO_STDIN;
         }
@@ -821,7 +831,6 @@ static inline void sys_writev_stop(int rc)
         } if (monitor_has_fd(open_socks, wvi->fd)) {
             struct socket_info* si;
             si = (struct socket_info *) monitor_get_fd_data(open_socks, wvi->fd);
-            assert(si);
             channel_fileno = si->fileno;
         } else {
             channel_fileno = -1;
@@ -865,6 +874,7 @@ static void sys_socket_start (struct thread_data* tdata, int domain, int type, i
     si->type = type;
     si->protocol = protocol;
     si->fileno = -1; // will be set in connect/accept/bind
+    si->ci = NULL;
 
     tdata->save_syscall_info = si;
 }
@@ -874,7 +884,6 @@ static void sys_socket_stop(int rc)
     if (rc > 0) {
         struct socket_info* si = (struct socket_info *) current_thread->save_syscall_info;
         monitor_add_fd(open_socks, rc, 0, si);
-	SYSCALL_DEBUG(stderr, "socket added fd %d to open_socks\n", rc);
         current_thread->save_syscall_info = NULL; // Giving si to the monitor
     }
 }
@@ -897,7 +906,7 @@ static void sys_connect_start(thread_data* tdata, int sockfd, struct sockaddr* a
             if (addr->sa_family == AF_UNIX) {
                 memcpy(ci->path, sun->sun_path, 108); // apparently 108 is the magic number
             } else {
-                fprintf (stderr, "unknown sa_family %d is not AF_UNIX len is %d vs %d\n", addr->sa_family, addrlen, sizeof(struct sockaddr_un));
+                //fprintf (stderr, "unknown sa_family %d is not AF_UNIX len is %d vs %d\n", addr->sa_family, addrlen, sizeof(struct sockaddr_un));
                 memcpy(ci->path, "UNK", 4);
             }
         } else if (si->domain == AF_INET) {
@@ -905,9 +914,9 @@ static void sys_connect_start(thread_data* tdata, int sockfd, struct sockaddr* a
                 struct sockaddr_in* sin = (struct sockaddr_in*) addr;
                 ci->port = htons(sin->sin_port);
                 memcpy(&ci->sin_addr, &sin->sin_addr, sizeof(struct in_addr));
-                fprintf (stderr, "connect AF_INET port %d addr %x\n", ci->port, ci->sin_addr.s_addr);
+                //fprintf (stderr, "connect AF_INET port %d addr %x\n", ci->port, ci->sin_addr.s_addr);
             } else {
-                fprintf (stderr, "unknown sa_family %d is not AF_INET len is %d vs %d\n", addr->sa_family, addrlen, sizeof(struct sockaddr_in));
+		//fprintf (stderr, "unknown sa_family %d is not AF_INET len is %d vs %d\n", addr->sa_family, addrlen, sizeof(struct sockaddr_in));
                 ci->port = 0;
                 memcpy(&ci->sin_addr, "UNK", 4);
             }
@@ -917,7 +926,7 @@ static void sys_connect_start(thread_data* tdata, int sockfd, struct sockaddr* a
                 ci->port = htons(sin6->sin6_port);
                 memcpy(&ci->sin_addr6, &sin6->sin6_addr, sizeof(struct in6_addr));
             } else {
-                fprintf (stderr, "unknown sa_family %d is not AF_INET6 len is %d vs %d\n", addr->sa_family, addrlen, sizeof(struct sockaddr_in6));
+                //fprintf (stderr, "unknown sa_family %d is not AF_INET6 len is %d vs %d\n", addr->sa_family, addrlen, sizeof(struct sockaddr_in6));
                 ci->port = 0;
                 memcpy(&ci->sin_addr6, "UNK", 4);
             }
@@ -1010,10 +1019,14 @@ static void sys_recv_stop(int rc)
         } else if (monitor_has_fd(open_socks, ri->fd)) {
             struct socket_info* si;
             si = (struct socket_info *) monitor_get_fd_data(open_socks, ri->fd);
-            assert (si);
             read_fileno = si->fileno;
             // FIXME
-            channel_name = (char *) "recvsocket";
+	    if (si->domain == AF_INET || si->domain == AF_INET6) {
+		channel_name = (char *) "inetsocket";
+		//fprintf (stderr, "Recv inet rc %d from fd %d at clock %lu\n", rc, ri->fd, *ppthread_log_clock);
+	    } else {
+		channel_name = (char *) "recvsocket";
+	    }
         }
         SYSCALL_DEBUG (stderr, "recv_stop\n");
 
@@ -1068,7 +1081,6 @@ static void sys_recvmsg_stop(int rc)
         if (monitor_has_fd(open_socks, rmi->fd)) {
             struct socket_info* si;
             si = (struct socket_info *) monitor_get_fd_data(open_socks, rmi->fd);
-            assert (si);
             read_fileno = si->fileno;
         } else {
             read_fileno = -1;
@@ -1124,7 +1136,6 @@ static void sys_sendmsg_stop(int rc)
         if (monitor_has_fd(open_socks, smi->fd)) {
             struct socket_info* si;
             si = (struct socket_info *) monitor_get_fd_data(open_socks, smi->fd);
-            assert(si);
             channel_fileno = si->fileno;
         } else {
             channel_fileno = -1;
@@ -1397,6 +1408,11 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
     if (current_thread->app_syscall != 999) current_thread->app_syscall = 0;
 
     ADDRINT ret_value = PIN_GetSyscallReturn(ctxt, std);
+    if (current_thread->sysnum == SYS_gettid) {
+	// Pin "helpfully" changes the return value to the replay tid - change it back here
+	//printf ("eax is %d changing to %d\n", PIN_GetContextReg (ctxt, LEVEL_BASE::REG_EAX), current_thread->record_pid);
+	PIN_SetContextReg (ctxt, LEVEL_BASE::REG_EAX, current_thread->record_pid);
+    }
 
     if (segment_length && *ppthread_log_clock > segment_length) {
 #ifdef TAINT_DEBUG
@@ -11224,15 +11240,10 @@ void instrument_store_string(INS ins)
 
 void instrument_load_string(INS ins)
 {
-    UINT32 opw = INS_OperandWidth(ins, 0);
-    UINT32 size = opw / 8;
-
     assert(INS_OperandIsReg(ins, 0));
     assert(INS_OperandIsMemory(ins, 1));
-    assert(size == INS_MemoryOperandSize(ins, 1));
 
     if (INS_RepPrefix(ins)) {
-        fprintf(stderr, "a rep'ed load string\n");
         INSTRUMENT_PRINT (log_f, "[WARN] a rep'ed load string\n");
         INS_InsertIfCall (ins, IPOINT_BEFORE, (AFUNPTR)returnArg,
                 IARG_FIRST_REP_ITERATION,
@@ -11321,7 +11332,6 @@ void instrument_load_string(INS ins)
                 break;
         }
     } else {
-        assert(size == INS_MemoryOperandSize(ins, 1));
         /* Ugh we don't know the address until runtime, so this is the
          * best we can do at instrumentation time. */
         switch(INS_MemoryOperandSize(ins, 0)) {
@@ -12887,6 +12897,21 @@ void instrument_div(INS ins)
         size = REG_Size(src_reg);
         // fprintf (stderr, "div: src_reg is %d(%s) size is %d\n", src_reg, REG_StringShort(src_reg).c_str(), size);
         switch (size) {
+            case 1:
+                lsb_treg = translate_reg(LEVEL_BASE::REG_AX); // Dividend
+                dst1_treg = translate_reg(LEVEL_BASE::REG_AL); // Quotient
+                dst2_treg = translate_reg(LEVEL_BASE::REG_AH); // Remainder
+                INS_InsertCall(ins, IPOINT_BEFORE,
+                                    AFUNPTR(taint_add2_hwregbreg_2breg),
+#ifdef FAST_INLINE
+                                    IARG_FAST_ANALYSIS_CALL,
+#endif
+                                    IARG_UINT32, lsb_treg,
+                                    IARG_UINT32, src_treg,
+                                    IARG_UINT32, dst1_treg,
+                                    IARG_UINT32, dst2_treg,
+                                    IARG_END);
+                break;
             case 2:
                 lsb_treg = translate_reg(LEVEL_BASE::REG_AX); // Dividend
                 dst1_treg = translate_reg(LEVEL_BASE::REG_AL); // Quotient
@@ -13250,6 +13275,17 @@ void instrument_imul(INS ins)
                 src_treg = translate_reg(src_reg);
                 assert (REG_Size(dst_reg) == REG_Size(src_reg));
                 switch (REG_Size(dst_reg)) {
+		    case 1:
+                        INS_InsertCall(ins, IPOINT_BEFORE,
+                                AFUNPTR(taint_lbreg2hwreg),
+#ifdef FAST_INLINE
+                                IARG_FAST_ANALYSIS_CALL,
+#endif
+                                IARG_UINT32, src_treg,
+                                IARG_UINT32, dst_treg,
+                                IARG_END);
+                        break;
+		      
                     case 2:
                         INS_InsertCall(ins, IPOINT_BEFORE,
                                 AFUNPTR(taint_hwreg2hwreg),
@@ -13515,6 +13551,17 @@ void trace_inst(ADDRINT ptr)
     taint_debug_inst = ptr;
 }
 #endif
+void trace_inst(ADDRINT ip)
+{
+    if (*ppthread_log_clock > 12769910 && *ppthread_log_clock < 12769938) { 
+	PIN_LockClient();
+        printf("[INST] Pid %d (tid: %d) (record %d) - %#x clock %lu\n", PIN_GetPid(), PIN_GetTid(), get_record_pid(), ip, *ppthread_log_clock);
+	if (IMG_Valid(IMG_FindByAddress(ip))) {
+		printf("%s -- img %s static %#x\n", RTN_FindNameByAddress(ip).c_str(), IMG_Name(IMG_FindByAddress(ip)).c_str(), find_static_address(ip));
+	}
+	PIN_UnlockClient();
+    }
+}
 
 void instruction_instrumentation(INS ins, void *v)
 {
@@ -14542,6 +14589,27 @@ VOID ImageLoad (IMG img, VOID *v)
 }
 #endif
 
+int get_open_file_descriptors ()
+{
+    struct open_socket osockets[4096];
+    long rc = get_open_sockets (dev_fd, osockets, 4096);
+    if (rc < 0) {
+	fprintf (stderr, "get_open_file_desciptors returns %ld\n", rc);
+	return rc;
+    }
+
+    for (long i = 0; i < rc; i++) {
+	struct socket_info* si = (struct socket_info *) malloc (sizeof(struct socket_info));
+	si->domain = osockets[i].data;
+	si->type = -1;
+	si->protocol = -1;
+	si->fileno = -1; 
+	si->ci = NULL;
+        monitor_add_fd(open_socks, osockets[i].fd, 0, si);
+    }
+
+    return 0;
+}
 
 int main(int argc, char** argv) 
 {    
@@ -14595,6 +14663,19 @@ int main(int argc, char** argv)
 	num_merge_entries = KnobMergeEntries.Value();
     }
 
+    if (!open_fds) {
+        open_fds = new_xray_monitor(sizeof(struct open_info));
+    }
+    if (!open_socks) {
+        open_socks = new_xray_monitor(sizeof(struct socket_info));
+    }
+    if (!open_x_fds) {
+        open_x_fds = new_xray_monitor(0);
+    }
+
+    // Determine open file descriptors for filters
+    if (splice_output) get_open_file_descriptors();
+
 #if defined(USE_NW) || defined(USE_SHMEM)
     // Open a connection to the 64-bit consumer process
     const char* hostname = KnobNWHostname.Value().c_str();
@@ -14637,15 +14718,6 @@ int main(int argc, char** argv)
     init_logs();
 #endif
     init_taint_structures(group_directory);
-    if (!open_fds) {
-        open_fds = new_xray_monitor(sizeof(struct open_info));
-    }
-    if (!open_socks) {
-        open_socks = new_xray_monitor(sizeof(struct socket_info));
-    }
-    if (!open_x_fds) {
-        open_x_fds = new_xray_monitor(0);
-    }
 
     // Try to map the log clock for this epoch
     ppthread_log_clock = map_shared_clock(dev_fd);
@@ -14683,7 +14755,7 @@ int main(int argc, char** argv)
                 add_input_filter(FILTER_BYTERANGE,
                         (void *) KnobFilterByteRange.Value(i).c_str());
             }
-            if (filter_read_filename) {
+            if (filter_read_filename && strlen(filter_read_filename) > 0) {
                 build_filters_from_file(filter_read_filename);
             }
         }

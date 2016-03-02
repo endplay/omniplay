@@ -369,7 +369,11 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 			args[argcnt++] = "-port";
 			sprintf (port, "%d", edata[i].port);
 			args[argcnt++] = port;
-			args[argcnt++] = NULL;
+			if (edata[i].filter_inet) {
+			    args[argcnt++] = "-i";
+			    args[argcnt++] = "-f";
+			    args[argcnt++] = "inetsocket";
+			}
 			args[argcnt++] = NULL;
 			rc = execv ("../../../../pin/pin", (char **) args);
 			fprintf (stderr, "execv of pin tool failed, rc=%d, errno=%d\n", rc, errno);
@@ -612,6 +616,9 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	    if (ehdr.cmd_type == AGG_TYPE_SEQ_PPG) {
 		args[argcnt++] = "-seq";
 		args[argcnt++] = "-ppg";
+	    }
+	    if (ehdr.flags&LOW_MEMORY) {
+		args[argcnt++] = "-lowmem";
 	    }
 	    args[argcnt++] = "-par";
 	    sprintf (parstring, "%d", ehdr.parallelize);
