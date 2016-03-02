@@ -1009,6 +1009,8 @@ struct output_par_data {
     uint32_t                 output_token;
     char*                    plog;
     char*                    outstop;
+    u_int                    stripes;
+    u_int                    offset;
     bitmap*                  plive_set;
     stacktype*               stack;
     uint32_t**               resolvedptr;
@@ -1030,17 +1032,17 @@ do_outputs_seq (void* pdata)
 {
     // Unpack arguments
     struct output_par_data* opdata = (struct output_par_data *) pdata;
-    uint32_t  output_token = opdata->output_token; 
+    uint32_t  output_token = 0;
     char*     plog = opdata->plog;
     char*     outstop = opdata->outstop;
     bitmap *plive_set= opdata->plive_set;
-
-
     stacktype* stack = opdata->stack;
     uint32_t*& resolvedptr = *opdata->resolvedptr;
     uint32_t*& resolvedstop = *opdata->resolvedstop;
-
     uint32_t wbucket_cnt = 0, wbucket_stop = 0;
+    int stripes = opdata->stripes;
+    int offset = opdata->offset;
+    u_int to_skip = offset;
 #ifdef STATS
     u_long ldirects = 0, lvalues_sent = 0, lquashed = 0, lindirects = 0, lvalues = 0, lmerges = 0;
     gettimeofday(&opdata->tv_start, NULL);
@@ -1050,7 +1052,22 @@ do_outputs_seq (void* pdata)
 	plog += sizeof(struct taint_creation_info) + sizeof(uint32_t);
 	uint32_t buf_size = *((uint32_t *) plog);
 	plog += sizeof(uint32_t);
-	for (uint32_t i = 0; i < buf_size; i++) {
+	while (buf_size) {
+	    if (to_skip) {
+		if (to_skip < buf_size) {
+		    plog += to_skip * 2 * sizeof(taint_t);
+		    buf_size -= to_skip;
+		    output_token += to_skip;
+		    to_skip = 0;
+		    continue;
+		} else {
+		    plog += buf_size * 2 * sizeof(taint_t);
+		    to_skip -= buf_size;
+		    output_token += buf_size;
+		    break;
+		}
+	    }
+
 	    plog += sizeof(uint32_t);
 	    taint_t value = *((taint_t *) plog);  
 #ifdef DEBUG
@@ -1121,6 +1138,8 @@ do_outputs_seq (void* pdata)
 		}
 	    }
 	    output_token++;
+	    buf_size--;
+	    to_skip = stripes-1;
 #ifdef STATS
 	    lvalues++;
 #endif
@@ -1150,14 +1169,16 @@ do_outputs_stream (void* pdata)
 {
     // Unpack arguments
     struct output_par_data* opdata = (struct output_par_data *) pdata;
-    uint32_t  output_token = opdata->output_token;
+    uint32_t  output_token = 0;
     char*     plog = opdata->plog;
     char*     outstop = opdata->outstop;
     stacktype* stack = opdata->stack;
     uint32_t*& resolvedptr = *opdata->resolvedptr;
     uint32_t*& resolvedstop = *opdata->resolvedstop;
-
     uint32_t wbucket_cnt = 0, wbucket_stop = 0;
+    int stripes = opdata->stripes;
+    int offset = opdata->offset;
+    u_int to_skip = offset;
 #ifdef STATS
     u_long ldirects = 0, lvalues_sent = 0, lquashed = 0, lindirects = 0, lvalues = 0, lmerges = 0;
     gettimeofday(&opdata->tv_start, NULL);
@@ -1167,7 +1188,22 @@ do_outputs_stream (void* pdata)
 	plog += sizeof(struct taint_creation_info) + sizeof(uint32_t);
 	uint32_t buf_size = *((uint32_t *) plog);
 	plog += sizeof(uint32_t);
-	for (uint32_t i = 0; i < buf_size; i++) {
+	while (buf_size) {
+	    if (to_skip) {
+		if (to_skip < buf_size) {
+		    plog += to_skip * 2 * sizeof(taint_t);
+		    buf_size -= to_skip;
+		    output_token += to_skip;
+		    to_skip = 0;
+		    continue;
+		} else {
+		    plog += buf_size * 2 * sizeof(taint_t);
+		    to_skip -= buf_size;
+		    output_token += buf_size;
+		    break;
+		}
+	    }
+
 	    plog += sizeof(uint32_t);
 	    taint_t value = *((taint_t *) plog);
 	    plog += sizeof(taint_t);
@@ -1227,6 +1263,8 @@ do_outputs_stream (void* pdata)
 		}
 	    }
 	    output_token++;
+	    buf_size--;
+	    to_skip = stripes-1;
 #ifdef STATS
 	    lvalues++;
 #endif
@@ -1255,7 +1293,7 @@ static uint32_t
 process_outputs (char* plog, char* outstop, bitmap* plive_set, const char* dirname, void *(*do_outputs)(void *))
 {
     struct output_par_data output_data[parallelize];
-    uint32_t output_tokens = 0, last_output_tokens = 0;
+    uint32_t output_tokens = 0;
     int ocnt = 0;
 
 #ifdef STATS
@@ -1268,36 +1306,17 @@ process_outputs (char* plog, char* outstop, bitmap* plive_set, const char* dirna
 
     if (plog != outstop) {
 
-	// For the moment, we have to ge the correct output token value to start each epoch - I think
-	// this info could be embedded in the file by the DIFT server with little cost
-	char* p = plog;
-	char* last = p;
 	for (int i = 0; i < parallelize; i++) {
-	    char* goal;
-	    if (i == parallelize-1) {
-		goal = outstop;
-	    } else {
-		goal = plog + (((u_long) outstop - (u_long) plog) * (i+1) / parallelize);
-	    }
-	    while (p < goal) {
-		p += sizeof(struct taint_creation_info) + sizeof(uint32_t);
-		uint32_t buf_size = *((uint32_t *) p);
-		p += sizeof(uint32_t) + buf_size*(sizeof(uint32_t)+sizeof(taint_t));
-		output_tokens += buf_size;
-	    }
-	    if (p > last) {
-		output_data[ocnt].output_token = last_output_tokens;
-		output_data[ocnt].plog = last;
-		output_data[ocnt].outstop = p;
-		output_data[ocnt].plive_set = plive_set;
-		output_data[ocnt].stack = &astacks[ocnt];
-		output_data[ocnt].resolvedptr = &outptrs[ocnt];
-		output_data[ocnt].resolvedstop = &outstops[ocnt];
-		ocnt++;
-		last = p;
-		last_output_tokens = output_tokens;
-	    }
+	    output_data[i].plog = plog;
+	    output_data[i].outstop = outstop;
+	    output_data[i].plive_set = plive_set;
+	    output_data[i].stack = &astacks[i];
+	    output_data[i].resolvedptr = &outptrs[i];
+	    output_data[i].resolvedstop = &outstops[i];
+	    output_data[i].stripes = parallelize;
+	    output_data[i].offset = i;
 	}
+	ocnt = parallelize;
 	
 	for (int i = 0; i < ocnt-1; i++) {
 	    long rc = pthread_create (&output_data[i].tid, NULL, do_outputs, &output_data[i]);
@@ -1312,12 +1331,12 @@ process_outputs (char* plog, char* outstop, bitmap* plive_set, const char* dirna
 	for (int i = 0; i < ocnt-1; i++) {
 	    long rc = pthread_join(output_data[i].tid, NULL);
 	    if (rc < 0) fprintf (stderr, "Cannot join output thread, rc=%ld\n", rc); 
+	    if (output_data[i].output_token > output_tokens) output_tokens = output_data[i].output_token;
 	}
     }
 
 #ifdef STATS
     gettimeofday(&output_end_tv, NULL);
-    output_merges = merges;
     output_send_idle = send_idle;
     output_recv_idle = recv_idle;
     for (int i = 0; i < ocnt; i++) {
@@ -1326,7 +1345,7 @@ process_outputs (char* plog, char* outstop, bitmap* plive_set, const char* dirna
 	quashed += output_data[i].lquashed;
 	indirects += output_data[i].lindirects;
 	values += output_data[i].lvalues;
-	merges += output_data[i].lmerges;
+	output_merges += output_data[i].lmerges;
 	u_long ms = ms_diff(output_data[i].tv_end, output_data[i].tv_start);
 	total_output_ms += ms;
 	if (ms > longest_output_ms) longest_output_ms = ms;
