@@ -1206,6 +1206,12 @@ replay_unlink_gdb(struct task_struct* tsk)
 	}
 }
 
+int should_call_recplay_exit_start() { 
+	return (is_pin_attached() && current->replay_thrd->rp_pin_restart_syscall == REPLAY_PIN_TRAP_STATUS_ENTER);
+
+}
+
+
 void print_memory_areas (void) 
 {
 	struct vm_area_struct *existing_mmap;
@@ -3472,9 +3478,9 @@ get_perf_event_fd(void)
 	pe.exclude_kernel = 1;
 	pe.exclude_hv = 1;
 
-
 	set_fs(KERNEL_DS);
 	fd = sys_perf_event_open(&pe, current->pid, -1, -1, 0);
+//	if (fd < 0) printk("failure from perf_event_open, rc %d errno %d\n",fd,errno);
 	set_fs(old_fs);
 	return fd;
 }
@@ -4974,8 +4980,8 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 	int ret, is_restart = 0;
 	int original_status = -1;
 
-	char* head = NULL;
-	int i = 0;
+//	char* head = NULL;
+//	int i = 0;
 
 #ifdef REPLAY_PARANOID
 	if (current->replay_thrd == NULL) {
@@ -5213,6 +5219,7 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 				 * simply wait for Pin to finish, such as exec and clone.
 				 */
 				if (is_pin_attached() && (syscall != 11 || syscall != 120)) {
+					dump_stack();
 					printk ("Pid %d -- Pin attached -- enterting syscall cannot wait due to signal, would try again but Pin is attaached. exiting with ERESTART\n", current->pid);
 					prt->rp_saved_psr = psr;
 					prt->rp_pin_restart_syscall = REPLAY_PIN_TRAP_STATUS_ENTER;
@@ -5639,6 +5646,7 @@ get_next_syscall (int syscall, char** ppretparams)
 	long exit_retval;
 
 	retval = get_next_syscall_enter (prt, prg, syscall, ppretparams, &psr);
+
 	if (retval < 0 && prt->rp_pin_attaching == PIN_ATTACHING) {
 		MPRINT ("Pid %d attaching so do not wait for syscall exit\n", current->pid);
 		return retval;

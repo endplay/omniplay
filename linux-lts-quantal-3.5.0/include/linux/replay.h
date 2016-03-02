@@ -54,6 +54,9 @@ void replay_signal_delivery (int* signr, siginfo_t* info);
 int replay_has_pending_signal (void);
 int get_record_pending_signal (siginfo_t* info);
 
+/* used in order to correctly exit in a very particular pin bug*/
+int should_call_recplay_exit_start(void);
+
 /* Called when a record/replay thread exits */
 void recplay_exit_start(void);
 void recplay_exit_middle(void);

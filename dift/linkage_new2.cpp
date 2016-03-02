@@ -101,7 +101,11 @@ struct save_state {
     unsigned long open_file_cnt; 
 };
 
+//long total_recv; //for debugging this stuff
+//long total_send; //for debugging this stuff
+
 /* Global state */
+
 TLS_KEY tls_key; // Key for accessing TLS. 
 int dev_fd; // File descriptor for the replay device
 int get_record_pid(void);
@@ -786,7 +790,7 @@ static inline void sys_write_stop(int rc)
         tci.offset = 0;
         tci.fileno = channel_fileno;
 
-        LOG_PRINT ("Output buffer result syscall %ld, %#lx\n", tci.syscall_cnt, (u_long) wi->buf);
+        LOG_PRINT ("Output buffer result syscall %u, %#lx\n", tci.syscall_cnt, (u_long) wi->buf);
         output_buffer_result (wi->buf, rc, &tci, outfd);
     }
 }
@@ -992,6 +996,8 @@ static void sys_recv_stop(int rc)
     struct read_info* ri = (struct read_info *) current_thread->save_syscall_info;
     LOG_PRINT ("Pid %d syscall recv returns %d\n", PIN_GetPid(), rc);
     SYSCALL_DEBUG (stderr, "Pid %d syscall recv returns %d\n", PIN_GetPid(), rc);
+    
+
 
     // If syscall cnt = 0, then write handled in previous epoch
     if (rc > 0) {
@@ -1141,6 +1147,64 @@ static void sys_sendmsg_stop(int rc)
     free(smi);
 }
 
+
+static void sys_send_start(struct thread_data* tdata, int fd, char* msg, size_t len, int flags)
+{
+    struct write_info* si;
+    si = (struct write_info *) malloc(sizeof(struct write_info));
+    if (si == NULL) {
+	fprintf (stderr, "Unable to malloc sendmsg_info\n");
+	assert (0);
+    }
+    si->fd = fd;
+    si->buf = msg;
+
+    tdata->save_syscall_info = (void *) si;
+}
+
+static void sys_send_stop(int rc)
+{
+    struct write_info* si = (struct write_info *) current_thread->save_syscall_info;
+    int channel_fileno = -1;
+
+    SYSCALL_DEBUG (stderr, "Pid %d syscall send %d \n", PIN_GetPid(), rc);
+    if (rc > 0) {
+        struct taint_creation_info tci;
+        SYSCALL_DEBUG (stderr, "send_stop: sucess write of size %d\n", rc);
+
+        if (monitor_has_fd(open_fds, si->fd)) {
+            struct open_info* oi;
+            oi = (struct open_info *) monitor_get_fd_data(open_fds, si->fd);
+            assert(oi);
+            channel_fileno = oi->fileno;
+        } else if (si->fd == fileno(stdout)) {
+            channel_fileno = FILENO_STDOUT;
+        } else if (si->fd == fileno(stderr)) {
+            channel_fileno = FILENO_STDERR;
+        } else if (si->fd == fileno(stdin)) {
+            channel_fileno = FILENO_STDIN;
+        } else {
+            channel_fileno = -1;
+        }
+        tci.type = 0;
+        tci.rg_id = current_thread->rg_id;
+        tci.record_pid = current_thread->record_pid;
+        tci.syscall_cnt = current_thread->syscall_cnt;
+	if (!current_thread->syscall_in_progress) {
+	    tci.syscall_cnt--; // Weird restart issue
+	}
+        tci.offset = 0;
+        tci.fileno = channel_fileno;
+
+        LOG_PRINT ("Output buffer result syscall %u, %#lx\n", tci.syscall_cnt, (u_long) si->buf);
+        output_buffer_result (si->buf, rc, &tci, outfd);
+    }
+    free(si);
+}
+
+
+
+
 void syscall_start(struct thread_data* tdata, int sysnum, ADDRINT syscallarg0, ADDRINT syscallarg1,
 		   ADDRINT syscallarg2, ADDRINT syscallarg3, ADDRINT syscallarg4, ADDRINT syscallarg5)
 {
@@ -1175,6 +1239,7 @@ void syscall_start(struct thread_data* tdata, int sysnum, ADDRINT syscallarg0, A
             int call = (int) syscallarg0;
             unsigned long *args = (unsigned long *)syscallarg1;
             current_thread->socketcall = call;
+	    SYSCALL_DEBUG(stderr, "new socketcall is %d\n",call);
             switch (call) {
                 case SYS_SOCKET:
                     SYSCALL_DEBUG(stderr, "socket_start\n");
@@ -1197,6 +1262,10 @@ void syscall_start(struct thread_data* tdata, int sysnum, ADDRINT syscallarg0, A
                     SYSCALL_DEBUG(stderr, "sendmsg_start\n");
                     sys_sendmsg_start(tdata, (int)args[0], (struct msghdr *)args[1], (int)args[2]);
                     break;
+	        case SYS_SEND:
+		    SYSCALL_DEBUG(stderr, "send_start\n");
+                    sys_send_start(tdata, (int)args[0], (char *)args[1], (int)args[2], (int)args[3]);
+		    break;
                 default:
                     break;
             }
@@ -1246,6 +1315,7 @@ void syscall_end(int sysnum, ADDRINT ret_value)
             break;
         case SYS_socketcall:
         {
+	    
             switch (current_thread->socketcall) {
                 case SYS_SOCKET:
                     sys_socket_stop(rc);
@@ -1263,6 +1333,9 @@ void syscall_end(int sysnum, ADDRINT ret_value)
                 case SYS_SENDMSG:
                     sys_sendmsg_stop(rc);
                     break;
+    	        case SYS_SEND:
+		    sys_send_stop(rc);
+		    break;
                 default:
                     break;
             }
@@ -1300,7 +1373,7 @@ void instrument_syscall(ADDRINT syscall_num,
 #endif
 	dift_done ();
 	try_to_exit(dev_fd, PIN_GetPid());
-        PIN_ExitApplication(0);  //not working? 
+        PIN_ExitApplication(0); 
     }
 	
     syscall_start(tdata, sysnum, syscallarg0, syscallarg1, syscallarg2, 

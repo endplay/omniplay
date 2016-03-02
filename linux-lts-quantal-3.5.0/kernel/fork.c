@@ -807,7 +807,24 @@ void mm_release(struct task_struct *tsk, struct mm_struct *mm)
 
 			struct syscall_result* psr; /* REPLAY */
 			if (current->record_thrd) new_syscall_enter_external (TID_WAKE_CALL);                                /* REPLAY */
-			else if (current->replay_thrd) get_next_syscall_enter_external (TID_WAKE_CALL, NULL, &psr);          /* REPLAY */
+			else if (current->replay_thrd) { 
+				/* REPLAY */
+				get_next_syscall_enter_external (TID_WAKE_CALL, NULL, &psr);
+				/*
+				 * We find ourselves in a weird case where the above syscall
+				 * fails b/c of a signal, but we're already exiting. To solve
+				 * the issue I recall recplay_exit_start here, which basically
+				 * manages all of the waiting in the case that something weird
+				 * is happening with pin
+				 */
+
+
+				if (should_call_recplay_exit_start()) { 
+					recplay_exit_start();
+				}
+			}
+
+
 
 			/*
 			 * We don't check the error code - if userspace has
