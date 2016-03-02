@@ -29,6 +29,7 @@ struct extra_data {
     double   dtiming;
     u_long   aindex;
     u_long   start_clock;
+    u_long   stop_clock; //used in order to figure out what syscalls are concurrently happening
     u_long   retval; //the return value of the syscall.. used entirely for fork. 
     u_long   taint_in; //the amount of taint that we've gotten in at this point
     u_long   taint_out; //the amount of taint that we've output at this point
@@ -206,6 +207,7 @@ void print_timing (struct replay_timing* timings, struct extra_data* edata, int 
 static int can_attach (map<u_int, short> *syscalls) 
 {
     bool attach = true;
+//    fprintf(stderr, "can_attach len %u\n",syscalls->size());
     for (auto iter = syscalls->begin(); iter != syscalls->end(); ++iter){ 
 	auto val = iter->second;
 	if (val == 192 || val == 91 || val == 120 || val == -1 || val == 174 || val == 125){
@@ -694,8 +696,8 @@ int populate_start_clock(vector<struct replay_timing *> &timings_vect,
 	    if(timings_index[i] == num_el[i]) continue;
 	    struct replay_timing* curr_timings = timings_vect[i];
 	    struct extra_data* curr_edata = edata_vect[i];
-	    
 	    curr_edata[timings_index[i]].start_clock = res->start_clock;
+	    curr_edata[timings_index[i]].stop_clock  = res->stop_clock;
 	    //advance the timings_index forward until we get to the next record with this pid
 	    do{ 
 		timings_index[i]++;
@@ -740,6 +742,7 @@ int populate_start_clock(vector<struct replay_timing *> &timings_vect,
 		struct extra_data* curr_edata = edata_vect[i];
 	    
 		curr_edata[timings_index[i]].start_clock = res->start_clock;
+		curr_edata[timings_index[i]].stop_clock  = res->stop_clock;
 		//advance the timings_index forward until we get to the next record with this pid
 		do{ 
 		    timings_index[i]++;
@@ -947,7 +950,7 @@ void generate_timings_for_process(struct replay_timing *timings,
     u_int i, j, k; 
     uint64_t total_cache_misses = 0;
     map<u_int,u_int> last_time;    
-    map<u_int,short> latest_syscall;    
+    map<u_int,u_int> current_index;    
 
 
     for (i = 0; i < num; i++) {
@@ -969,7 +972,6 @@ void generate_timings_for_process(struct replay_timing *timings,
 	    fprintf(stderr, "holy shit, way to many cache_misses\n");
 	}
 
-	
 	/*
 	 * since we associate taint_in and taint_out ops with reads and writes, the taint they 
 	 * create is actually added AFTER the syscall. For this reason, we assign the current 
@@ -1000,18 +1002,33 @@ void generate_timings_for_process(struct replay_timing *timings,
 	edata[i].taint_out = curr_total_out;
 
 
-	//when we see a fork, we need to add the child to the list right?  
+	//update the current index of the current pid, and its potential child pid
+	edata[i].rpg_syscalls = new map<u_int, short>();
+	u_int current_time = edata[i].start_clock;
+
+	current_index[pid] = i; 
 	if (timings[i].syscall == 120) { 
 	    child_pid = edata[i].retval;
-	    latest_syscall[child_pid] = -1; //to indicate that the child just started
+	    current_index[child_pid] = -1; //to indicate that the child just started
 	}
 
-	latest_syscall[pid] = timings[i].syscall;  //update the latest_syscall of this pid to be this syscall
-	for (auto pair : latest_syscall) { 
-	    edata[i].rpg_syscalls = new map<u_int, short>();
-	    (*edata[i].rpg_syscalls)[pair.first] = pair.second;
+	vector<u_int> to_erase; 
+	for (auto pair : current_index) { 
+//	    fprintf(stderr, "(%u,%u)->(%u, %lu)\n",pid,current_time, pair.first, edata[pair.second].stop_clock);
+	    //special flag for just been forked
+	    if (pair.second < 0) { 
+		    (*edata[i].rpg_syscalls)[pair.first] = pair.second; 
+	    }
+	    else if (edata[pair.second].stop_clock > current_time) { 
+		(*edata[i].rpg_syscalls)[pair.first] = timings[pair.second].syscall;
+	    }
+	    else { 
+		to_erase.push_back(pair.first);
+	    }
 	}
-    }
+	for (auto val : to_erase)
+	    current_index.erase(val);
+	}
 
     // Next interpolate values where increment is small
     for (i = 0; i < num; i++) {
@@ -1042,7 +1059,7 @@ void generate_timings_for_process(struct replay_timing *timings,
     }
 /*
     for (i = 0; i < num; i++) {
-	fprintf (stderr, "%d %lu %.3f %lu %lu %llu\n", timings[i].pid, edata[i].start_clock, edata[i].dtiming, edata[i].taint_in, edata[i].taint_out, timings[i].cache_misses);
+	fprintf (stderr, "%d %lu %lu %.3f %lu %lu %llu\n", timings[i].pid, edata[i].start_clock, edata[i].stop_clock, edata[i].dtiming, edata[i].taint_in, edata[i].taint_out, timings[i].cache_misses);
     }
 */
 	
