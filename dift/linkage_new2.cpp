@@ -1335,6 +1335,11 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
     if (current_thread->app_syscall != 999) current_thread->app_syscall = 0;
 
     ADDRINT ret_value = PIN_GetSyscallReturn(ctxt, std);
+    if (current_thread->sysnum == SYS_gettid) {
+	// Pin "helpfully" changes the return value to the replay tid - change it back here
+	//printf ("eax is %d changing to %d\n", PIN_GetContextReg (ctxt, LEVEL_BASE::REG_EAX), current_thread->record_pid);
+	PIN_SetContextReg (ctxt, LEVEL_BASE::REG_EAX, current_thread->record_pid);
+    }
 
     if (segment_length && *ppthread_log_clock > segment_length) {
 #ifdef TAINT_DEBUG
