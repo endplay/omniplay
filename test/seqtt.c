@@ -20,7 +20,6 @@ int main (int argc, char* argv[])
     char cpids[80], tmpdir[80], lscmd[80];
     char* lscmd_output;
     char* dirname;
-//    char shmemname[256];
     char cache_dir[BUFFER_SIZE] = "";
 
     pid_t cpid, mpid, ppid;
