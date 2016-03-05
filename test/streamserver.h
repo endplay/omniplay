@@ -14,6 +14,10 @@
 #define NW_COMPRESS   0x10
 #define LOW_MEMORY    0x20
 
+#define FILTER_NONE 0x00
+#define FILTER_INET 0x01
+#define FILTER_PART 0x02
+
 #define NAMELEN 256
 #define PATHLEN 512
 
@@ -45,6 +49,8 @@ struct epoch_hdr {
     u_char   cmd_type;
     u_char   parallelize;
     u_char   flags;
+    u_char   filter_flags;
+    char     filter_data[NAMELEN];
     char     dirname[NAMELEN];
     char     prev_host[NAMELEN];
     char     next_host[NAMELEN];
@@ -57,8 +63,6 @@ struct epoch_data {
     uint32_t start_clock;
     char     stop_level;
     uint32_t stop_clock;
-    uint32_t filter_syscall;
-    bool     filter_inet;
     uint32_t ckpt;
     uint32_t fork_flags; //definitely needed
     uint32_t port;              // Aggregation port

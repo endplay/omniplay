@@ -17,7 +17,7 @@ using namespace std;
 #include "../taint_interface/taint_creation.h"
 #include "../../test/streamserver.h"
 
-//#define TARGET(x) ((x)==0x32cc7d)
+//#define TARGET(x) ((x)==0xdd016f)
 //#define ITARGET(x) ((x)==0||(x)==0x7e5751)
 #define ALLOW_DUPS
 
@@ -100,7 +100,7 @@ int main (int argc, char* argv[])
 #endif
     mptr = (uint32_t *) mbuf;
     dptr = dbuf;
-#ifdef TARGET
+#if defined(TARGET) || defined(OUTPUT_CMP)
     struct taint_creation_info* tci = (struct taint_creation_info *) dbuf;
 #endif
     dptr += sizeof(struct taint_creation_info) + sizeof(uint32_t);
@@ -116,13 +116,14 @@ int main (int argc, char* argv[])
     tokval += buf_size;
 #endif
 
-    dptr += sizeof(uint32_t);
+    dptr += sizeof(uint32_t) + buf_size*(sizeof(taint_t) + sizeof(uint32_t));
+
     buf_cnt = 0;
     while ((u_long) mptr < (u_long) mbuf + mdatasize) {
 	while (*mptr) {
 #ifdef TARGET
 	    if (TARGET(otoken)) {
-		printf ("Output %x -> input %x syscall %u offset %u out of %u\n", otoken, *mptr, tci->syscall_cnt, buf_cnt, buf_size);
+		printf ("Output %x -> input %x pid %d syscall %u offset %u out of %u\n", otoken, *mptr, tci->record_pid, tci->syscall_cnt, buf_cnt, buf_size);
 	    }
 #endif
 #ifdef ITARGET
@@ -136,15 +137,16 @@ int main (int argc, char* argv[])
 	otoken++;
 	mptr++;
 	buf_cnt++;
-	dptr += sizeof(taint_t) + sizeof(uint32_t);
-	while (buf_cnt == buf_size) {
-#ifdef TARGET
+
+#if defined(TARGET) || defined(OUTPUT_CMP)
+	while (buf_cnt == buf_size && (u_long) mptr < (u_long) mbuf + mdatasize) {
 	    tci = (struct taint_creation_info *) dptr;
-#endif
 	    dptr += sizeof(struct taint_creation_info) + sizeof(uint32_t);
 	    buf_size = *((uint32_t *) dptr);
 #ifdef OUTPUT_CMP
-	    printf ("outputs %x-%x: record pid %d syscall %d size %d\n", tokval, tokval+buf_size, tci->record_pid, tci->syscall_cnt, buf_size);
+	    if (buf_size > 0) {
+		printf ("outputs %x-%x: record pid %d syscall %d size %d\n", tokval, tokval+buf_size, tci->record_pid, tci->syscall_cnt, buf_size);
+	    }
 	    oi.tokval = tokval;
 	    oi.record_pid = tci->record_pid;
 	    oi.syscall = tci->syscall_cnt;
@@ -152,9 +154,11 @@ int main (int argc, char* argv[])
 	    outputs.push_back(oi);
 	    tokval += buf_size;
 #endif
-	    dptr += sizeof(uint32_t);
 	    buf_cnt = 0;
+	    dptr += sizeof(uint32_t) + buf_size*(sizeof(taint_t) + sizeof(uint32_t));
 	}
+#endif
+
     }
 
     unmap_file (mbuf, mfd, mmapsize);

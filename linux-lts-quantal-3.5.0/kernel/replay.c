@@ -8142,6 +8142,7 @@ replay_open (const char __user * filename, int flags, int mode)
 	rc = get_next_syscall (5, (char **) &pretvals);	
 	DPRINT("replay_open(%s,%d,%d) returns %ld\n", filename,flags,mode,rc);
 	if (rc == -EINTR && current->replay_thrd->rp_pin_attaching) return rc;
+	if (rc >= 0) xray_monitor_add_fd(current->replay_thrd->rp_group->rg_open_socks, rc, MONITOR_FILE, 0, filename);
 	if (pretvals) {
 		fd = open_cache_file (pretvals->dev, pretvals->ino, pretvals->mtime, flags);
 		DPRINT ("replay_open: opened cache file %s flags %x fd is %ld rc is %ld\n", filename, flags, fd, rc);
@@ -10036,8 +10037,7 @@ replay_socketcall (int call, unsigned long __user *args)
 
 	switch (call) {
 	case SYS_SOCKET:
-		printk ("Socket domain %ld rc %ld\n", kargs[0], rc);
-		xray_monitor_add_fd(current->replay_thrd->rp_group->rg_open_socks, rc, kargs[0]);
+		xray_monitor_add_fd(current->replay_thrd->rp_group->rg_open_socks, rc, MONITOR_SOCKET, kargs[0], NULL);
 	case SYS_CONNECT:
 		if (retparams) argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct generic_socket_retvals));
 		return rc;

@@ -322,7 +322,7 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 
 		    pid_t mpid = fork();
 		    if (mpid == 0) {
-			char cpids[80], syscalls[80], output_filter[80], port[80], fork_flags[80];
+			char cpids[80], syscalls[80], port[80], fork_flags[80];
 			const char* args[256];
 			int argcnt = 0;
 			
@@ -352,21 +352,20 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 			    args[argcnt++] = "-so";
 			} 
 
-			if (edata[i].filter_syscall) {
-			    sprintf (output_filter, "%u", edata[i].filter_syscall);
-			    args[argcnt++] = "-ofs";
-			    args[argcnt++] = output_filter;
-			}
 			printf ("%lu: hostname %s port %d\n", i, edata[i].hostname, edata[i].port);
 			args[argcnt++] = "-host";
 			args[argcnt++] = edata[i].hostname;
 			args[argcnt++] = "-port";
 			sprintf (port, "%d", edata[i].port);
 			args[argcnt++] = port;
-			if (edata[i].filter_inet) {
-			    args[argcnt++] = "-i";
+			if (ehdr.filter_flags) args[argcnt++] = "-i";
+			if (ehdr.filter_flags&FILTER_INET) {
 			    args[argcnt++] = "-f";
 			    args[argcnt++] = "inetsocket";
+			} 
+			if (ehdr.filter_flags&FILTER_PART) {
+			    args[argcnt++] = "-e";
+			    args[argcnt++] = ehdr.filter_data;
 			}
 			args[argcnt++] = NULL;
 			rc = execv ("../../../../pin/pin", (char **) args);

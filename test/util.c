@@ -213,12 +213,12 @@ int get_filemap (int fd_spec, int fd, loff_t offset, int size, void* entries, in
     return ioctl (fd_spec, SPECI_GET_FILEMAP, &fentry);
 }
 
-int get_open_sockets (int fd_spec, struct open_socket* entries, int num_entries) 
+int get_open_fds (int fd_spec, struct open_fd* entries, int num_entries) 
 {
-    struct open_sockets_data oentry;
+    struct open_fds_data oentry;
     oentry.entries = entries;
     oentry.num_entries = num_entries;
-    return ioctl (fd_spec, SPECI_GET_OPEN_SOCKETS, &oentry);
+    return ioctl (fd_spec, SPECI_GET_OPEN_FDS, &oentry);
 }
 
 long reset_replay_ndx(int fd_spec)
