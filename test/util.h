@@ -33,9 +33,14 @@ struct filemap_entry {
 	int num_entries;
 };
 
-struct open_socket {
+#define OPEN_FD_TYPE_FILE   0
+#define OPEN_FD_TYPE_SOCKET 1
+
+struct open_fd {
 	int fd;
+	int type;
 	int data;
+	char channel[256];
 };
 
 int devspec_init (int* fd_spec);
@@ -62,7 +67,7 @@ unsigned long get_env_vars (int fd_spec);
 int get_record_group_id (int fd_spec, uint64_t* rg_id);
 int get_num_filemap_entries (int fd_spec, int fd, loff_t offset, int size);
 int get_filemap(int fd_spec, int fd, loff_t offset, int size, void* entries, int num_entries);
-int get_open_sockets (int fd_spec, struct open_socket* entries, int num_entries);
+int get_open_fds (int fd_spec, struct open_fd* entries, int num_entries);
 long reset_replay_ndx(int fd_spec);
 pid_t get_current_record_pid(int fd_spec, pid_t nonrecord_pid);
 long get_attach_status (int fd_spec, pid_t pid);

@@ -13,9 +13,14 @@ struct xray_monitor {
 // A structure to hold fds
 struct fd_struct {
 	int fd;
+	int type;
 	int data;
+	char* channel;
 	struct list_head list;
 };
+
+#define MONITOR_FILE   0
+#define MONITOR_SOCKET 1
 
 struct xray_monitor* new_xray_monitor(void) {
 	struct xray_monitor* monitor;
@@ -35,6 +40,7 @@ void xray_monitor_destroy (struct xray_monitor* pmonitor)
 	
 	list_for_each_entry_safe (fds, fds_safe, &(pmonitor->fds), list) {
 		list_del (&fds->list);
+		if (fds->channel) kfree (fds->channel);
 		kfree(fds);
         }
 	kfree (pmonitor);
@@ -44,11 +50,19 @@ long xray_monitor_fillbuf (struct xray_monitor* pmonitor, struct monitor_data __
 {
 	struct fd_struct* fds;
 	u_long cnt = 0;
+	struct monitor_data m;
 
 	list_for_each_entry (fds, &pmonitor->fds, list) {
 		if (cnt < entries) {
-			copy_to_user (&buf[cnt].fd, &fds->fd, sizeof(fds->fd));
-			copy_to_user (&buf[cnt].data, &fds->data, sizeof(fds->data));
+			m.fd = fds->fd;
+			m.type = fds->type;
+			m.data = fds->data;
+			if (fds->channel && strlen(fds->channel) < sizeof(m.channel)) {
+				strcpy (m.channel, fds->channel);
+			} else {
+				m.channel[0] = '\0';
+			}
+			copy_to_user (&buf[cnt], &m, sizeof(struct monitor_data));
 			cnt++;
 		} else {
 			return -E2BIG;
@@ -67,7 +81,7 @@ int xray_monitor_has_fd(struct xray_monitor* monitor, int fd) {
 	return 0;
 }
 
-int xray_monitor_add_fd(struct xray_monitor* monitor, int fd, int data) {
+int xray_monitor_add_fd(struct xray_monitor* monitor, int fd, int type, int data, const char* channel) {
 	struct fd_struct* fds;
 	
 #ifdef REPLAY_PARANOID
@@ -80,8 +94,20 @@ int xray_monitor_add_fd(struct xray_monitor* monitor, int fd, int data) {
 
 	// else add it
 	fds = (struct fd_struct*) kmalloc(sizeof(struct fd_struct), GFP_KERNEL);
+	if (fds == NULL) return -1;
 	fds->fd = fd;
+	fds->type = type;
 	fds->data = data;
+	if (channel) {
+		fds->channel = kmalloc(strlen(channel)+1, GFP_KERNEL);
+		if (fds->channel == NULL) {
+			kfree (fds);
+			return -1;
+		}
+		strcpy (fds->channel, channel);
+	} else {
+		fds->channel = NULL;
+	}
 	list_add (&(fds->list), &(monitor->fds));
 	
 	return 0;
@@ -93,6 +119,7 @@ int xray_monitor_remove_fd(struct xray_monitor* monitor, int fd) {
 	list_for_each_entry_safe (fds, fds_safe, &(monitor->fds), list) {
 		if (fds->fd == fd) {
 			list_del (&(fds->list));
+			if (fds->channel) kfree (fds->channel);
 			kfree(fds);
 			return 1;
 		}

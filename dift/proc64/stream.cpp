@@ -31,7 +31,7 @@ using namespace std;
 typedef PagedBitmap<MAX_TAINTS, PAGE_BITS> bitmap;
 
 
-//#define DEBUG(x) ((x)==0x59 || (x) == 0xc7)
+//#define DEBUG(x) ((x)==0x1c8273)
 #define STATS
 
 #define PREPRUNE_NONE   0
@@ -915,7 +915,7 @@ setup_aggregation (const char* dirname, int& outputfd, int& inputfd, int& addrsf
     }
 #endif
 
-#ifdef DEBUF
+#ifdef DEBUG
     char debugname[256];
     sprintf (debugname, "%s/stream-debug", dirname);
     debugfile = fopen (debugname, "w");
@@ -1741,11 +1741,11 @@ do_addresses_binsearch (void* pdata)
 #endif
 #ifdef DEBUG
 		if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
-		    fprintf (debugfile, "output %x to merge chain %lx via %lx\n", otoken+output_token, (long) iter->second, (long) value);
+		    fprintf (debugfile, "output %x to merge chain %lx via %lx\n", otoken+output_token, (long) *result, (long) value);
 		}
 #endif
 #ifdef PARANOID
-		struct taint_entry* pentry = &merge_log[iter->second-0xe0000001];
+		struct taint_entry* pentry = &merge_log[*result-0xe0000001];
 		if (pentry->p1 == 0 && pentry->p2 == 0) {
 		    fprintf (stderr, "NULL merge entry\n");
 		}
@@ -2558,6 +2558,7 @@ preprune_local_lowmem (u_long& mdatasize, char* output_log, u_long odatasize, ta
 	    }
 	}
 	pentry--;
+	ndx--;
     }
 
     // Compress first half of log
@@ -2625,7 +2626,6 @@ preprune_local_lowmem (u_long& mdatasize, char* output_log, u_long odatasize, ta
     }
 
     mdatasize = new_index*sizeof(struct taint_entry);
-    fprintf (stderr, "new index is %lu\n", new_index);
 
     plog = output_log;
     while (plog < outstop) {
