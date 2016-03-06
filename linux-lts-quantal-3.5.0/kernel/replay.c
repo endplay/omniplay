@@ -979,6 +979,7 @@ struct replay_thread {
 	int rp_pin_attach_ndx;          // Used to order threads for multi-threaded attach
 	u_long rp_pin_thread_data;      // Address of thread-specific Pin data
 	u_long __user* rp_pin_curthread_ptr;// Pin TLS ptr to update on context switch
+	int rp_pin_switch_before_attach; // Used for "lost wakeup" problem where attach happens after switch
 
 	int gdb_state;	      // State of gdb. 0 = not attached. 1 = attached
 	long rp_ckpt_save_args_head;     // Really hard to get this info on restore, so save it
@@ -2118,6 +2119,7 @@ new_replay_thread (struct replay_group* prg, struct record_thread* prec_thrd, u_
 	prp->rp_pin_attaching = PIN_ATTACHING_NONE;
 	prp->rp_pin_thread_data = 0;
 	prp->rp_pin_curthread_ptr = NULL;
+	prp->rp_pin_switch_before_attach = 0;
 
 	if (pfiles) {
 		prp->rp_cache_files = pfiles;
@@ -2854,6 +2856,10 @@ int set_pin_address (u_long pin_address, u_long thread_data, u_long __user* curt
 		prept->app_syscall_addr = pin_address;
 		prept->rp_pin_thread_data = thread_data;
 		prept->rp_pin_curthread_ptr = curthread_ptr;
+		if (prept->rp_pin_switch_before_attach) {
+			printk ("switched before this attach so update current thread\n");	
+			put_user (prept->rp_pin_thread_data, prept->rp_pin_curthread_ptr);
+		}
 		if (prept->rp_pin_attaching) {
 			*attach_ndx = prept->rp_pin_attach_ndx;
 			if (prept->rp_record_thread->rp_record_pid != prept->rp_group->rg_attach_pid) {
@@ -5278,7 +5284,13 @@ get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, stru
 				    || (original_status == REPLAY_STATUS_WAIT_CLOCK && tmp->rp_status == REPLAY_STATUS_RUNNING && tmp->rp_wait_clock <= *(prt->rp_preplay_clock))){
 
 					tmp->rp_status = REPLAY_STATUS_RUNNING;
-					if (tmp->rp_pin_thread_data) put_user (tmp->rp_pin_thread_data, tmp->rp_pin_curthread_ptr);
+					if (tmp->rp_pin_thread_data) {
+						put_user (tmp->rp_pin_thread_data, tmp->rp_pin_curthread_ptr);
+					} else if (prt->rp_pin_thread_data) {
+						printk ("Pid %d: I have pin thread data but switching thread %d (recpid %d) does not\n", 
+							current->pid, tmp->rp_replay_pid, tmp->rp_record_thread->rp_record_pid);
+						tmp->rp_pin_switch_before_attach = 1;
+					}
 					wake_up (&tmp->rp_waitq);
 					DPRINT ("Wake it up\n");
 					break;

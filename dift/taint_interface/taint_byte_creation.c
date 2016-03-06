@@ -595,6 +595,10 @@ static inline void fill_outbuf (char* pout, struct taint_creation_info* tci, voi
 	memcpy (pout, &value, sizeof(taint_t));
 	pout += sizeof(taint_t);
     }
+#ifdef TAINT_DEBUG
+    fprintf (debug_f, "output %lx-%lx size %d clock %ld\n", 
+	     debug_taint_cnt-size, debug_taint_cnt, size, *ppthread_log_clock);
+#endif
 }
 
 void output_buffer_result (void* buf, int size,

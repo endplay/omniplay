@@ -1289,6 +1289,10 @@ void instrument_syscall(ADDRINT syscall_num,
     struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
     tdata->sysnum = sysnum;
     tdata->syscall_in_progress = true;
+#ifdef TAINT_DEBUG
+    fprintf (debug_f, "Thread %d sees sysnum %d in progress\n", tdata->record_pid, sysnum);
+    if (current_thread != tdata) fprintf (debug_f, "current thread %d tdata %d\n", current_thread->record_pid, tdata->record_pid);
+#endif
 
     if (sysnum == 31) {
 	tdata->ignore_flag = (u_long) syscallarg1;
@@ -1353,7 +1357,9 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
 	    }
 	} else {
 #ifdef TAINT_DEBUG
-	    fprintf (debug_f, "Syscall not in progress for global_syscall_cnt %ld sysnum %d\n", global_syscall_cnt, current_thread->sysnum);
+	  fprintf (debug_f, "Syscall not in progress for global_syscall_cnt %ld sysnum %d thread %d\n", global_syscall_cnt, current_thread->sysnum, current_thread->record_pid);
+	  struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+	  fprintf (debug_f, "tdata is %p current_thread is %p\n", tdata, current_thread);
 #endif
 	}
     } else {
@@ -13471,6 +13477,7 @@ void trace_inst(ADDRINT ptr)
     taint_debug_inst = ptr;
 }
 #endif
+#if 0
 void trace_inst(ADDRINT ip)
 {
     if (*ppthread_log_clock > 12769910 && *ppthread_log_clock < 12769938) { 
@@ -13482,6 +13489,7 @@ void trace_inst(ADDRINT ip)
 	PIN_UnlockClient();
     }
 }
+#endif
 
 void instruction_instrumentation(INS ins, void *v)
 {
@@ -14275,7 +14283,9 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 
     int thread_ndx;
     long thread_status = set_pin_addr (dev_fd, (u_long) &(ptdata->app_syscall), ptdata, (void **) &current_thread, &thread_ndx);
-    //printf ("Thread %d gets rc %ld ndx %d from set_pin_addr\n", ptdata->record_pid, thread_status, thread_ndx);
+#ifdef DEBUG
+    fprintf (debug_f, "Thread %d gets rc %ld ndx %d from set_pin_addr\n", ptdata->record_pid, thread_status, thread_ndx);
+#endif
     if (thread_status < 2) {
 	current_thread = ptdata;
     }
