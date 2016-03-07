@@ -134,6 +134,7 @@ int main (int argc, char* argv[])
     int rc;
     char dirname[80];
     int wait_for_response = 0, validate = 0, get_stats = 0, sync_files = 0, nw_compress = 0, low_memory = 0, filter_inet = 0;
+    char* filter_part = NULL;
     char* dest_dir, *cmp_dir;
     struct vector<struct replay_path> log_files;
     struct vector<struct cache_info> cache_files;
@@ -159,6 +160,9 @@ int main (int argc, char* argv[])
 	    low_memory = 1;
 	} else if (!strcmp (argv[i], "-filter_inet")) {
 	    filter_inet = 1;
+	} else if (!strcmp (argv[i], "-filter_part")) {
+	    filter_part = argv[i+1];
+	    i++;
 	} else if (!strcmp (argv[i], "-stats")) {
 	    get_stats = 1;
 	} else if (!strcmp (argv[i], "-v")) {
@@ -211,9 +215,8 @@ int main (int argc, char* argv[])
 	char line[256];
 	if (fgets (line, 255, file)) {
 	    struct epoch e;
-
-	    rc = sscanf (line, "%d %c %u %c %u %u %u %u\n", &e.data.start_pid, &e.data.start_level, &e.data.start_clock, &e.data.stop_level, &e.data.stop_clock, &e.data.filter_syscall, &e.data.ckpt, &e.data.fork_flags);
-	    e.data.filter_inet = filter_inet;
+	    u_int unused;
+	    rc = sscanf (line, "%d %c %u %c %u %u %u %u\n", &e.data.start_pid, &e.data.start_level, &e.data.start_clock, &e.data.stop_level, &e.data.stop_clock, &unused, &e.data.ckpt, &e.data.fork_flags);
 	    if (rc != 8) {
 		fprintf (stderr, "Unable to parse line of epoch descrtion file: %s\n", line);
 		return -1;
@@ -324,16 +327,22 @@ int main (int argc, char* argv[])
 			    cinfo.ino = pretvals->ino;
 			    cinfo.mtime = pretvals->mtime;
 			    test_and_set(cache_files, cinfo);
-			    //cache_files.push_back(cinfo);
+#if 0
+			    printf ("open cache file dev %x ino %x mtime %lx.%lx log %s\n", 
+				    cinfo.dev, cinfo.ino, cinfo.mtime.tv_sec, cinfo.mtime.tv_nsec, de->d_name);
+#endif
 			}
 		    } else if (res->psr.sysnum == 11) {
 			struct execve_retvals* pretvals = (struct execve_retvals *) res->retparams;
-			if (pretvals) {
+			if (pretvals && !pretvals->is_new_group) {
 			    cinfo.dev = pretvals->data.same_group.dev;
 			    cinfo.ino = pretvals->data.same_group.ino;
 			    cinfo.mtime = pretvals->data.same_group.mtime;
 			    test_and_set(cache_files, cinfo);
-//			    cache_files.push_back(cinfo);
+#if 0
+			    printf ("exec cache file dev %x ino %x mtime %lx.%lx log %s\n", 
+				    cinfo.dev, cinfo.ino, cinfo.mtime.tv_sec, cinfo.mtime.tv_nsec, de->d_name);
+#endif
 			}
 		    } else if (res->psr.sysnum == 86 || res->psr.sysnum == 192) {
 			struct mmap_pgoff_retvals* pretvals = (struct mmap_pgoff_retvals *) res->retparams;
@@ -342,7 +351,10 @@ int main (int argc, char* argv[])
 			    cinfo.ino = pretvals->ino;
 			    cinfo.mtime = pretvals->mtime;
 			    test_and_set(cache_files, cinfo);
-//			    cache_files.push_back(cinfo);
+#if 0
+			    printf ("mmap cache file dev %x ino %x mtime %lx.%lx log %s\n", 
+				    cinfo.dev, cinfo.ino, cinfo.mtime.tv_sec, cinfo.mtime.tv_nsec, de->d_name);
+#endif
 			}
 		    }
 		}
@@ -363,6 +375,14 @@ int main (int argc, char* argv[])
 	if (get_stats) ehdr.flags |= SEND_STATS;
 	if (nw_compress) ehdr.flags |= NW_COMPRESS;
 	if (low_memory) ehdr.flags |= LOW_MEMORY;
+	
+	ehdr.filter_flags = 0;
+	if (filter_inet) ehdr.filter_flags |= FILTER_INET;
+	if (filter_part) {
+	    ehdr.filter_flags |= FILTER_PART;
+	    strcpy (ehdr.filter_data, filter_part);
+	}
+
 	strcpy (ehdr.dirname, dirname);
 	ehdr.epochs = conf.aggregators[i]->num_epochs;
 	if (i == 0) {

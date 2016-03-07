@@ -161,7 +161,9 @@ long pthread_shm_path (void);
 /* For obtaining list of open sockets */
 struct monitor_data {
 	int fd;
+	int type;
 	int data;
+	char channel[256];
 };
 long get_open_socks (struct monitor_data __user* entries, int num_entries);
 

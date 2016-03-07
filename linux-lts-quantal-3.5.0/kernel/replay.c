@@ -982,13 +982,14 @@ struct replay_thread {
 	int rp_pin_attach_ndx;          // Used to order threads for multi-threaded attach
 	u_long rp_pin_thread_data;      // Address of thread-specific Pin data
 	u_long __user* rp_pin_curthread_ptr;// Pin TLS ptr to update on context switch
+	int rp_pin_switch_before_attach; // Used for "lost wakeup" problem where attach happens after switch
 
 	int gdb_state;	      // State of gdb. 0 = not attached. 1 = attached
 	long rp_ckpt_save_args_head;     // Really hard to get this info on restore, so save it
 	long rp_ckpt_save_expected_clock; // Really hard to get this info on restore, so save it
 	struct semaphore* rp_ckpt_restart_sem; // Really hard to get this info on restore, so save it
         struct replay_cache_files* rp_cache_files; // Info about open cache files
-
+        struct replay_cache_files* rp_mmap_files; // Info about open cache files
 };
 
 /* Prototypes */
@@ -2079,7 +2080,8 @@ new_record_thread (struct record_group* prg, u_long recpid, struct record_cache_
 
 /* Creates a new replay thread */
 static struct replay_thread* 
-new_replay_thread (struct replay_group* prg, struct record_thread* prec_thrd, u_long reppid, u_long out_ptr, struct replay_cache_files* pfiles)
+new_replay_thread (struct replay_group* prg, struct record_thread* prec_thrd, u_long reppid, u_long out_ptr, 
+		   struct replay_cache_files* pfiles, struct replay_cache_files* pmfiles)
 {
 	struct replay_thread* prp = KMALLOC (sizeof(struct replay_thread), GFP_KERNEL);
 	if (prp == NULL) {
@@ -2130,12 +2132,25 @@ new_replay_thread (struct replay_group* prg, struct record_thread* prec_thrd, u_
 	prp->rp_pin_attaching = PIN_ATTACHING_NONE;
 	prp->rp_pin_thread_data = 0;
 	prp->rp_pin_curthread_ptr = NULL;
+
+	prp->rp_pin_switch_before_attach = 0;
+
 	if (pfiles) {
 		prp->rp_cache_files = pfiles;
 		get_replay_cache_files (pfiles);
 	} else {
 		prp->rp_cache_files = init_replay_cache_files();
 		if (prp->rp_cache_files == NULL) {
+			KFREE (prp);
+			return NULL;
+		}
+	}
+	if (pmfiles) {
+		prp->rp_mmap_files = pmfiles;
+		get_replay_cache_files (pmfiles);
+	} else {
+		prp->rp_mmap_files = init_replay_cache_files();
+		if (prp->rp_mmap_files == NULL) {
 			KFREE (prp);
 			return NULL;
 		}
@@ -2211,6 +2226,7 @@ __destroy_replay_thread (struct replay_thread* prp)
 	BUG_ON (ds_list_remove(prp->rp_group->rg_replay_threads, prp) == NULL);
 
 	put_replay_cache_files (prp->rp_cache_files);
+	put_replay_cache_files (prp->rp_mmap_files);
 
 	// Decrement the record thread's refcnt and maybe destroy it.
 	__destroy_record_thread (prp->rp_record_thread);
@@ -2854,6 +2870,10 @@ int set_pin_address (u_long pin_address, u_long thread_data, u_long __user* curt
 		prept->app_syscall_addr = pin_address;
 		prept->rp_pin_thread_data = thread_data;
 		prept->rp_pin_curthread_ptr = curthread_ptr;
+		if (prept->rp_pin_switch_before_attach) {
+			printk ("switched before this attach so update current thread\n");	
+			put_user (prept->rp_pin_thread_data, prept->rp_pin_curthread_ptr);
+		}
 		if (prept->rp_pin_attaching) {
 			*attach_ndx = prept->rp_pin_attach_ndx;
 			if (prept->rp_record_thread->rp_record_pid != prept->rp_group->rg_attach_pid) {
@@ -3563,7 +3583,7 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 
 	if (ckpt_at > 0) prepg->rg_checkpoint_at = ckpt_at;
 
-	prept = new_replay_thread (prepg, prect, current->pid, 0, NULL);
+	prept = new_replay_thread (prepg, prect, current->pid, 0, NULL, NULL);
 	if (prept == NULL) {
 		destroy_replay_group (prepg);
 		destroy_record_group (precg);
@@ -3826,7 +3846,7 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* 
 		return -ENOMEM;
 	}
 
-	prept = new_replay_thread (prepg, prect, current->pid, 0, NULL);
+	prept = new_replay_thread (prepg, prect, current->pid, 0, NULL, NULL);
 	if (prept == NULL) {
 		destroy_replay_group (prepg);
 		destroy_record_group (precg);
@@ -4007,7 +4027,7 @@ replay_full_ckpt_proc_wakeup (char* logdir, char* filename, int fd)
 		return -ENOMEM;
 	}
 
-	prept = new_replay_thread (pckpt_waiter->prepg, prect, current->pid, 0, NULL);
+	prept = new_replay_thread (pckpt_waiter->prepg, prect, current->pid, 0, NULL, NULL);
 	if (prept == NULL) {
 		printk ("replay_fill_ckpt_proc_wakeup: cannot create replay thread\n");
 		return -ENOMEM;
@@ -5357,7 +5377,13 @@ get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, stru
 				    || (original_status == REPLAY_STATUS_WAIT_CLOCK && tmp->rp_status == REPLAY_STATUS_RUNNING && tmp->rp_wait_clock <= *(prt->rp_preplay_clock))){
 
 					tmp->rp_status = REPLAY_STATUS_RUNNING;
-					if (tmp->rp_pin_thread_data) put_user (tmp->rp_pin_thread_data, tmp->rp_pin_curthread_ptr);
+					if (tmp->rp_pin_thread_data) {
+						put_user (tmp->rp_pin_thread_data, tmp->rp_pin_curthread_ptr);
+					} else if (prt->rp_pin_thread_data) {
+						printk ("Pid %d: I have pin thread data but switching thread %d (recpid %d) does not\n", 
+							current->pid, tmp->rp_replay_pid, tmp->rp_record_thread->rp_record_pid);
+						tmp->rp_pin_switch_before_attach = 1;
+					}
 					wake_up (&tmp->rp_waitq);
 					DPRINT ("Wake it up\n");
 					break;
@@ -8243,7 +8269,9 @@ replay_open (const char __user * filename, int flags, int mode)
 	long rc, fd;
 
 	rc = get_next_syscall (5, (char **) &pretvals);	
+	DPRINT("replay_open(%s,%d,%d) returns %ld\n", filename,flags,mode,rc);
 	if (rc == -EINTR && current->replay_thrd->rp_pin_attaching) return rc;
+	if (rc >= 0) xray_monitor_add_fd(current->replay_thrd->rp_group->rg_open_socks, rc, MONITOR_FILE, 0, filename);
 	if (pretvals) {
 		fd = open_cache_file (pretvals->dev, pretvals->ino, pretvals->mtime, flags);
 		DPRINT ("replay_open: opened cache file %s flags %x fd is %ld rc is %ld\n", filename, flags, fd, rc);
@@ -8292,10 +8320,17 @@ replay_close (int fd)
 	DPRINT("replay_close(%d)\n", fd);
 	rc = get_next_syscall (6, NULL);
 	if (rc == -EINTR && current->replay_thrd->rp_pin_attaching) return rc;
-	if (rc >= 0 && is_replay_cache_file (current->replay_thrd->rp_cache_files, fd, &cache_fd)) {
-		clear_replay_cache_file (current->replay_thrd->rp_cache_files, fd);
-		DPRINT ("pid %d about to close cache fd %d fd %d\n", current->pid, cache_fd, fd);
-		sys_close (cache_fd);
+	if (rc >= 0) {
+		if (is_replay_cache_file (current->replay_thrd->rp_cache_files, fd, &cache_fd)) {
+			clear_replay_cache_file (current->replay_thrd->rp_cache_files, fd);
+			DPRINT ("pid %d about to close cache fd %d fd %d\n", current->pid, cache_fd, fd);
+			sys_close (cache_fd);
+		}
+		if (is_replay_cache_file (current->replay_thrd->rp_mmap_files, fd, &cache_fd)) {
+			clear_replay_cache_file (current->replay_thrd->rp_mmap_files, fd);
+			printk ("pid %d about to close mmap cache fd %d fd %d\n", current->pid, cache_fd, fd);
+			sys_close (cache_fd);
+		}
 	}
 	if (xray_monitor_has_fd(current->replay_thrd->rp_group->rg_open_socks, fd)) {
 		xray_monitor_remove_fd(current->replay_thrd->rp_group->rg_open_socks, fd);
@@ -8552,6 +8587,7 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 	if (retval >= 0) {
 
 		close_replay_cache_files(prt->rp_cache_files); // Simpler to just close whether group survives or not
+		close_replay_cache_files(prt->rp_mmap_files); 
 		if (retparams->is_new_group) {
 			if (current->vfork_done) complete_vfork_done (current);
 
@@ -10130,8 +10166,7 @@ replay_socketcall (int call, unsigned long __user *args)
 
 	switch (call) {
 	case SYS_SOCKET:
-		printk ("Socket domain %ld rc %ld\n", kargs[0], rc);
-		xray_monitor_add_fd(current->replay_thrd->rp_group->rg_open_socks, rc, kargs[0]);
+		xray_monitor_add_fd(current->replay_thrd->rp_group->rg_open_socks, rc, MONITOR_SOCKET, kargs[0], NULL);
 	case SYS_CONNECT:
 		if (retparams) argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct generic_socket_retvals));
 		return rc;
@@ -10949,10 +10984,12 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 		DPRINT ("Cloning new replay thread\n");
 		if (clone_flags&CLONE_FILES) {
 			// file descriptor table is shared so share handles to clone files
-			tsk->replay_thrd = new_replay_thread(prg, prt, pid, 0, current->replay_thrd->rp_cache_files);
+			tsk->replay_thrd = new_replay_thread(prg, prt, pid, 0, current->replay_thrd->rp_cache_files,
+							     current->replay_thrd->rp_mmap_files);
 		} else {
-			tsk->replay_thrd = new_replay_thread(prg, prt, pid, 0, NULL);
+		  tsk->replay_thrd = new_replay_thread(prg, prt, pid, 0, NULL, NULL);
 			copy_replay_cache_files (current->replay_thrd->rp_cache_files, tsk->replay_thrd->rp_cache_files);
+			copy_replay_cache_files (current->replay_thrd->rp_mmap_files, tsk->replay_thrd->rp_mmap_files);
 		}
 		BUG_ON (!tsk->replay_thrd);
 
@@ -12584,10 +12621,11 @@ replay_vfork_handler (struct task_struct* tsk)
 	/* Update our replay_thrd with this information */
 	tsk->record_thrd = NULL;
 	DPRINT ("Cloning new replay thread\n");
-	tsk->replay_thrd = new_replay_thread(prg, prt, tsk->pid, 0, NULL);
+	tsk->replay_thrd = new_replay_thread(prg, prt, tsk->pid, 0, NULL, NULL);
 	BUG_ON (!tsk->replay_thrd);
 	
 	copy_replay_cache_files (current->replay_thrd->rp_cache_files, tsk->replay_thrd->rp_cache_files);
+	copy_replay_cache_files (current->replay_thrd->rp_mmap_files, tsk->replay_thrd->rp_mmap_files);
 
 	// inherit the parent's app_syscall_addr
 	tsk->replay_thrd->app_syscall_addr = current->replay_thrd->app_syscall_addr;
@@ -12757,12 +12795,12 @@ static asmlinkage long
 replay_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, unsigned long flags, unsigned long fd, unsigned long pgoff)
 {
 	u_long retval, rc, is_cache_file;
-	int given_fd = fd;
+	int cache_fd, given_fd = fd;
 	struct mmap_pgoff_retvals* recbuf = NULL;
 	struct replay_thread* prt = current->replay_thrd;
 	struct syscall_result* psr;
 
-    DPRINT("mmap(%lu, %lu, %lu, %lu, %lu, %lu)\n", addr, len, prot, flags, fd, pgoff);
+	DPRINT("mmap(%lu, %lu, %lu, %lu, %lu, %lu)\n", addr, len, prot, flags, fd, pgoff);
 	if (is_pin_attached()) {
 		DPRINT ("replay_mmap_pgoff - is_pin_attached() - pin is attached\n");
 		rc = prt->rp_saved_rc;
@@ -12777,7 +12815,14 @@ replay_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, un
 
 	if (recbuf) {
 		rg_lock(prt->rp_record_thread->rp_group);
-		given_fd = open_mmap_cache_file (recbuf->dev, recbuf->ino, recbuf->mtime, (prot&PROT_WRITE) && (flags&MAP_SHARED));
+		if (is_replay_cache_file (prt->rp_mmap_files, fd, &cache_fd)) {
+			printk ("mmap reusing cache file %d for fd %ld\n", cache_fd, fd);
+			given_fd = cache_fd;
+		} else {
+			given_fd = open_mmap_cache_file (recbuf->dev, recbuf->ino, recbuf->mtime, (prot&PROT_WRITE) && (flags&MAP_SHARED));
+			printk ("mmap using cache file %d for fd %ld\n", given_fd, fd);
+			if (set_replay_cache_file (prt->rp_mmap_files, fd, given_fd) < 0) return syscall_mismatch();
+		}
 		rg_unlock(prt->rp_record_thread->rp_group);
 		DPRINT ("replay_mmap_pgoff opens cache file %x %lx %lx.%lx, fd = %d\n", recbuf->dev, recbuf->ino, recbuf->mtime.tv_sec, recbuf->mtime.tv_nsec, given_fd);
 		if (given_fd < 0) {

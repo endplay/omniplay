@@ -279,6 +279,7 @@ extern int dump_mem_taints (int fd);
 extern int dump_reg_taints (int fd, taint_t* pregs);
 extern int dump_mem_taints_start (int fd);
 extern int dump_reg_taints_start (int fd, taint_t* pregs);
+extern taint_t taint_num;
 
 #ifdef TAINT_DEBUG
 extern void print_taint_debug_reg (int tid, taint_t* pregs);
@@ -602,8 +603,6 @@ static inline void sys_read_stop(int rc)
             read_fileno = FILENO_STDIN;
         }
 
-        SYSCALL_DEBUG (stderr, "read_stop from file: %s\n", channel_name);
-
         tci.rg_id = current_thread->rg_id;
         tci.record_pid = current_thread->record_pid;
         tci.syscall_cnt = current_thread->syscall_cnt;
@@ -618,7 +617,6 @@ static inline void sys_read_stop(int rc)
 #ifdef LINKAGE_FDTRACK
         //fprintf(stderr, "read from fd %d\n", ri->fd);
         if (is_fd_tainted(ri->fd)) {
-            fprintf(stderr, "taint fd %d to mem %lu\n", ri->fd, (u_long) ri->buf);
             taint_add_fd2mem((u_long) ri->buf, rc, ri->fd);
         }
 #endif
@@ -654,10 +652,7 @@ static inline void sys_pread_stop(int rc)
             channel_name = oi->name;
         } else if(ri->fd == fileno(stdin)) {
             read_fileno = 0;
-        } else {
         }
-
-        SYSCALL_DEBUG (stderr, "pread_stop from file: %s\n", channel_name);
 
         tci.rg_id = current_thread->rg_id;
         tci.record_pid = current_thread->record_pid;
@@ -1028,7 +1023,6 @@ static void sys_recv_stop(int rc)
 		channel_name = (char *) "recvsocket";
 	    }
         }
-        SYSCALL_DEBUG (stderr, "recv_stop\n");
 
         tci.rg_id = current_thread->rg_id;
         tci.record_pid = current_thread->record_pid;
@@ -1043,7 +1037,6 @@ static void sys_recv_stop(int rc)
 
 #ifdef LINKAGE_FDTRACK
         if (is_fd_tainted(ri->fd)) {
-            fprintf(stderr, "taint fd %d to mem %lu\n", ri->fd, (u_long) ri->buf);
             taint_fd2mem((u_long) ri->buf, rc, ri->fd);
         }
 #endif
@@ -1086,7 +1079,7 @@ static void sys_recvmsg_stop(int rc)
             read_fileno = -1;
         }
 
-        SYSCALL_DEBUG (stderr, "rcvmsg_stop from file: %s\n", channel_name);
+        //fprintf (stderr, "rcvmsg_stop from channel: %s\n", channel_name);
         tci.rg_id = current_thread->rg_id;
         tci.record_pid = current_thread->record_pid;
         tci.syscall_cnt = current_thread->syscall_cnt;
@@ -1230,6 +1223,7 @@ void syscall_start(struct thread_data* tdata, int sysnum, ADDRINT syscallarg0, A
 	    sys_read_start(tdata, (int) syscallarg0, (char *) syscallarg1, (int) syscallarg2);
             break;
         case SYS_write:
+        case SYS_pwrite64:
             sys_write_start(tdata, (int) syscallarg0, (char *) syscallarg1, (int) syscallarg2);
             break;
         case SYS_writev:
@@ -1306,6 +1300,7 @@ void syscall_end(int sysnum, ADDRINT ret_value)
             sys_read_stop(rc);
             break;
         case SYS_write:
+        case SYS_pwrite64:
             sys_write_stop(rc);
             break;
         case SYS_writev:
@@ -1367,6 +1362,10 @@ void instrument_syscall(ADDRINT syscall_num,
     struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
     tdata->sysnum = sysnum;
     tdata->syscall_in_progress = true;
+#ifdef TAINT_DEBUG
+    fprintf (debug_f, "Thread %d sees sysnum %d in progress\n", tdata->record_pid, sysnum);
+    if (current_thread != tdata) fprintf (debug_f, "current thread %d tdata %d\n", current_thread->record_pid, tdata->record_pid);
+#endif
 
     if (sysnum == 31) {
 	tdata->ignore_flag = (u_long) syscallarg1;
@@ -1396,9 +1395,7 @@ void instrument_syscall(ADDRINT syscall_num,
 void syscall_after (ADDRINT ip)
 {
     if (current_thread->app_syscall == 999) {
-	if (check_clock_after_syscall (dev_fd) != 0) {
-	    fprintf (stderr, "Check clock failed\n");
-	}
+	check_clock_after_syscall (dev_fd);
 	current_thread->app_syscall = 0;  
     }
 }
@@ -1433,7 +1430,9 @@ void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD 
 	    }
 	} else {
 #ifdef TAINT_DEBUG
-	    fprintf (debug_f, "Syscall not in progress for global_syscall_cnt %ld sysnum %d\n", global_syscall_cnt, current_thread->sysnum);
+	  fprintf (debug_f, "Syscall not in progress for global_syscall_cnt %ld sysnum %d thread %d\n", global_syscall_cnt, current_thread->sysnum, current_thread->record_pid);
+	  struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
+	  fprintf (debug_f, "tdata is %p current_thread is %p\n", tdata, current_thread);
 #endif
 	}
     } else {
@@ -13551,6 +13550,7 @@ void trace_inst(ADDRINT ptr)
     taint_debug_inst = ptr;
 }
 #endif
+#if 0
 void trace_inst(ADDRINT ip)
 {
     if (*ppthread_log_clock > 12769910 && *ppthread_log_clock < 12769938) { 
@@ -13562,6 +13562,7 @@ void trace_inst(ADDRINT ip)
 	PIN_UnlockClient();
     }
 }
+#endif
 
 void instruction_instrumentation(INS ins, void *v)
 {
@@ -14355,7 +14356,9 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 
     int thread_ndx;
     long thread_status = set_pin_addr (dev_fd, (u_long) &(ptdata->app_syscall), ptdata, (void **) &current_thread, &thread_ndx);
-    //printf ("Thread %d gets rc %ld ndx %d from set_pin_addr\n", ptdata->record_pid, thread_status, thread_ndx);
+#ifdef DEBUG
+    fprintf (debug_f, "Thread %d gets rc %ld ndx %d from set_pin_addr\n", ptdata->record_pid, thread_status, thread_ndx);
+#endif
     if (thread_status < 2) {
 	current_thread = ptdata;
     }
@@ -14485,7 +14488,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
             if (!arg) {
                 break;
             }
-            LOG_PRINT ("arg is %s\n", arg);
+            fprintf (stderr, "input arg is %s\n", arg);
             tci.offset = acc;
             create_taints_from_buffer(arg, strlen(arg) + 1, &tci, tokens_fd,
                                                             (char *) "EXEC_ARG");
@@ -14503,7 +14506,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
             if (!arg) {
                 break;
             }
-            LOG_PRINT ("arg is %s\n", arg);
+            fprintf ("input arg is %s\n", arg);
             tci.offset = acc;
             create_taints_from_buffer(arg, strlen(arg) + 1, &tci, tokens_fd,
                                                             (char *) "EXEC_ENV");
@@ -14591,21 +14594,29 @@ VOID ImageLoad (IMG img, VOID *v)
 
 int get_open_file_descriptors ()
 {
-    struct open_socket osockets[4096];
-    long rc = get_open_sockets (dev_fd, osockets, 4096);
+    struct open_fd ofds[4096];
+    long rc = get_open_fds (dev_fd, ofds, 4096);
     if (rc < 0) {
 	fprintf (stderr, "get_open_file_desciptors returns %ld\n", rc);
 	return rc;
     }
 
     for (long i = 0; i < rc; i++) {
-	struct socket_info* si = (struct socket_info *) malloc (sizeof(struct socket_info));
-	si->domain = osockets[i].data;
-	si->type = -1;
-	si->protocol = -1;
-	si->fileno = -1; 
-	si->ci = NULL;
-        monitor_add_fd(open_socks, osockets[i].fd, 0, si);
+	if (ofds[i].type == OPEN_FD_TYPE_FILE) {
+	    struct open_info* oi = (struct open_info *) malloc (sizeof(struct open_info));
+	    strcpy (oi->name, ofds[i].channel);
+	    oi->flags = 0;
+	    oi->fileno = 0;
+	    monitor_add_fd(open_fds, ofds[i].fd, 0, oi);
+	} else if (ofds[i].type == OPEN_FD_TYPE_SOCKET) {
+	    struct socket_info* si = (struct socket_info *) malloc (sizeof(struct socket_info));
+	    si->domain = ofds[i].data;
+	    si->type = -1;
+	    si->protocol = -1;
+	    si->fileno = -1; 
+	    si->ci = NULL;
+	    monitor_add_fd(open_socks, ofds[i].fd, 0, si);
+	}
     }
 
     return 0;
