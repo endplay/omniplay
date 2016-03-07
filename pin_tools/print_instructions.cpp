@@ -313,11 +313,12 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 
     ptdata = (struct thread_data *) malloc (sizeof(struct thread_data));
     assert (ptdata);
-    printf ("Start of threadid %d ptdata %p\n", (int) threadid, ptdata);
+//    getppid();
+//    fprintf (stderr, "Start of threadid %d ptdata %p\n", (int) threadid, ptdata);
     
     ptdata->app_syscall = 0;
     ptdata->record_pid = get_record_pid();
-    ptdata->syscall_cnt = 0;
+    //   get_record_group_id(dev_fd, &(ptdata->rg_id));
 
 #ifdef USE_TLS_SCRATCH
     // set the TLS in the virutal register
@@ -326,10 +327,17 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
     PIN_SetThreadData (tls_key, ptdata, threadid);
 #endif
 
-    // On attach, don't do this when we are a waiting thread
-    if (set_pin_addr (fd, (u_long) &(ptdata->app_syscall), ptdata, (void **) &current_thread) == 0) {
+    int thread_ndx;
+    long thread_status = set_pin_addr (fd, (u_long) &(ptdata->app_syscall), ptdata, (void **) &current_thread, &thread_ndx);
+    /*
+     * DON'T PUT SYSCALLS ABOVE THIS POINT! 
+     */
+
+    if (thread_status < 2) {
 	current_thread = ptdata;
     }
+    fprintf (stderr,"Thread %d gets rc %ld ndx %d from set_pin_addr\n", ptdata->record_pid, thread_status, thread_ndx);
+
 }
 
 void thread_fini (THREADID threadid, const CONTEXT* ctxt, INT32 code, VOID* v)
@@ -481,7 +489,6 @@ int main(int argc, char** argv)
     // forks a new process
     PIN_AddForkFunction(FPOINT_AFTER_IN_CHILD, AfterForkInChild, 0);
 
-    IMG_AddInstrumentFunction (ImageLoad, 0);
     TRACE_AddInstrumentFunction (track_trace, 0);
 #ifdef DEBUG_FUNCTIONS
     RTN_AddInstrumentFunction (routine, 0);
