@@ -1213,7 +1213,6 @@ int should_call_recplay_exit_start() {
 
 }
 
-
 void print_memory_areas (void) 
 {
 	struct vm_area_struct *existing_mmap;
@@ -2131,7 +2130,6 @@ new_replay_thread (struct replay_group* prg, struct record_thread* prec_thrd, u_
 	prp->rp_pin_attaching = PIN_ATTACHING_NONE;
 	prp->rp_pin_thread_data = 0;
 	prp->rp_pin_curthread_ptr = NULL;
-
 	if (pfiles) {
 		prp->rp_cache_files = pfiles;
 		get_replay_cache_files (pfiles);
@@ -2851,7 +2849,7 @@ int set_pin_address (u_long pin_address, u_long thread_data, u_long __user* curt
 	struct replay_thread* prept = current->replay_thrd;
 
 	if (prept) {
-		printk ("set_pin_address: pin address for pid %d is %lx attaching %d status %d\n", 
+		printk ("set_pin_address: pin address for pid %d is %lx attaching %d status %d\n",
 			current->pid, pin_address, prept->rp_pin_attaching, prept->rp_status);
 		prept->app_syscall_addr = pin_address;
 		prept->rp_pin_thread_data = thread_data;
@@ -3515,7 +3513,6 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 	char** env;
 	char* execname;
 	__u64 rg_id;
-	__u64 count;	
 	mm_segment_t old_fs = get_fs();
 
 	printk("Replay Start\n");
@@ -3665,6 +3662,24 @@ should_take_checkpoint (void)
 	return (atomic_read (current->replay_thrd->rp_group->rg_rec_group->rg_pkrecord_clock) == current->replay_thrd->rp_group->rg_checkpoint_at);
 }
 
+int is_pin_attaching(void) 
+{ 
+	struct task_struct *task;
+	struct replay_thread *tmp;
+	struct replay_thread *prept = current->replay_thrd;	
+
+	if (!prept) return 0;
+	for (tmp = prept->rp_next_thread; tmp != prept; tmp = tmp->rp_next_thread) {
+
+		task = find_task_by_vpid(tmp->rp_replay_pid);
+		if(task && current->tgid == task->tgid && tmp->rp_pin_attaching == PIN_ATTACHING) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+
 long
 replay_full_ckpt (long rc)
 {
@@ -3731,8 +3746,7 @@ replay_full_ckpt (long rc)
 		tsk = pid_task (find_vpid(tmp->rp_replay_pid), PIDTYPE_PID);
 		if (tsk && tsk != current) {
 			struct replay_thread* prt = tsk->replay_thrd;
-			printk ("Checkpointing task %d status %d exp clock %lu argshead %ld read_log_pos %lu\n", tsk->pid, prt->rp_status, prt->rp_ckpt_save_expected_clock,
-				prt->rp_ckpt_save_args_head, prt->rp_record_thread->rp_read_log_pos);
+			printk ("Checkpointing task %d status %d exp clock %ld\n", tsk->pid, prt->rp_status, prt->rp_ckpt_save_expected_clock);
 			retval = replay_full_checkpoint_proc_to_disk (ckpt, tsk, prt->rp_record_thread->rp_record_pid, 0,
 								      prt->rp_record_thread->rp_read_log_pos, prt->rp_out_ptr, 
 								      prt->rp_ckpt_save_args_head, prt->rp_ckpt_save_expected_clock, &pos);
@@ -4033,7 +4047,6 @@ replay_full_ckpt_proc_wakeup (char* logdir, char* filename, int fd)
 	prept->rp_ckpt_restart_sem = &pckpt_waiter->sem2; 
 	prept->rp_out_ptr--;
 
-	MPRINT("pid %d consumed is %lu, read_log_pos %lu\n",current->pid,consumed, prect->rp_read_log_pos);
 
 	if (consumed > 0) argsconsume(prect, consumed);
 
@@ -5038,7 +5051,6 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 
 
 	MPRINT ("Replay Pid %d, index %ld sys %d\n", current->pid, prt->rp_out_ptr, psr->sysnum);
-
 	if (prt->rp_pin_attaching == PIN_ATTACHING_FF || prt->rp_pin_attaching == PIN_ATTACHING_RESTART) {
 		// Since we are redoing this system call, we need to go roll back to the beginnning
 	        u_long clock_adj = argsconsumed(prt->rp_record_thread)-prt->rp_ckpt_save_args_head;
@@ -5051,16 +5063,16 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 	//becuase of the way all we store the records, we are sometimes off sizeof(u_long)
 	if (prt->rp_status == REPLAY_STATUS_RESTART_CKPT && psr->flags & SR_HAS_START_CLOCK_SKIP) { 
 		argsrestore (prt->rp_record_thread, sizeof(u_long)); 
-		MPRINT ("Replay Pid %d, checkpointed consumed offset was off by the start_clock offset\n", current->pid);
+//		MPRINT ("Replay Pid %d, checkpointed consumed offset was off by the start_clock offset\n", current->pid);
 	}
-	MPRINT ("Replay Pid %d, flags %x argsconsumed %lu\n", current->pid, psr->flags, argsconsumed(prect));
+//	MPRINT ("Replay Pid %d, flags %x argsconsumed %lu\n", current->pid, psr->flags, argsconsumed(prect));
 
 	start_clock = prt->rp_expected_clock;
 	if (psr->flags & SR_HAS_START_CLOCK_SKIP) {
 		pclock = (u_long *) argshead(prect);
 		argsconsume(prect, sizeof(u_long));
 		start_clock += *pclock;		
-		MPRINT("Replay pid %d, argsconsumed %lu, pclock %lu, start_clock %lu\n", current->pid, argsconsumed(prect) - sizeof(u_long), *pclock, start_clock);
+//		MPRINT("Replay pid %d, argsconsumed %lu, pclock %lu, start_clock %lu\n", current->pid, argsconsumed(prect) - sizeof(u_long), *pclock, start_clock);
 		if (start_clock > 100000000) {
 			printk("start_clock %ld, pclock %ld, prt->rp_expected_clock %ld\n", start_clock, *pclock, prt->rp_expected_clock); 
 		}
@@ -5316,7 +5328,7 @@ get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, stru
 	if (psr->flags & SR_HAS_STOP_CLOCK_SKIP) stop_clock += prt->rp_stop_clock_skip;
 	prt->rp_expected_clock = stop_clock + 1;
 
-	MPRINT("syscall_exit: preplay_clock %lu, expected_clock %lu, stop_clock_skip %lu, stop_clock %lu\n",*(prt->rp_preplay_clock), prt->rp_expected_clock, prt->rp_stop_clock_skip, stop_clock);
+//	MPRINT("syscall_exit: preplay_clock %lu, expected_clock %lu, stop_clock_skip %lu, stop_clock %lu\n",*(prt->rp_preplay_clock), prt->rp_expected_clock, prt->rp_stop_clock_skip, stop_clock);
 
 	rg_lock (prg->rg_rec_group);
 	while (*(prt->rp_preplay_clock) < stop_clock) {
@@ -5530,7 +5542,7 @@ record_timings (struct replay_thread* prept, short syscall)
 
 	rc = sys_ioctl(prepg->rg_perf_fd, PERF_EVENT_IOC_DISABLE, 0);
 	if (rc < 0) printk("cannot PERF_EVENT_IOC_DISABLE!\n");
-	rc = sys_read(prepg->rg_perf_fd, &count, sizeof(__u64));	
+	rc = sys_read(prepg->rg_perf_fd, (char *)&count, sizeof(__u64));	
 
 	if (rc != sizeof(__u64)) {
 		printk("record_timings read %d bytes, val %llu\n", rc, count);
@@ -5603,6 +5615,7 @@ test_pin_attach (struct replay_thread* prept, int is_syscall)
 		if (prepg->rg_attach_device == ATTACH_PIN) {
 		    //ARQUINN: added logic to make it so pin_attaching only set on certain cases
 
+
 		    this_task = find_task_by_vpid(prept->rp_replay_pid);
 		    task = this_task;
 		    if(!this_task) {
@@ -5637,7 +5650,7 @@ test_pin_attach (struct replay_thread* prept, int is_syscall)
 			    //the else isn't a big deal... It can happen if the replay thread already exited
 			    MPRINT("%d: pid %d is not in the same process\n",current->pid, tmp->rp_replay_pid);
 			}
-		    }		   
+		    }
 		    return -EINTR; // Pin will restart syscall
 		}
 	}
@@ -10879,7 +10892,8 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 		// We also need to create a clone here 
 		pid = do_fork(clone_flags, stack_start, regs, stack_size, parent_tidptr, child_tidptr);
 
-		printk ("replay_clone: new Pid %d, record Pid %ld, parent pid %d flags %lx\n", pid, rc, current->pid, clone_flags);
+		printk ("currp%d, replay_clone: new Pid %d, record Pid %ld, parent pid %d flags %lx child_tidptr %p\n", current->pid, pid, rc, current->pid, clone_flags, child_tidptr);
+
 		MPRINT ("Pid %d in replay clone spawns child %d\n", current->pid, pid);
 		if (pid < 0) {
 			printk ("[DIFF]replay_clone: second clone failed, rc=%d\n", pid);
@@ -12643,9 +12657,8 @@ replay_vfork (unsigned long clone_flags, unsigned long stack_start, struct pt_re
 
 		// Next, we have to wait while child runs 
 		DPRINT ("replay_vfork: pid %d going to sleep\n", current->pid);
-//		printk("pid %d sleeping on wait queue at line %d, try_to_exit %d\n", current->pid, __LINE__, current->replay_thrd->rp_group->rg_try_to_exit);
 		ret = wait_event_interruptible_timeout (prt->rp_waitq, prt->rp_status == REPLAY_STATUS_RUNNING, SCHED_TO);
-//		printk("pid %d woken up from wait queue at line %d, try_to_exit %d\n", current->pid, __LINE__, current->replay_thrd->rp_group->rg_try_to_exit);
+
 		rg_lock(prg->rg_rec_group);
 		if (ret == 0) printk ("Replay pid %d timed out waiting for vfork to complete\n", current->pid);
 		if (prt->rp_status != REPLAY_STATUS_RUNNING) {
@@ -14243,7 +14256,9 @@ replay_prlimit64 (pid_t pid, unsigned int resource, const struct rlimit64 __user
 	if (retparams) {
 		if (copy_to_user (old_rlim, retparams, sizeof(struct rlimit64))) printk ("Pid %d replay_prlimit cannot copy to user\n", current->pid);
 		argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct rlimit64));
+		printk ("Pid %d prlimit64 is pulling from retparams\n", current->pid);
 	}
+
 	DPRINT ("replay_prlimit64 pid %d resource %u returns %ld\n", pid, resource, rc_orig);
 
 	return rc_orig;

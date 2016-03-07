@@ -57,6 +57,9 @@ int get_record_pending_signal (siginfo_t* info);
 /* used in order to correctly exit in a very particular pin bug*/
 int should_call_recplay_exit_start(void);
 
+/* used b/c pin calls set_tid_address on attach, and I'm just going to see if ignoring that works */
+int is_pin_attaching(void); 
+
 /* Called when a record/replay thread exits */
 void recplay_exit_start(void);
 void recplay_exit_middle(void);
