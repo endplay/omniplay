@@ -14419,8 +14419,6 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 		assert(0);
 	    }
 
-
-	    fprintf(stderr, "%d: make_token start_thread\n", PIN_GetPid());
 #endif
 #ifdef USE_FILE
             char name[256];
@@ -14453,7 +14451,6 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 		assert(0);
 	    }
 
-	    fprintf(stderr, "%d: make_ouput start_thread\n", PIN_GetPid());
 #endif
 #ifdef USE_FILE
             char output_file_name[256];
