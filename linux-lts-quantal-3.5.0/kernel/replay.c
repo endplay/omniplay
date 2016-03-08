@@ -5188,7 +5188,13 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 				    || (original_status == REPLAY_STATUS_WAIT_CLOCK && tmp->rp_status == REPLAY_STATUS_RUNNING && tmp->rp_wait_clock <= *(prt->rp_preplay_clock))){
 
 					tmp->rp_status = REPLAY_STATUS_RUNNING;
-					if (tmp->rp_pin_thread_data) put_user (tmp->rp_pin_thread_data, tmp->rp_pin_curthread_ptr);
+					if (tmp->rp_pin_thread_data) {
+						put_user (tmp->rp_pin_thread_data, tmp->rp_pin_curthread_ptr);
+					} else if (prt->rp_pin_thread_data) {
+						printk ("Pid %d: I have pin thread data but switching thread %d (recpid %d) does not\n", 
+							current->pid, tmp->rp_replay_pid, tmp->rp_record_thread->rp_record_pid);
+						tmp->rp_pin_switch_before_attach = 1;
+					}
 					wake_up (&tmp->rp_waitq);
 					DPRINT ("Wake it up\n");
 					break;
@@ -6169,7 +6175,14 @@ sys_pthread_block (u_long clock)
 				    || (original_status == REPLAY_STATUS_WAIT_CLOCK && tmp->rp_status == REPLAY_STATUS_RUNNING && tmp->rp_wait_clock <= *(prt->rp_preplay_clock))){
 
 					tmp->rp_status = REPLAY_STATUS_RUNNING;
-					if (tmp->rp_pin_thread_data) put_user (tmp->rp_pin_thread_data, tmp->rp_pin_curthread_ptr);
+					if (tmp->rp_pin_thread_data) {
+						put_user (tmp->rp_pin_thread_data, tmp->rp_pin_curthread_ptr);
+					} else if (prt->rp_pin_thread_data) {
+						printk ("Pid %d: I have pin thread data but switching thread %d (recpid %d) does not\n", 
+							current->pid, tmp->rp_replay_pid, tmp->rp_record_thread->rp_record_pid);
+						tmp->rp_pin_switch_before_attach = 1;
+					}
+
 					wake_up (&tmp->rp_waitq);
 					break;
 				}

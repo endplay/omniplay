@@ -1138,7 +1138,6 @@ SYSCALL_DEFINE1(set_tid_address, int __user *, tidptr)
 
 	/* REPLAY */
 	if (!is_pin_attaching()) { 
-		printk("pid %d, set_tid_address being called w/ %p\n",current->pid, tidptr);
 		current->clear_child_tid = tidptr;
 	}
 
