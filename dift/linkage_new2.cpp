@@ -988,7 +988,7 @@ static void sys_connect_stop(int rc)
 static void sys_recv_start(thread_data* tdata, int fd, char* buf, int size) 
 {
     // recv and read are similar so they can share the same info struct
-    struct read_info* ri = (struct read_info*) &current_thread->read_info_cache;
+    struct read_info* ri = (struct read_info*) &tdata->read_info_cache;
     ri->fd = fd;
     ri->buf = buf;
     tdata->save_syscall_info = (void *) ri;
@@ -997,11 +997,9 @@ static void sys_recv_start(thread_data* tdata, int fd, char* buf, int size)
 
 static void sys_recv_stop(int rc) 
 {
-    struct read_info* ri = (struct read_info *) current_thread->save_syscall_info;
+    struct read_info* ri = (struct read_info *) &current_thread->read_info_cache;
     LOG_PRINT ("Pid %d syscall recv returns %d\n", PIN_GetPid(), rc);
     SYSCALL_DEBUG (stderr, "Pid %d syscall recv returns %d\n", PIN_GetPid(), rc);
-    
-
 
     // If syscall cnt = 0, then write handled in previous epoch
     if (rc > 0) {
@@ -1031,8 +1029,8 @@ static void sys_recv_stop(int rc)
         tci.fileno = read_fileno;
         tci.data = 0;
 
-        LOG_PRINT ("Create taints from buffer sized %d at location %#lx\n",
-                        rc, (unsigned long) ri->buf);
+        LOG_PRINT ("Create taints from buffer sized %d at location %#lx, clock %lu\n",
+		   rc, (unsigned long) ri->buf, *ppthread_log_clock );
         create_taints_from_buffer(ri->buf, rc, &tci, tokens_fd, channel_name);
 
 #ifdef LINKAGE_FDTRACK
@@ -1042,7 +1040,7 @@ static void sys_recv_stop(int rc)
 #endif
 
     }
-    SYSCALL_DEBUG (stderr, "recv_done\n");
+    memset(&current_thread->read_info_cache, 0, sizeof(struct read_info));
     current_thread->save_syscall_info = 0;
 }
 
@@ -1243,7 +1241,7 @@ void syscall_start(struct thread_data* tdata, int sysnum, ADDRINT syscallarg0, A
         {
             int call = (int) syscallarg0;
             unsigned long *args = (unsigned long *)syscallarg1;
-            current_thread->socketcall = call;
+            tdata->socketcall = call;
 	    SYSCALL_DEBUG(stderr, "new socketcall is %d\n",call);
             switch (call) {
                 case SYS_SOCKET:
@@ -14356,7 +14354,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 
     int thread_ndx;
     long thread_status = set_pin_addr (dev_fd, (u_long) &(ptdata->app_syscall), ptdata, (void **) &current_thread, &thread_ndx);
-#ifdef DEBUG
+#ifdef TAINT_DEBUG
     fprintf (debug_f, "Thread %d gets rc %ld ndx %d from set_pin_addr\n", ptdata->record_pid, thread_status, thread_ndx);
 #endif
     if (thread_status < 2) {
@@ -14420,6 +14418,9 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 		fprintf(stderr, "could not truncate tokens %s, errno %d\n", token_file, errno);
 		assert(0);
 	    }
+
+
+	    fprintf(stderr, "%d: make_token start_thread\n", PIN_GetPid());
 #endif
 #ifdef USE_FILE
             char name[256];
@@ -14451,6 +14452,8 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 		fprintf(stderr, "could not truncate tokens %s, errno %d\n", output_file, errno);
 		assert(0);
 	    }
+
+	    fprintf(stderr, "%d: make_ouput start_thread\n", PIN_GetPid());
 #endif
 #ifdef USE_FILE
             char output_file_name[256];
