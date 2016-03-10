@@ -6155,8 +6155,12 @@ sys_pthread_block (u_long clock)
 	prg = prt->rp_group;
 
 	if (clock == INT_MAX) consume_remaining_records(); // Before we block forever, consume any remaining system call records
+
+        //moved this to above the check below. Some weird pin attach issue that I was having before where I think this was getting update while we're in this syscall?
+	// not sure how or why, but seemed we were failing on a can't find thread to run w/ the clock value of preplay_clock == clock
+	rg_lock (prg->rg_rec_group); 
 	while (*(prt->rp_preplay_clock) < clock) {
-		rg_lock (prg->rg_rec_group);
+
 
 		if (!(prt->rp_pin_attaching == PIN_ATTACHING_FF && prt->rp_status == REPLAY_STATUS_WAIT_CLOCK)) {
 			MPRINT ("Replay pid %d is waiting for user clock value %ld but current clock value is %ld\n", current->pid, clock, *(prt->rp_preplay_clock));
@@ -6169,7 +6173,7 @@ sys_pthread_block (u_long clock)
 
 			do {
 				DPRINT ("Consider thread %d status %d clock %ld\n", tmp->rp_replay_pid, tmp->rp_status, tmp->rp_wait_clock);
-				//addded the third condition... we'll see if this works. I think there's some sort of weird corner case we can find ourselves in on the pin attach
+				//added the third condition... we'll see if this works. I think there's some sort of weird corner case we can find ourselves in on the pin attach
 				if (tmp->rp_status == REPLAY_STATUS_ELIGIBLE 
 				    || (tmp->rp_status == REPLAY_STATUS_WAIT_CLOCK && tmp->rp_wait_clock <= *(prt->rp_preplay_clock)) 
 				    || (original_status == REPLAY_STATUS_WAIT_CLOCK && tmp->rp_status == REPLAY_STATUS_RUNNING && tmp->rp_wait_clock <= *(prt->rp_preplay_clock))){
@@ -6242,8 +6246,9 @@ sys_pthread_block (u_long clock)
 			MPRINT ("Replay pid %d woken up to die on block\n", current->pid);
 			sys_exit (0);
 		}
-		rg_unlock (prg->rg_rec_group);
 	}
+	//moved this to outside the while loop, see the comment before the lock above (which was also moved to outside the while loop)
+	rg_unlock (prg->rg_rec_group);
 	/* 
 	 * there's one case where we hit this function and we don't make it into the block above. Basically, pin will restart this function call 
 	 * after a pin attach. In this case, its possible that we run into a case where the rp_preplay_clock is not less than the clock value that
