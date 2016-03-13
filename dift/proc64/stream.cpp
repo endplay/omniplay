@@ -30,8 +30,7 @@ using namespace std;
 
 typedef PagedBitmap<MAX_TAINTS, PAGE_BITS> bitmap;
 
-
-//#define DEBUG(x) ((x)==0x1c8273)
+//#define DEBUG(x) ((x)==0xb1-0xa9)
 #define STATS
 
 #define PREPRUNE_NONE   0
@@ -3026,6 +3025,20 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 		      mdatasize, odatasize, idatasize, adatasize);
     if (rc < 0) return rc;
 
+#ifdef PARANOID
+    if (adatasize > 0) {
+	taint_t last = ts_log[0];
+	for (u_long i = 1; i < adatasize/sizeof(taint_entry); i++) {
+	    taint_t cur = ts_log[i*2];
+	    if (cur <= last) {
+		fprintf (stderr, "address entry %ld out of %ld is %x but previous was %x\n", i, adatasize/sizeof(taint_entry), cur, last);
+		return -1;
+	    }
+	    last = cur;
+	}
+    }
+#endif
+      
 #ifdef STATS
     gettimeofday(&recv_done_tv, NULL);
 #endif

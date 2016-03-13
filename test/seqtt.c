@@ -93,7 +93,7 @@ int main (int argc, char* argv[])
 	} else if (filter_partfile) {
 	    rc = execl ("../../../pin/pin", "pin", "-pid", cpids, "-t", "../dift/obj-ia32/linkage_data.so", "-i", "-e", filter_partfile, NULL);
 	} else {
-	    rc = execl ("../../../pin/pin", "pin", "-pid", cpids, "-t", "../dift/obj-ia32/linkage_data.so", "-i", NULL);
+	    rc = execl ("../../../pin/pin", "pin", "-pid", cpids, "-t", "../dift/obj-ia32/linkage_data.so", NULL);
 	}
 	  
 	fprintf (stderr, "execl of pin tool failed, rc=%d, errno=%d\n", rc, errno);

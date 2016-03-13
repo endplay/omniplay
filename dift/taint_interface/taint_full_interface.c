@@ -715,7 +715,7 @@ int dump_mem_taints_start(int fd)
     }
 
 #ifdef USE_SHMEM
-    if (ftruncate (fd, (dump_total_count+dumpindex)*sizeof(taint_t))) {
+    if (ftruncate (fd, dump_total_count+(dumpindex*sizeof(taint_t)))) {
 	fprintf (stderr, "Cound not truncate dump mem to %ld\n", dump_total_count*sizeof(taint_t));
 	assert (0);
     }

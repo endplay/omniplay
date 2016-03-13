@@ -38,6 +38,14 @@ using namespace std;
 #include "splice.h"
 #include "taint_nw.h"
 
+
+#define PIN_NORMAL         0
+#define PIN_ATTACH_RUNNING 1
+#define PIN_ATTACH_BLOCKED 2
+#define PIN_ATTACH_REDO    4
+
+u_int redo_syscall = 0;
+
 #if defined(USE_NW) || defined(USE_SHMEM)
 int s = -1;
 #endif
@@ -1290,8 +1298,8 @@ void instrument_syscall(ADDRINT syscall_num,
     tdata->sysnum = sysnum;
     tdata->syscall_in_progress = true;
 #ifdef TAINT_DEBUG
-    fprintf (debug_f, "Thread %d sees sysnum %d in progress\n", tdata->record_pid, sysnum);
-    if (current_thread != tdata) fprintf (debug_f, "current thread %d tdata %d\n", current_thread->record_pid, tdata->record_pid);
+      fprintf (debug_f, "Thread %d sees sysnum %d in progress\n", tdata->record_pid, sysnum);
+      if (current_thread != tdata) fprintf (debug_f, "current thread %d tdata %d\n", current_thread->record_pid, tdata->record_pid);
 #endif
 
     if (sysnum == 31) {
@@ -1319,6 +1327,31 @@ void instrument_syscall(ADDRINT syscall_num,
     tdata->app_syscall = syscall_num;
 }
 
+static void syscall_after_redo (ADDRINT ip)
+{
+    if (redo_syscall) {
+	u_long rc, len, retval;
+	if (check_for_redo (dev_fd) == 192) {
+	    redo_syscall--;
+	    //fprintf (stderr, "Instruction %x redo mmap please %d\n", ip, redo_syscall);
+	    retval = redo_mmap (dev_fd, &rc, &len);
+	    if (retval) fprintf (stderr, "redo_mmap failed, rc=%ld\n", retval);
+#if 0
+	    fprintf (stderr, "syscall_after, eax is %x\n", PIN_GetContextReg(ctxt, LEVEL_BASE::REG_EAX));
+	    fprintf (stderr, "syscall_after, ebx is %x\n", PIN_GetContextReg(ctxt, LEVEL_BASE::REG_EBX));
+	    fprintf (stderr, "syscall_after, ecx is %x\n", PIN_GetContextReg(ctxt, LEVEL_BASE::REG_ECX));
+#endif
+	    //fprintf (stderr, "Clearing taints %lx,%lx\n", rc, len);
+	    clear_mem_taints (rc, len);
+	    current_thread->app_syscall = 0;  
+	}
+    } else if (current_thread->app_syscall == 999) {
+	check_clock_after_syscall (dev_fd);
+	current_thread->app_syscall = 0;  
+    }
+}
+
+#if 0
 void syscall_after (ADDRINT ip)
 {
     if (current_thread->app_syscall == 999) {
@@ -1326,6 +1359,7 @@ void syscall_after (ADDRINT ip)
 	current_thread->app_syscall = 0;  
     }
 }
+#endif
 
 void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD std, VOID* v)
 {
@@ -1482,14 +1516,6 @@ void string_inspect(ADDRINT ptr)
             u_long mem_loc = ptr + i;
             output_xcoords(xoutput_fd, current_thread->syscall_cnt, 0, 0, mem_loc);
     }
-}
-
-void track_trace(TRACE trace, void* data)
-{
-    // System calls automatically end a Pin trace.
-    // So we can instrument every trace (instead of every instruction) to check to see if
-    // the beginning of the trace is the first instruction after a system call.
-    TRACE_InsertCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_after, IARG_INST_PTR, IARG_END);
 }
 
 void track_function(RTN rtn, void* v)
@@ -13477,10 +13503,11 @@ void trace_inst(ADDRINT ptr)
     taint_debug_inst = ptr;
 }
 #endif
+
 #if 0
-void trace_inst(ADDRINT ip)
+void trace_inst(ADDRINT ip, CONTEXT* ctxt)
 {
-    if (*ppthread_log_clock > 12769910 && *ppthread_log_clock < 12769938) { 
+    if (segment_length > 1000000) {
 	PIN_LockClient();
         printf("[INST] Pid %d (tid: %d) (record %d) - %#x clock %lu\n", PIN_GetPid(), PIN_GetTid(), get_record_pid(), ip, *ppthread_log_clock);
 	if (IMG_Valid(IMG_FindByAddress(ip))) {
@@ -13517,9 +13544,10 @@ void instruction_instrumentation(INS ins, void *v)
 
 #ifdef TAINT_DEBUG
     INS_InsertCall(ins, IPOINT_BEFORE,
-                    AFUNPTR(trace_inst),
-                    IARG_INST_PTR,
-                    IARG_END);
+		   AFUNPTR(trace_inst),
+		   IARG_INST_PTR,
+		   IARG_CONTEXT,
+		   IARG_END);
 #endif
 
 #ifdef HEARTBLEED
@@ -13895,7 +13923,8 @@ void trace_instrumentation(TRACE trace, void* v)
     struct timeval tv_end, tv_start;
 
     gettimeofday (&tv_start, NULL);
-    TRACE_InsertCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_after, IARG_INST_PTR, IARG_END);
+    TRACE_InsertCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_after_redo, IARG_INST_PTR, IARG_END);
+    //TRACE_InsertCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_after, IARG_INST_PTR, IARG_END);
 
     for (BBL bbl = TRACE_BblHead(trace); BBL_Valid(bbl); bbl = BBL_Next(bbl)) {
 	for (INS ins = BBL_InsHead(bbl); INS_Valid(ins); ins = INS_Next(ins)) {
@@ -14283,17 +14312,17 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 
     int thread_ndx;
     long thread_status = set_pin_addr (dev_fd, (u_long) &(ptdata->app_syscall), ptdata, (void **) &current_thread, &thread_ndx);
-#ifdef DEBUG
-    fprintf (debug_f, "Thread %d gets rc %ld ndx %d from set_pin_addr\n", ptdata->record_pid, thread_status, thread_ndx);
-#endif
-    if (thread_status < 2) {
+    if (!(thread_status&PIN_ATTACH_BLOCKED)) {
 	current_thread = ptdata;
+    }
+    if (thread_status&PIN_ATTACH_REDO) {
+	//fprintf (stderr, "Need to redo system call (mmap)\n");
+	redo_syscall++;
     }
     PIN_SetThreadData (tls_key, ptdata, threadid);
 
     if (splice_output && thread_status > 0) {
 	int base = (NUM_REGS*REG_SIZE)*thread_ndx;
-	//printf ("Thread %d gets reg_taints starting at %d\n", ptdata->record_pid, base+1);
 	for (int i = 0; i < NUM_REGS * REG_SIZE; i++) {
 	    ptdata->shadow_reg_table[i] = base+i+1; // For small number of threads, not part of AS
 	}
