@@ -5157,8 +5157,11 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 	// Done with syscall record 
 	prt->rp_out_ptr += 1;
 
-	// Do this twice - once for syscall entry and once for exit
-	while (*(prt->rp_preplay_clock) < start_clock || (prt->rp_pin_attaching == PIN_ATTACHING_FF && prt->rp_status == REPLAY_STATUS_WAIT_CLOCK)) {
+	// Do this twice - once for syscall entry and onc
+       
+
+	//worried about this code, what happens if we've made progress and start_clock < rp_preplay_clock now? 
+	while (*(prt->rp_preplay_clock) < start_clock) { 
 		MPRINT ("Replay pid %d is waiting for clock value %ld on syscall entry but current clock value is %ld\n", current->pid, start_clock, *(prt->rp_preplay_clock));
 		if (prt->rp_pin_attaching == PIN_ATTACHING_FF && prt->rp_status == REPLAY_STATUS_WAIT_CLOCK) {
 			printk ("attaching pid %d has reached syscall entrance\n", current->pid);
@@ -5169,6 +5172,7 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 				printk ("Pid %d not restarting start_clock %lx attach_clock %lx\n", current->pid, start_clock, prg->rg_pin_attach_clock);
 			}
 		}
+
 		if (prt->rp_status == REPLAY_STATUS_RESTART_CKPT) {
 			// We can continue
 			MPRINT ("Pid %d signals restart\n", current->pid);
@@ -5218,7 +5222,7 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 		}
 		if (prt->rp_pin_attaching == PIN_ATTACHING_FF && is_restart) {
 			printk ("Pid %d no longer attaching on enter\n", current->pid);
-			prt->rp_pin_attaching = PIN_ATTACHING_NONE; // Must have been waiting here
+			prt->rp_pin_attaching = PIN_ATTACHING_NONE;
 		}
 
 		while (!(prt->rp_status == REPLAY_STATUS_RUNNING || (prt->rp_replay_exit && prect->rp_in_ptr == prt->rp_out_ptr+1))) {	
@@ -5359,7 +5363,7 @@ get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, stru
 //	MPRINT("syscall_exit: preplay_clock %lu, expected_clock %lu, stop_clock_skip %lu, stop_clock %lu\n",*(prt->rp_preplay_clock), prt->rp_expected_clock, prt->rp_stop_clock_skip, stop_clock);
 
 	rg_lock (prg->rg_rec_group);
-	while (*(prt->rp_preplay_clock) < stop_clock || (prt->rp_pin_attaching == PIN_ATTACHING_FF && prt->rp_status == REPLAY_STATUS_WAIT_CLOCK)) { 
+	while (*(prt->rp_preplay_clock) < stop_clock) { 
 		is_restart = 0;
 		MPRINT ("Replay pid %d is waiting for clock value %ld on syscall exit but current clock value is %ld\n", current->pid, stop_clock, *(prt->rp_preplay_clock));
 		if (prt->rp_pin_attaching == PIN_ATTACHING_FF && prt->rp_status == REPLAY_STATUS_WAIT_CLOCK) {
@@ -5414,7 +5418,6 @@ get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, stru
 		if (prt->rp_pin_attaching == PIN_ATTACHING_FF) {
 			prt->rp_pin_attaching = PIN_ATTACHING_NONE;
 		}
-
 
 		while (!(prt->rp_status == REPLAY_STATUS_RUNNING || (prt->rp_replay_exit && prect->rp_in_ptr == prt->rp_out_ptr+1))) {   
 //			MPRINT ("Replay pid %d waiting for clock value %ld on syscall exit but current clock value is %ld\n", current->pid, stop_clock, *(prt->rp_preplay_clock));
@@ -5492,6 +5495,13 @@ get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, stru
 		prt->rp_signals = 1;
 		signal_wake_up (current, 0);
 	}
+
+	//we always need to flip pin attaching, sometimes we can get in this case where the replay has made some progress so the replay clock is no longer correct. 
+	if (prt->rp_pin_attaching == PIN_ATTACHING_FF) {
+		prt->rp_pin_attaching = PIN_ATTACHING_NONE;
+		MPRINT("Pid %d flipping rp_pin_attaching\n",current->pid);
+	}
+
 
 	(*prt->rp_preplay_clock)++;
 	MPRINT ("Pid %d incremented replay clock on syscall %d exit to %ld\n", current->pid, psr->sysnum, *(prt->rp_preplay_clock));
@@ -6163,9 +6173,8 @@ sys_pthread_block (u_long clock)
 	rg_lock (prg->rg_rec_group); 
 //	MPRINT("Replay Pid %d called sys_pthread_block w/ user clock val %ld when replay clock val is %ld\n",current->pid, clock, *(prt->rp_preplay_clock));
 
-	//on pin attach we sometimes call into this function w/ clock == prt->rp_preplay_clock. This is bad. We need to pause in this function so that we can
-	//make sure that only one thread is running at a time after the pin attach. There are some 
-	while (*(prt->rp_preplay_clock) < clock  || (prt->rp_pin_attaching == PIN_ATTACHING_FF && prt->rp_status == REPLAY_STATUS_WAIT_CLOCK)) { 
+
+	while (*(prt->rp_preplay_clock) < clock){ 
 
 		if (!(prt->rp_pin_attaching == PIN_ATTACHING_FF && prt->rp_status == REPLAY_STATUS_WAIT_CLOCK)) {
 			MPRINT ("Replay pid %d is waiting for user clock value %ld but current clock value is %ld\n", current->pid, clock, *(prt->rp_preplay_clock));
@@ -6263,19 +6272,19 @@ sys_pthread_block (u_long clock)
 	 *
 	 * tl;dr: it seems like we always want to flip pin_attaching back to PIN_ATTACHING_NONE
 	 */
-/*
+
 	if (prt->rp_pin_attaching == PIN_ATTACHING_FF) {
 	    prt->rp_pin_attaching = PIN_ATTACHING_NONE; 
-	    printk ("user-level-block: pid %d attaching now second case %d\n", current->pid,  prt->rp_pin_attaching);
+	    printk ("user-level-block: pid %d attaching now second case %d, status %d\n", current->pid,  prt->rp_pin_attaching, prt->rp_status);
 	    //as best I can tell if we got here it means that pin recalled this function on us, but we were ready to run by the time that pin called it. 
 	    //we're gonna need to do some more cleanup if this is true. 
 	    
-	    prt->rp_status = REPLAY_STATUS_RUNNING; //we're running now. 
+//	    prt->rp_status = REPLAY_STATUS_RUNNING; //we're running now. 
 	    //switch the curthread pointer. 
 	    put_user (prt->rp_pin_thread_data, prt->rp_pin_curthread_ptr);//I assume we don't need to do anything w/ waitclock
 
 	}
-*/
+
 	//should we flip the replay status here? does it matter? 
 
 
