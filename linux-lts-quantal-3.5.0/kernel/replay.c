@@ -2870,6 +2870,7 @@ int set_pin_address (u_long pin_address, u_long thread_data, u_long __user* curt
 		prept->app_syscall_addr = pin_address;
 		prept->rp_pin_thread_data = thread_data;
 		prept->rp_pin_curthread_ptr = curthread_ptr;
+
 		if (prept->rp_pin_switch_before_attach) {
 			printk ("switched before this attach so update current thread\n");	
 			put_user (prept->rp_pin_thread_data, prept->rp_pin_curthread_ptr);
@@ -2877,6 +2878,7 @@ int set_pin_address (u_long pin_address, u_long thread_data, u_long __user* curt
 		if (prept->rp_pin_attaching) {
 			*attach_ndx = prept->rp_pin_attach_ndx;
 			if (prept->rp_record_thread->rp_record_pid != prept->rp_group->rg_attach_pid) {
+				//I don't think its quite this simple
 				prept->rp_pin_attaching = PIN_ATTACHING_FF; // Still need to wait for the clock 
 				return PIN_ATTACH_BLOCKED; // This thread will block
 			} else {
@@ -6157,11 +6159,13 @@ sys_pthread_block (u_long clock)
 	if (clock == INT_MAX) consume_remaining_records(); // Before we block forever, consume any remaining system call records
 
         //moved this to above the check below. Some weird pin attach issue that I was having before where I think this was getting update while we're in this syscall?
-	// not sure how or why, but seemed we were failing on a can't find thread to run w/ the clock value of preplay_clock == clock
+	// not sure how or why, but we were failing on a can't find thread to run w/ the clock value of preplay_clock == clock
 	rg_lock (prg->rg_rec_group); 
-	while (*(prt->rp_preplay_clock) < clock) {
+	MPRINT("Replay Pid %d called sys_pthread_block w/ user clock val %ld when replay clock val is %ld\n",current->pid, clock, *(prt->rp_preplay_clock));
 
-
+	//on pin attach we sometimes call into this function w/ clock == prt->rp_preplay_clock. This is bad. We need to pause in this function so that we can
+	//make sure that only one thread is running at a time after the pin attach. There are some 
+	while (*(prt->rp_preplay_clock) < clock || prt->rp_pin_attaching == PIN_ATTACHING_FF) {
 		if (!(prt->rp_pin_attaching == PIN_ATTACHING_FF && prt->rp_status == REPLAY_STATUS_WAIT_CLOCK)) {
 			MPRINT ("Replay pid %d is waiting for user clock value %ld but current clock value is %ld\n", current->pid, clock, *(prt->rp_preplay_clock));
 			MPRINT ("Pid %d: pin attaching %d status %d\n", current->pid, prt->rp_pin_attaching, prt->rp_status);
@@ -6257,10 +6261,20 @@ sys_pthread_block (u_long clock)
 	 *
 	 * tl;dr: it seems like we always want to flip pin_attaching back to PIN_ATTACHING_NONE
 	 */
+/*
 	if (prt->rp_pin_attaching == PIN_ATTACHING_FF) {
 	    prt->rp_pin_attaching = PIN_ATTACHING_NONE; 
 	    printk ("user-level-block: pid %d attaching now second case %d\n", current->pid,  prt->rp_pin_attaching);
+	    //as best I can tell if we got here it means that pin recalled this function on us, but we were ready to run by the time that pin called it. 
+	    //we're gonna need to do some more cleanup if this is true. 
+	    
+	    prt->rp_status = REPLAY_STATUS_RUNNING; //we're running now. 
+	    //switch the curthread pointer. 
+	    put_user (prt->rp_pin_thread_data, prt->rp_pin_curthread_ptr);//I assume we don't need to do anything w/ waitclock
+
 	}
+*/
+	//should we flip the replay status here? does it matter? 
 
 	MPRINT ("Pid %d returning from user-level replay block, preplay_clock %ld, clock %ld, attaching %d, rp_status %d\n", current->pid, *(prt->rp_preplay_clock), clock, prt->rp_pin_attaching, prt->rp_status);
 	return 0;
