@@ -5158,7 +5158,7 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 	prt->rp_out_ptr += 1;
 
 	// Do this twice - once for syscall entry and once for exit
-	while (*(prt->rp_preplay_clock) < start_clock) {
+	while (*(prt->rp_preplay_clock) < start_clock || (prt->rp_pin_attaching == PIN_ATTACHING_FF && prt->rp_status == REPLAY_STATUS_WAIT_CLOCK)) {
 		MPRINT ("Replay pid %d is waiting for clock value %ld on syscall entry but current clock value is %ld\n", current->pid, start_clock, *(prt->rp_preplay_clock));
 		if (prt->rp_pin_attaching == PIN_ATTACHING_FF && prt->rp_status == REPLAY_STATUS_WAIT_CLOCK) {
 			printk ("attaching pid %d has reached syscall entrance\n", current->pid);
@@ -5359,7 +5359,7 @@ get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, stru
 //	MPRINT("syscall_exit: preplay_clock %lu, expected_clock %lu, stop_clock_skip %lu, stop_clock %lu\n",*(prt->rp_preplay_clock), prt->rp_expected_clock, prt->rp_stop_clock_skip, stop_clock);
 
 	rg_lock (prg->rg_rec_group);
-	while (*(prt->rp_preplay_clock) < stop_clock) {
+	while (*(prt->rp_preplay_clock) < stop_clock || (prt->rp_pin_attaching == PIN_ATTACHING_FF && prt->rp_status == REPLAY_STATUS_WAIT_CLOCK)) { 
 		is_restart = 0;
 		MPRINT ("Replay pid %d is waiting for clock value %ld on syscall exit but current clock value is %ld\n", current->pid, stop_clock, *(prt->rp_preplay_clock));
 		if (prt->rp_pin_attaching == PIN_ATTACHING_FF && prt->rp_status == REPLAY_STATUS_WAIT_CLOCK) {
@@ -5417,7 +5417,7 @@ get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, stru
 
 
 		while (!(prt->rp_status == REPLAY_STATUS_RUNNING || (prt->rp_replay_exit && prect->rp_in_ptr == prt->rp_out_ptr+1))) {   
-			MPRINT ("Replay pid %d waiting for clock value %ld on syscall exit but current clock value is %ld\n", current->pid, stop_clock, *(prt->rp_preplay_clock));
+//			MPRINT ("Replay pid %d waiting for clock value %ld on syscall exit but current clock value is %ld\n", current->pid, stop_clock, *(prt->rp_preplay_clock));
 
 			rg_unlock (prg->rg_rec_group);
 			//I have no idea why, but on multi-proc replays the processes don't seem to wakeup without that prg->rp_try_to_exit flag being there...? 
@@ -6161,11 +6161,12 @@ sys_pthread_block (u_long clock)
         //moved this to above the check below. Some weird pin attach issue that I was having before where I think this was getting update while we're in this syscall?
 	// not sure how or why, but we were failing on a can't find thread to run w/ the clock value of preplay_clock == clock
 	rg_lock (prg->rg_rec_group); 
-	MPRINT("Replay Pid %d called sys_pthread_block w/ user clock val %ld when replay clock val is %ld\n",current->pid, clock, *(prt->rp_preplay_clock));
+//	MPRINT("Replay Pid %d called sys_pthread_block w/ user clock val %ld when replay clock val is %ld\n",current->pid, clock, *(prt->rp_preplay_clock));
 
 	//on pin attach we sometimes call into this function w/ clock == prt->rp_preplay_clock. This is bad. We need to pause in this function so that we can
 	//make sure that only one thread is running at a time after the pin attach. There are some 
-	while (*(prt->rp_preplay_clock) < clock || prt->rp_pin_attaching == PIN_ATTACHING_FF) {
+	while (*(prt->rp_preplay_clock) < clock  || (prt->rp_pin_attaching == PIN_ATTACHING_FF && prt->rp_status == REPLAY_STATUS_WAIT_CLOCK)) { 
+
 		if (!(prt->rp_pin_attaching == PIN_ATTACHING_FF && prt->rp_status == REPLAY_STATUS_WAIT_CLOCK)) {
 			MPRINT ("Replay pid %d is waiting for user clock value %ld but current clock value is %ld\n", current->pid, clock, *(prt->rp_preplay_clock));
 			MPRINT ("Pid %d: pin attaching %d status %d\n", current->pid, prt->rp_pin_attaching, prt->rp_status);
@@ -6252,6 +6253,7 @@ sys_pthread_block (u_long clock)
 		}
 	}
 	//moved this to outside the while loop, see the comment before the lock above (which was also moved to outside the while loop)
+	MPRINT ("Pid %d sys_pthread_block, preplay_clock %ld, attaching %d, rp_status %d\n", current->pid, *(prt->rp_preplay_clock), prt->rp_pin_attaching, prt->rp_status);
 	rg_unlock (prg->rg_rec_group);
 	/* 
 	 * there's one case where we hit this function and we don't make it into the block above. Basically, pin will restart this function call 
@@ -6276,7 +6278,7 @@ sys_pthread_block (u_long clock)
 */
 	//should we flip the replay status here? does it matter? 
 
-	MPRINT ("Pid %d returning from user-level replay block, preplay_clock %ld, clock %ld, attaching %d, rp_status %d\n", current->pid, *(prt->rp_preplay_clock), clock, prt->rp_pin_attaching, prt->rp_status);
+
 	return 0;
 }
 
