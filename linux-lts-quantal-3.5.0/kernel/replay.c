@@ -4928,7 +4928,14 @@ get_next_clock (struct replay_thread* prt, struct replay_group* prg, long wait_c
 			MPRINT ("Consider thread %d status %d clock %ld\n", tmp->rp_replay_pid, tmp->rp_status, tmp->rp_wait_clock);
 			if (tmp->rp_status == REPLAY_STATUS_ELIGIBLE || (tmp->rp_status == REPLAY_STATUS_WAIT_CLOCK && tmp->rp_wait_clock <= *(prt->rp_preplay_clock))) {
 				tmp->rp_status = REPLAY_STATUS_RUNNING;
-				if (tmp->rp_pin_thread_data) put_user (tmp->rp_pin_thread_data, tmp->rp_pin_curthread_ptr);
+				if (tmp->rp_pin_thread_data) {
+					put_user (tmp->rp_pin_thread_data, tmp->rp_pin_curthread_ptr);
+				} else if (prt->rp_pin_thread_data) {
+					printk ("Pid %d: I have pin thread data but switching thread %d (recpid %d) does not\n", 
+						current->pid, tmp->rp_replay_pid, tmp->rp_record_thread->rp_record_pid);
+					tmp->rp_pin_switch_before_attach = 1;
+				}
+
 				wake_up (&tmp->rp_waitq);
 				DPRINT ("Wake it up\n");
 				break;
@@ -6279,10 +6286,11 @@ sys_pthread_block (u_long clock)
 	    //as best I can tell if we got here it means that pin recalled this function on us, but we were ready to run by the time that pin called it. 
 	    //we're gonna need to do some more cleanup if this is true. 
 	    
-//	    prt->rp_status = REPLAY_STATUS_RUNNING; //we're running now. 
 	    //switch the curthread pointer. 
-	    put_user (prt->rp_pin_thread_data, prt->rp_pin_curthread_ptr);//I assume we don't need to do anything w/ waitclock
 
+	    //I don't think this is right:
+
+//	    put_user (prt->rp_pin_thread_data, prt->rp_pin_curthread_ptr);//I assume we don't need to do anything w/ waitclock
 	}
 
 	//should we flip the replay status here? does it matter? 
@@ -7018,7 +7026,14 @@ recplay_exit_middle(void)
 			if (tmp->rp_status == REPLAY_STATUS_ELIGIBLE || (tmp->rp_status == REPLAY_STATUS_WAIT_CLOCK && tmp->rp_wait_clock <= clock)) {
 				tmp->rp_status = REPLAY_STATUS_RUNNING;
 				
-				if (tmp->rp_pin_thread_data) put_user (tmp->rp_pin_thread_data, tmp->rp_pin_curthread_ptr);
+				if (tmp->rp_pin_thread_data) {
+					put_user (tmp->rp_pin_thread_data, tmp->rp_pin_curthread_ptr);
+				} else if (current->replay_thrd->rp_pin_thread_data) {
+					printk ("Pid %d: I have pin thread data but switching thread %d (recpid %d) does not\n", 
+						current->pid, tmp->rp_replay_pid, tmp->rp_record_thread->rp_record_pid);
+					tmp->rp_pin_switch_before_attach = 1;
+				}
+
 				wake_up (&tmp->rp_waitq);
 				break;
 			} else if (tmp->rp_status != REPLAY_STATUS_DONE) {
@@ -8650,7 +8665,14 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 					DPRINT("Pid %d considers thread %d status %d clock %ld - clock is %ld\n", current->pid, tmp->rp_replay_pid, tmp->rp_status, tmp->rp_wait_clock, clock);
 					if (tmp->rp_status == REPLAY_STATUS_ELIGIBLE || (tmp->rp_status == REPLAY_STATUS_WAIT_CLOCK && tmp->rp_wait_clock <= clock)) {
 						tmp->rp_status = REPLAY_STATUS_RUNNING;
-						if (tmp->rp_pin_thread_data) put_user (tmp->rp_pin_thread_data, tmp->rp_pin_curthread_ptr);
+						if (tmp->rp_pin_thread_data) {
+							put_user (tmp->rp_pin_thread_data, tmp->rp_pin_curthread_ptr);
+						} else if (prt->rp_pin_thread_data) {
+							printk ("Pid %d: I have pin thread data but switching thread %d (recpid %d) does not\n", 
+								current->pid, tmp->rp_replay_pid, tmp->rp_record_thread->rp_record_pid);
+							tmp->rp_pin_switch_before_attach = 1;
+						}
+
 						wake_up(&tmp->rp_waitq);
 						break;
 					} else if (tmp->rp_status != REPLAY_STATUS_DONE) {
@@ -11608,7 +11630,15 @@ asmlinkage long shim_sched_yield (void)
 				DPRINT ("Letting thread %d run - this may be non-deterministic\n", tmp->rp_replay_pid);
 				current->replay_thrd->rp_status = REPLAY_STATUS_ELIGIBLE;
 				tmp->rp_status = REPLAY_STATUS_RUNNING;
-				if (tmp->rp_pin_thread_data) put_user (tmp->rp_pin_thread_data, tmp->rp_pin_curthread_ptr);
+				if (tmp->rp_pin_thread_data) {
+					put_user (tmp->rp_pin_thread_data, tmp->rp_pin_curthread_ptr);
+				} else if (current->replay_thrd->rp_pin_thread_data) {
+					printk ("Pid %d: I have pin thread data but switching thread %d (recpid %d) does not\n", 
+						current->pid, tmp->rp_replay_pid, tmp->rp_record_thread->rp_record_pid);
+					tmp->rp_pin_switch_before_attach = 1;
+				}
+
+
 				wake_up (&tmp->rp_waitq);
 				ret = wait_event_interruptible_timeout (current->replay_thrd->rp_waitq, current->replay_thrd->rp_status == REPLAY_STATUS_RUNNING || current->replay_thrd->rp_group->rg_rec_group->rg_mismatch_flag, SCHED_TO);
 				if (ret == 0) printk ("Replay pid %d timed out waiting after yield\n", current->pid);
