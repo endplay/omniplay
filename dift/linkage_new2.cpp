@@ -303,10 +303,18 @@ extern void output_finish (int fd);
 //In here we need to mess with stuff for if we are no longer following this process
 static void dift_done ()
 {    
-    if (terminated) return;  // Only do this once
+    /* 
+       in the case where this is called when pin hasn't attached to everyone we have to lock here 
+       b/c otherwise we have a race
+     */
+    PIN_LockClient();
+    if (terminated) {
+	PIN_UnlockClient();
+	return;  // Only do this once
+    }    
     terminated = 1;
+    PIN_UnlockClient();
 
-    //fprintf (stderr, "starting dift_done\n");
 
 #ifdef USE_FILE
     char taint_structures_file[256];
@@ -357,7 +365,6 @@ static void dift_done ()
 	}
     }
 #endif
-
     // Finish up output of other files
 #ifdef USE_NW
     write_token_finish (s);
@@ -633,6 +640,11 @@ static inline void sys_pread_start(struct thread_data* tdata, int fd, char* buf,
     ri->fd = fd;
     ri->buf = buf;
     tdata->save_syscall_info = (void *) ri;
+
+#ifdef TAINT_DEBUG
+    fprintf (debug_f, "pid %d pread fd %d clock %lu\n", tdata->record_pid, fd, *ppthread_log_clock);
+
+#endif
 }
 
 static inline void sys_pread_stop(int rc)
@@ -1377,11 +1389,19 @@ void instrument_syscall(ADDRINT syscall_num,
     if (segment_length && *ppthread_log_clock >= segment_length) {
 	// Done with this replay - do exit stuff now because we may not get clean unwind
 #ifdef TAINT_DEBUG
-	fprintf (debug_f, "Pin terminating at Pid %d, entry to syscall %ld, term. clock %ld cur. clock %ld\n", PIN_GetPid(), global_syscall_cnt, segment_length, *ppthread_log_clock);
+	fprintf (debug_f, "Pin terminating at Pid %d, entry to syscall %ld, term. clock %ld cur. clock %ld\n", PIN_GetTid(), global_syscall_cnt, segment_length, *ppthread_log_clock);
 #endif
+
 	dift_done ();
+
+	//we can't exit if we haven't attached to all of the threads yet.            
+	while (is_pin_attaching(dev_fd)) {
+	    usleep(1000); 
+	}
+
 	try_to_exit(dev_fd, PIN_GetPid());
-        PIN_ExitApplication(0); 
+	PIN_ExitApplication(0); 
+
     }
 	
     syscall_start(tdata, sysnum, syscallarg0, syscallarg1, syscallarg2, 
@@ -14338,6 +14358,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 {
     struct thread_data* ptdata;
     
+
     // TODO Use slab allocator
     ptdata = (struct thread_data *) malloc (sizeof(struct thread_data));
     if (ptdata == NULL) {
@@ -14346,17 +14367,21 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
     }
     assert(ptdata);
     memset(ptdata, 0, sizeof(struct thread_data));
-
     ptdata->threadid = threadid;
     ptdata->app_syscall = 0;
     ptdata->record_pid = get_record_pid();
     get_record_group_id(dev_fd, &(ptdata->rg_id));
 
+
     int thread_ndx;
+//    fprintf(stderr, "%d thread calling set_pin_addr %p %p %p %p\n",PIN_GetTid(), &(ptdata->app_syscall),ptdata, &current_thread, &thread_ndx);
     long thread_status = set_pin_addr (dev_fd, (u_long) &(ptdata->app_syscall), ptdata, (void **) &current_thread, &thread_ndx);
+/*
 #ifdef TAINT_DEBUG
-    fprintf (debug_f, "Thread %d gets rc %ld ndx %d from set_pin_addr\n", ptdata->record_pid, thread_status, thread_ndx);
+    fprintf (debug_f, "%d Thread %d gets rc %ld ndx %d from set_pin_addr\n", PIN_GetTid(),ptdata->record_pid, thread_status, thread_ndx);
 #endif
+    fprintf (stderr, "%d Thread %d gets rc %ld ndx %d from set_pin_addr\n", PIN_GetTid(),ptdata->record_pid, thread_status, thread_ndx);
+*/
     if (thread_status < 2) {
 	current_thread = ptdata;
     }
@@ -14418,8 +14443,11 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 		fprintf(stderr, "could not truncate tokens %s, errno %d\n", token_file, errno);
 		assert(0);
 	    }
-
+//	    fprintf(stderr, "%d read in tokens_file\n",PIN_GetTid());
 #endif
+
+
+
 #ifdef USE_FILE
             char name[256];
             snprintf(name, 256, "%s/tokens", group_directory);
@@ -14450,6 +14478,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 		fprintf(stderr, "could not truncate tokens %s, errno %d\n", output_file, errno);
 		assert(0);
 	    }
+//	    fprintf(stderr, "%d created dataflow_results\n",PIN_GetTid());
 
 #endif
 #ifdef USE_FILE
@@ -14527,7 +14556,9 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
         }
     }
 #endif
+//    fprintf(stderr, "%d done 1\n",PIN_GetTid());
     active_threads[ptdata->record_pid] = ptdata;
+//    fprintf(stderr, "%d done 2\n",PIN_GetTid());
 }
 
 void thread_fini (THREADID threadid, const CONTEXT* ctxt, INT32 code, VOID* v)
@@ -14596,18 +14627,28 @@ int get_open_file_descriptors ()
 {
     struct open_fd ofds[4096];
     long rc = get_open_fds (dev_fd, ofds, 4096);
+#ifdef TAINT_DEBUG      
+	fprintf (debug_f, "get_open_file_desciptors returns %ld\n", rc);
+#endif
+    
     if (rc < 0) {
 	fprintf (stderr, "get_open_file_desciptors returns %ld\n", rc);
 	return rc;
     }
 
     for (long i = 0; i < rc; i++) {
+#ifdef TAINT_DEBUG
+	int fd = -1;
+#endif
 	if (ofds[i].type == OPEN_FD_TYPE_FILE) {
 	    struct open_info* oi = (struct open_info *) malloc (sizeof(struct open_info));
 	    strcpy (oi->name, ofds[i].channel);
 	    oi->flags = 0;
 	    oi->fileno = 0;
 	    monitor_add_fd(open_fds, ofds[i].fd, 0, oi);
+#ifdef TAINT_DEBUG	    
+	    fd = ofds[i].fd;
+#endif
 	} else if (ofds[i].type == OPEN_FD_TYPE_SOCKET) {
 	    struct socket_info* si = (struct socket_info *) malloc (sizeof(struct socket_info));
 	    si->domain = ofds[i].data;
@@ -14616,7 +14657,14 @@ int get_open_file_descriptors ()
 	    si->fileno = -1; 
 	    si->ci = NULL;
 	    monitor_add_fd(open_socks, ofds[i].fd, 0, si);
+#ifdef TAINT_DEBUG
+	    fd = ofds[i].fd;
+#endif
 	}
+#ifdef TAINT_DEBUG
+	fprintf (debug_f, "get_open_fds %d\n",fd);
+#endif	
+	
     }
 
     return 0;
@@ -14684,6 +14732,10 @@ int main(int argc, char** argv)
         open_x_fds = new_xray_monitor(0);
     }
 
+#ifndef NO_FILE_OUTPUT
+    init_logs();
+#endif
+
     // Determine open file descriptors for filters
     if (splice_output) get_open_file_descriptors();
 
@@ -14725,9 +14777,6 @@ int main(int argc, char** argv)
 
 #endif
 
-#ifndef NO_FILE_OUTPUT
-    init_logs();
-#endif
     init_taint_structures(group_directory);
 
     // Try to map the log clock for this epoch

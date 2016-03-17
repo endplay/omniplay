@@ -341,6 +341,10 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 
 		return get_replay_pid (replay_pid_data.parent_pid, replay_pid_data.record_pid);
 
+	case SPECI_IS_PIN_ATTACHING: 
+	    return is_pin_attaching ();
+	    
+
 	case SPECI_MAP_CLOCK: {
 		return pthread_shm_path ();
 	}

@@ -118,5 +118,6 @@ struct set_pin_address_data {
 #define SPECI_GET_REPLAY_PID _IOR('u', 21, struct get_replay_pid_data)
 #define SPECI_MAP_CLOCK _IO('u',22)
 #define SPECI_GET_OPEN_FDS _IOR('u', 23, struct open_fds_data)
+#define SPECI_IS_PIN_ATTACHING _IO('u', 24)
 
 #endif

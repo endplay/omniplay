@@ -1135,11 +1135,11 @@ static inline int
 is_pin_attached (void)
 {
 	if (current->replay_thrd == NULL) {
-		printk ("is_pin_attached: NULL replay thrd\n");
+		printk ("pid %d: is_pin_attached: NULL replay thrd\n", current->pid);
 		return 0;
 	}
 	if (current->replay_thrd->rp_group == NULL) {
-		printk ("is_pin_attached: NULL replay group\n");
+		printk ("pid %dis_pin_attached: NULL replay group\n", current->pid);
 		return 0;
 	}
 	return (current->replay_thrd->rp_group->rg_attach_device == ATTACH_PIN 
@@ -2877,12 +2877,13 @@ int set_pin_address (u_long pin_address, u_long thread_data, u_long __user* curt
 		}
 		if (prept->rp_pin_attaching) {
 			*attach_ndx = prept->rp_pin_attach_ndx;
-			if (prept->rp_record_thread->rp_record_pid != prept->rp_group->rg_attach_pid) {
-				//I don't think its quite this simple
+			if (prept->rp_record_thread->rp_record_pid != prept->rp_group->rg_attach_pid) {      
 				prept->rp_pin_attaching = PIN_ATTACHING_FF; // Still need to wait for the clock 
+				printk("returning %d\n",PIN_ATTACH_BLOCKED);
 				return PIN_ATTACH_BLOCKED; // This thread will block
 			} else {
 				prept->rp_pin_attaching = PIN_ATTACHING_RESTART;
+				printk("returning %d\n",PIN_ATTACH_RUNNING);
 				return PIN_ATTACH_RUNNING;
 			}
 		}
@@ -3690,17 +3691,21 @@ int is_pin_attaching(void)
 	struct replay_thread *tmp;
 	struct replay_thread *prept = current->replay_thrd;	
 
-	if (!prept) return 0;
+	if (!prept) { 
+		printk("%d: is_pin_attaching has no replay_thrd\n", current->pid);
+		return 0;
+	}
 	for (tmp = prept->rp_next_thread; tmp != prept; tmp = tmp->rp_next_thread) {
 
 		task = find_task_by_vpid(tmp->rp_replay_pid);
+		if(task) 
 		if(task && current->tgid == task->tgid && tmp->rp_pin_attaching == PIN_ATTACHING) {
 			return 1;
 		}
 	}
 	return 0;
 }
-
+EXPORT_SYMBOL(is_pin_attaching);
 
 long
 replay_full_ckpt (long rc)

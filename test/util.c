@@ -258,6 +258,12 @@ pid_t get_replay_pid(int fd_spec, pid_t parent_pid, pid_t record_pid)
     return ioctl (fd_spec, SPECI_GET_REPLAY_PID, &data);
 }
 
+int is_pin_attaching(int fd_spec)
+{
+    return ioctl (fd_spec, SPECI_IS_PIN_ATTACHING);
+}
+
+
 u_long* map_shared_clock (int fd_spec)
 {
     u_long* clock;
