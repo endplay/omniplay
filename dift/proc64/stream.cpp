@@ -2193,7 +2193,8 @@ struct new_live_set_data {
     taint_t*                 pls;
     taint_t*                 plsend;
     bitmap*                  plive_set;
-    vector<taint_t>          results;
+    taint_t*                 results;
+    uint32_t                 written;
 #ifdef STATS
     u_long                   lno_changes;
     u_long                   lzeros;
@@ -2215,10 +2216,9 @@ do_new_live_set (void* data)
     taint_t* pend = pnlsd->pend;
     taint_t* pls = pnlsd->pls;
     taint_t* plsend = pnlsd->plsend;
-    bitmap *plive_set = pnlsd->plive_set;
-    vector<taint_t>& results = pnlsd->results;
+    bitmap* plive_set = pnlsd->plive_set;
+    taint_t* results = pnlsd->results;
 
-    results.reserve ((plsend-pls)*2); // Use old live set as estimate for new one
 #ifdef STATS
     uint32_t lno_changes = 0, lzeros = 0, linputs = 0, lnot_live = 0, lmerges = 0, lmerge_zeros = 0;
     gettimeofday(&pnlsd->tv_start, NULL);
@@ -2228,7 +2228,7 @@ do_new_live_set (void* data)
 	taint_t addr = *p;
 	if (*pls < addr) {
 	    // No change - so still in live set
-	    results.push_back(*pls);
+	    *results++ = *pls;
 #ifdef STATS
 	    lno_changes++;
 #endif
@@ -2242,7 +2242,7 @@ do_new_live_set (void* data)
 #endif
 	    } else if (val < 0xc0000000) {
 		if (start_flag || plive_set->test(val)) {
-		    results.push_back(addr);
+		    *results++ = addr;
 #ifdef STATS
 		    linputs++;
 #endif
@@ -2252,7 +2252,7 @@ do_new_live_set (void* data)
 #endif
 		}
 	    } else if (val <= 0xe0000000) {
-		results.push_back(addr);
+		*results++ = addr;
 #ifdef STATS
 		linputs++;
 #endif
@@ -2264,7 +2264,7 @@ do_new_live_set (void* data)
 	    } else {
 		taint_entry* pentry = &merge_log[val-0xe0000001];
 		if (pentry->p1 || pentry->p2) {
-		    results.push_back(addr);
+		    *results++ = addr;
 #ifdef STATS
 		    lmerges++;
 #endif
@@ -2289,7 +2289,7 @@ do_new_live_set (void* data)
 #endif
 	    } else if (val < 0xc0000000) {
 		if (start_flag || plive_set->test(val)) {
-		    results.push_back(addr);
+		    *results++ = addr;
 #ifdef STATS
 		    linputs++;
 #endif
@@ -2299,14 +2299,14 @@ do_new_live_set (void* data)
 #endif
 		}
 	    } else if (val <= 0xe0000000) {
-		results.push_back(addr);
+		*results++ = addr;
 #ifdef STATS
 		linputs++;
 #endif
 	    } else {
 		taint_entry* pentry = &merge_log[val-0xe0000001];
 		if (pentry->p1 || pentry->p2) {
-		    results.push_back(addr);
+		    *results++ = addr;
 #ifdef STATS
 		    lmerges++;
 #endif
@@ -2321,10 +2321,12 @@ do_new_live_set (void* data)
     }
     if (p == pend) {
 	while (pls < plsend) {
-	    results.push_back(*pls);
+	    *results++ = *pls;
 	    pls++;
 	}
     }
+
+    pnlsd->written = results - pnlsd->results;
 
 #ifdef STATS
     gettimeofday(&pnlsd->tv_end, NULL);
@@ -2400,6 +2402,7 @@ make_new_live_set (taint_t* p, taint_t* pend, taint_t* pls, taint_t* plsend, bit
 		    lastp = new_live_set_data[i].pend = split;
 		}
 		new_live_set_data[i].plive_set = &live_set;
+		new_live_set_data[i].results = &inputq_buf[i*(TAINTENTRIES/parallelize)];
 	    }
 	    ncnt = parallelize;
 	} else if (pend != p) {
@@ -2408,6 +2411,7 @@ make_new_live_set (taint_t* p, taint_t* pend, taint_t* pls, taint_t* plsend, bit
 	    new_live_set_data[0].pls = pls;
 	    new_live_set_data[0].plsend = plsend;
 	    new_live_set_data[0].plive_set = &live_set;
+	    new_live_set_data[0].results = &inputq_buf[0];
 	    ncnt = 1;
 	}
     } else {
@@ -2431,6 +2435,7 @@ make_new_live_set (taint_t* p, taint_t* pend, taint_t* pls, taint_t* plsend, bit
 		    lastpls = new_live_set_data[i].plsend = split;
 		}
 		new_live_set_data[i].plive_set = &live_set;
+		new_live_set_data[i].results = &inputq_buf[i*(TAINTENTRIES/parallelize)];
 	    }
 	    ncnt = parallelize;
 	} else if (pend != p) {
@@ -2439,6 +2444,7 @@ make_new_live_set (taint_t* p, taint_t* pend, taint_t* pls, taint_t* plsend, bit
 	    new_live_set_data[0].pls = pls;
 	    new_live_set_data[0].plsend = plsend;
 	    new_live_set_data[0].plive_set = &live_set;
+	    new_live_set_data[0].results = &inputq_buf[0];
 	    ncnt = 1;
 	}
     }
@@ -2459,10 +2465,22 @@ make_new_live_set (taint_t* p, taint_t* pend, taint_t* pls, taint_t* plsend, bit
 	    long rc = pthread_join(new_live_set_data[i].tid, NULL);
 	    if (rc < 0) fprintf (stderr, "Cannot join make live set thread, rc=%ld\n", rc); 
 	}
-	for (auto iter = new_live_set_data[i].results.begin(); iter != new_live_set_data[i].results.end(); iter++) {
-	    inputq_buf[wbucket_cnt++] = *iter;
+	if (i > 0) {
+	    memcpy(inputq_buf+wbucket_cnt, inputq_buf+i*(TAINTENTRIES/parallelize), 
+		   new_live_set_data[i].written*sizeof(taint_t));
 	}
+	wbucket_cnt += new_live_set_data[i].written;
     }
+#if PARANOID
+    u_int last = inputq_buf[0];
+    for (uint32_t i = 1; i < wbucket_cnt; i++) {
+	if (inputq_buf[i] <= last) {
+	    fprintf (stderr, "offset %d has value %x but prev value is %x\n", i, inputq_buf[i], last);
+	    assert (0);
+	}
+	last = inputq_buf[i];
+    }
+#endif	
     bucket_complete_write (inputq_hdr, inputq_buf, wbucket_cnt);
 
 #ifdef STATS
@@ -3004,6 +3022,73 @@ preprune_global (u_long& mdatasize, char* output_log, u_long odatasize, taint_t*
     return 0;
 }
 
+struct insert_live_set_data {
+    pthread_t                tid;
+    bitmap*                  plive_set;
+    uint32_t                 start;
+    uint32_t                 finish;
+};
+
+void* 
+do_insert_live_set (void* data)
+{
+    struct insert_live_set_data* pilsd = (struct insert_live_set_data *)  data;
+    uint32_t start = pilsd->start;
+    uint32_t finish = pilsd->finish;
+    bitmap* plive_set = pilsd->plive_set;
+
+    //fprintf (stderr, "inserting from %u (%x) to %u (%x)\n", start, outputq_buf[start], finish-1, outputq_buf[finish-1]);
+    for (uint32_t i = start; i < finish; i++) {
+	plive_set->set(outputq_buf[i]);
+    }
+
+    return NULL;
+}
+
+static int insert_live_set (bitmap& live_set, int cnt)
+{
+    uint32_t finish;
+    uint32_t start = 0;
+    struct insert_live_set_data tdata[parallelize];
+    int tcnt = 0;
+
+    for (int i = 0; i < parallelize-1; i++) {
+	finish = start + cnt/parallelize;
+	if (finish > (uint32_t) cnt) {
+	    finish = cnt;
+	} else {
+	    uint32_t page = outputq_buf[finish]/4096;
+	    while (outputq_buf[finish]/4096 == page && finish < (uint32_t) cnt) finish++;
+	}
+	if (start != finish) {
+	    tdata[tcnt].start = start;
+	    tdata[tcnt].finish = finish;
+	    tdata[tcnt].plive_set = &live_set;
+	    long rc = pthread_create (&tdata[i].tid, NULL, do_insert_live_set, &tdata[i]);
+	    if (rc < 0) {
+		fprintf (stderr, "Cannot create output thread, rc=%ld\n", rc);
+		assert (0);
+	    }	    
+	    tcnt++;
+	}
+	start = finish;
+    }
+
+    if (start != (uint32_t) cnt) {
+	tdata[tcnt].start = start;
+	tdata[tcnt].finish = cnt;
+	tdata[tcnt].plive_set = &live_set;
+	do_insert_live_set(&tdata[tcnt]);
+    }
+
+    for (int i = 0; i < tcnt; i++) {
+	long rc = pthread_join(tdata[i].tid, NULL);
+	if (rc < 0) fprintf (stderr, "Cannot join insert live set thread, rc=%ld\n", rc); 
+    }
+
+    return 0;
+}
+
 // Process one epoch for sequential forward strategy 
 long seq_epoch (const char* dirname, int port, int do_preprune)
 {
@@ -3016,6 +3101,7 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
     bitmap live_set;
     unordered_map<taint_t,taint_t> address_map;
     pthread_t build_map_tid = 0;
+    int live_set_cnt = 0;
 
     rc = setup_aggregation (dirname, outputfd, inputfd, addrsfd);
     if (rc < 0) return rc;
@@ -3068,18 +3154,17 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 #ifdef STATS
 	gettimeofday(&live_first_byte_tv, NULL);
 #endif
-	int cnt = bucket_wait_term(outputq_hdr, outputq_buf);
+	live_set_cnt = bucket_wait_term(outputq_hdr, outputq_buf);
 
 #ifdef STATS
 	gettimeofday(&live_insert_start_tv, NULL);
 #endif
-	for (int i = 0; i < cnt; i++) {
-	    live_set.set(outputq_buf[i]);
-	}
+
+	insert_live_set (live_set, live_set_cnt);
 
 #ifdef STATS
 	gettimeofday(&live_receive_end_tv, NULL);
-	live_set_size = live_set.size(); 
+	live_set_size = live_set_cnt;
 #endif
 	// Prune the merge log
 	prune_merge_log (mdatasize, live_set);
@@ -3089,11 +3174,7 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
     if (!finish_flag) {
 
 	uint32_t* pls = outputq_buf;
-	uint32_t* plsend = outputq_buf + live_set.size();
-	if (live_set.size() > TAINTENTRIES) {
-	    fprintf (stderr, "Oops: live set is %x\n", live_set.size());
-	    return -1;
-	}
+	uint32_t* plsend = outputq_buf + live_set_cnt;
 	make_new_live_set(ts_log, ts_log + adatasize/sizeof(taint_t), pls, plsend, live_set);
     }
     
