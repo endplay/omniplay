@@ -62,6 +62,9 @@
 #include <linux/replay_configs.h>
 
 
+//included b/c I want do_coredump
+#include <linux/binfmts.h>
+
 //xdou
 #include <linux/xcomp.h>
 #include <linux/encodebuffer.h>
@@ -2307,10 +2310,12 @@ __syscall_mismatch (struct record_group* precg)
 {
 	precg->rg_mismatch_flag = 1;
 	rg_unlock (precg);
-	printk ("SYSCALL MISMATCH\n");
+	printk ("SYSCALL MISMATCH\n");	
 #ifdef REPLAY_STATS
 	atomic_inc(&rstats.mismatched);
 #endif
+	do_coredump(11,11,get_pt_regs(NULL)); //11 is segfault
+
 	sys_exit_group(0);
 }
 
