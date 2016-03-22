@@ -107,8 +107,11 @@ int verify_debug = 0;
 
 #define DPRINT if(replay_debug) printk
 //#define DPRINT(x,...)
-#define MPRINT if(replay_debug || replay_min_debug) printk
-//#define MPRINT(x,...)
+#define MPRINT if(replay_debug || replay_min_debug || \
+                 (current->replay_thrd && current->replay_thrd->rp_preplay_clock && \
+		  replay_min_debug_low <= *(current->replay_thrd->rp_preplay_clock) && \
+		  replay_min_debug_high >= *(current->replay_thrd->rp_preplay_clock))) printk
+//#define MPRINT(x,...) does this work? 
 #define MCPRINT
 
 //#define REPLAY_PAUSE
@@ -592,6 +595,8 @@ atomic_t vmalloc_cnt = ATOMIC_INIT(0);
 unsigned int syslog_recs = 20000;
 unsigned int replay_debug = 0;
 unsigned int replay_min_debug = 0;
+unsigned int replay_min_debug_low = 0;
+unsigned int replay_min_debug_high = 0;
 unsigned long argsalloc_size = (512*1024);
 // If the replay clock is greater than this value, MPRINT out the syscalls made by pin
 unsigned long pin_debug_clock = LONG_MAX;
@@ -1840,6 +1845,7 @@ new_record_group (char* logdir)
 {
 	struct record_group* prg;
 
+	
 	MPRINT ("Pid %d new_record_group: entered\n", current->pid);
 
 	prg = KMALLOC (sizeof(struct record_group), GFP_KERNEL);
@@ -8755,7 +8761,7 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 	get_next_syscall_exit(prt, prg, psr);
 
 	MPRINT("replay_execve: sp is %lx, ip is %lx\n", regs->sp, regs->ip);
-
+	MPRINT("linker is at %p\n",get_linker()); //print out the linker's addr
 	return retval;
 }
 
@@ -9285,6 +9291,7 @@ replay_fcntl (unsigned int fd, unsigned int cmd, unsigned long arg)
 {
 	char* retparams = NULL;
 	long rc = get_next_syscall (55, &retparams);
+	
 	if (rc == -EINTR && current->replay_thrd->rp_pin_attaching) return rc;
 	if (retparams) {
 		u_long bytes = *((u_long *) retparams);
@@ -12878,7 +12885,7 @@ replay_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, un
 	struct replay_thread* prt = current->replay_thrd;
 	struct syscall_result* psr;
 
-	DPRINT("mmap(%lu, %lu, %lu, %lu, %lu, %lu)\n", addr, len, prot, flags, fd, pgoff);
+
 	if (is_pin_attached()) {
 		DPRINT ("replay_mmap_pgoff - is_pin_attached() - pin is attached\n");
 		rc = prt->rp_saved_rc;
@@ -12916,6 +12923,8 @@ replay_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, un
 	}
 
 	retval = sys_mmap_pgoff (rc, len, prot, (flags | MAP_FIXED), given_fd, pgoff);
+	MPRINT("mmap'd (%#lx, %#lx) from fd %d\n",retval, retval + len, given_fd);
+
 	DPRINT ("Pid %d replays mmap_pgoff with address %lx len %lx input address %lx fd %d flags %lx prot %lx pgoff %lx returning %lx, flags & MAP_FIXED %lu\n", current->pid, addr, len, rc, given_fd, flags, prot, pgoff, retval, flags & MAP_FIXED);
 	
 	if (rc != retval) {
@@ -13048,8 +13057,23 @@ record_fstat64(int fd, struct stat64 __user *statbuf) {
 	perftimer_stop(fstat64_tmr);
 	return rc;
 }
+/*RET1_REPLAY (fstat64, 197, struct stat64, statbuf, int fd, struct stat64 __user *statbuf);static asmlinkage long*/
 
-RET1_REPLAY (fstat64, 197, struct stat64, statbuf, int fd, struct stat64 __user *statbuf);
+static asmlinkage long replay_fstat64 (int fd, struct stat64 __user *statbuf) 
+{									
+	char *retparams = NULL;						
+	long rc = get_next_syscall (197, (char **) &retparams);	
+	if (rc == -EINTR && current->replay_thrd->rp_pin_attaching) return rc; 
+									
+	if (retparams) {						
+		if (copy_to_user (statbuf, retparams, sizeof(struct stat64))) printk ("replay_##name: pid %d cannot copy to user\n", current->pid);
+		argsconsume (current->replay_thrd->rp_record_thread, sizeof(struct stat64));
+	}								
+	MPRINT("%d fstat64 fd %d\n",current->pid, fd);
+
+	return rc;							
+}									
+
 
 asmlinkage long shim_fstat64(int fd, struct stat64 __user *statbuf) SHIM_CALL(fstat64, 197, fd, statbuf);
 
@@ -13360,6 +13384,7 @@ replay_fcntl64 (unsigned int fd, unsigned int cmd, unsigned long arg)
 		if (copy_to_user((void __user *)arg, retparams + sizeof(u_long), bytes)) return syscall_mismatch();
 		argsconsume(current->replay_thrd->rp_record_thread, sizeof(u_long) + bytes);
 	}
+	MPRINT("%d: replay_fcntl with fd %d, cmd %u and arg %lu\n",current->pid,fd,cmd,arg);
 	return rc;
 }
 
@@ -15451,6 +15476,20 @@ static struct ctl_table replay_ctl[] = {
 	{
 		.procname	= "replay_min_debug",
 		.data		= &replay_min_debug,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "replay_min_debug_low",
+		.data		= &replay_min_debug_low,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "replay_min_debug_high",
+		.data		= &replay_min_debug_high,
 		.maxlen		= sizeof(unsigned int),
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec,
