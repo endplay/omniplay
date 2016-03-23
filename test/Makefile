@@ -63,7 +63,7 @@ fulltt: libutil.a
 fullsend: libutil.a
 
 mkpartition: libutil.a mkpartition.cpp 
-	c++ -Wall -Werror -std=c++0x mkpartition.cpp libutil.a -pthread -lrt -o mkpartition -g
+	c++ -Wall -Werror -std=c++0x mkpartition.cpp libutil.a -pthread -lrt -o mkpartition -O8
 
 get_stats: get_stats.cpp 
 	c++ -Wall -Werror -std=c++0x get_stats.cpp  -o get_stats -g

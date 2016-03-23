@@ -55,6 +55,9 @@ int s = -1;
 // #define ALT_PATH_EXPLORATION         // indirect control flow
 // #define CONFAID
 
+//used in order to trace instructions! 
+//#define TRACE_INST
+
 //#define LOGGING_ON
 #define LOG_F log_f
 //#define ERROR_PRINT fprintf
@@ -79,7 +82,6 @@ int s = -1;
  #define LOG_PRINT(x,...);
  #define INSTRUMENT_PRINT(x,...);
  #define SYSCALL_DEBUG(x,...);
- //#define SYSCALL_DEBUG fprintf
  #define PRINTX(x,...);
 #endif
 #define SPECIAL_REG(X) (X == LEVEL_BASE::REG_EBP || X == LEVEL_BASE::REG_ESP)
@@ -301,20 +303,21 @@ extern void write_token_finish (int fd);
 extern void output_finish (int fd);
 
 //In here we need to mess with stuff for if we are no longer following this process
-static void dift_done ()
+static int dift_done ()
 {    
     /* 
        in the case where this is called when pin hasn't attached to everyone we have to lock here 
        b/c otherwise we have a race
      */
+
     PIN_LockClient();
     if (terminated) {
 	PIN_UnlockClient();
-	return;  // Only do this once
+	return 0;  // Only do this once
     }    
     terminated = 1;
     PIN_UnlockClient();
-
+    fprintf(stderr, "%d: in dift_done\n",PIN_GetTid());
 
 #ifdef USE_FILE
     char taint_structures_file[256];
@@ -411,6 +414,7 @@ static void dift_done ()
 	}
     }
 #endif
+    return 1; //we actually did the dift_done
 }
 
 ADDRINT find_static_address(ADDRINT ip)
@@ -452,12 +456,10 @@ static inline void increment_syscall_cnt (int syscall_num)
             global_syscall_cnt++;
             current_thread->syscall_cnt++;
         }
-#if 0
-#ifdef TAINT_DEBUG
-	fprintf (debug_f, "pid %d syscall %d global syscall cnt %lu num %d clock %ld\n", current_thread->record_pid, 
+	
+	//made this a syscall_debug funct instead of taint_debug
+	SYSCALL_DEBUG(stderr, "pid %d syscall %d global syscall cnt %lu num %d clock %ld\n", current_thread->record_pid, 
 		 current_thread->syscall_cnt, global_syscall_cnt, syscall_num, *ppthread_log_clock);
-#endif
-#endif
     }
 }
 
@@ -525,6 +527,8 @@ char* get_file_ext(char* filename){
 
 static inline void sys_open_stop(int rc)
 {
+    SYSCALL_DEBUG(stderr, "open_stop, fd: %d\n",rc);
+
     if (rc > 0) {
         struct open_info* oi = (struct open_info *) current_thread->save_syscall_info;
         monitor_add_fd(open_fds, rc, 0, current_thread->save_syscall_info);
@@ -727,6 +731,7 @@ static void sys_mmap_start(struct thread_data* tdata, u_long addr, int len, int 
 static void sys_mmap_stop(int rc)
 {
     struct mmap_info* mmi = (struct mmap_info*) current_thread->save_syscall_info;
+    SYSCALL_DEBUG(stderr, "mmap file fd %d rc 0x%x @ %ld %d\n", mmi->fd, rc, *ppthread_log_clock , mmi->prot & PROT_EXEC);
 #ifdef MMAP_INPUTS
     // If global_syscall_cnt == 0, then handled in previous epoch
     if (rc != -1 && (mmi->fd != -1)) {
@@ -1392,13 +1397,19 @@ void instrument_syscall(ADDRINT syscall_num,
 	fprintf (debug_f, "Pin terminating at Pid %d, entry to syscall %ld, term. clock %ld cur. clock %ld\n", PIN_GetTid(), global_syscall_cnt, segment_length, *ppthread_log_clock);
 #endif
 
-	dift_done ();
+	/*
+	 * there's a race condition here if we are still attaching to multiple threads. A thread that skips 
+	 * dift_done might fly through the rest of this and exit before dift_done has been called. This
+	 * *is* what is happening in a partitioning for firefox (weird). 
+	 */
+	//we can't exit if we haven't aren't the one calling dift_done or if some threads are still attaching
 
-	//we can't exit if we haven't attached to all of the threads yet.            
-	while (is_pin_attaching(dev_fd)) {
+	int calling_dd = dift_done ();
+	while (!calling_dd || is_pin_attaching(dev_fd)) { 
 	    usleep(1000); 
 	}
 
+	fprintf(stderr, "%d: calling try_to_exit\n", PIN_GetTid());
 	try_to_exit(dev_fd, PIN_GetPid());
 	PIN_ExitApplication(0); 
 
@@ -1412,6 +1423,8 @@ void instrument_syscall(ADDRINT syscall_num,
 
 void syscall_after (ADDRINT ip)
 {
+
+//    fprintf(stderr, "%p\n",current_thread);
     if (current_thread->app_syscall == 999) {
 	check_clock_after_syscall (dev_fd);
 	current_thread->app_syscall = 0;  
@@ -13568,14 +13581,49 @@ void trace_inst(ADDRINT ptr)
     taint_debug_inst = ptr;
 }
 #endif
-#if 0
+#ifdef TRACE_INST
 void trace_inst(ADDRINT ip)
 {
-    if (*ppthread_log_clock > 12769910 && *ppthread_log_clock < 12769938) { 
+    if (*ppthread_log_clock > 9411409 && *ppthread_log_clock < 9411485) { 
 	PIN_LockClient();
-        printf("[INST] Pid %d (tid: %d) (record %d) - %#x clock %lu\n", PIN_GetPid(), PIN_GetTid(), get_record_pid(), ip, *ppthread_log_clock);
+        fprintf(stderr,"[INST] Pid %d (tid: %d) (record %d) - %#x clock %lu\n", PIN_GetPid(), PIN_GetTid(), get_record_pid(), ip, *ppthread_log_clock);
 	if (IMG_Valid(IMG_FindByAddress(ip))) {
-		printf("%s -- img %s static %#x\n", RTN_FindNameByAddress(ip).c_str(), IMG_Name(IMG_FindByAddress(ip)).c_str(), find_static_address(ip));
+	    fprintf(stderr,"%s -- img %s static %#x\n", RTN_FindNameByAddress(ip).c_str(), IMG_Name(IMG_FindByAddress(ip)).c_str(), find_static_address(ip));
+	}
+	else { 
+	    string file ="";
+	    long offset = -1;
+	       
+	    if (0xb7662000 <= ip && ip <= 0xb7662000 + (136 *1024)){
+		offset = ip - 0xb7662000;
+		file = "e5d9ad";
+	    }
+	    else if (0xb65e6000 <= ip && ip <= 0xb65e6000 + (544 * 1024)) { 
+		offset = ip - 0xb65e6000;
+		file = "4024a6";
+	    }
+	    else if (0xb74c3000 <= ip && ip <= 0xb74c3000 + (1632 * 1024)) { 
+		offset = ip - 0xb74c3000;
+		file = "e5b12f";
+	    }
+	    else if (0xb77c7000 <= ip && ip <= 0xb77c7000 + (4 * 1024)) { 
+		offset = ip - 0xb77c7000;
+		file = "weird anon region";
+	    }
+	    else if (0xb3b9a000 <= ip && ip <= 0xb3b9a000 + (33648 * 1024)) { 
+		offset = ip - 0xb3b9a000;
+		file = "4024ad";
+	    }
+	    else if (0xb6945000 <= ip && ip < 0xb6945000 + (8 * 1024)) { 
+		offset = ip - 0xb6945000;
+		file = "40241d";
+	    }
+
+	    else { 
+		fprintf(stderr, "Can't place ip %#x\n",ip);
+	    }
+
+	    fprintf(stderr,"%s %#lx\n",file.c_str(),offset);
 	}
 	PIN_UnlockClient();
     }
@@ -13606,7 +13654,7 @@ void instruction_instrumentation(INS ins, void *v)
     opcode = INS_Opcode(ins);
     category = INS_Category(ins);
 
-#ifdef TAINT_DEBUG
+#ifdef TRACE_INST
     INS_InsertCall(ins, IPOINT_BEFORE,
                     AFUNPTR(trace_inst),
                     IARG_INST_PTR,
@@ -14558,7 +14606,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 #endif
 //    fprintf(stderr, "%d done 1\n",PIN_GetTid());
     active_threads[ptdata->record_pid] = ptdata;
-//    fprintf(stderr, "%d done 2\n",PIN_GetTid());
+//    fprintf(stderr, "%d done with thread_start\n",PIN_GetTid());
 }
 
 void thread_fini (THREADID threadid, const CONTEXT* ctxt, INT32 code, VOID* v)
@@ -14612,14 +14660,18 @@ void fini(INT32 code, void* v)
     dift_done ();
 }
 
-#if 0
+#ifdef TRACE_INST
 VOID ImageLoad (IMG img, VOID *v)
 {
     uint32_t id = IMG_Id (img);
 
     ADDRINT load_offset = IMG_LoadOffset(img);
-    fprintf(stderr, "[IMG] Loading image id %d, name %s with load offset %#x\n",
-            id, IMG_Name(img).c_str(), load_offset);
+    ADDRINT low_addr = IMG_LowAddress(img);
+    ADDRINT high_addr = IMG_HighAddress(img);
+    USIZE size  = IMG_SizeMapped(img);
+    
+    fprintf(stderr, "[IMG] Loading image id %d, name %s with load offset %#x, size %u, (%#x, %#x)\n",
+            id, IMG_Name(img).c_str(), load_offset, size, low_addr, high_addr);
 }
 #endif
 
@@ -14666,7 +14718,6 @@ int get_open_file_descriptors ()
 #endif	
 	
     }
-
     return 0;
 }
 
@@ -14853,7 +14904,7 @@ int main(int argc, char** argv)
 	RTN_AddInstrumentFunction(track_function, 0);
     }
 
-#if 0
+#ifdef TRACE_INST
     IMG_AddInstrumentFunction (ImageLoad, 0);
 #endif
 

@@ -484,6 +484,7 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	pthread_condattr_t sharedc;
 	pthread_condattr_init(&sharedc);
 	pthread_condattr_setpshared(&sharedc, PTHREAD_PROCESS_SHARED);
+	pthread_condattr_setclock(&sharedc,CLOCK_MONOTONIC);  //added for the timeouts
 	rc = pthread_cond_init (&(qh->full), &sharedc);
 	if (rc < 0) {
 	    fprintf (stderr, "pthread_mutex_init returns %d, errno=%d\n", rc, errno);

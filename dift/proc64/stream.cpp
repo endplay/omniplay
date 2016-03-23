@@ -10,6 +10,13 @@
 #include <pthread.h>
 #include <netdb.h>
 
+
+//added for additional timeout debugging around the communication
+#include <sys/ioctl.h>
+#include <linux/sockios.h>
+#include <linux/tcp.h>
+
+
 #include <unordered_set>
 #include <unordered_map>
 #include <vector>
@@ -30,6 +37,8 @@ using namespace std;
 
 typedef PagedBitmap<MAX_TAINTS, PAGE_BITS> bitmap;
 
+//macro for progression debuging 
+//#define PROG
 
 //#define DEBUG(x) ((x)==0x1c8273)
 #define STATS
@@ -368,11 +377,12 @@ bucket_pull (uint32_t& val, struct taintq_hdr* qh, uint32_t*& qb, int qfd, uint3
 static u_long bucket_wait_term (struct taintq_hdr* qh, uint32_t*& qb)
 {
     pthread_mutex_lock(&(qh->lock));
-    while (qh->write_index == qh->read_index || !QEND(qb[qh->write_index*TAINTBUCKETENTRIES-1])) {
-	pthread_cond_wait(&(qh->empty), &(qh->lock));
+
+    while (qh->write_index == qh->read_index || !QEND(qb[qh->write_index*TAINTBUCKETENTRIES-1])) {	
+	pthread_cond_wait(&(qh->empty), &(qh->lock));	
     }
     pthread_mutex_unlock(&(qh->lock));
-    u_long ndx = (qh->write_index-1)*TAINTBUCKETENTRIES;
+    u_long ndx = (qh->write_index-1)*TAINTBUCKETENTRIES;   
     while (QSTOP(qb[ndx])) {
 	if (ndx == 0) return 0;
 	ndx -= TAINTBUCKETENTRIES;
@@ -2461,10 +2471,13 @@ make_new_live_set (taint_t* p, taint_t* pend, taint_t* pls, taint_t* plsend, bit
 	    if (rc < 0) fprintf (stderr, "Cannot join make live set thread, rc=%ld\n", rc); 
 	}
 	for (auto iter = new_live_set_data[i].results.begin(); iter != new_live_set_data[i].results.end(); iter++) {
-	    inputq_buf[wbucket_cnt++] = *iter;
+	    inputq_buf[wbucket_cnt++] = *iter; 
 	}
     }
     bucket_complete_write (inputq_hdr, inputq_buf, wbucket_cnt);
+#ifdef PROG
+    fprintf(stderr, "%d make_live_set bc %u wi %u \n",getpid(),wbucket_cnt, wbucket_cnt / TAINTBUCKETENTRIES + 1);
+#endif   
 
 #ifdef STATS
     gettimeofday(&new_live_end_tv, NULL);
@@ -3026,6 +3039,9 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
     rc = read_inputs (port, token_log, output_log, ts_log, merge_log,
 		      mdatasize, odatasize, idatasize, adatasize);
     if (rc < 0) return rc;
+#ifdef PROG
+    fprintf(stderr, "%d: finished read_inputs\n",getpid());
+#endif
 
 #ifdef STATS
     gettimeofday(&recv_done_tv, NULL);
@@ -3041,6 +3057,11 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	preprune_global (mdatasize, output_log, odatasize, ts_log, adatasize);
 	bucket_init();
     }
+
+#ifdef PROG
+    fprintf(stderr, "%d: finished preprune\n",getpid());
+#endif
+
 
     if (!low_memory && !finish_flag) build_map_tid = spawn_map_thread (&address_map, ts_log, adatasize);
 
@@ -3069,8 +3090,17 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	gettimeofday(&live_receive_end_tv, NULL);
 	live_set_size = live_set.size(); 
 #endif
+#ifdef PROG
+    fprintf(stderr, "%d: finished receiving live_set\n",getpid());
+#endif
+
+
 	// Prune the merge log
 	prune_merge_log (mdatasize, live_set);
+#ifdef PROG
+    fprintf(stderr, "%d: finished prune_merge_log\n",getpid());
+#endif
+
     }
 
     // Construct and send out new live set
@@ -3083,6 +3113,10 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	    return -1;
 	}
 	make_new_live_set(ts_log, ts_log + adatasize/sizeof(taint_t), pls, plsend, live_set);
+#ifdef PROG
+    fprintf(stderr, "%d: finished making_live_set\n",getpid());
+#endif
+
     }
     
     if (!start_flag) {
@@ -3099,6 +3133,9 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
     bucket_write_init();
 
     output_token = process_outputs (output_log, output_log + odatasize, &live_set, dirname, do_outputs_seq);
+#ifdef PROG
+    fprintf(stderr, "%d: finished process_outputs\n",getpid());
+#endif
 
     if (!finish_flag) {
 
@@ -3129,8 +3166,12 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	if (low_memory) {
 	    process_addresses_binsearch (output_token, ts_log, adatasize);
 	} else {
-	    process_addresses (output_token, address_map);
+	    process_addresses (output_token, address_map);	    
 	}
+#ifdef PROG
+    fprintf(stderr, "%d: finished process_addresses\n",getpid());
+#endif
+
 
     } else if (!start_flag) {
 	uint32_t write_cnt = 0, write_stop = 0;
@@ -3158,6 +3199,9 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
     }
 
     finish_aggregation (addrsfd, inputfd, outputfd, output_token, tokens, token_log, idatasize, output_log, odatasize);
+#ifdef PROG
+    fprintf(stderr, "%d: finished finish_aggregation\n",getpid());
+#endif
 
 #ifdef STATS
     gettimeofday(&end_tv, NULL);
@@ -3173,6 +3217,7 @@ int connect_output_queue (struct senddata* data)
     struct hostent* hp;
     long rc;
     int s;
+
 
     // Establish a connection to receiving computer
     hp = gethostbyname (data->host);
@@ -3190,6 +3235,14 @@ int connect_output_queue (struct senddata* data)
     addr.sin_family = AF_INET;
     addr.sin_port = htons(data->port);
     memcpy (&addr.sin_addr, hp->h_addr, hp->h_length);
+
+
+    struct timeval tv;
+    tv.tv_sec = 120;  /* 30 Secs Timeout */
+    tv.tv_usec = 0;  // Not init'ing this can cause strange errors
+    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (char *)&tv,sizeof(struct timeval));
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (char *)&tv,sizeof(struct timeval));
+
 
     // Receiver may not be started, so spin until connection is accepted
     do {
@@ -3239,10 +3292,16 @@ int connect_input_queue (struct recvdata* data)
     }
     
     s = accept (c, NULL, NULL);
+
     if (s < 0) {
 	fprintf (stderr, "Cannot accept connection, errno=%d\n", errno);
 	return s;
     }
+    struct timeval tv;
+    tv.tv_sec = 120;  /* 2 mins Secs Timeout */
+    tv.tv_usec = 0;  // Not init'ing this can cause strange errors
+    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (char *)&tv,sizeof(struct timeval));
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (char *)&tv,sizeof(struct timeval));
 
     close (c);
     return s;
@@ -3253,6 +3312,8 @@ void send_stream (int s, struct taintq_hdr* qh, uint32_t* qb)
     // Listen on output queue and send over network
     bool done = false;
     u_long bytes_sent = 0;
+    int out_bytes;
+
     while (!done) {
 
 	pthread_mutex_lock(&(qh->lock));
@@ -3260,19 +3321,43 @@ void send_stream (int s, struct taintq_hdr* qh, uint32_t* qb)
 	    pthread_cond_wait(&(qh->empty), &(qh->lock));
 	}
 	pthread_mutex_unlock(&(qh->lock));
-
 	long rc = safe_write (s, qb + (qh->read_index*TAINTBUCKETENTRIES), TAINTBUCKETSIZE);
-	if (rc != (long)TAINTBUCKETSIZE) return; // Error sending the data
+	if (rc == -1 && errno == 11) { 
+	    struct tcp_info ti;
+	    u_int ti_len = sizeof(ti);
 
-	bytes_sent += TAINTBUCKETENTRIES;
+	    ioctl(s,SIOCOUTQ, &out_bytes);
+	    getsockopt(s,IPPROTO_TCP, TCP_INFO, (void*)&ti, &ti_len);
+
+
+	    fprintf(stderr, "%d dumping info about tcp connection\n",getpid());
+	    fprintf(stderr, "\t state %d\n",ti.tcpi_state);
+	    fprintf(stderr, "\t wscale %d, rcv_wscale %d\n",ti.tcpi_snd_wscale, ti.tcpi_rcv_wscale);
+	    fprintf(stderr, "\t unacked %d, sacked %d, lost %d retrans %d\n",ti.tcpi_unacked,ti.tcpi_sacked,ti.tcpi_lost,ti.tcpi_retrans);;
+	    fprintf(stderr, "\t rcv_ssthread %d, snd_ssthread %d, snd_cwnd %d\n", ti.tcpi_rcv_ssthresh, ti.tcpi_snd_ssthresh,ti.tcpi_snd_cwnd);
+
+	    fprintf(stderr, "%d sent %lu bytes, there are %d outbytes\n",getpid(), bytes_sent, out_bytes);	    
+
+	    continue;
+	} 
+
+	if (rc != (long)TAINTBUCKETSIZE) { 
+	    fprintf(stderr, "%d error sending data, rc %ld, errno %d\n", getpid(), rc, errno);
+	    fprintf(stderr, "%d already sent %lu bytes\n",getpid(), bytes_sent);
+	    return; // Error sending the data
+	}
+	bytes_sent += TAINTBUCKETSIZE;	
 
 	if (qb[qh->read_index*TAINTBUCKETENTRIES+TAINTBUCKETENTRIES-1] == TERM_VAL) done = true;
-
 	pthread_mutex_lock(&(qh->lock));
 	qh->read_index = (qh->read_index+1)%TAINTBUCKETS;
 	pthread_cond_signal(&(qh->full));
 	pthread_mutex_unlock(&(qh->lock));
     }
+#ifdef PROG
+    fprintf(stderr, "%d finished with send_stream, sent %lu bytes\n",getpid(),bytes_sent);
+#endif
+
 }
 
 void send_stream_compress (int s, struct taintq_hdr* qh, uint32_t* qb)
@@ -3281,6 +3366,7 @@ void send_stream_compress (int s, struct taintq_hdr* qh, uint32_t* qb)
     uint32_t outbuf[outentries];
     uint32_t outndx = 0;
     uint32_t bytes_sent = 0;
+    int out_bytes = 0;
 
     // Wait until bytes are ready to send
     u_long cnt = bucket_wait_term (qh, qb);
@@ -3294,6 +3380,13 @@ void send_stream_compress (int s, struct taintq_hdr* qh, uint32_t* qb)
 		outbuf[outndx++] = run_length;
 		if (outndx == outentries) {
 		    long rc = safe_write (s, outbuf, sizeof(outbuf));
+
+		    if (rc == -1 && errno == 11) { 
+			ioctl(s,SIOCOUTQ, &out_bytes);
+			fprintf(stderr, "%d sent %u bytes, there are %d outbytes\n",getpid(), bytes_sent, out_bytes);
+			continue;
+		    } 
+
 		    if (rc != sizeof(outbuf)) {
 			fprintf (stderr, "Compressed send returns %ld, errno=%d\n", rc, errno);
 			return;
@@ -3326,29 +3419,56 @@ void recv_stream (int s, struct taintq_hdr* qh, uint32_t* qb)
     // Get data and put on the inputq
     bool done = false;
     u_long bytes_rcvd = 0;
+    int out_bytes;   
+
     while (!done) {
 
 	// Receive a block at a time
 	pthread_mutex_lock(&(qh->lock));
+
 	while ((qh->write_index+1)%TAINTBUCKETS == qh->read_index) {
 	    pthread_cond_wait(&(qh->full), &(qh->lock));
 	}
 	pthread_mutex_unlock(&(qh->lock));
 
 	long rc = safe_read (s, qb + (qh->write_index*TAINTBUCKETENTRIES), TAINTBUCKETSIZE);
-	if (rc != (long)TAINTBUCKETSIZE) {
-	    fprintf(stderr,"error receiving the data");
+	//if we timed out, tell us and try again (errno == EAGAIN) 
+	if (rc == -1 && errno == 11) { 
+
+	    struct tcp_info ti;
+	    u_int ti_len = sizeof(ti);
+
+	    ioctl(s,SIOCINQ, &out_bytes);
+	    getsockopt(s,IPPROTO_TCP, TCP_INFO, (void*)&ti, &ti_len);
+	    fprintf(stderr, "%d dumping info about tcp connection\n",getpid());
+	    fprintf(stderr, "\t state %d\n",ti.tcpi_state);
+	    fprintf(stderr, "\t wscale %d, rcv_wscale %d\n",ti.tcpi_snd_wscale, ti.tcpi_rcv_wscale);
+	    fprintf(stderr, "\t unacked %d, sacked %d, lost %d retrans %d\n",ti.tcpi_unacked,ti.tcpi_sacked,ti.tcpi_lost,ti.tcpi_retrans);;
+	    fprintf(stderr, "\t rcv_ssthread %d, snd_ssthread %d, snd_cwnd %d\n", ti.tcpi_rcv_ssthresh, ti.tcpi_snd_ssthresh,ti.tcpi_snd_cwnd);
+
+
+	    fprintf(stderr, "%d rcvd %lu bytes, there are %d outbytes\n",getpid(), bytes_rcvd, out_bytes);
+	    continue;
+	} 
+	else if (rc != (long)TAINTBUCKETSIZE) {
+	    ioctl(s,SIOCINQ, &out_bytes);
+	    fprintf(stderr, "%d rcvd %lu bytes, there are %d outbytes\n",getpid(), bytes_rcvd, out_bytes);
+	    fprintf(stderr,"%d error receiving the data rc %ld, errno %d\n", getpid(), rc, errno);
+	    fprintf(stderr, "%d already read %lu bytes\n",getpid(), bytes_rcvd);
 	    return; // Error sending the data
 	}
 
-	bytes_rcvd += TAINTBUCKETENTRIES;
-	if (qb[qh->write_index*TAINTBUCKETENTRIES+TAINTBUCKETENTRIES-1] == TERM_VAL) done = true;
+	bytes_rcvd += TAINTBUCKETSIZE; 
 
+	if (qb[qh->write_index*TAINTBUCKETENTRIES+TAINTBUCKETENTRIES-1] == TERM_VAL) done = true;
 	pthread_mutex_lock(&(qh->lock));
 	qh->write_index = (qh->write_index+1)%TAINTBUCKETS;
 	pthread_cond_signal(&(qh->empty));
 	pthread_mutex_unlock(&(qh->lock));
     }
+#ifdef PROG    
+    fprintf(stderr, "%d finished with recv_stream, recvd %lu bytes\n",getpid(),bytes_rcvd);
+#endif
 }
 
 void recv_stream_compress (int s, struct taintq_hdr* qh, uint32_t* qb)
@@ -3356,10 +3476,17 @@ void recv_stream_compress (int s, struct taintq_hdr* qh, uint32_t* qb)
     const uint32_t outentries = 4096;
     uint32_t outbuf[outentries];
     uint32_t ndx = 0;
+    int out_bytes;
 
     while (1) {
 
 	long rc = safe_read (s, outbuf, sizeof(outbuf));
+	if (rc == -1 && errno == 11) { 
+	    ioctl(s,SIOCINQ, &out_bytes);
+	    fprintf(stderr, "%d there are %d outbytes\n",getpid(), out_bytes);
+	    continue;
+	} 
+
 	if (rc != sizeof(outbuf)) {
 	    fprintf (stderr, "Compressed recv returns %ld, errno=%d\n", rc, errno);
 	    return;
@@ -3562,7 +3689,7 @@ int main (int argc, char* argv[])
 	rd.port = STREAM_PORT;
 	rd.do_sequential = do_sequential;
 	rd.do_preprune_global = (do_preprune == PREPRUNE_GLOBAL);
-	rd.compress = do_compress;
+	rd.compress = do_compress; //shou
 	return recv_input_queue (&rd);
     }
 
