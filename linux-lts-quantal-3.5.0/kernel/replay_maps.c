@@ -251,8 +251,9 @@ int open_mmap_cache_file (dev_t dev, u_long ino, struct timespec mtime, int is_w
 	if (is_write) {
 		// For writeable mmaps, we need to create a copy just for this replay
 
-		sprintf (tname, "/tmp/replay_mmap_%d", atomic_inc_return(&counter));
-		printk("%d: mmaped %d\n",current->pid,counter);
+		int c_val = atomic_inc_return(&counter);
+		sprintf (tname, "/tmp/replay_mmap_%d", c_val);
+		printk("%d: mmaped /tmp/replay_mmap_%d for %s/%x_%lx_%lu_%lu\n",current->pid,c_val, cache_dir, dev, ino, mtime.tv_sec, mtime.tv_nsec);
 		tfd = sys_open (tname, O_CREAT|O_TRUNC|O_RDWR, 0600);
 		if (tfd < 0) {
 			printk ("open_cache_file: cannot create temp file %s, rc=%d\n", tname, tfd);
