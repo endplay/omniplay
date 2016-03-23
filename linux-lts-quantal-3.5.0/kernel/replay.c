@@ -3703,7 +3703,6 @@ int is_pin_attaching(void)
 	struct replay_thread *prept = current->replay_thrd;	
 
 	if (!prept) { 
-		printk("%d: is_pin_attaching has no replay_thrd\n", current->pid);
 		return 0;
 	}
 	for (tmp = prept->rp_next_thread; tmp != prept; tmp = tmp->rp_next_thread) {
@@ -8343,7 +8342,7 @@ replay_open (const char __user * filename, int flags, int mode)
 	long rc, fd;
 
 	rc = get_next_syscall (5, (char **) &pretvals);	
-	DPRINT("replay_open(%s,%d,%d) returns %ld\n", filename,flags,mode,rc);
+	MPRINT("replay_open(%s,%d,%d) returns %ld\n", filename,flags,mode,rc);
 	if (rc == -EINTR && current->replay_thrd->rp_pin_attaching) return rc;
 	if (rc >= 0) xray_monitor_add_fd(current->replay_thrd->rp_group->rg_open_socks, rc, MONITOR_FILE, 0, filename);
 	if (pretvals) {
@@ -9297,6 +9296,7 @@ replay_fcntl (unsigned int fd, unsigned int cmd, unsigned long arg)
 	char* retparams = NULL;
 	long rc = get_next_syscall (55, &retparams);
 	
+
 	if (rc == -EINTR && current->replay_thrd->rp_pin_attaching) return rc;
 	if (retparams) {
 		u_long bytes = *((u_long *) retparams);
@@ -13389,7 +13389,12 @@ replay_fcntl64 (unsigned int fd, unsigned int cmd, unsigned long arg)
 		if (copy_to_user((void __user *)arg, retparams + sizeof(u_long), bytes)) return syscall_mismatch();
 		argsconsume(current->replay_thrd->rp_record_thread, sizeof(u_long) + bytes);
 	}
-	MPRINT("%d: replay_fcntl with fd %d, cmd %u and arg %lu\n",current->pid,fd,cmd,arg);
+
+	MPRINT("%d: rp_fcntl fd %d, cmd %u and arg %lu returning %ld\n",current->pid,fd,cmd,arg, rc);
+	if (cmd == F_SETLK64) { 
+		MPRINT("%d: set_lock to %d,%d (%lu,%lu)\n",current->pid, ((struct flock64*)arg)->l_type,((struct flock64*)arg)->l_whence, ((struct flock64*)arg)->l_start, ((struct flock64*)arg)->l_len);
+	}
+
 	return rc;
 }
 
