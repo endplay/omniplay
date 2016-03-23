@@ -210,6 +210,8 @@ int open_cache_file (dev_t dev, u_long ino, struct timespec mtime, int flags)
 	return fd;
 }
 
+static atomic_t counter = {0};
+
 int open_mmap_cache_file (dev_t dev, u_long ino, struct timespec mtime, int is_write)
 {
 	char cname[CACHE_FILENAME_SIZE], tname[CACHE_FILENAME_SIZE];
@@ -218,7 +220,6 @@ int open_mmap_cache_file (dev_t dev, u_long ino, struct timespec mtime, int is_w
 	int fd, tfd, rc, copyed;
 	struct file* tfile, *cfile;
 	loff_t ipos = 0, opos = 0;
-	static u_long counter = 0;
 	char* buffer;
 
         // check if most recent cache file is still valid
@@ -249,7 +250,9 @@ int open_mmap_cache_file (dev_t dev, u_long ino, struct timespec mtime, int is_w
 
 	if (is_write) {
 		// For writeable mmaps, we need to create a copy just for this replay
-		sprintf (tname, "/tmp/replay_mmap_%lu", counter++);
+
+		sprintf (tname, "/tmp/replay_mmap_%d", atomic_inc_return(&counter));
+		printk("%d: mmaped %d\n",current->pid,counter);
 		tfd = sys_open (tname, O_CREAT|O_TRUNC|O_RDWR, 0600);
 		if (tfd < 0) {
 			printk ("open_cache_file: cannot create temp file %s, rc=%d\n", tname, tfd);
