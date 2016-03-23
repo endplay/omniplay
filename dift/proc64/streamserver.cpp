@@ -511,6 +511,7 @@ void do_stream (int s, struct epoch_hdr& ehdr)
     if (!ehdr.start_flag) {
 	if (fork() == 0) {
 	    const char* args[256];
+	    char parstring[80];
 	    int argcnt = 0;
 			    
 	    args[argcnt++] = "stream";
@@ -535,6 +536,9 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	    if (ehdr.flags&NW_COMPRESS) {
 		args[argcnt++] = "-compress";
 	    }
+	    args[argcnt++] = "-par";
+	    sprintf (parstring, "%d", ehdr.parallelize);
+	    args[argcnt++] = parstring;
 	    args[argcnt++] = NULL;
 	    
 	    rc = execv ("./stream", (char **) args);
@@ -545,6 +549,7 @@ void do_stream (int s, struct epoch_hdr& ehdr)
     if (!ehdr.finish_flag) {
 	if (fork() == 0) {
 	    const char* args[256];
+	    char parstring[80];
 	    int argcnt = 0;
 			    
 	    args[argcnt++] = "stream";
@@ -568,6 +573,9 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	    if (ehdr.flags&NW_COMPRESS) {
 		args[argcnt++] = "-compress";
 	    }
+	    args[argcnt++] = "-par";
+	    sprintf (parstring, "%d", ehdr.parallelize);
+	    args[argcnt++] = parstring;
 	    args[argcnt++] = NULL;
 	    
 	    rc = execv ("./stream", (char **) args);

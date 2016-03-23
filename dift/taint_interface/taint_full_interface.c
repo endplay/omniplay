@@ -727,7 +727,7 @@ int dump_mem_taints_start(int fd)
     return 0;
 }
 
-int dump_reg_taints (int fd, taint_t* pregs)
+int dump_reg_taints (int fd, taint_t* pregs, int thread_ndx)
 {
     u_long i;
 
@@ -736,7 +736,7 @@ int dump_reg_taints (int fd, taint_t* pregs)
 	return -1;
     }
 
-
+    u_long base = thread_ndx*(NUM_REGS*REG_SIZE);
 
     if (dumpbuf == NULL) {
 #ifdef USE_SHMEM
@@ -756,8 +756,8 @@ int dump_reg_taints (int fd, taint_t* pregs)
 
     // Increment by 1 because 0 is reserved for "no taint"
     for (i = 0; i < NUM_REGS*REG_SIZE; i++) {
-	if (pregs[i] != i+1) {
-	    print_value (fd, i+1);
+	if (pregs[i] != base+i+1) {
+	    print_value (fd, base+i+1);
 	    print_value (fd, pregs[i]);
 #ifdef DEBUGTRACE
 	    if (is_in_trace_set(pregs[i])) {
@@ -770,7 +770,7 @@ int dump_reg_taints (int fd, taint_t* pregs)
     return 0;
 }
 
-int dump_reg_taints_start (int fd, taint_t* pregs)
+int dump_reg_taints_start (int fd, taint_t* pregs, int thread_ndx)
 {
     u_long i;
 
@@ -779,6 +779,7 @@ int dump_reg_taints_start (int fd, taint_t* pregs)
 	return -1;
     }
 
+    u_long base = thread_ndx*(NUM_REGS*REG_SIZE);
 
     if (dumpbuf == NULL) {
 #ifdef USE_SHMEM
@@ -799,7 +800,7 @@ int dump_reg_taints_start (int fd, taint_t* pregs)
     // Increment by 1 because 0 is reserved for "no taint"
     for (i = 0; i < NUM_REGS*REG_SIZE; i++) {
 	if (pregs[i]) {
-	    print_value (fd, i+1);
+	    print_value (fd, base+i+1);
 	    print_value (fd, pregs[i]);
 	}
     }

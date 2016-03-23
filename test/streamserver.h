@@ -77,7 +77,7 @@ struct epoch_ack {
 #define TAINTQSIZE ((512*1024*1024))
 #define TAINTENTRIES (TAINTQSIZE)/sizeof(uint32_t))
 #else
-#define TAINTQSIZE (64*1024*1024)
+#define TAINTQSIZE (256*1024*1024)
 #endif
 
 #define TAINTENTRIES (TAINTQSIZE/sizeof(uint32_t))

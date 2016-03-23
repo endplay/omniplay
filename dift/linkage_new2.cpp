@@ -280,9 +280,9 @@ static void copy_file(FILE* src, FILE* dest) {
 
 static int terminated = 0;
 extern int dump_mem_taints (int fd);
-extern int dump_reg_taints (int fd, taint_t* pregs);
+extern int dump_reg_taints (int fd, taint_t* pregs, int thread_ndx);
 extern int dump_mem_taints_start (int fd);
-extern int dump_reg_taints_start (int fd, taint_t* pregs);
+extern int dump_reg_taints_start (int fd, taint_t* pregs, int thread_ndx);
 extern taint_t taint_num;
 
 #ifdef TAINT_DEBUG
@@ -343,19 +343,19 @@ static void dift_done ()
 
 #ifndef USE_NULL    
     if (all_output) {
+	int thread_ndx = 0;
 	if (splice_output) {
 	    // Dump out the active registers in order of the record thread id
 	    for (map<pid_t,struct thread_data*>::iterator iter = active_threads.begin(); 
 		 iter != active_threads.end(); iter++) {
-		//printf ("dumping record pid %d regs\n", iter->second->record_pid);
-		dump_reg_taints(taint_fd, iter->second->shadow_reg_table);
+		dump_reg_taints(taint_fd, iter->second->shadow_reg_table, thread_ndx++);
 	    }
 	    dump_mem_taints(taint_fd);
 	} else {
 	    // Dump out the active registers in order of the record thread id
 	    for (map<pid_t,struct thread_data*>::iterator iter = active_threads.begin(); 
 		 iter != active_threads.end(); iter++) {
-		dump_reg_taints_start(taint_fd, iter->second->shadow_reg_table);
+		dump_reg_taints_start(taint_fd, iter->second->shadow_reg_table, thread_ndx++);
 	    }
 	    dump_mem_taints_start(taint_fd);
 	}

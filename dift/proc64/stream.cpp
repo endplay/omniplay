@@ -28,6 +28,8 @@ using namespace std;
 #define MAX_TAINTS 0xc0000000
 #define PAGE_BITS 4096
 
+//#define LS_DETAIL
+
 typedef PagedBitmap<MAX_TAINTS, PAGE_BITS> bitmap;
 
 //#define DEBUG(x) ((x)==0xb1-0xa9)
@@ -2190,8 +2192,10 @@ struct new_live_set_data {
     pthread_t                tid;
     taint_t*                 p;
     taint_t*                 pend;
-    taint_t*                 pls;
-    taint_t*                 plsend;
+    uint32_t                 start_seg;
+    uint32_t                 start_off;
+    uint32_t                 finish_seg;
+    uint32_t                 finish_off;
     bitmap*                  plive_set;
     taint_t*                 results;
     uint32_t                 written;
@@ -2214,71 +2218,105 @@ do_new_live_set (void* data)
     new_live_set_data* pnlsd = (new_live_set_data *) data;
     taint_t* p = pnlsd->p;
     taint_t* pend = pnlsd->pend;
-    taint_t* pls = pnlsd->pls;
-    taint_t* plsend = pnlsd->plsend;
+    uint32_t start_seg = pnlsd->start_seg;
+    uint32_t start_off = pnlsd->start_off;
+    uint32_t finish_seg = pnlsd->finish_seg;
+    uint32_t finish_off = pnlsd->finish_off;
     bitmap* plive_set = pnlsd->plive_set;
     taint_t* results = pnlsd->results;
+    taint_t* pls = NULL;
+    taint_t* plsend = NULL;
 
 #ifdef STATS
     uint32_t lno_changes = 0, lzeros = 0, linputs = 0, lnot_live = 0, lmerges = 0, lmerge_zeros = 0;
     gettimeofday(&pnlsd->tv_start, NULL);
 #endif
 
-    while (p < pend && pls < plsend) {
-	taint_t addr = *p;
-	if (*pls < addr) {
-	    // No change - so still in live set
-	    *results++ = *pls;
-#ifdef STATS
-	    lno_changes++;
+    while (p < pend && start_seg <= finish_seg) {
+	pls = outputq_buf + start_seg*(TAINTENTRIES/parallelize)+start_off;
+	if (finish_seg == start_seg) {
+	    plsend = outputq_buf+finish_seg*(TAINTENTRIES/parallelize)+finish_off;
+#ifdef LS_DETAIL
+	    fprintf (stderr, "<%d:%d> to <%d:%d> doing seg %d up to %d\n", 
+		     pnlsd->start_seg, pnlsd->start_off,
+		     pnlsd->finish_seg, pnlsd->finish_off, start_seg,
+		     finish_seg*(TAINTENTRIES/parallelize)+finish_off);
 #endif
-	    pls++;
+	    start_seg++;
 	} else {
-	    taint_t val = *(p+1);
-	    if (val == 0) {
-		// Do nothing
-#ifdef STATS
-		lzeros++;
+	    plsend = outputq_buf+start_seg*(TAINTENTRIES/parallelize)+outputq_buf[start_seg];
+#ifdef LS_DETAIL
+	    fprintf (stderr, "<%d:%d> to <%d:%d> doing seg %d up to %d\n", 
+		     pnlsd->start_seg, pnlsd->start_off,
+		     pnlsd->finish_seg, pnlsd->finish_off, start_seg,
+		     start_seg*(TAINTENTRIES/parallelize)+outputq_buf[start_seg]);
 #endif
-	    } else if (val < 0xc0000000) {
-		if (start_flag || plive_set->test(val)) {
+	    start_seg++;
+	    start_off = 0;
+	}
+	
+	while (p < pend && pls < plsend) {
+	    taint_t addr = *p;
+	    if (*pls < addr) {
+		// No change - so still in live set
+		*results++ = *pls;
+#ifdef STATS
+		lno_changes++;
+#endif
+		pls++;
+	    } else {
+		taint_t val = *(p+1);
+		if (val == 0) {
+		    // Do nothing
+#ifdef STATS
+		    lzeros++;
+#endif
+		} else if (val < 0xc0000000) {
+		    if (start_flag || plive_set->test(val)) {
+			*results++ = addr;
+#ifdef STATS
+			linputs++;
+#endif
+		    } else {
+#ifdef STATS
+			lnot_live++;
+#endif
+		    }
+		} else if (val <= 0xe0000000) {
 		    *results++ = addr;
 #ifdef STATS
 		    linputs++;
 #endif
-		} else {
+		} else if (val == 0xffffffff) {
 #ifdef STATS
-		    lnot_live++;
-#endif
-		}
-	    } else if (val <= 0xe0000000) {
-		*results++ = addr;
-#ifdef STATS
-		linputs++;
-#endif
-	    } else if (val == 0xffffffff) {
-#ifdef STATS
-		// This is a result of the preprune global state
-		lmerge_zeros++;
-#endif
-	    } else {
-		taint_entry* pentry = &merge_log[val-0xe0000001];
-		if (pentry->p1 || pentry->p2) {
-		    *results++ = addr;
-#ifdef STATS
-		    lmerges++;
-#endif
-		} else {
-#ifdef STATS
+		    // This is a result of the preprune global state
 		    lmerge_zeros++;
 #endif
+		} else {
+		    taint_entry* pentry = &merge_log[val-0xe0000001];
+		    if (pentry->p1 || pentry->p2) {
+			*results++ = addr;
+#ifdef STATS
+			lmerges++;
+#endif
+		    } else {
+#ifdef STATS
+			lmerge_zeros++;
+#endif
+		    }
 		}
+		p += 2;
+		if (addr == *pls) pls++;
 	    }
-	    p += 2;
-	    if (addr == *pls) pls++;
 	}
     }
-    if (pls == plsend) {
+
+    if (pls == plsend && start_seg > finish_seg) {
+#ifdef LS_DETAIL
+	fprintf (stderr, "<%d:%d> to <%d:%d> cleaning up addresses\n", 
+		 pnlsd->start_seg, pnlsd->start_off,
+		 pnlsd->finish_seg, pnlsd->finish_off);
+#endif
 	while (p < pend) {
 	    taint_t addr = *p;
 	    taint_t val = *(p+1);
@@ -2320,10 +2358,37 @@ do_new_live_set (void* data)
 	}
     }
     if (p == pend) {
+#ifdef LS_DETAIL
+	fprintf (stderr, "<%d:%d> to <%d:%d> cleaning up live set next seg %d\n",
+		 pnlsd->start_seg, pnlsd->start_off,
+		 pnlsd->finish_seg, pnlsd->finish_off, start_seg);
+	if (pls != plsend) {
+	    fprintf (stderr, "<%d:%d> to <%d:%d>  pls %p (%x) plsend-1 %p (%x)\n", 
+		     pnlsd->start_seg, pnlsd->start_off,
+		     pnlsd->finish_seg, pnlsd->finish_off, pls, *pls, plsend-1, *(plsend-1));
+	}
+#endif
 	while (pls < plsend) {
 	    *results++ = *pls;
 	    pls++;
 	}
+
+	while (start_seg <= finish_seg) {
+	    pls = outputq_buf + start_seg*(TAINTENTRIES/parallelize)+start_off;
+	    if (finish_seg == start_seg) {
+		plsend = outputq_buf+finish_seg*(TAINTENTRIES/parallelize)+finish_off;
+		start_seg++;
+	    } else {
+		plsend = outputq_buf+start_seg*(TAINTENTRIES/parallelize)+outputq_buf[start_seg];
+		start_seg++;
+		start_off = 0;
+	    }
+
+	    while (pls < plsend) {
+		*results++ = *pls;
+		pls++;
+	    }
+	} 
     }
 
     pnlsd->written = results - pnlsd->results;
@@ -2340,18 +2405,36 @@ do_new_live_set (void* data)
     return NULL;
 }
 
-static taint_t* find_split (taint_t* start, taint_t* end, taint_t val) 
+static uint32_t next_seg (int seg) 
 {
-    while (end > start) {
-	u_long new_incr = (end - start) / 2;
-	taint_t* mid = start + new_incr;
-	if (*mid >= val) {
-	    end = mid;
+    do {
+	seg++;
+	if (seg == parallelize) return 0xffffffff; // No values past this one
+    } while (outputq_buf[seg] == 0);
+    return (outputq_buf[seg*(TAINTENTRIES/parallelize)]);
+}
+
+static void find_split (uint32_t& start_seg, uint32_t& start_off, taint_t val) 
+{
+    // First find the right segment
+    while (next_seg(start_seg) < val) {
+	start_seg++;
+	start_off = 0;
+    }
+
+    uint32_t low_off = start_off;
+    uint32_t high_off = outputq_buf[start_seg];
+    taint_t* segment = outputq_buf + start_seg*(TAINTENTRIES/parallelize);
+    while (low_off < high_off) {
+	u_long new_off = (low_off + high_off) / 2;
+	taint_t mid = *(segment+new_off);
+	if (mid >= val) {
+	    high_off = new_off;
 	} else {
-	    start = mid+1;
+	    low_off = new_off+1;
 	}
     }
-    return end;
+    start_off = high_off;
 }
 
 static taint_entry* find_asplit (taint_entry* start, taint_entry* end, taint_t val) 
@@ -2369,7 +2452,7 @@ static taint_entry* find_asplit (taint_entry* start, taint_entry* end, taint_t v
 }
 
 static void
-make_new_live_set (taint_t* p, taint_t* pend, taint_t* pls, taint_t* plsend, bitmap &live_set)
+make_new_live_set (taint_t* p, taint_t* pend, u_long lsvalues, bitmap &live_set, const char* dirname)
 {
     struct new_live_set_data new_live_set_data[parallelize];
 
@@ -2380,45 +2463,72 @@ make_new_live_set (taint_t* p, taint_t* pend, taint_t* pls, taint_t* plsend, bit
 
     int ncnt = 0;
     u_long values = (pend - p)/2;
-    u_long lsvalues = (plsend-pls);
     if (lsvalues > values) {
 	u_long step = lsvalues/parallelize;
 	if (step > 0) {
 	    taint_t* lastp = p;
-	    taint_t* lastpls = pls;
+	    uint32_t start_seg = 0;
+	    uint32_t start_off = parallelize;
 	    for (int i = 0; i < parallelize; i++) {
 		
-		new_live_set_data[i].pls = lastpls;
+		new_live_set_data[i].start_seg = start_seg;
+		new_live_set_data[i].start_off = start_off;
 		if (i == parallelize-1) {
-		    new_live_set_data[i].plsend = plsend;
+		    new_live_set_data[i].finish_seg = parallelize-1;
+		    new_live_set_data[i].finish_off = outputq_buf[parallelize-1];
 		} else {
-		    lastpls = new_live_set_data[i].plsend = lastpls + step;
+		    start_off += step;
+		    while (start_off >= outputq_buf[start_seg]) {
+			start_off -= outputq_buf[start_seg];
+			start_seg++;
+			if (start_seg == parallelize) {
+			    start_seg = parallelize-1;
+			    start_off = outputq_buf[parallelize-1];
+			    break;
+			}
+		    }
+		    new_live_set_data[i].finish_seg = start_seg;
+		    new_live_set_data[i].finish_off = start_off;
 		}
 		new_live_set_data[i].p = lastp;
-		if (i == parallelize-1) {
+		if (new_live_set_data[i].finish_seg == (u_long) parallelize-1 && 
+		    new_live_set_data[i].finish_off == outputq_buf[parallelize-1]) {
 		    new_live_set_data[i].pend = pend;
 		} else {
-		    taint_t* split = (taint_t *) find_asplit ((taint_entry *) lastp, (taint_entry *) pend, *lastpls);
+		    taint_t lsval = outputq_buf[start_seg*(TAINTENTRIES/parallelize)+start_off];
+		    taint_t* split = (taint_t *) find_asplit ((taint_entry *) lastp, (taint_entry *) pend, lsval);
 		    lastp = new_live_set_data[i].pend = split;
 		}
+#ifdef LS_DETAIL
+		fprintf (stderr, "*start_seg %d start_off %d finish_seg %d finish_off %d\n", 
+			 new_live_set_data[i].start_seg, new_live_set_data[i].start_off, 
+			 new_live_set_data[i].finish_seg, new_live_set_data[i].finish_off);
+#endif
 		new_live_set_data[i].plive_set = &live_set;
-		new_live_set_data[i].results = &inputq_buf[i*(TAINTENTRIES/parallelize)];
+		if (i == 0) {
+		    new_live_set_data[i].results = &inputq_buf[parallelize];
+		} else {
+		    new_live_set_data[i].results = &inputq_buf[i*(TAINTENTRIES/parallelize)];
+		}
 	    }
 	    ncnt = parallelize;
 	} else if (pend != p) {
 	    new_live_set_data[0].p = p;
 	    new_live_set_data[0].pend = pend;
-	    new_live_set_data[0].pls = pls;
-	    new_live_set_data[0].plsend = plsend;
+	    new_live_set_data[0].start_seg = 0;
+	    new_live_set_data[0].start_off = parallelize;
+	    new_live_set_data[0].finish_seg = parallelize-1;
+	    new_live_set_data[0].finish_off = outputq_buf[parallelize-1];
 	    new_live_set_data[0].plive_set = &live_set;
-	    new_live_set_data[0].results = &inputq_buf[0];
+	    new_live_set_data[0].results = &inputq_buf[parallelize];
 	    ncnt = 1;
 	}
     } else {
 	u_long step = values/parallelize;
 	if (step > 0) {
 	    taint_t* lastp = p;
-	    taint_t* lastpls = pls;
+	    uint32_t start_seg = 0;
+	    uint32_t start_off = parallelize;
 	    for (int i = 0; i < parallelize; i++) {
 		
 		new_live_set_data[i].p = lastp;
@@ -2427,27 +2537,49 @@ make_new_live_set (taint_t* p, taint_t* pend, taint_t* pls, taint_t* plsend, bit
 		} else {
 		    lastp = new_live_set_data[i].pend = lastp + step*2;
 		}
-		new_live_set_data[i].pls = lastpls;
-		if (i == parallelize-1) {
-		    new_live_set_data[i].plsend = plsend;
+		new_live_set_data[i].start_seg = start_seg;
+		new_live_set_data[i].start_off = start_off;
+		if (start_flag) {
+		    new_live_set_data[i].finish_seg = start_seg;
+		    new_live_set_data[i].finish_off = start_off;
+		} else if (i == parallelize-1) {
+		    new_live_set_data[i].finish_seg = parallelize-1;
+		    new_live_set_data[i].finish_off = outputq_buf[parallelize-1];
 		} else {
-		    taint_t* split = find_split (lastpls, plsend, *lastp);
-		    lastpls = new_live_set_data[i].plsend = split;
+		    find_split (start_seg, start_off, *lastp);
+#ifdef LS_DETAIL
+		    fprintf (stderr, "find split on %x returns start_seg %d start_off %d\n", 
+			     *lastp, start_seg, start_off);
+#endif
+		    new_live_set_data[i].finish_seg = start_seg;
+		    new_live_set_data[i].finish_off = start_off;
 		}
+#ifdef LS_DETAIL
+		fprintf (stderr, "start_seg %d start_off %d finish_seg %d finish_off %d\n", 
+			 new_live_set_data[i].start_seg, new_live_set_data[i].start_off, 
+			 new_live_set_data[i].finish_seg, new_live_set_data[i].finish_off);
+#endif
 		new_live_set_data[i].plive_set = &live_set;
-		new_live_set_data[i].results = &inputq_buf[i*(TAINTENTRIES/parallelize)];
+		if (i == 0) {
+		    new_live_set_data[i].results = &inputq_buf[parallelize];
+		} else {
+		    new_live_set_data[i].results = &inputq_buf[i*(TAINTENTRIES/parallelize)];
+		}
 	    }
 	    ncnt = parallelize;
 	} else if (pend != p) {
 	    new_live_set_data[0].p = p;
 	    new_live_set_data[0].pend = pend;
-	    new_live_set_data[0].pls = pls;
-	    new_live_set_data[0].plsend = plsend;
+	    new_live_set_data[0].start_seg = 0;
+	    new_live_set_data[0].start_off = parallelize;
+	    new_live_set_data[0].finish_seg = parallelize-1;
+	    new_live_set_data[0].finish_off = outputq_buf[parallelize-1];
 	    new_live_set_data[0].plive_set = &live_set;
-	    new_live_set_data[0].results = &inputq_buf[0];
+	    new_live_set_data[0].results = &inputq_buf[parallelize];
 	    ncnt = 1;
 	}
     }
+
     for (int i = 0; i < ncnt-1; i++) {
 	long rc = pthread_create (&new_live_set_data[i].tid, NULL, do_new_live_set, &new_live_set_data[i]);
 	if (rc < 0) {
@@ -2458,33 +2590,53 @@ make_new_live_set (taint_t* p, taint_t* pend, taint_t* pls, taint_t* plsend, bit
 
     if (ncnt) do_new_live_set(&new_live_set_data[ncnt-1]);
 
-    // Write values in order
-    uint32_t wbucket_cnt = 0;
+    // Wait for threads to complete
     for (int i = 0; i < ncnt; i++) {
 	if (i < ncnt-1) {
 	    long rc = pthread_join(new_live_set_data[i].tid, NULL);
 	    if (rc < 0) fprintf (stderr, "Cannot join make live set thread, rc=%ld\n", rc); 
 	}
-	if (i > 0) {
-	    memcpy(inputq_buf+wbucket_cnt, inputq_buf+i*(TAINTENTRIES/parallelize), 
-		   new_live_set_data[i].written*sizeof(taint_t));
-	}
-	wbucket_cnt += new_live_set_data[i].written;
+	inputq_buf[i] = new_live_set_data[i].written;
+	if (i == 0) inputq_buf[i] += parallelize;
     }
-#if PARANOID
-    u_int last = inputq_buf[0];
-    for (uint32_t i = 1; i < wbucket_cnt; i++) {
-	if (inputq_buf[i] <= last) {
-	    fprintf (stderr, "offset %d has value %x but prev value is %x\n", i, inputq_buf[i], last);
-	    assert (0);
-	}
-	last = inputq_buf[i];
+    for (int i = ncnt; i < parallelize; i++) {
+	inputq_buf[i] = 0;
+	if (i == 0) inputq_buf[i] += parallelize;
     }
-#endif	
+
+    // Last bit written to this location
+    uint32_t wbucket_cnt = (parallelize-1)*(TAINTENTRIES/parallelize) + inputq_buf[parallelize-1];
+#ifdef LS_DETAIL
+    char filename[256];
+    sprintf (filename, "%s/liveset", dirname);
+    FILE* file = fopen (filename, "w");
+    int total = 0;
+    if (file) {
+	for (int i = 0; i < parallelize; i++) {
+	    int cnt = inputq_buf[i];
+	    uint32_t offset;
+	    if (i == 0) {
+		offset = parallelize;
+		cnt -= parallelize;
+	    } else {
+		offset = i*(TAINTENTRIES/parallelize);
+	    }
+	    total += cnt;
+	    fprintf (file, "segment %d cnt %d total %d:\n", i, cnt, total);
+	    for (int j = 0; j < cnt; j++) {
+		fprintf (file, "%x\n", inputq_buf[offset+j]);
+	    }
+	}
+	fclose (file);
+    } else {
+	fprintf (stderr, "cannot open %s\n", filename);
+    }
+#endif
     bucket_complete_write (inputq_hdr, inputq_buf, wbucket_cnt);
 
 #ifdef STATS
     gettimeofday(&new_live_end_tv, NULL);
+
     new_live_set_send_idle = send_idle;
     new_live_set_recv_idle = recv_idle;
 
@@ -3025,44 +3177,107 @@ preprune_global (u_long& mdatasize, char* output_log, u_long odatasize, taint_t*
 struct insert_live_set_data {
     pthread_t                tid;
     bitmap*                  plive_set;
-    uint32_t                 start;
-    uint32_t                 finish;
+    uint32_t                 start_seg;
+    uint32_t                 start_off;
+    uint32_t                 finish_seg;
+    uint32_t                 finish_off;
 };
 
 void* 
 do_insert_live_set (void* data)
 {
     struct insert_live_set_data* pilsd = (struct insert_live_set_data *)  data;
-    uint32_t start = pilsd->start;
-    uint32_t finish = pilsd->finish;
+    uint32_t start_seg = pilsd->start_seg;
+    uint32_t start_off = pilsd->start_off;
+    uint32_t finish_seg = pilsd->finish_seg;
+    uint32_t finish_off = pilsd->finish_off;
     bitmap* plive_set = pilsd->plive_set;
 
-    //fprintf (stderr, "inserting from %u (%x) to %u (%x)\n", start, outputq_buf[start], finish-1, outputq_buf[finish-1]);
-    for (uint32_t i = start; i < finish; i++) {
-	plive_set->set(outputq_buf[i]);
-    }
+    if (start_seg == finish_seg) {
+	taint_t* ploc = outputq_buf + start_seg*(TAINTENTRIES/parallelize) + start_off;
+	for (uint32_t i = start_off; i < finish_off; i++) {
+	    plive_set->set(*ploc);
+	    ploc++;
+	}
+    } else {
+	taint_t* ploc = outputq_buf + start_seg*(TAINTENTRIES/parallelize) + start_off;
+	for (uint32_t i = start_off; i < outputq_buf[start_seg]; i++) {
+	    plive_set->set(*ploc);
+	    ploc++;
+	}
+
+	for (uint32_t i = start_seg+1; i < finish_seg; i++) {
+	    ploc = outputq_buf + i*(TAINTENTRIES/parallelize);
+	    for (uint32_t j = 0; j < outputq_buf[i]; j++) {
+		plive_set->set(*ploc);
+		ploc++;
+	    }
+	}
+	    
+	ploc = outputq_buf + finish_seg*(TAINTENTRIES/parallelize);
+	for (uint32_t i = 0; i < finish_off; i++) {
+	    plive_set->set(*ploc);
+	    ploc++;
+	}
+    }   
 
     return NULL;
 }
 
 static int insert_live_set (bitmap& live_set, int cnt)
 {
-    uint32_t finish;
-    uint32_t start = 0;
     struct insert_live_set_data tdata[parallelize];
     int tcnt = 0;
 
+    uint32_t live_set_size = 0;
+    for (int i = 0; i < parallelize; i++) {
+	live_set_size += outputq_buf[i];
+	if (i == 0) live_set_size -= parallelize;
+    }
+
+    uint32_t start_seg = 0;
+    uint32_t start_off = parallelize;
+    uint32_t finish_seg = 0;
+    uint32_t finish_off;
     for (int i = 0; i < parallelize-1; i++) {
-	finish = start + cnt/parallelize;
-	if (finish > (uint32_t) cnt) {
-	    finish = cnt;
-	} else {
-	    uint32_t page = outputq_buf[finish]/4096;
-	    while (outputq_buf[finish]/4096 == page && finish < (uint32_t) cnt) finish++;
+	finish_off = start_off + live_set_size/parallelize;
+	while (finish_off >= outputq_buf[finish_seg]) {
+	    finish_off -= outputq_buf[finish_seg];
+	    finish_seg++;
+	    if (finish_seg == parallelize) break;
 	}
-	if (start != finish) {
-	    tdata[tcnt].start = start;
-	    tdata[tcnt].finish = finish;
+	if (finish_seg == parallelize) {
+	    finish_seg = parallelize-1;
+	    finish_off = outputq_buf[finish_seg];
+	} else {
+	    uint32_t finish_loc = finish_seg*(TAINTENTRIES/parallelize)+finish_off;
+	    uint32_t page;
+	    if (finish_off > 0) {
+		page = outputq_buf[finish_loc-1]/4096;
+	    } else {
+		uint32_t page_loc = (finish_seg-1)*(TAINTENTRIES/parallelize)+outputq_buf[finish_seg-1]-1;
+		page = outputq_buf[page_loc]/4096;
+	    }
+	    while (outputq_buf[finish_loc]/4096 == page) {
+		finish_off++;
+		if (finish_off >= outputq_buf[finish_seg]) {
+		    if (finish_seg == (uint32_t) parallelize-1) {
+			break;
+		    } else {
+			finish_seg++;
+			finish_off = 0;
+			finish_loc = finish_seg*(TAINTENTRIES/parallelize)+finish_off;
+		    }
+		} else {
+		    finish_loc++;
+		}
+	    }
+	}
+	if (start_seg != finish_seg || start_off != finish_off) {
+	    tdata[tcnt].start_seg = start_seg;
+	    tdata[tcnt].start_off = start_off;
+	    tdata[tcnt].finish_seg = finish_seg;
+	    tdata[tcnt].finish_off = finish_off;
 	    tdata[tcnt].plive_set = &live_set;
 	    long rc = pthread_create (&tdata[i].tid, NULL, do_insert_live_set, &tdata[i]);
 	    if (rc < 0) {
@@ -3071,12 +3286,15 @@ static int insert_live_set (bitmap& live_set, int cnt)
 	    }	    
 	    tcnt++;
 	}
-	start = finish;
+	start_seg = finish_seg;
+	start_off = finish_off;
     }
 
-    if (start != (uint32_t) cnt) {
-	tdata[tcnt].start = start;
-	tdata[tcnt].finish = cnt;
+    if (start_seg != (uint32_t) parallelize-1 || start_off != outputq_buf[parallelize-1]) {
+	tdata[tcnt].start_seg = start_seg;
+	tdata[tcnt].start_off = start_off;
+	tdata[tcnt].finish_seg = parallelize-1;
+	tdata[tcnt].finish_off = outputq_buf[parallelize-1];
 	tdata[tcnt].plive_set = &live_set;
 	do_insert_live_set(&tdata[tcnt]);
     }
@@ -3086,7 +3304,7 @@ static int insert_live_set (bitmap& live_set, int cnt)
 	if (rc < 0) fprintf (stderr, "Cannot join insert live set thread, rc=%ld\n", rc); 
     }
 
-    return 0;
+    return live_set_size;
 }
 
 // Process one epoch for sequential forward strategy 
@@ -3101,7 +3319,8 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
     bitmap live_set;
     unordered_map<taint_t,taint_t> address_map;
     pthread_t build_map_tid = 0;
-    int live_set_cnt = 0;
+    int live_set_cnt = 0; // Last slot in buffer
+    int live_set_total = 0; // Number of slots used
 
     rc = setup_aggregation (dirname, outputfd, inputfd, addrsfd);
     if (rc < 0) return rc;
@@ -3160,11 +3379,12 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	gettimeofday(&live_insert_start_tv, NULL);
 #endif
 
-	insert_live_set (live_set, live_set_cnt);
+	live_set_total = insert_live_set (live_set, live_set_cnt);
+	if (live_set_total < 0) return live_set_size;
 
 #ifdef STATS
 	gettimeofday(&live_receive_end_tv, NULL);
-	live_set_size = live_set_cnt;
+	live_set_size = live_set_total;
 #endif
 	// Prune the merge log
 	prune_merge_log (mdatasize, live_set);
@@ -3172,10 +3392,7 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 
     // Construct and send out new live set
     if (!finish_flag) {
-
-	uint32_t* pls = outputq_buf;
-	uint32_t* plsend = outputq_buf + live_set_cnt;
-	make_new_live_set(ts_log, ts_log + adatasize/sizeof(taint_t), pls, plsend, live_set);
+	make_new_live_set(ts_log, ts_log + adatasize/sizeof(taint_t), live_set_total, live_set, dirname);
     }
     
     if (!start_flag) {
@@ -3372,46 +3589,102 @@ void send_stream_compress (int s, struct taintq_hdr* qh, uint32_t* qb)
 {
     const uint32_t outentries = 4096;
     uint32_t outbuf[outentries];
-    uint32_t outndx = 0;
     uint32_t bytes_sent = 0;
 
     // Wait until bytes are ready to send
     u_long cnt = bucket_wait_term (qh, qb);
-    if (cnt) {
-	// Do run length encoding
-	uint32_t last = qb[0];
-	outbuf[outndx++] = last;
-	uint32_t run_length = 1;
-	for (uint32_t i = 1; i < cnt; i++) {
-	    if (qb[i] != last+1) {
-		outbuf[outndx++] = run_length;
-		if (outndx == outentries) {
-		    long rc = safe_write (s, outbuf, sizeof(outbuf));
-		    if (rc != sizeof(outbuf)) {
-			fprintf (stderr, "Compressed send returns %ld, errno=%d\n", rc, errno);
-			return;
-		    }
-		    bytes_sent += sizeof(outbuf);
-		    outndx = 0;
-		}
-		outbuf[outndx++] = qb[i];
-		run_length = 1;
-	    } else {
-		run_length++;
-	    }
-	    last = qb[i];
-	}
-	outbuf[outndx++] = run_length;
-	if (outndx == outentries) {
-	    assert (safe_write (s, outbuf, sizeof(outbuf)) == sizeof(outbuf));
-	    bytes_sent += sizeof(outbuf);
-	    outndx = 0;
-	}
+    if (cnt == 0) {
+	fprintf (stderr, "No header for send_stream_compress");
+	return;
     }
-    outbuf[outndx++] = 0;
-    assert (safe_write (s, outbuf, sizeof(outbuf)) == sizeof(outbuf));
-    bytes_sent += sizeof(outbuf);
-    printf ("Bytes sent %u queue size %lu\n", bytes_sent, cnt*sizeof(uint32_t));
+
+    // First send header data
+    long rc = safe_write (s, qb, parallelize*sizeof(uint32_t));
+    if (rc != (long) (parallelize*sizeof(uint32_t))) {
+	fprintf (stderr, "send_steam: send of header returns %ld\n", rc);
+	return;
+    }
+    for (int seg = 0; seg < parallelize; seg++) {
+	int offset = 0;
+	if (seg == 0) {
+	    offset = parallelize;
+	} else {
+	    offset = seg*(TAINTENTRIES/parallelize);
+	}
+	int stop_at = offset + qb[seg];
+	uint32_t outndx = 0;
+	if (qb[seg]) {
+	    // Do run length encoding of this segment
+	    uint32_t last = qb[offset];
+	    outbuf[outndx++] = last;
+	    uint32_t run_length = 1;
+	    for (int i = offset+1; i < stop_at; i++) {
+		if (qb[i] != last+1) {
+		    outbuf[outndx++] = run_length;
+		    if (outndx == outentries) {
+			rc = safe_write (s, outbuf, sizeof(outbuf));
+			if (rc != sizeof(outbuf)) {
+			    fprintf (stderr, "Compressed send returns %ld, errno=%d\n", rc, errno);
+			    return;
+			}
+			bytes_sent += sizeof(outbuf);
+			outndx = 0;
+		    }
+			outbuf[outndx++] = qb[i];
+			run_length = 1;
+		} else {
+		    run_length++;
+		}
+		last = qb[i];
+	    }
+	    outbuf[outndx++] = run_length;
+	    if (outndx == outentries) {
+		assert (safe_write (s, outbuf, sizeof(outbuf)) == sizeof(outbuf));
+		bytes_sent += sizeof(outbuf);
+		outndx = 0;
+	    }
+	}
+	outbuf[outndx++] = 0;
+	assert (safe_write (s, outbuf, sizeof(outbuf)) == sizeof(outbuf));
+	bytes_sent += sizeof(outbuf);
+    }
+    // No need for sentinel since header info tells length precisely
+}
+    
+void send_stream_nocompress (int s, struct taintq_hdr* qh, uint32_t* qb)
+{
+    uint32_t bytes_sent = 0;
+
+    // Wait until bytes are ready to send
+    u_long cnt = bucket_wait_term (qh, qb);
+    if (cnt == 0) {
+	fprintf (stderr, "No header for send_stream_compress");
+	return;
+    }
+
+    // First send header data
+    long rc = safe_write (s, qb, parallelize*sizeof(uint32_t));
+    if (rc != (long) (parallelize*sizeof(uint32_t))) {
+	fprintf (stderr, "send_steam_nocompress: send of header returns %ld\n", rc);
+	return;
+    }
+    for (int seg = 0; seg < parallelize; seg++) {
+	int offset = 0;
+	if (seg == 0) {
+	    offset = parallelize;
+	} else {
+	    offset = seg*(TAINTENTRIES/parallelize);
+	}
+	if (qb[seg]) {
+	    rc = safe_write (s, qb+offset, qb[seg]*sizeof(uint32_t));
+	    if (rc != (long) (qb[seg]*sizeof(uint32_t))) {
+		fprintf (stderr, "Uncompressed send returns %ld, errno=%d\n", rc, errno);
+		return;
+	    }
+	}
+	bytes_sent += qb[seg];
+    }
+    // No need for sentinel since header info tells length precisely
 }
     
 void recv_stream (int s, struct taintq_hdr* qh, uint32_t* qb)
@@ -3450,26 +3723,77 @@ void recv_stream_compress (int s, struct taintq_hdr* qh, uint32_t* qb)
     uint32_t outbuf[outentries];
     uint32_t ndx = 0;
 
-    while (1) {
-
-	long rc = safe_read (s, outbuf, sizeof(outbuf));
-	if (rc != sizeof(outbuf)) {
-	    fprintf (stderr, "Compressed recv returns %ld, errno=%d\n", rc, errno);
-	    return;
+    // Firest read in headder
+    long rc = safe_read (s, qb, parallelize*sizeof(uint32_t));
+    if (rc != (long) (parallelize*sizeof(uint32_t))) {
+	fprintf (stderr, "Compressed recv cannot read header %ld, errno=%d\n", rc, errno);
+	return;
+    }
+    
+    for (int seg = 0; seg < parallelize; seg++) {
+	
+	if (seg == 0) {
+	    ndx = parallelize;
+	} else {
+	    ndx = seg*(TAINTENTRIES/parallelize);
 	}
-	for (uint32_t i = 0; i < outentries; i += 2) {
-	    if (outbuf[i] == 0) {
-		bucket_complete_write (qh, qb, ndx);
-		return; // Last entry - we are done
-	    }
 
-	    uint32_t val = outbuf[i];
-	    uint32_t len = outbuf[i+1];
-	    for (uint32_t j = 0; j < len; j++) {
-		qb[ndx++] = val++;
+	bool seg_done = false;
+	while (!seg_done) {
+	    
+	    long rc = safe_read (s, outbuf, sizeof(outbuf));
+	    if (rc != sizeof(outbuf)) {
+		fprintf (stderr, "Compressed recv returns %ld, errno=%d\n", rc, errno);
+		return;
+	    }
+	    for (uint32_t i = 0; i < outentries; i += 2) {
+		if (outbuf[i] == 0) {
+		    seg_done = true;
+		    break;
+		}
+
+		uint32_t val = outbuf[i];
+		uint32_t len = outbuf[i+1];
+		for (uint32_t j = 0; j < len; j++) {
+		    qb[ndx++] = val++;
+		}
 	    }
 	}
     }
+
+    bucket_complete_write (qh, qb, ndx);
+    return; // Last entry - we are done
+}
+
+void recv_stream_nocompress (int s, struct taintq_hdr* qh, uint32_t* qb)
+{
+    uint32_t off = 0;
+
+    // Firest read in headder
+    long rc = safe_read (s, qb, parallelize*sizeof(uint32_t));
+    if (rc != (long) (parallelize*sizeof(uint32_t))) {
+	fprintf (stderr, "Uncompressed recv cannot read header %ld, errno=%d\n", rc, errno);
+	return;
+    }
+    
+    for (int seg = 0; seg < parallelize; seg++) {
+	
+	if (seg == 0) {
+	    off = parallelize;
+	} else {
+	    off = seg*(TAINTENTRIES/parallelize);
+	}
+	    
+	long rc = safe_read (s, qb + off, qb[seg]*sizeof(uint32_t));
+	if (rc != (long) (qb[seg]*sizeof(uint32_t))) {
+	    fprintf (stderr, "Uncompressed recv returns %ld, errno=%d\n", rc, errno);
+	    return;
+	}
+    }
+
+    uint32_t ndx = off+qb[parallelize-1];
+    bucket_complete_write (qh, qb, ndx);
+    return; // Last entry - we are done
 }
 
 int recv_input_queue (struct recvdata* data)
@@ -3485,7 +3809,7 @@ int recv_input_queue (struct recvdata* data)
 	if (data->compress) {
 	    send_stream_compress (s, inputq_hdr, inputq_buf); // First we send filters downstream	
 	} else {
-	    send_stream (s, inputq_hdr, inputq_buf);
+	    send_stream_nocompress (s, inputq_hdr, inputq_buf);
 	}
 	shutdown (s, SHUT_WR);
 	inputq_hdr->read_index = inputq_hdr->write_index = 0;
@@ -3512,7 +3836,7 @@ int send_output_queue (struct senddata* data)
        if (data->compress) {
 	   recv_stream_compress (s, outputq_hdr, outputq_buf); // First we read data from upstream
        } else {
-	   recv_stream (s, outputq_hdr, outputq_buf); // First we read data from upstream
+	   recv_stream_nocompress (s, outputq_hdr, outputq_buf); // First we read data from upstream
        }
        DOWN_QSEM(outputq_hdr);
    }
