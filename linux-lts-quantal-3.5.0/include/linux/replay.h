@@ -11,6 +11,7 @@
 #define PIN_NORMAL         0
 #define PIN_ATTACH_RUNNING 1
 #define PIN_ATTACH_BLOCKED 2
+#define PIN_ATTACH_REDO    4
 
 #include <linux/signal.h>
 #include <linux/mm_types.h>
@@ -43,6 +44,8 @@ long get_log_id (void);
 unsigned long get_clock_value (void);
 long check_clock_before_syscall (int syscall);
 long check_clock_after_syscall (int syscall);
+long check_for_redo (void);
+long redo_mmap (u_long __user * prc, u_long __user * plen);
 long get_used_addresses (struct used_address __user * plist, int listsize);
 void print_memory_areas (void);
 

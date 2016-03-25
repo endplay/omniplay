@@ -947,6 +947,15 @@ struct record_thread {
 #define PIN_ATTACHING_FF       2
 #define PIN_ATTACHING_RESTART  3
 
+struct mmap_attach_parms {
+	u_long addr;
+	u_long len;
+	u_long prot;
+	u_long flags;
+	u_long fd;
+	u_long pgoff;
+};	
+
 // This has replay thread specific data
 struct replay_thread {
 	struct replay_group* rp_group; // Points to replay group
@@ -988,6 +997,7 @@ struct replay_thread {
 	int is_pin_vfork;		// Set 1 when Pin calls clone instead of vfork
 	int rp_pin_attaching;           // Set to 1 when Pin attaching to multithread program
 	int rp_pin_attach_ndx;          // Used to order threads for multi-threaded attach
+	struct mmap_attach_parms* rp_pin_attach_redo_mmap; // Saves parms if we need to reattach after mmap
 	u_long rp_pin_thread_data;      // Address of thread-specific Pin data
 	u_long __user* rp_pin_curthread_ptr;// Pin TLS ptr to update on context switch
 	int rp_pin_switch_before_attach; // Used for "lost wakeup" problem where attach happens after switch
@@ -1026,6 +1036,7 @@ static void write_and_free_handler (struct work_struct *work);
 static int record_execve(const char *filename, const char __user *const __user *__argv, const char __user *const __user *__envp, struct pt_regs *regs);
 static int replay_execve(const char *filename, const char __user *const __user *__argv, const char __user *const __user *__envp, struct pt_regs *regs);
 static asmlinkage long replay_poll (struct pollfd __user *ufds, unsigned int nfds, long timeout_msecs);
+static asmlinkage long replay_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, unsigned long flags, unsigned long fd, unsigned long pgoff);
 
 /* Return values for complex system calls */
 struct gettimeofday_retvals {
@@ -2139,6 +2150,7 @@ new_replay_thread (struct replay_group* prg, struct record_thread* prec_thrd, u_
 
 	prp->is_pin_vfork = 0;
 	prp->rp_pin_attaching = PIN_ATTACHING_NONE;
+	prp->rp_pin_attach_redo_mmap = NULL;
 	prp->rp_pin_thread_data = 0;
 	prp->rp_pin_curthread_ptr = NULL;
 
@@ -2236,6 +2248,7 @@ __destroy_replay_thread (struct replay_thread* prp)
 
 	put_replay_cache_files (prp->rp_cache_files);
 	put_replay_cache_files (prp->rp_mmap_files);
+	if (prp->rp_pin_attach_redo_mmap) KFREE (prp->rp_pin_attach_redo_mmap);
 
 	// Decrement the record thread's refcnt and maybe destroy it.
 	__destroy_record_thread (prp->rp_record_thread);
@@ -2887,15 +2900,19 @@ int set_pin_address (u_long pin_address, u_long thread_data, u_long __user* curt
 			put_user (prept->rp_pin_thread_data, prept->rp_pin_curthread_ptr);
 		}
 		if (prept->rp_pin_attaching) {
+			int flags = 0;
+			if (prept->rp_pin_attach_redo_mmap) {
+				MPRINT ("Pid %d: Need to redo mmap on PIN restart\n", current->pid);
+				flags = PIN_ATTACH_REDO;
+			}
 			*attach_ndx = prept->rp_pin_attach_ndx;
 			if (prept->rp_record_thread->rp_record_pid != prept->rp_group->rg_attach_pid) {      
 				prept->rp_pin_attaching = PIN_ATTACHING_FF; // Still need to wait for the clock 
-				printk("returning %d\n",PIN_ATTACH_BLOCKED);
-				return PIN_ATTACH_BLOCKED; // This thread will block
+				return PIN_ATTACH_BLOCKED | flags; // This thread will block
 			} else {
 				prept->rp_pin_attaching = PIN_ATTACHING_RESTART;
-				printk("returning %d\n",PIN_ATTACH_RUNNING);
-				return PIN_ATTACH_RUNNING;
+				return PIN_ATTACH_RUNNING | flags;
+
 			}
 		}
 		return PIN_NORMAL;
@@ -5282,6 +5299,7 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 					} else {
 						prt->rp_out_ptr--;
 					}
+					if (syscall == 192) prt->rp_saved_rc = retval;  // We need to return this thanks to PIN wierdness
 					if (psr->sysnum == 168) {
 						return -ERESTART_RESTARTBLOCK;
 					} else {
@@ -5336,11 +5354,12 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 #endif
 	// Try to pause for attach when we are actually executing and before syscall is done - called right before we increment replay clock
 	{
-	  long rc = test_pin_attach (current->replay_thrd, 1);	    
-	  if (rc < 0) {
-	      rg_unlock (prg->rg_rec_group);
-	      return rc;		
-	  }			       
+		long rc = test_pin_attach (prt, 1);	    
+		if (rc < 0) {
+			rg_unlock (prg->rg_rec_group);
+			if (syscall == 192) prt->rp_saved_rc = retval;  // We need to return this thanks to PIN wierdness
+			return rc;		
+		}			       
 	}
 
 	/*
@@ -5878,15 +5897,18 @@ long check_clock_before_syscall (int syscall)
 	int ignore_flag;
 
 	// This should block until it is time to execute the syscall.  We must save the returned values for use in the actual system call
-	DPRINT ("Pid %d pre-wait for syscall %d\n", current->pid, syscall);
-
+	DPRINT ("Pid %d pre-wait for syscall %d replay clock %lu\n", current->pid, syscall, *(prt->rp_preplay_clock));
 	if (prt->rp_record_thread->rp_ignore_flag_addr) {
 		get_user (ignore_flag, prt->rp_record_thread->rp_ignore_flag_addr);
 	} else {
 		ignore_flag = 0;
 	}
-	if (!ignore_flag) {						
+	if (!ignore_flag) {	
 		prt->rp_saved_rc = get_next_syscall_enter (prt, prt->rp_group, syscall, &prt->rp_saved_retparams, &prt->rp_saved_psr);
+		if (prt->rp_saved_rc == -EINTR && current->replay_thrd->rp_pin_attaching) {
+			return prt->rp_saved_rc;
+		}
+
 		// Pin calls clone instead of vfork and enforces the vfork semantics at
 		// the Pin layer, we need to know this so that we can call replay_clone
 		// in place of the vfork
@@ -5981,11 +6003,53 @@ wait_for_replay_group(pid_t pid)
 }
 EXPORT_SYMBOL(wait_for_replay_group);
 
+long check_for_redo (void)
+{
+	struct replay_thread* prt = current->replay_thrd;
+
+	if (prt == NULL) return -EINVAL;
+
+	if (prt->rp_pin_attach_redo_mmap) return 192; // Redo should be done
+
+	return 0; // Don't redo this one
+}
+EXPORT_SYMBOL(check_for_redo);
+
+long redo_mmap (u_long __user * prc, u_long __user * plen)
+{
+	u_long syscall, retval;
+	struct replay_thread* prt = current->replay_thrd;
+
+	if (prt == NULL) return -EINVAL;
+
+	if (prt->rp_pin_attach_redo_mmap) {
+		MPRINT ("Pid %d trying to redo mmap after attach\n", current->pid);
+		syscall = 192;
+		check_clock_before_syscall (syscall);
+		retval = replay_mmap_pgoff (prt->rp_pin_attach_redo_mmap->addr,
+					    prt->rp_pin_attach_redo_mmap->len,
+					    prt->rp_pin_attach_redo_mmap->prot,
+					    prt->rp_pin_attach_redo_mmap->flags,
+					    prt->rp_pin_attach_redo_mmap->fd,
+					    prt->rp_pin_attach_redo_mmap->pgoff);
+		MPRINT ("Pid %d: mmap after attach returns %lx\n", current->pid, retval);
+		put_user (retval, prc);
+		put_user (prt->rp_pin_attach_redo_mmap->len, plen);
+		KFREE (prt->rp_pin_attach_redo_mmap);
+		prt->rp_pin_attach_redo_mmap = NULL;
+		check_clock_after_syscall (syscall);
+		return 0;
+	} else {
+		return -ENOENT;
+	}
+}
+EXPORT_SYMBOL(redo_mmap);
 
 long check_clock_after_syscall (int syscall)
 {
 	struct replay_thread* prt = current->replay_thrd;
 	int ignore_flag;
+	long retval = 0;
 
 	if (prt->rp_record_thread->rp_ignore_flag_addr) {
 		get_user (ignore_flag, prt->rp_record_thread->rp_ignore_flag_addr);
@@ -6006,7 +6070,7 @@ long check_clock_after_syscall (int syscall)
 	DPRINT ("Pid %d post-wait for syscall for syscall %d\n", current->pid, prt->rp_saved_psr->sysnum);
 	get_next_syscall_exit (prt, prt->rp_group, prt->rp_saved_psr);
 	prt->rp_saved_psr = NULL;
-	return 0;
+	return retval;
 }
 EXPORT_SYMBOL(check_clock_after_syscall);
 
@@ -9588,7 +9652,8 @@ replay_munmap (unsigned long addr, size_t len)
 	retval = sys_munmap (addr, len);
 	DPRINT ("Pid %d replays munmap of addr %lx len %d returning %ld\n", current->pid, addr, len, retval);
 	if (rc != retval) {
-		printk ("Replay munmap returns different value %lu than %lu\n",	retval, rc);
+		printk ("Pid %d Replay munmap addr %lx len %lx returns different value %lu than %lu\n", 
+			current->pid, addr, (u_long) len, retval, rc);
 		return syscall_mismatch();
 	}
 	if (retval == 0 && is_preallocated()) preallocate_after_munmap (addr, len);
@@ -12890,7 +12955,7 @@ replay_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, un
 	struct replay_thread* prt = current->replay_thrd;
 	struct syscall_result* psr;
 
-
+	DPRINT ("%d: mmap(%lx, %lx, %lu, %lu, %lu, %lu)\n", current->pid, addr, len, prot, flags, fd, pgoff);
 	if (is_pin_attached()) {
 		DPRINT ("replay_mmap_pgoff - is_pin_attached() - pin is attached\n");
 		rc = prt->rp_saved_rc;
@@ -12900,7 +12965,22 @@ replay_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, un
 	} else {
 		DPRINT ("replay_mmap_pgoff - is_pin_attached() - pin is NOT attached\n");
 		rc = get_next_syscall (192, (char **) &recbuf);
-		if (rc == -EINTR && current->replay_thrd->rp_pin_attaching) return rc;
+		if (rc == -EINTR && current->replay_thrd->rp_pin_attaching) {
+			// Save parameters so that we can redo mmap after attach 
+			current->replay_thrd->rp_pin_attach_redo_mmap = KMALLOC(sizeof(struct mmap_attach_parms), GFP_KERNEL);
+			if (current->replay_thrd->rp_pin_attach_redo_mmap == NULL) {
+				printk ("kmalloc of mmap attach parms failed\n");
+				return -ENOMEM;
+			}
+			current->replay_thrd->rp_pin_attach_redo_mmap->addr = addr;
+			current->replay_thrd->rp_pin_attach_redo_mmap->len = len;
+			current->replay_thrd->rp_pin_attach_redo_mmap->prot = prot;
+			current->replay_thrd->rp_pin_attach_redo_mmap->flags = flags;
+			current->replay_thrd->rp_pin_attach_redo_mmap->fd = fd;
+			current->replay_thrd->rp_pin_attach_redo_mmap->pgoff = pgoff;
+			MPRINT ("mmap attach return %lx\n", prt->rp_saved_rc);
+			return prt->rp_saved_rc; // Since pin won't redo system call, use real return code now
+		}
 	}
 
 	if (recbuf) {

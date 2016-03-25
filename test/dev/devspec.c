@@ -348,6 +348,18 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 	case SPECI_MAP_CLOCK: {
 		return pthread_shm_path ();
 	}
+	case SPECI_CHECK_FOR_REDO: {
+		return check_for_redo ();
+	}
+	case SPECI_REDO_MMAP: {
+		struct redo_mmap_data __user * rd = (struct redo_mmap_data __user *) data;
+		if (len != sizeof(struct redo_mmap_data)) {
+			printk ("ioctl SPECI_CHECK_FOR_REDO fails, len %d\n", len);
+			return -EINVAL;
+		}
+		retval = redo_mmap (&rd->rc, &rd->len);
+		return retval;
+	}
 	default:
 		return -EINVAL;
 	}
