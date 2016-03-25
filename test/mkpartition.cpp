@@ -452,7 +452,7 @@ int open_ulog(const pid_t pid,
 int pop_with_ulog(vector<struct timing_data> &td, u_int td_index, ulog_data &udata) 
 { 
     u_long entry;    
-    long i;
+    u_long i;
     int skip, unused, rc;
     
     int fd = udata.fd;
