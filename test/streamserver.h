@@ -13,6 +13,7 @@
 #define SEND_STATS    0x8
 #define NW_COMPRESS   0x10
 #define LOW_MEMORY    0x20
+#define STREAM_LS     0x40
 
 #define FILTER_NONE 0x00
 #define FILTER_INET 0x01

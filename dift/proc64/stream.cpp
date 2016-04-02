@@ -12,6 +12,7 @@
 
 #include <unordered_set>
 #include <unordered_map>
+#include <set>
 #include <vector>
 #include <atomic>
 using namespace std;
@@ -32,7 +33,7 @@ using namespace std;
 
 typedef PagedBitmap<MAX_TAINTS, PAGE_BITS> bitmap;
 
-//#define DEBUG(x) ((x)==0xb1-0xa9)
+//#define DEBUG(x) ((x)==0x70 || (x)==0x119)
 #define STATS
 
 #define PREPRUNE_NONE   0
@@ -73,6 +74,7 @@ struct senddata {
     bool   do_sequential;
     bool   do_preprune_global;
     bool   compress;
+    bool   stream_ls;
 };
 
 struct recvdata {
@@ -80,6 +82,7 @@ struct recvdata {
     bool   do_sequential;
     bool   do_preprune_global;
     bool   compress;
+    bool   stream_ls;
 };
 
 struct taint_entry {
@@ -122,6 +125,7 @@ u_char              parallelize = 1;
 bool                start_flag = false;
 bool                finish_flag = false;
 bool                low_memory = false;
+bool                do_stream_live_set = false;
 
 #ifdef DEBUG
 FILE* debugfile;
@@ -133,7 +137,7 @@ u_long send_idle = 0, recv_idle = 0, new_live_set_send_idle = 0, new_live_set_re
 u_long atokens = 0, passthrus = 0, aresolved = 0, aindirects = 0, unmodified = 0, written = 0;
 u_long prune_cnt = 0, simplify_cnt = 0;
 u_long new_live_no_changes = 0, new_live_zeros = 0, new_live_inputs = 0, new_live_merges = 0, new_live_merge_zeros = 0, new_live_notlive = 0;
-u_long live_set_size = 0;
+u_long live_set_size = 0, revindex_multimap_size = 0;
 u_long values_sent = 0, values_rcvd = 0;
 u_long prune_lookup = 0, prune_indirect = 0;
 u_long total_address_ms = 0, longest_address_ms = 0, total_output_ms = 0, longest_output_ms = 0, total_new_live_set_ms = 0, longest_new_live_set_ms = 0, total_prune_1_ms = 0, longest_prune_1_ms = 0, total_prune_2_ms = 0;
@@ -153,6 +157,7 @@ struct timeval address_start_tv = {0,0}, address_end_tv = {0,0};
 struct timeval new_live_start_tv = {0,0}, new_live_end_tv = {0,0}, live_done_tv = {0,0}, new_live_send_tv = {0,0};
 struct timeval preprune_local_start_tv = {0,0}, preprune_local_end_tv = {0,0};
 struct timeval preprune_global_start_tv = {0,0}, preprune_global_output_done_tv = {0,0}, preprune_global_address_done_tv = {0,0}, preprune_global_send_done_tv = {0,0}, preprune_global_end_tv = {0,0};
+struct timeval revindex_start_tv = {0,0}, revindex_merge_build_done_tv = {0, 0}, revindex_addr_build_done_tv = {0, 0}, revindex_done_tv = {0,0};
 
 static long ms_diff (struct timeval tv1, struct timeval tv2)
 {
@@ -813,7 +818,11 @@ static void map_iter_par (taint_t value, uint32_t output_token, taint_t* stack, 
 #endif
 
     pentry = &merge_log[value-0xe0000001];
-    // printf ("%llx -> %llx,%llx (%u)\n", value, pentry->p1, pentry->p2, stack_depth);
+#ifdef DEBUG
+    if (DEBUG(output_token)) {
+	fprintf (debugfile, "%x -> %x,%x (%u)\n", value, pentry->p1, pentry->p2, stack_depth);
+    }
+#endif
     stack[stack_depth++] = pentry->p1;
     stack[stack_depth++] = pentry->p2;
     
@@ -826,6 +835,11 @@ static void map_iter_par (taint_t value, uint32_t output_token, taint_t* stack, 
 	} else {
 	    if (seen_indices.insert(value).second) {
 		pentry = &merge_log[value-0xe0000001];
+#ifdef DEBUG
+		if (DEBUG(output_token)) {
+		    fprintf (debugfile, "%x -> %x,%x (%u)\n", value, pentry->p1, pentry->p2, stack_depth);
+		}
+#endif
 #ifdef STATS
 		lmerges++;
 #endif
@@ -1865,6 +1879,9 @@ print_stats (const char* dirname, u_long mdatasize, u_long odatasize, u_long ida
     fprintf (statsfile, "Insert live set time:    %6ld ms\n", ms_diff (live_receive_end_tv, live_insert_start_tv));
     fprintf (statsfile, "Prune live set time:     %6ld ms\n", ms_diff (prune_2_end_tv, prune_1_start_tv));
     fprintf (statsfile, "Make live set time:      %6ld ms\n", ms_diff (new_live_end_tv, new_live_start_tv));
+    fprintf (statsfile, "Make rindex merge time:  %6ld ms\n", ms_diff (revindex_merge_build_done_tv, revindex_start_tv));
+    fprintf (statsfile, "Make rindex addr time:   %6ld ms\n", ms_diff (revindex_addr_build_done_tv, revindex_merge_build_done_tv));
+    fprintf (statsfile, "Make rindex stream time: %6ld ms\n", ms_diff (revindex_done_tv, revindex_addr_build_done_tv));
     fprintf (statsfile, "Send live set wait time: %6ld ms\n", ms_diff (send_wait_end_tv, send_wait_start_tv));
     fprintf (statsfile, "Output processing time:  %6ld ms\n", ms_diff (output_end_tv, output_start_tv));
     fprintf (statsfile, "Index wait time:         %6ld ms\n", ms_diff (index_wait_end_tv, index_wait_start_tv));
@@ -3307,6 +3324,194 @@ static int insert_live_set (bitmap& live_set, int cnt)
     return live_set_size;
 }
 
+// This creates a reverse index
+long make_rev_index (const char* dirname, u_long mdatasize, taint_entry* ts_log, u_long adatasize, bitmap& live_set)
+{
+    unordered_multimap<taint_t,uint32_t> revindex;
+    uint32_t write_cnt = 0, write_stop = 0;
+
+#ifdef STATS    
+    gettimeofday(&revindex_start_tv, NULL);
+#endif
+
+    // Index merge log
+    u_long entries = mdatasize/sizeof(taint_entry);    
+    vector<bool> mmarked;
+#ifdef LS_DETAIL
+    set<uint32_t> olive_set;
+#endif
+    mmarked.resize(entries, false);
+
+    for (u_long i = 0; i < entries; i++) {
+	taint_t val = merge_log[i].p1;
+	if (val < 0xc0000000) {
+	    if (start_flag) {
+		// Points to input, so live
+		mmarked[i] = true;
+	    } else {
+		// Points to input address, add to address's reverse index
+		revindex.insert(make_pair(val,0xe0000001+i));
+	    }
+	} else if (val < 0xe0000000) {
+	    // Points to input, so live
+	    mmarked[i] = true;
+	} else {
+	    if (mmarked[val-0xe0000001]) {
+		// Points to live merge log entry, so also live
+		mmarked[i] = true;
+	    } else {
+		revindex.insert(make_pair(val,0xe0000001+i));
+	    }
+	}		
+	if (!mmarked[i]) {
+	    val = merge_log[i].p2;
+	    if (val < 0xc0000000) {
+		if (start_flag) {
+		    // Points to input, so live
+		    mmarked[i] = true;
+		} else {
+		    // Points to input address, add to address's reverse index
+		    revindex.insert(make_pair(val,0xe0000001+i));
+		}
+	    } else if (val < 0xe0000000) {
+		// Points to input, so live
+		mmarked[i] = true;
+	    } else {
+		if (mmarked[val-0xe0000001]) {
+		    // Points to live merge log entry, so also live
+		    mmarked[i] = true;
+		} else {
+		    revindex.insert(make_pair(val,0xe0000001+i));
+		}
+	    }	
+	}	
+    }
+
+#ifdef STATS    
+    gettimeofday(&revindex_merge_build_done_tv, NULL);
+#endif
+
+    // Index outputs
+    u_long aentries = adatasize/sizeof(taint_entry);    
+    for (u_long i = 0; i < aentries; i++) {
+	u_long val = ts_log[i].p2;
+	if (val) {
+	    if (val < 0xc0000000) {
+		if (start_flag) {
+		    // Points to input, so live
+		    PUT_QVALUEB(ts_log[i].p1, inputq_hdr, inputq_buf, iqfd, write_cnt, write_stop);			
+		} else {
+		    // Points to input address, add to input address's reverse index
+		    revindex.insert(make_pair(val,ts_log[i].p1));
+		}
+	    } else if (val < 0xe0000000) {
+		// Points to input, so live
+		PUT_QVALUEB(ts_log[i].p1, inputq_hdr, inputq_buf, iqfd, write_cnt, write_stop);			
+#ifdef LS_DETAIL
+		olive_set.insert(ts_log[i].p1);
+#endif
+	    } else {
+		if (mmarked[val-0xe0000001]) {
+		    // Points to live merge log entry, so also live
+		    PUT_QVALUEB(ts_log[i].p1, inputq_hdr, inputq_buf, iqfd, write_cnt, write_stop);			
+#ifdef LS_DETAIL
+		    olive_set.insert(ts_log[i].p1);
+#endif
+		} else {
+		    revindex.insert(make_pair(val,ts_log[i].p1));
+		}
+	    }		
+	}
+    }
+
+#ifdef STATS    
+    gettimeofday(&revindex_addr_build_done_tv, NULL);
+    revindex_multimap_size = revindex.size();
+#endif
+
+    // Now, read in the live set values from prior epoch
+    if (!start_flag) {
+	taint_t* stack = astacks[0];
+	uint32_t val, rbucket_cnt = 0, rbucket_stop = 0;
+	u_long stack_depth;
+
+	GET_QVALUEB(val, outputq_hdr, outputq_buf, iqfd, rbucket_cnt, rbucket_stop);
+	while (val != TERM_VAL) {
+	    live_set.set(val);
+#ifdef STATS
+	    live_set_size++;
+#endif
+	    auto pr = revindex.equal_range(val);
+	    stack_depth = 0;
+	    for (auto it = pr.first; it != pr.second; ++it) {
+		uint32_t mval = it->second;
+		if (mval < 0xe0000000) {
+		    // This address is now live
+		    PUT_QVALUEB(mval, inputq_hdr, inputq_buf, iqfd, write_cnt, write_stop);			
+#ifdef LS_DETAIL
+		    olive_set.insert(mval);
+#endif
+		} else {
+		    stack[stack_depth++] = mval;
+		}
+	    }
+
+	    while (stack_depth) {
+		uint32_t sval = stack[--stack_depth];
+		if (!mmarked[sval-0xe0000001]) {
+		    auto pr = revindex.equal_range(sval);
+		    for (auto it = pr.first; it != pr.second; ++it) {
+			uint32_t mval = it->second;
+			if (mval < 0xe0000000) {
+			    // This address is now live
+			    PUT_QVALUEB(mval, inputq_hdr, inputq_buf, iqfd, write_cnt, write_stop);			
+#ifdef LS_DETAIL
+			    olive_set.insert(mval);
+#endif
+			} else {
+			    stack[stack_depth++] = mval;
+			    assert (stack_depth < STACK_SIZE);
+			}
+		    }
+		    mmarked[sval-0xe0000001] = true;
+		}
+	    }
+
+	    if (!binsearch(ts_log, aentries, val)) {
+		PUT_QVALUEB(val, inputq_hdr, inputq_buf, iqfd, write_cnt, write_stop);			
+#ifdef LS_DETAIL
+		olive_set.insert(val);
+#endif
+	    }
+
+	    GET_QVALUEB(val, outputq_hdr, outputq_buf, iqfd, rbucket_cnt, rbucket_stop);
+	}
+    }
+
+    PUT_QVALUEB(TERM_VAL, inputq_hdr, inputq_buf, iqfd, write_cnt, write_stop);
+    bucket_term (inputq_hdr, inputq_buf, iqfd, write_cnt, write_stop);
+
+#ifdef STATS
+    gettimeofday(&revindex_done_tv, NULL);
+#endif
+
+#ifdef LS_DETAIL
+    char filename[256];
+    sprintf (filename, "%s/liveset", dirname);
+    FILE* file = fopen (filename, "w");
+    if (file) {
+	for (auto it = live_set.begin(); it != live_set.end(); ++it) {
+	    fprintf (file, "%x\n", *it);
+	}
+	fclose (file);
+    } else {
+	fprintf (stderr, "cannot open %s\n", filename);
+    }
+#endif
+
+    return 0;
+}
+
 // Process one epoch for sequential forward strategy 
 long seq_epoch (const char* dirname, int port, int do_preprune)
 {
@@ -3361,42 +3566,59 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 
     if (!low_memory && !finish_flag) build_map_tid = spawn_map_thread (&address_map, ts_log, adatasize);
 
-    if (!start_flag) {
-	// Wait for preceding epoch to send list of live addresses
-#ifdef STATS
-	gettimeofday(&live_receive_start_tv, NULL);
-#endif
-	uint32_t val;
-	uint32_t rbucket_cnt = 0, rbucket_stop = 0;
+    if (do_stream_live_set) {
+	if (!finish_flag) {
+	    make_rev_index(dirname, mdatasize, (taint_entry *) ts_log, adatasize, live_set);
+	} else {
+	    uint32_t val, rbucket_cnt = 0, rbucket_stop = 0;
+	    GET_QVALUEB(val, outputq_hdr, outputq_buf, iqfd, rbucket_cnt, rbucket_stop);
+	    while (val != TERM_VAL) {
+		live_set.set(val);
+		GET_QVALUEB(val, outputq_hdr, outputq_buf, iqfd, rbucket_cnt, rbucket_stop);
+	    }
+	}
+	if (!start_flag) {
+	    prune_merge_log(mdatasize, live_set);
+	}
+    } else {
 
-	GET_QVALUEB(val, outputq_hdr, outputq_buf, oqfd, rbucket_cnt, rbucket_stop);
+	if (!start_flag) {
+	    // Wait for preceding epoch to send list of live addresses
 #ifdef STATS
-	gettimeofday(&live_first_byte_tv, NULL);
+	    gettimeofday(&live_receive_start_tv, NULL);
 #endif
-	live_set_cnt = bucket_wait_term(outputq_hdr, outputq_buf);
-
+	    uint32_t val;
+	    uint32_t rbucket_cnt = 0, rbucket_stop = 0;
+	    
+	    GET_QVALUEB(val, outputq_hdr, outputq_buf, oqfd, rbucket_cnt, rbucket_stop);
 #ifdef STATS
-	gettimeofday(&live_insert_start_tv, NULL);
+	    gettimeofday(&live_first_byte_tv, NULL);
 #endif
-
-	live_set_total = insert_live_set (live_set, live_set_cnt);
-	if (live_set_total < 0) return live_set_size;
-
+	    live_set_cnt = bucket_wait_term(outputq_hdr, outputq_buf);
+	    
 #ifdef STATS
-	gettimeofday(&live_receive_end_tv, NULL);
-	live_set_size = live_set_total;
+	    gettimeofday(&live_insert_start_tv, NULL);
 #endif
-	// Prune the merge log
-	prune_merge_log (mdatasize, live_set);
+	    
+	    live_set_total = insert_live_set (live_set, live_set_cnt);
+	    if (live_set_total < 0) return live_set_size;
+	    
+#ifdef STATS
+	    gettimeofday(&live_receive_end_tv, NULL);
+	    live_set_size = live_set_total;
+#endif
+	    // Prune the merge log
+	    prune_merge_log (mdatasize, live_set);
+	}
+
+	// Construct and send out new live set
+	if (!finish_flag) {
+	    make_new_live_set(ts_log, ts_log + adatasize/sizeof(taint_t), live_set_total, live_set, dirname);
+	}
     }
 
-    // Construct and send out new live set
-    if (!finish_flag) {
-	make_new_live_set(ts_log, ts_log + adatasize/sizeof(taint_t), live_set_total, live_set, dirname);
-    }
-    
     if (!start_flag) {
-	// Done reqding data in outputq - reset queue and wait on sender
+	// Done reading data in outputq - reset queue and wait on sender
 	outputq_hdr->read_index = outputq_hdr->write_index = 0;
 	UP_QSEM (outputq_hdr);
     }
@@ -3404,7 +3626,6 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 #ifdef STATS
     gettimeofday(&live_done_tv, NULL);
 #endif
-
     
     bucket_write_init();
 
@@ -3806,7 +4027,9 @@ int recv_input_queue (struct recvdata* data)
 	    recv_stream (s, inputq_hdr, inputq_buf);
 	    DOWN_QSEM(inputq_hdr);
 	}
-	if (data->compress) {
+	if (data->stream_ls) {
+	    send_stream (s, inputq_hdr, inputq_buf);
+	} else if (data->compress) {
 	    send_stream_compress (s, inputq_hdr, inputq_buf); // First we send filters downstream	
 	} else {
 	    send_stream_nocompress (s, inputq_hdr, inputq_buf);
@@ -3833,10 +4056,13 @@ int send_output_queue (struct senddata* data)
 	   outputq_hdr->read_index = outputq_hdr->write_index = 0;
 	   UP_QSEM(outputq_hdr);
        }
-       if (data->compress) {
-	   recv_stream_compress (s, outputq_hdr, outputq_buf); // First we read data from upstream
+       // First we read data from upstream
+       if (data->stream_ls) {
+	   recv_stream (s, outputq_hdr, outputq_buf); 
+       } else if (data->compress) {
+	   recv_stream_compress (s, outputq_hdr, outputq_buf);
        } else {
-	   recv_stream_nocompress (s, outputq_hdr, outputq_buf); // First we read data from upstream
+	   recv_stream_nocompress (s, outputq_hdr, outputq_buf); 
        }
        DOWN_QSEM(outputq_hdr);
    }
@@ -3917,6 +4143,8 @@ int main (int argc, char* argv[])
 	    do_compress = true;
 	} else if (!strcmp (argv[i], "-lowmem")) {
 	    low_memory = true;
+	} else if (!strcmp (argv[i], "-streamls")) {
+	    do_stream_live_set = true;
 	} else if (!strcmp (argv[i], "-ppl")) {
 	    do_preprune = PREPRUNE_LOCAL;
 	} else if (!strcmp (argv[i], "-ppg")) {
@@ -3952,6 +4180,7 @@ int main (int argc, char* argv[])
 	sd.do_sequential = do_sequential;
 	sd.do_preprune_global = (do_preprune == PREPRUNE_GLOBAL);
 	sd.compress = do_compress;
+	sd.stream_ls = do_stream_live_set;
 	return (send_output_queue (&sd));
     }
 
@@ -3980,6 +4209,7 @@ int main (int argc, char* argv[])
 	rd.do_sequential = do_sequential;
 	rd.do_preprune_global = (do_preprune == PREPRUNE_GLOBAL);
 	rd.compress = do_compress;
+	rd.stream_ls = do_stream_live_set;
 	return recv_input_queue (&rd);
     }
 
