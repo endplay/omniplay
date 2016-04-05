@@ -1878,10 +1878,12 @@ print_stats (const char* dirname, u_long mdatasize, u_long odatasize, u_long ida
     fprintf (statsfile, "Receive live set time:   %6ld ms\n", ms_diff (live_insert_start_tv, live_first_byte_tv));
     fprintf (statsfile, "Insert live set time:    %6ld ms\n", ms_diff (live_receive_end_tv, live_insert_start_tv));
     fprintf (statsfile, "Prune live set time:     %6ld ms\n", ms_diff (prune_2_end_tv, prune_1_start_tv));
+    fprintf (statsfile, "Thru prune time:         %6ld ms\n", ms_diff (prune_2_end_tv, start_tv));
     fprintf (statsfile, "Make live set time:      %6ld ms\n", ms_diff (new_live_end_tv, new_live_start_tv));
     fprintf (statsfile, "Make rindex merge time:  %6ld ms\n", ms_diff (revindex_merge_build_done_tv, revindex_start_tv));
     fprintf (statsfile, "Make rindex addr time:   %6ld ms\n", ms_diff (revindex_addr_build_done_tv, revindex_merge_build_done_tv));
     fprintf (statsfile, "Make rindex stream time: %6ld ms\n", ms_diff (revindex_done_tv, revindex_addr_build_done_tv));
+    fprintf (statsfile, "Thru stream time:        %6ld ms\n", ms_diff (revindex_done_tv, start_tv));
     fprintf (statsfile, "Send live set wait time: %6ld ms\n", ms_diff (send_wait_end_tv, send_wait_start_tv));
     fprintf (statsfile, "Output processing time:  %6ld ms\n", ms_diff (output_end_tv, output_start_tv));
     fprintf (statsfile, "Index wait time:         %6ld ms\n", ms_diff (index_wait_end_tv, index_wait_start_tv));
@@ -3325,9 +3327,9 @@ static int insert_live_set (bitmap& live_set, int cnt)
 }
 
 // This creates a reverse index
+unordered_multimap<taint_t,uint32_t> revindex;
 long make_rev_index (const char* dirname, u_long mdatasize, taint_entry* ts_log, u_long adatasize, bitmap& live_set)
 {
-    unordered_multimap<taint_t,uint32_t> revindex;
     uint32_t write_cnt = 0, write_stop = 0;
 
 #ifdef STATS    
