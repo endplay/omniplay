@@ -77,6 +77,7 @@
 #include "../kernel/replay_graph/replayfs_syscall_cache.h"
 #include "../kernel/replay_graph/replayfs_perftimer.h"
 #include "replay_monitor.h"
+#include "replay_perf_event_wrapper.h"
 
 /* For debugging failing fs operations */
 int debug_flag = 0;
@@ -593,6 +594,7 @@ unsigned int syslog_recs = 20000;
 unsigned int replay_debug = 0;
 unsigned int replay_min_debug = 0;
 unsigned long argsalloc_size = (512*1024);
+unsigned int record_perf_event_sampling_period = 4096; //idk what to start this with
 // If the replay clock is greater than this value, MPRINT out the syscalls made by pin
 unsigned long pin_debug_clock = LONG_MAX;
 
@@ -727,9 +729,9 @@ struct replay_group {
 	u_long rg_nfake_calls;      // Number of fake calls to make during this replay
 	u_long rg_fake_calls_made;  // Number of fake calls to make during this replay
 	u_long* rg_fake_calls;      // Make them at these points            
-        int rg_perf_fd;             // The file descriptor for our perf api
-	struct xray_monitor* rg_open_socks; // Keeps track of open sockets for partitioned replay
 
+	struct xray_monitor* rg_open_socks; // Keeps track of open sockets for partitioned replay
+        struct record_perf_event_wrapper rg_perf_event_wrapper; //a perf_event_wrapper
 };
 
 struct argsalloc_node {
@@ -1125,11 +1127,20 @@ test_app_syscall(int number)
 	return (prt->app_syscall_addr == 0) || (*(int*)(prt->app_syscall_addr) == number);
 }
 
+static inline int 
+is_perf_sampling(void) 
+{
+	return (int)(current->replay_thrd->rp_group->rg_timebuf);
+}
+
+
+/* since we preallocate w/ perf_sampling, I add in the call to this function as well*/
 static inline int
 is_preallocated (void)
 {
-	return (current->replay_thrd->rp_group->rg_attach_device);
+	return (current->replay_thrd->rp_group->rg_attach_device || is_perf_sampling());
 }
+
 
 static inline int
 is_pin_attached (void)
@@ -1805,6 +1816,8 @@ new_replay_group (struct record_group* prec_group, int follow_splits)
 	prg->rg_attach_pid = -1;
 
 	prg->rg_timebuf = NULL;
+	memset (&(prg->rg_perf_event_wrapper), 0, sizeof(struct record_perf_event_wrapper));
+//	prg->rg_perf_event_wrapper.mapping = NULL; //maybe just memset everything? 
 	prg->rg_timecnt = 0;
 	prg->rg_timepos = 0;
 	prg->rg_try_to_exit = 0;
@@ -1812,7 +1825,6 @@ new_replay_group (struct record_group* prec_group, int follow_splits)
 	prg->rg_nfake_calls = 0;
 	prg->rg_fake_calls_made = 0;
 	prg->rg_fake_calls = NULL;
-	prg->rg_perf_fd = -1;
 	// Record group should not be destroyed before replay group
 	get_record_group (prec_group);
 
@@ -1903,6 +1915,11 @@ destroy_replay_group (struct replay_group *prepg)
 
 	MPRINT ("Pid %d destroy replay group %p: enter\n", current->pid, prepg);
 
+	//added for the perf_event_wrapper
+	destroy_record_perf_event_wrapper(&(prepg->rg_perf_event_wrapper));
+
+	
+
 	// Destroy replay_threads list
 	if (prepg->rg_replay_threads) {
 		while (ds_list_count(prepg->rg_replay_threads)) {
@@ -1971,6 +1988,8 @@ destroy_record_group (struct record_group *prg)
 		printk ("Pid %d clear up pause clock\n", current->pid);
 	}
 #endif
+
+
 
 	kunmap (prg->rg_shared_page);
 	put_page (prg->rg_shared_page);
@@ -3491,33 +3510,6 @@ get_linker (void)
 }
 
 
-/*
- * get a perf_event_fd. Right now this only produces perf_event fds that grab 
- * the HW_CACHE_MISSES, whichare supposed to be the misses to the last level 
- * cache. For more detailed cache info, we'll have to slightly change how we 
- * grab this info. 
- */
-int 
-get_perf_event_fd(void)
-{
-	struct perf_event_attr pe;
-	int fd;
-	mm_segment_t old_fs = get_fs();
-
-	memset(&pe, 0, sizeof(struct perf_event_attr));
-	pe.type = PERF_TYPE_HARDWARE;
-	pe.size = sizeof(struct perf_event_attr);
-	pe.config = PERF_COUNT_HW_CACHE_MISSES; 
-	pe.disabled = 1;
-	pe.exclude_kernel = 1;
-	pe.exclude_hv = 1;
-
-	set_fs(KERNEL_DS);
-	fd = sys_perf_event_open(&pe, current->pid, -1, -1, 0);
-//	if (fd < 0) printk("failure from perf_event_open, rc %d errno %d\n",fd,errno);
-	set_fs(old_fs);
-	return fd;
-}
 
 
 long
@@ -3567,20 +3559,20 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 		atomic_set(precg->rg_pkrecord_clock+1,fake_call_points[0]);        
 	}
 	if (record_timing) {
+		//we call mmap in the init_record_pref_event_wrapper... so, I have to preallocate otherwise bad things can happen
+		rc = read_mmap_log(precg);
+		if (rc) {
+			printk("replay_ckpt_wakeup: could not read memory log for timing support\n");
+			return rc;
+		}
+
+		preallocate_memory(precg); // Actually do the preallocation for this process
+
 		prepg->rg_timebuf = KMALLOC(sizeof(struct replay_timing)*REPLAY_TIMEBUF_ENTRIES, GFP_KERNEL);
 		if (prepg->rg_timebuf == NULL) printk ("Cannot allocate timing buffer\n");
 		
-
-		prepg->rg_perf_fd = get_perf_event_fd();
-		if (prepg->rg_perf_fd < 0) printk ("Cannot setup perf_events_fd\n");
-		set_fs(KERNEL_DS);
-	
-		rc = sys_ioctl(prepg->rg_perf_fd, PERF_EVENT_IOC_RESET, 0);
-		if (rc < 0) printk("cannot PERF_EVENT_IOC_RESET!\n");
-		rc = sys_ioctl(prepg->rg_perf_fd, PERF_EVENT_IOC_ENABLE, 0);
-		if (rc < 0) printk("cannot PERF_EVENT_IOC_ENABLE!\n");
-		set_fs(old_fs);
-
+		init_record_perf_event_wrapper(&(prepg->rg_perf_event_wrapper), record_perf_event_sampling_period);
+		record_perf_event_wrapper_start_sampling(&(prepg->rg_perf_event_wrapper));
 	}
 
 	if (ckpt_at > 0) prepg->rg_checkpoint_at = ckpt_at;
@@ -5578,40 +5570,24 @@ void write_timings (struct replay_group* prepg)
 	prepg->rg_timecnt = 0;
 }
 
-
 static void
 record_timings (struct replay_thread* prept, short syscall)
 {
 	cputime_t ut, st;
-	__u64 count;
-	int rc; 
- 	mm_segment_t old_fs;
 	struct replay_group* prepg = prept->rp_group;
 	
-	old_fs = get_fs();
-	set_fs(KERNEL_DS);
-
-	rc = sys_ioctl(prepg->rg_perf_fd, PERF_EVENT_IOC_DISABLE, 0);
-	if (rc < 0) printk("cannot PERF_EVENT_IOC_DISABLE!\n");
-	rc = sys_read(prepg->rg_perf_fd, (char *)&count, sizeof(__u64));	
-
-	if (rc != sizeof(__u64)) {
-		printk("record_timings read %d bytes, val %llu\n", rc, count);
-	}
-
-	rc = sys_ioctl(prepg->rg_perf_fd, PERF_EVENT_IOC_RESET, 0);
-	if (rc < 0) printk("cannot PERF_EVENT_IOC_RESET!\n");
-	rc = sys_ioctl(prepg->rg_perf_fd, PERF_EVENT_IOC_ENABLE, 0);
-	if (rc < 0) printk("cannot PERF_EVENT_IOC_ENABLE!\n");
-
-	set_fs(old_fs);
 	
 	task_times (current, &ut, &st);
 	prepg->rg_timebuf[prepg->rg_timecnt].pid = prept->rp_record_thread->rp_record_pid;
 	prepg->rg_timebuf[prepg->rg_timecnt].index = prept->rp_record_thread->rp_count;
 	prepg->rg_timebuf[prepg->rg_timecnt].syscall = syscall;
 	prepg->rg_timebuf[prepg->rg_timecnt].ut = ut;		
-	prepg->rg_timebuf[prepg->rg_timecnt++].cache_misses = count;		
+
+
+	//iterate and print out ips
+	record_perf_event_wrapper_stop_sampling(&(prepg->rg_perf_event_wrapper));
+//	record_perf_event_wrapper_iterate(&(prepg->rg_perf_event_wrapper));
+	record_perf_event_wrapper_start_sampling(&(prepg->rg_perf_event_wrapper));
 
 	if (prepg->rg_timecnt == REPLAY_TIMEBUF_ENTRIES) write_timings (prepg);
 }
@@ -8746,6 +8722,12 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 			preallocate_memory(prt->rp_record_thread->rp_group); /* And preallocate memory again - our previous preallocs were just destroyed */
 			create_used_address_list();
 		}
+
+		if (is_perf_sampling()) { 
+			init_record_perf_event_wrapper(&(prt->rp_group->rg_perf_event_wrapper), record_perf_event_sampling_period);
+			record_perf_event_wrapper_start_sampling(&(prt->rp_group->rg_perf_event_wrapper));
+		}
+
 	}
 	get_next_syscall_exit(prt, prg, psr);
 
@@ -15490,6 +15472,14 @@ static struct ctl_table replay_ctl[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec,
 	},
+	{
+		.procname	= "sampling_period",
+		.data		= &record_perf_event_sampling_period,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+	},
+
 
 	{0, },
 };
