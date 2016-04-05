@@ -20,7 +20,7 @@
 #include "../linux-lts-quantal-3.5.0/include/linux/pthread_log.h"
 using namespace std;
 
-unordered_set<short> bad_syscalls({192, 91, 120, 174, 125});
+unordered_set<short> bad_syscalls({192, 91, 120, 174, 125, 45});
 
 
 //used simply for the read from the file system
@@ -40,6 +40,9 @@ struct timing_data {
     u_int     ut;      //should I not include this as it is only used to calculate dtiming? 
 
     bool      can_attach; 
+    short     blocking_syscall; //the syscall number that is forcing this to be unattachable
+
+
     pid_t     forked_pid; //the pid of the forked process (if applicable).
     bool      should_track; //should I track this rp_timing? 
     u_long    call_clock;   //the clock value of the most recent sync operation before this syscall is called. 
@@ -79,6 +82,7 @@ int ckpt_cnt = 0;
 
 static int group_by = 0, filter_syscall = 0, details = 0, use_ckpt = 0, do_split = 0;
 
+static int count;
 
 void format ()
 {
@@ -144,9 +148,12 @@ static double estimate_gap(vector<struct timing_data> &td, int i, int j)
 
 inline static void print_timing (vector<struct timing_data> &td, int start, int end, char* fork_flags)
 { 
+
+    fprintf(stderr,"%lu %lu a1 %lu a2 %lu\n", td[start].start_clock, td[end].start_clock, td[start].aindex, td[end].aindex);
+
+    count++;
     printf ("%5d k %6lu k %6lu ", td[start].pid, td[start].start_clock, td[end].start_clock);
 
-    //what does this do? 
     if (filter_syscall > 0) {
 	if ((u_long) filter_syscall > td[start].index && (u_long) filter_syscall <= td[end].index) {
 	    printf (" %6lu", filter_syscall-td[start].index+1);
@@ -192,6 +199,7 @@ int gen_timings (vector<timing_data> &td,
     assert (partitions <= cnt_interval(td,start, end));
 
     if (partitions == 1) {
+//	fprintf(stderr, "only_one:");
 	print_timing (td, start, end, fork_flags);
 	return 0;
     }
@@ -207,7 +215,7 @@ int gen_timings (vector<timing_data> &td,
     gap_end = start + 1;
 	
     for (i = start+1; i < end; i++) {
-	if (td[i].can_attach){
+	if (td[i].can_attach && td[i].should_track){
 	    double gap = estimate_gap(td, last, i);
 	    if (gap > biggest_gap) {
 		gap_start = last;
@@ -223,6 +231,7 @@ int gen_timings (vector<timing_data> &td,
     }
     if (partitions > 2 && biggest_gap >= total_time/partitions) {
 	// Pivot on this gap
+
 	u_int split = 1;
 	int intvl = 1;
 	if (do_split && biggest_gap >= 2*total_time/partitions) {
@@ -246,6 +255,7 @@ int gen_timings (vector<timing_data> &td,
 	    if (split > 1) {
 		print_utimings (td, gap_start, gap_end, split, intvl, fork_flags);
 	    } else {
+//		fprintf(stderr, "(%d,%d): total %lf, gap %lf, goal %lf\n", gap_start, gap_end,total_time, gap, total_time / partitions); //oughta tell me the cause of this issue? 
 		print_timing (td, gap_start, gap_end, fork_flags);
 	    }
 	    return gen_timings (td, gap_end, end, partitions, fork_flags);
@@ -272,6 +282,14 @@ int gen_timings (vector<timing_data> &td,
 	if (split > 1) {
 	    print_utimings (td, gap_start, gap_end, split, intvl, fork_flags);
 	} else {
+//	    fprintf(stderr, "(%d,%d): total %lf, gap %lf, goal %lf\n", gap_start, gap_end,total_time, gap, total_time / partitions);
+//	    for (i = gap_start; i < gap_end + 1; i++) {
+//		timing_data &t = td[i];
+
+//		fprintf (stderr,"%d, %d: syscall %d %d %lu %lu, %lu, %d, %d\n", count,i, t.syscall,t.pid, t.call_clock, t.start_clock, t.stop_clock, t.should_track, t.can_attach);
+
+//	    }
+
 	    print_timing (td, gap_start, gap_end, fork_flags);
 	}
 	return gen_timings (td, gap_end, end, partitions - new_part, fork_flags);
@@ -285,7 +303,7 @@ int gen_timings (vector<timing_data> &td,
 	    if (td[i].can_attach) {
 		double gap = estimate_gap(td, start, i);
 		if (gap > goal || cnt_interval(td, i, end) == partitions-1) {	
-		    fprintf(stderr, "gap %lf goal %lf\n", gap, goal);
+//		    fprintf(stderr, "gap %lf goal %lf\n", gap, goal);
 		    print_timing (td,  start, i, fork_flags);
 		    return gen_timings(td, i, end, partitions-1, fork_flags);
 		}
@@ -394,6 +412,9 @@ int parse_klogs(vector<struct timing_data> &td,
 
 	    //we found a fork
 	    if (res->psr.sysnum == 120 && procs.count(res->retval) > 0) { 
+		if (details)
+		    fprintf(stderr,"%d, %lu (%u) forking %lu\n", td[lindex].pid, res->start_clock, lindex, res->retval);
+
 		if (fork_flags[ff_index] == '1') { 
 		    //stop tracking this pid, already covered all of its traced syscalls
 		    td[lindex].forked_pid = res->retval; //this is important for can_attach logic
@@ -406,6 +427,8 @@ int parse_klogs(vector<struct timing_data> &td,
 	    }
 	    //found a thread_fork
 	    else if (res->psr.sysnum == 120) { 
+		if (details) 
+		    fprintf(stderr,"%d, %lu (%u) forking %lu\n", td[lindex].pid, res->start_clock, lindex, res->retval);
 		td[lindex].forked_pid = res->retval; //this is important for can_attach logic
 		pair<pid_t, u_long> new_pair = make_pair(res->retval, res->start_clock);
 		pids_to_track.push(new_pair);		    
@@ -504,7 +527,8 @@ int parse_ulogs(vector<struct timing_data> &td, const char* dir)
 	    ulog_data u(fd, 0);
 	    pid_fd_map[td[i].pid] = u;
 	}
-	pop_with_ulog(td, i, pid_fd_map[td[i].pid]);       
+	if (pid_fd_map[td[i].pid].fd > 0) 
+	    pop_with_ulog(td, i, pid_fd_map[td[i].pid]);       
     }
     return 0;
 }
@@ -563,34 +587,52 @@ void inline update_can_attach( vector<struct timing_data> &td,
 {
     if (bad_syscalls.count(td[td_index].syscall))
     {
-	assert(td[td_index].call_clock && "bad_syscall happens on first syscall?");
+	//this means we have a bad syscall on the very first syscall, which evidently can happen (evince has this with a brk)
+	//since the logic around the original fork covers from fork-> this sysall, we just need to block out things from the
+	//start_clock onwards
+	if (!td[td_index].call_clock) { 
+	    td[td_index].call_clock = td[td_index].start_clock;	   
+	}
+	int i = 0;
 	for (auto &t : td) 
 	{
 	    //if the record's attach clock occurs during this syscall
 	    if (t.start_clock > td[td_index].call_clock &&
 		t.start_clock < td[td_index].stop_clock) 
 	    { 
+//		if (t.start_clock >= 34361435 && t.start_clock <= 34596889) 
+//		    fprintf(stderr, "flipping %d's can_attach b/c of pid %d at (%d, %lu,%lu)\n",i,td[td_index].syscall, td[td_index].pid,td[td_index].call_clock, td[td_index].stop_clock);
 		t.can_attach = false;
+		t.blocking_syscall = td[td_index].syscall;
 	    }
+	    i++;
 	}
     }
 
-    //special case for the forked child
-    if (td[td_index].syscall == 120) 
+    //special case for the forked child. we check to make sure that forked_pid > 0, 
+    //b/c if we aren't tracking this fork then it won't be above 0
+
+    if (td[td_index].syscall == 120 && td[td_index].forked_pid > 0) 
     {
 	u_long call_clock = td[td_index].start_clock; 
 	u_int  forked_index = td_index+1;
 
 	//update forked_index until we find the first entry of the child
 	while (td[forked_index].pid != td[td_index].forked_pid) forked_index++;
+	int i = 0;
 	for (auto &t : td) 
 	{
+
 	    //if the record's attach clock occurs during the child's ret from fork
 	    if (t.start_clock > call_clock &&
 		t.start_clock < td[forked_index].start_clock)
 	    { 
+//		fprintf(stderr, "flipping %d's can_attach b/c of fork at (%lu,%lu)\n",i,call_clock,td[forked_index].start_clock);
 		t.can_attach = false;
+		t.blocking_syscall = 120; //b/c of a clone! 
+
 	    }
+	    i++;
 	}       
     }   
 }
@@ -605,7 +647,10 @@ int parse_timing_data( vector<struct timing_data> &td)
     u_int i, j, k; 
 
     for (i = 0; i < td.size(); i++) {
-	if (! td[i].should_track) continue; 
+	if (! td[i].should_track) { 
+	    td[i].can_attach = false;
+	    continue; 
+	}
 
 	update_ut(td, total_time, last_time, i);
 	update_cache_misses(td, total_cache_misses, i);
@@ -735,8 +780,11 @@ int main (int argc, char* argv[])
 	next_td.ut = timings[i].ut;
 	next_td.taint_in = 0;
 	next_td.taint_out = 0;
+	
 
 	next_td.cache_misses = timings[i].cache_misses;
+	next_td.forked_pid = -1; //just assume that syscalls don't have forked_pids. this will get fixed later if we're wrong
+	next_td.should_track = false; //assume that we don't track it, it will be fixed if we should
 	next_td.can_attach = true; //set it to be true first
 	td[i] = next_td; 
 
@@ -753,19 +801,25 @@ int main (int argc, char* argv[])
 	if (bad_syscalls.count(t.syscall) > 0 && t.should_track) { 
 	    for (auto t2 : td) { 
 		if (t2.start_clock > t.call_clock && t2.start_clock < t.stop_clock) { 
+//		    fprintf(stderr,"bad syscall %d @ (%d,%lu) and syscall (%d,%lu)\n",t.syscall,t.pid, t.start_clock, t2.pid, t2.start_clock);
 		    assert(!t2.can_attach);//step one
 		}
 	    }
 	}
     }
-
-
+    
+    i = 0;
+    int cant_attach = 0;
     if(details) {
 	for (auto t : td) { 
-	    assert(t.should_track);
-
-	    printf ("%d %lu %lu, %lu, (%lf %lu %lu %llu), %d\n", t.pid, t.call_clock, t.start_clock, t.stop_clock, t.dtiming, t.taint_in, t.taint_out, t.cache_misses, t.should_track);
-	    if (!t.can_attach) printf("\t can't attach\n");
+//	    assert(t.should_track);
+//	    assert(t.should_track || (!t.should_track && t.pid == 1531)); only for firefox
+	    fprintf (stderr,"%d: %d %lu %lu, %lu, (%lf %lu %lu %llu), %d, %d\n", i, t.pid, t.call_clock, t.start_clock, t.stop_clock, t.dtiming, t.taint_in, t.taint_out, t.cache_misses, t.should_track, t.can_attach);
+	    if (!t.can_attach) {
+		cant_attach++;
+	    }
+				   
+	    i++;
 	}
     }
 
