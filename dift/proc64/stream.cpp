@@ -3580,7 +3580,8 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	    }
 	}
 	if (!start_flag) {
-	    prune_merge_log(mdatasize, live_set);
+	    prune_range_pass_both (merge_log, merge_log + mdatasize/sizeof(struct taint_entry), live_set);
+	    //prune_merge_log(mdatasize, live_set);
 	}
     } else {
 
