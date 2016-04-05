@@ -73,8 +73,11 @@ pid_t get_current_record_pid(int fd_spec, pid_t nonrecord_pid);
 long get_attach_status (int fd_spec, pid_t pid);
 int wait_for_replay_group(int fd_spec, pid_t pid);
 long try_to_exit (int fd_spec, pid_t pid);
+int is_pin_attaching (int fd_spec);
 pid_t get_replay_pid(int fd_spec, pid_t parent_pid, pid_t record_pid);
 u_long* map_shared_clock (int fd_spec);
+long check_for_redo (int fd_spec);
+long redo_mmap (int fd_spec, u_long* prc, u_long* plen);
 
 #ifdef __cplusplus
 }

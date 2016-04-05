@@ -38,6 +38,14 @@ using namespace std;
 #include "splice.h"
 #include "taint_nw.h"
 
+
+#define PIN_NORMAL         0
+#define PIN_ATTACH_RUNNING 1
+#define PIN_ATTACH_BLOCKED 2
+#define PIN_ATTACH_REDO    4
+
+u_int redo_syscall = 0;
+
 #if defined(USE_NW) || defined(USE_SHMEM)
 int s = -1;
 #endif
@@ -54,6 +62,9 @@ int s = -1;
 // #define CTRL_FLOW                    // direct control flow
 // #define ALT_PATH_EXPLORATION         // indirect control flow
 // #define CONFAID
+
+//used in order to trace instructions! 
+//#define TRACE_INST
 
 //#define LOGGING_ON
 #define LOG_F log_f
@@ -79,7 +90,6 @@ int s = -1;
  #define LOG_PRINT(x,...);
  #define INSTRUMENT_PRINT(x,...);
  #define SYSCALL_DEBUG(x,...);
- //#define SYSCALL_DEBUG fprintf
  #define PRINTX(x,...);
 #endif
 #define SPECIAL_REG(X) (X == LEVEL_BASE::REG_EBP || X == LEVEL_BASE::REG_ESP)
@@ -276,9 +286,9 @@ static void copy_file(FILE* src, FILE* dest) {
 
 static int terminated = 0;
 extern int dump_mem_taints (int fd);
-extern int dump_reg_taints (int fd, taint_t* pregs);
+extern int dump_reg_taints (int fd, taint_t* pregs, int thread_ndx);
 extern int dump_mem_taints_start (int fd);
-extern int dump_reg_taints_start (int fd, taint_t* pregs);
+extern int dump_reg_taints_start (int fd, taint_t* pregs, int thread_ndx);
 extern taint_t taint_num;
 
 #ifdef TAINT_DEBUG
@@ -301,12 +311,21 @@ extern void write_token_finish (int fd);
 extern void output_finish (int fd);
 
 //In here we need to mess with stuff for if we are no longer following this process
-static void dift_done ()
+static int dift_done ()
 {    
-    if (terminated) return;  // Only do this once
-    terminated = 1;
+    /* 
+       in the case where this is called when pin hasn't attached to everyone we have to lock here 
+       b/c otherwise we have a race
+     */
 
-    //fprintf (stderr, "starting dift_done\n");
+    PIN_LockClient();
+    if (terminated) {
+	PIN_UnlockClient();
+	return 0;  // Only do this once
+    }    
+    terminated = 1;
+    PIN_UnlockClient();
+    fprintf(stderr, "%d: in dift_done\n",PIN_GetTid());
 
 #ifdef USE_FILE
     char taint_structures_file[256];
@@ -339,25 +358,24 @@ static void dift_done ()
 
 #ifndef USE_NULL    
     if (all_output) {
+	int thread_ndx = 0;
 	if (splice_output) {
 	    // Dump out the active registers in order of the record thread id
 	    for (map<pid_t,struct thread_data*>::iterator iter = active_threads.begin(); 
 		 iter != active_threads.end(); iter++) {
-		//printf ("dumping record pid %d regs\n", iter->second->record_pid);
-		dump_reg_taints(taint_fd, iter->second->shadow_reg_table);
+		dump_reg_taints(taint_fd, iter->second->shadow_reg_table, thread_ndx++);
 	    }
 	    dump_mem_taints(taint_fd);
 	} else {
 	    // Dump out the active registers in order of the record thread id
 	    for (map<pid_t,struct thread_data*>::iterator iter = active_threads.begin(); 
 		 iter != active_threads.end(); iter++) {
-		dump_reg_taints_start(taint_fd, iter->second->shadow_reg_table);
+		dump_reg_taints_start(taint_fd, iter->second->shadow_reg_table, thread_ndx++);
 	    }
 	    dump_mem_taints_start(taint_fd);
 	}
     }
 #endif
-
     // Finish up output of other files
 #ifdef USE_NW
     write_token_finish (s);
@@ -404,6 +422,7 @@ static void dift_done ()
 	}
     }
 #endif
+    return 1; //we actually did the dift_done
 }
 
 ADDRINT find_static_address(ADDRINT ip)
@@ -445,12 +464,10 @@ static inline void increment_syscall_cnt (int syscall_num)
             global_syscall_cnt++;
             current_thread->syscall_cnt++;
         }
-#if 0
-#ifdef TAINT_DEBUG
-	fprintf (debug_f, "pid %d syscall %d global syscall cnt %lu num %d clock %ld\n", current_thread->record_pid, 
+	
+	//made this a syscall_debug funct instead of taint_debug
+	SYSCALL_DEBUG(stderr, "pid %d syscall %d global syscall cnt %lu num %d clock %ld\n", current_thread->record_pid, 
 		 current_thread->syscall_cnt, global_syscall_cnt, syscall_num, *ppthread_log_clock);
-#endif
-#endif
     }
 }
 
@@ -518,6 +535,8 @@ char* get_file_ext(char* filename){
 
 static inline void sys_open_stop(int rc)
 {
+    SYSCALL_DEBUG(stderr, "open_stop, fd: %d\n",rc);
+
     if (rc > 0) {
         struct open_info* oi = (struct open_info *) current_thread->save_syscall_info;
         monitor_add_fd(open_fds, rc, 0, current_thread->save_syscall_info);
@@ -633,6 +652,11 @@ static inline void sys_pread_start(struct thread_data* tdata, int fd, char* buf,
     ri->fd = fd;
     ri->buf = buf;
     tdata->save_syscall_info = (void *) ri;
+
+#ifdef TAINT_DEBUG
+    fprintf (debug_f, "pid %d pread fd %d clock %lu\n", tdata->record_pid, fd, *ppthread_log_clock);
+
+#endif
 }
 
 static inline void sys_pread_stop(int rc)
@@ -715,6 +739,7 @@ static void sys_mmap_start(struct thread_data* tdata, u_long addr, int len, int 
 static void sys_mmap_stop(int rc)
 {
     struct mmap_info* mmi = (struct mmap_info*) current_thread->save_syscall_info;
+    SYSCALL_DEBUG(stderr, "mmap file fd %d rc 0x%x @ %ld %d\n", mmi->fd, rc, *ppthread_log_clock , mmi->prot & PROT_EXEC);
 #ifdef MMAP_INPUTS
     // If global_syscall_cnt == 0, then handled in previous epoch
     if (rc != -1 && (mmi->fd != -1)) {
@@ -1361,8 +1386,8 @@ void instrument_syscall(ADDRINT syscall_num,
     tdata->sysnum = sysnum;
     tdata->syscall_in_progress = true;
 #ifdef TAINT_DEBUG
-    fprintf (debug_f, "Thread %d sees sysnum %d in progress\n", tdata->record_pid, sysnum);
-    if (current_thread != tdata) fprintf (debug_f, "current thread %d tdata %d\n", current_thread->record_pid, tdata->record_pid);
+      fprintf (debug_f, "Thread %d sees sysnum %d in progress\n", tdata->record_pid, sysnum);
+      if (current_thread != tdata) fprintf (debug_f, "current thread %d tdata %d\n", current_thread->record_pid, tdata->record_pid);
 #endif
 
     if (sysnum == 31) {
@@ -1377,11 +1402,25 @@ void instrument_syscall(ADDRINT syscall_num,
     if (segment_length && *ppthread_log_clock >= segment_length) {
 	// Done with this replay - do exit stuff now because we may not get clean unwind
 #ifdef TAINT_DEBUG
-	fprintf (debug_f, "Pin terminating at Pid %d, entry to syscall %ld, term. clock %ld cur. clock %ld\n", PIN_GetPid(), global_syscall_cnt, segment_length, *ppthread_log_clock);
+	fprintf (debug_f, "Pin terminating at Pid %d, entry to syscall %ld, term. clock %ld cur. clock %ld\n", PIN_GetTid(), global_syscall_cnt, segment_length, *ppthread_log_clock);
 #endif
-	dift_done ();
+
+	/*
+	 * there's a race condition here if we are still attaching to multiple threads. A thread that skips 
+	 * dift_done might fly through the rest of this and exit before dift_done has been called. This
+	 * *is* what is happening in a partitioning for firefox (weird). 
+	 */
+	//we can't exit if we haven't aren't the one calling dift_done or if some threads are still attaching
+
+	int calling_dd = dift_done ();
+	while (!calling_dd || is_pin_attaching(dev_fd)) { 
+	    usleep(1000); 
+	}
+
+	fprintf(stderr, "%d: calling try_to_exit\n", PIN_GetTid());
 	try_to_exit(dev_fd, PIN_GetPid());
-        PIN_ExitApplication(0); 
+	PIN_ExitApplication(0); 
+
     }
 	
     syscall_start(tdata, sysnum, syscallarg0, syscallarg1, syscallarg2, 
@@ -1390,13 +1429,41 @@ void instrument_syscall(ADDRINT syscall_num,
     tdata->app_syscall = syscall_num;
 }
 
+static void syscall_after_redo (ADDRINT ip)
+{
+    if (redo_syscall) {
+	u_long rc, len, retval;
+	if (check_for_redo (dev_fd) == 192) {
+	    redo_syscall--;
+	    //fprintf (stderr, "Instruction %x redo mmap please %d\n", ip, redo_syscall);
+	    retval = redo_mmap (dev_fd, &rc, &len);
+	    if (retval) fprintf (stderr, "redo_mmap failed, rc=%ld\n", retval);
+#if 0
+	    fprintf (stderr, "syscall_after, eax is %x\n", PIN_GetContextReg(ctxt, LEVEL_BASE::REG_EAX));
+	    fprintf (stderr, "syscall_after, ebx is %x\n", PIN_GetContextReg(ctxt, LEVEL_BASE::REG_EBX));
+	    fprintf (stderr, "syscall_after, ecx is %x\n", PIN_GetContextReg(ctxt, LEVEL_BASE::REG_ECX));
+#endif
+	    //fprintf (stderr, "Clearing taints %lx,%lx\n", rc, len);
+	    clear_mem_taints (rc, len);
+	    current_thread->app_syscall = 0;  
+	}
+    } else if (current_thread->app_syscall == 999) {
+	check_clock_after_syscall (dev_fd);
+	current_thread->app_syscall = 0;  
+    }
+}
+
+#if 0
 void syscall_after (ADDRINT ip)
 {
+
+//    fprintf(stderr, "%p\n",current_thread);
     if (current_thread->app_syscall == 999) {
 	check_clock_after_syscall (dev_fd);
 	current_thread->app_syscall = 0;  
     }
 }
+#endif
 
 void instrument_syscall_ret(THREADID thread_id, CONTEXT* ctxt, SYSCALL_STANDARD std, VOID* v)
 {
@@ -1553,14 +1620,6 @@ void string_inspect(ADDRINT ptr)
             u_long mem_loc = ptr + i;
             output_xcoords(xoutput_fd, current_thread->syscall_cnt, 0, 0, mem_loc);
     }
-}
-
-void track_trace(TRACE trace, void* data)
-{
-    // System calls automatically end a Pin trace.
-    // So we can instrument every trace (instead of every instruction) to check to see if
-    // the beginning of the trace is the first instruction after a system call.
-    TRACE_InsertCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_after, IARG_INST_PTR, IARG_END);
 }
 
 void track_function(RTN rtn, void* v)
@@ -13548,14 +13607,49 @@ void trace_inst(ADDRINT ptr)
     taint_debug_inst = ptr;
 }
 #endif
-#if 0
+#ifdef TRACE_INST
 void trace_inst(ADDRINT ip)
 {
-    if (*ppthread_log_clock > 12769910 && *ppthread_log_clock < 12769938) { 
+    if (*ppthread_log_clock > 9411409 && *ppthread_log_clock < 9411485) { 
 	PIN_LockClient();
-        printf("[INST] Pid %d (tid: %d) (record %d) - %#x clock %lu\n", PIN_GetPid(), PIN_GetTid(), get_record_pid(), ip, *ppthread_log_clock);
+        fprintf(stderr,"[INST] Pid %d (tid: %d) (record %d) - %#x clock %lu\n", PIN_GetPid(), PIN_GetTid(), get_record_pid(), ip, *ppthread_log_clock);
 	if (IMG_Valid(IMG_FindByAddress(ip))) {
-		printf("%s -- img %s static %#x\n", RTN_FindNameByAddress(ip).c_str(), IMG_Name(IMG_FindByAddress(ip)).c_str(), find_static_address(ip));
+	    fprintf(stderr,"%s -- img %s static %#x\n", RTN_FindNameByAddress(ip).c_str(), IMG_Name(IMG_FindByAddress(ip)).c_str(), find_static_address(ip));
+	}
+	else { 
+	    string file ="";
+	    long offset = -1;
+	       
+	    if (0xb7662000 <= ip && ip <= 0xb7662000 + (136 *1024)){
+		offset = ip - 0xb7662000;
+		file = "e5d9ad";
+	    }
+	    else if (0xb65e6000 <= ip && ip <= 0xb65e6000 + (544 * 1024)) { 
+		offset = ip - 0xb65e6000;
+		file = "4024a6";
+	    }
+	    else if (0xb74c3000 <= ip && ip <= 0xb74c3000 + (1632 * 1024)) { 
+		offset = ip - 0xb74c3000;
+		file = "e5b12f";
+	    }
+	    else if (0xb77c7000 <= ip && ip <= 0xb77c7000 + (4 * 1024)) { 
+		offset = ip - 0xb77c7000;
+		file = "weird anon region";
+	    }
+	    else if (0xb3b9a000 <= ip && ip <= 0xb3b9a000 + (33648 * 1024)) { 
+		offset = ip - 0xb3b9a000;
+		file = "4024ad";
+	    }
+	    else if (0xb6945000 <= ip && ip < 0xb6945000 + (8 * 1024)) { 
+		offset = ip - 0xb6945000;
+		file = "40241d";
+	    }
+
+	    else { 
+		fprintf(stderr, "Can't place ip %#x\n",ip);
+	    }
+
+	    fprintf(stderr,"%s %#lx\n",file.c_str(),offset);
 	}
 	PIN_UnlockClient();
     }
@@ -13586,11 +13680,12 @@ void instruction_instrumentation(INS ins, void *v)
     opcode = INS_Opcode(ins);
     category = INS_Category(ins);
 
-#ifdef TAINT_DEBUG
+#ifdef TRACE_INST
     INS_InsertCall(ins, IPOINT_BEFORE,
-                    AFUNPTR(trace_inst),
-                    IARG_INST_PTR,
-                    IARG_END);
+		   AFUNPTR(trace_inst),
+		   IARG_INST_PTR,
+		   IARG_CONTEXT,
+		   IARG_END);
 #endif
 
 #ifdef HEARTBLEED
@@ -13966,7 +14061,8 @@ void trace_instrumentation(TRACE trace, void* v)
     struct timeval tv_end, tv_start;
 
     gettimeofday (&tv_start, NULL);
-    TRACE_InsertCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_after, IARG_INST_PTR, IARG_END);
+    TRACE_InsertCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_after_redo, IARG_INST_PTR, IARG_END);
+    //TRACE_InsertCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_after, IARG_INST_PTR, IARG_END);
 
     for (BBL bbl = TRACE_BblHead(trace); BBL_Valid(bbl); bbl = BBL_Next(bbl)) {
 	for (INS ins = BBL_InsHead(bbl); INS_Valid(ins); ins = INS_Next(ins)) {
@@ -14338,6 +14434,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 {
     struct thread_data* ptdata;
     
+
     // TODO Use slab allocator
     ptdata = (struct thread_data *) malloc (sizeof(struct thread_data));
     if (ptdata == NULL) {
@@ -14346,25 +14443,25 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
     }
     assert(ptdata);
     memset(ptdata, 0, sizeof(struct thread_data));
-
     ptdata->threadid = threadid;
     ptdata->app_syscall = 0;
     ptdata->record_pid = get_record_pid();
     get_record_group_id(dev_fd, &(ptdata->rg_id));
 
+
     int thread_ndx;
     long thread_status = set_pin_addr (dev_fd, (u_long) &(ptdata->app_syscall), ptdata, (void **) &current_thread, &thread_ndx);
-#ifdef TAINT_DEBUG
-    fprintf (debug_f, "Thread %d gets rc %ld ndx %d from set_pin_addr\n", ptdata->record_pid, thread_status, thread_ndx);
-#endif
-    if (thread_status < 2) {
+    if (!(thread_status&PIN_ATTACH_BLOCKED)) {
 	current_thread = ptdata;
+    }
+    if (thread_status&PIN_ATTACH_REDO) {
+	//fprintf (stderr, "Need to redo system call (mmap)\n");
+	redo_syscall++;
     }
     PIN_SetThreadData (tls_key, ptdata, threadid);
 
     if (splice_output && thread_status > 0) {
 	int base = (NUM_REGS*REG_SIZE)*thread_ndx;
-	//printf ("Thread %d gets reg_taints starting at %d\n", ptdata->record_pid, base+1);
 	for (int i = 0; i < NUM_REGS * REG_SIZE; i++) {
 	    ptdata->shadow_reg_table[i] = base+i+1; // For small number of threads, not part of AS
 	}
@@ -14418,8 +14515,11 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 		fprintf(stderr, "could not truncate tokens %s, errno %d\n", token_file, errno);
 		assert(0);
 	    }
-
+//	    fprintf(stderr, "%d read in tokens_file\n",PIN_GetTid());
 #endif
+
+
+
 #ifdef USE_FILE
             char name[256];
             snprintf(name, 256, "%s/tokens", group_directory);
@@ -14450,6 +14550,7 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 		fprintf(stderr, "could not truncate tokens %s, errno %d\n", output_file, errno);
 		assert(0);
 	    }
+//	    fprintf(stderr, "%d created dataflow_results\n",PIN_GetTid());
 
 #endif
 #ifdef USE_FILE
@@ -14527,7 +14628,9 @@ void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
         }
     }
 #endif
+//    fprintf(stderr, "%d done 1\n",PIN_GetTid());
     active_threads[ptdata->record_pid] = ptdata;
+//    fprintf(stderr, "%d done with thread_start\n",PIN_GetTid());
 }
 
 void thread_fini (THREADID threadid, const CONTEXT* ctxt, INT32 code, VOID* v)
@@ -14581,14 +14684,18 @@ void fini(INT32 code, void* v)
     dift_done ();
 }
 
-#if 0
+#ifdef TRACE_INST
 VOID ImageLoad (IMG img, VOID *v)
 {
     uint32_t id = IMG_Id (img);
 
     ADDRINT load_offset = IMG_LoadOffset(img);
-    fprintf(stderr, "[IMG] Loading image id %d, name %s with load offset %#x\n",
-            id, IMG_Name(img).c_str(), load_offset);
+    ADDRINT low_addr = IMG_LowAddress(img);
+    ADDRINT high_addr = IMG_HighAddress(img);
+    USIZE size  = IMG_SizeMapped(img);
+    
+    fprintf(stderr, "[IMG] Loading image id %d, name %s with load offset %#x, size %u, (%#x, %#x)\n",
+            id, IMG_Name(img).c_str(), load_offset, size, low_addr, high_addr);
 }
 #endif
 
@@ -14596,18 +14703,28 @@ int get_open_file_descriptors ()
 {
     struct open_fd ofds[4096];
     long rc = get_open_fds (dev_fd, ofds, 4096);
+#ifdef TAINT_DEBUG      
+	fprintf (debug_f, "get_open_file_desciptors returns %ld\n", rc);
+#endif
+    
     if (rc < 0) {
 	fprintf (stderr, "get_open_file_desciptors returns %ld\n", rc);
 	return rc;
     }
 
     for (long i = 0; i < rc; i++) {
+#ifdef TAINT_DEBUG
+	int fd = -1;
+#endif
 	if (ofds[i].type == OPEN_FD_TYPE_FILE) {
 	    struct open_info* oi = (struct open_info *) malloc (sizeof(struct open_info));
 	    strcpy (oi->name, ofds[i].channel);
 	    oi->flags = 0;
 	    oi->fileno = 0;
 	    monitor_add_fd(open_fds, ofds[i].fd, 0, oi);
+#ifdef TAINT_DEBUG	    
+	    fd = ofds[i].fd;
+#endif
 	} else if (ofds[i].type == OPEN_FD_TYPE_SOCKET) {
 	    struct socket_info* si = (struct socket_info *) malloc (sizeof(struct socket_info));
 	    si->domain = ofds[i].data;
@@ -14616,9 +14733,15 @@ int get_open_file_descriptors ()
 	    si->fileno = -1; 
 	    si->ci = NULL;
 	    monitor_add_fd(open_socks, ofds[i].fd, 0, si);
+#ifdef TAINT_DEBUG
+	    fd = ofds[i].fd;
+#endif
 	}
+#ifdef TAINT_DEBUG
+	fprintf (debug_f, "get_open_fds %d\n",fd);
+#endif	
+	
     }
-
     return 0;
 }
 
@@ -14684,6 +14807,10 @@ int main(int argc, char** argv)
         open_x_fds = new_xray_monitor(0);
     }
 
+#ifndef NO_FILE_OUTPUT
+    init_logs();
+#endif
+
     // Determine open file descriptors for filters
     if (splice_output) get_open_file_descriptors();
 
@@ -14725,9 +14852,6 @@ int main(int argc, char** argv)
 
 #endif
 
-#ifndef NO_FILE_OUTPUT
-    init_logs();
-#endif
     init_taint_structures(group_directory);
 
     // Try to map the log clock for this epoch
@@ -14804,7 +14928,7 @@ int main(int argc, char** argv)
 	RTN_AddInstrumentFunction(track_function, 0);
     }
 
-#if 0
+#ifdef TRACE_INST
     IMG_AddInstrumentFunction (ImageLoad, 0);
 #endif
 

@@ -90,7 +90,12 @@ void format ()
     exit (22);
 }
 
-//might want to optimize this with the first pass optimization that was getting done b4
+static long ms_diff (struct timeval tv1, struct timeval tv2)
+{
+    return ((tv1.tv_sec - tv2.tv_sec) * 1000 + (tv1.tv_usec - tv2.tv_usec) / 1000);
+}
+
+
 static int cnt_interval (vector<struct timing_data> &td, int start, int end)
 {
     int last_aindex = 0;
@@ -135,7 +140,7 @@ static inline void print_utimings (vector<struct timing_data> &td, int start, in
 
 
 //model created by correlation analysis
-static double estimate_gap(vector<struct timing_data> &td, int i, int j)
+static double estimate_dift(vector<struct timing_data> &td, int i, int j)
 { 
     double utime = td[j].dtiming - td[i].dtiming;
     u_long taint_out = td[j].taint_out - td[i].taint_out; 
@@ -204,7 +209,7 @@ int gen_timings (vector<timing_data> &td,
 	return 0;
     }
 
-    double total_time = estimate_gap(td, start, end);
+    double total_time = estimate_dift(td, start, end);
     // find the largest gap
     if (details) {
 	printf ("Consider [%d,%d]: %d partitions %.3f time\n", start, end, partitions, total_time);
@@ -215,8 +220,9 @@ int gen_timings (vector<timing_data> &td,
     gap_end = start + 1;
 	
     for (i = start+1; i < end; i++) {
+
 	if (td[i].can_attach && td[i].should_track){
-	    double gap = estimate_gap(td, last, i);
+	    double gap = estimate_dift(td, last, i);
 	    if (gap > biggest_gap) {
 		gap_start = last;
 		gap_end = i;
@@ -225,9 +231,9 @@ int gen_timings (vector<timing_data> &td,
 	    last = i;
 	}
     }
-    double gap = estimate_gap(td, gap_start, gap_end);
+
     if (details) {
-	printf ("Biggest gap from %d to %d is %.3f\n", gap_start, gap_end, gap);
+	printf ("Biggest gap from %d to %d is %.3f\n", gap_start, gap_end, biggest_gap);
     }
     if (partitions > 2 && biggest_gap >= total_time/partitions) {
 	// Pivot on this gap
@@ -249,7 +255,7 @@ int gen_timings (vector<timing_data> &td,
 		printf ("Interval is %d\n", intvl);
 	    }
 	} 
-	total_time -= gap;
+	total_time -= biggest_gap;
 	partitions -= split;
 	if (gap_start == start) {
 	    if (split > 1) {
@@ -261,7 +267,7 @@ int gen_timings (vector<timing_data> &td,
 	    return gen_timings (td, gap_end, end, partitions, fork_flags);
 	}
 
-	double front_gap = estimate_gap(td, start, gap_start);
+	double front_gap = estimate_dift(td, start, gap_start);
 
 	new_part = 0.5 + (partitions * front_gap) / total_time;
 	if (details) {
@@ -301,7 +307,7 @@ int gen_timings (vector<timing_data> &td,
 	}
 	for (i = start+1; i < end; i++) {
 	    if (td[i].can_attach) {
-		double gap = estimate_gap(td, start, i);
+		double gap = estimate_dift(td, start, i);
 		if (gap > goal || cnt_interval(td, i, end) == partitions-1) {	
 //		    fprintf(stderr, "gap %lf goal %lf\n", gap, goal);
 		    print_timing (td,  start, i, fork_flags);
@@ -396,8 +402,7 @@ int parse_klogs(vector<struct timing_data> &td,
 	}
 	lindex = 0;
 
-	//our first pid has its record_timings off by one b/c it doesn't track exec. 
-	//so we skip the first value in the first pid's log
+	//our first pid has its record_timings off by one b/c we don't have timings data on exec
 	if (pid == td[0].pid) { 
 	    res = parseklog_get_next_psr(log); 
 	}
@@ -471,7 +476,7 @@ int open_ulog(const pid_t pid,
 int pop_with_ulog(vector<struct timing_data> &td, u_int td_index, ulog_data &udata) 
 { 
     u_long entry;    
-    long i;
+    u_long i;
     int skip, unused, rc;
     
     int fd = udata.fd;
@@ -648,7 +653,7 @@ int parse_timing_data( vector<struct timing_data> &td)
 
     for (i = 0; i < td.size(); i++) {
 	if (! td[i].should_track) { 
-	    td[i].can_attach = false;
+	    td[i].can_attach = false; //mark it as not attachable, and continue
 	    continue; 
 	}
 
@@ -690,6 +695,9 @@ int main (int argc, char* argv[])
     int fd, rc, num, i, parts;
     char following[256];   
     set<pid_t> procs;
+    struct timeval start_tv, read_and_copy_tv, pklog_tv, pulog_tv, ptiming_tv, gen_timings_tv;
+    
+    gettimeofday(&start_tv, NULL);
 
     if (argc < 3) {
 	format ();
@@ -771,6 +779,7 @@ int main (int argc, char* argv[])
      * start by populating the td vector with all of the exiting
      * timings_info. 
      */
+
     for ( i = 0; i < num; i++) { 
 	
 	struct timing_data next_td;
@@ -789,14 +798,19 @@ int main (int argc, char* argv[])
 	td[i] = next_td; 
 
     }
-
+    gettimeofday(&read_and_copy_tv, NULL);
     
     rc = parse_klogs(td, argv[1], following, procs);
+    gettimeofday(&pklog_tv, NULL);
+
     rc = parse_ulogs(td, argv[1]);     
+    gettimeofday(&pulog_tv, NULL);
+
     rc = parse_timing_data(td);
+    gettimeofday(&ptiming_tv, NULL);
 
 
-    //TODO: check for the forked proc as well
+/*
     for (auto t : td) { 
 	if (bad_syscalls.count(t.syscall) > 0 && t.should_track) { 
 	    for (auto t2 : td) { 
@@ -807,6 +821,7 @@ int main (int argc, char* argv[])
 	    }
 	}
     }
+<<<<<<< HEAD
     
     i = 0;
     int cant_attach = 0;
@@ -820,11 +835,26 @@ int main (int argc, char* argv[])
 	    }
 				   
 	    i++;
+=======
+*/
+
+    if(details) {
+	for (auto t : td) { 
+	    printf ("%d %lu %lu, %lu, (%lf %lu %lu %llu), %d\n", t.pid, t.call_clock, t.start_clock, t.stop_clock, t.dtiming, t.taint_in, t.taint_out, t.cache_misses, t.should_track);
+	    if (!t.can_attach) printf("\t can't attach\n");
 	}
     }
 
     printf ("%s\n", argv[1]);
     gen_timings(td, 0, td.size() - 1, parts, following);
+    gettimeofday(&gen_timings_tv, NULL);
+
+    fprintf(stderr, "read_and_copy_time %ld\n",ms_diff(read_and_copy_tv, start_tv));
+    fprintf(stderr, "pklog_time %ld\n",ms_diff(pklog_tv, read_and_copy_tv));
+    fprintf(stderr, "pulog_time %ld\n",ms_diff(pulog_tv, pklog_tv));
+    fprintf(stderr, "ptiming_time %ld\n",ms_diff(ptiming_tv, pulog_tv));
+    fprintf(stderr, "gen_timings_time %ld\n",ms_diff(gen_timings_tv, ptiming_tv));
+
     return 0;
 }
 

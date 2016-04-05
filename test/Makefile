@@ -62,7 +62,7 @@ fulltt: libutil.a
 fullsend: libutil.a
 
 mkpartition: libutil.a mkpartition.cpp 
-	c++ -Wall -Werror -std=c++0x mkpartition.cpp libutil.a -pthread -lrt -o mkpartition -g
+	c++ -Wall -Werror -std=c++0x mkpartition.cpp libutil.a -pthread -lrt -o mkpartition -O8
 
 sync_files: sync_files.cpp streamserver.h parseklib.o streamnw.cpp streamnw.h
 	c++ -Wall -Werror -std=c++0x sync_files.cpp parseklib.o streamnw.cpp -o sync_files 

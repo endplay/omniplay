@@ -94,6 +94,11 @@ struct set_pin_address_data {
 	int attach_ndx;
 };
 
+struct redo_mmap_data {
+	u_long rc;
+	u_long len;
+};
+
 #define SPECI_REPLAY_FORK _IOR('u', 0, struct record_data)
 #define SPECI_RESUME _IOR('u', 1, struct wakeup_data)
 #define SPECI_SET_PIN_ADDR _IOWR('u',2,struct set_pin_address_data)
@@ -118,5 +123,8 @@ struct set_pin_address_data {
 #define SPECI_GET_REPLAY_PID _IOR('u', 21, struct get_replay_pid_data)
 #define SPECI_MAP_CLOCK _IO('u',22)
 #define SPECI_GET_OPEN_FDS _IOR('u', 23, struct open_fds_data)
+#define SPECI_CHECK_FOR_REDO _IO('u', 24)
+#define SPECI_REDO_MMAP _IOW('u', 25, struct redo_mmap_data)
+#define SPECI_IS_PIN_ATTACHING _IO('u', 26)
 
 #endif

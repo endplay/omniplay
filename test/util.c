@@ -155,6 +155,20 @@ int check_clock_after_syscall (int fd_spec)
     return ioctl (fd_spec, SPECI_CHECK_AFTER);
 }
 
+long check_for_redo (int fd_spec)
+{
+    return ioctl (fd_spec, SPECI_CHECK_FOR_REDO);
+}
+
+long redo_mmap (int fd_spec, u_long* prc, u_long* plen) 
+{
+    struct redo_mmap_data redo;
+    long retval =  ioctl (fd_spec, SPECI_REDO_MMAP, &redo);
+    *prc = redo.rc;
+    *plen = redo.len;
+    return retval;
+}
+
 int get_log_id (int fd_spec)
 {
     return ioctl (fd_spec, SPECI_GET_LOG_ID);
@@ -257,6 +271,12 @@ pid_t get_replay_pid(int fd_spec, pid_t parent_pid, pid_t record_pid)
 
     return ioctl (fd_spec, SPECI_GET_REPLAY_PID, &data);
 }
+
+int is_pin_attaching(int fd_spec)
+{
+    return ioctl (fd_spec, SPECI_IS_PIN_ATTACHING);
+}
+
 
 u_long* map_shared_clock (int fd_spec)
 {
