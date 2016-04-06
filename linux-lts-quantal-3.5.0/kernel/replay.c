@@ -602,7 +602,15 @@ unsigned int replay_min_debug = 0;
 unsigned int replay_min_debug_low = 0;
 unsigned int replay_min_debug_high = 0;
 unsigned long argsalloc_size = (512*1024);
-unsigned int record_perf_event_sampling_period = 4096; //idk what to start this with
+
+
+unsigned int replay_perf_sample = 0; //whether or not to do the perf_event_sampling (default to not doing it)
+unsigned int replay_perf_sampling_period = 4096; //idk what to start this with
+unsigned int replay_perf_sampling_type = PERF_TYPE_HARDWARE; //default to counting instructions
+unsigned int replay_perf_sampling_config = PERF_COUNT_HW_INSTRUCTIONS; //default to counting instructions
+unsigned int replay_perf_data_size = (2 * PAGE_SIZE); //default to counting instructions
+
+
 // If the replay clock is greater than this value, MPRINT out the syscalls made by pin
 unsigned long pin_debug_clock = LONG_MAX;
 
@@ -739,7 +747,7 @@ struct replay_group {
 	u_long* rg_fake_calls;      // Make them at these points            
 
 	struct xray_monitor* rg_open_socks; // Keeps track of open sockets for partitioned replay
-        struct record_perf_event_wrapper rg_perf_event_wrapper; //a perf_event_wrapper
+        struct replay_perf_wrapper rg_perf_wrapper; //a perf_event_wrapper
 };
 
 struct argsalloc_node {
@@ -1149,7 +1157,8 @@ test_app_syscall(int number)
 static inline int 
 is_perf_sampling(void) 
 {
-	return (int)(current->replay_thrd->rp_group->rg_timebuf);
+        //true whenever we have sampling enabled ad the timebuf is not NULL (this means that we want timings) 
+	return (int)(current->replay_thrd->rp_group->rg_timebuf) && replay_perf_sample;
 }
 
 
@@ -1835,8 +1844,8 @@ new_replay_group (struct record_group* prec_group, int follow_splits)
 	prg->rg_attach_pid = -1;
 
 	prg->rg_timebuf = NULL;
-	memset (&(prg->rg_perf_event_wrapper), 0, sizeof(struct record_perf_event_wrapper));
-//	prg->rg_perf_event_wrapper.mapping = NULL; //maybe just memset everything? 
+	memset (&(prg->rg_perf_wrapper), 0, sizeof(struct replay_perf_wrapper));
+
 	prg->rg_timecnt = 0;
 	prg->rg_timepos = 0;
 	prg->rg_try_to_exit = 0;
@@ -1934,11 +1943,6 @@ destroy_replay_group (struct replay_group *prepg)
 	struct reserved_mapping* pmapping;
 
 	MPRINT ("Pid %d destroy replay group %p: enter\n", current->pid, prepg);
-
-	//added for the perf_event_wrapper
-	destroy_record_perf_event_wrapper(&(prepg->rg_perf_event_wrapper));
-
-	
 
 	// Destroy replay_threads list
 	if (prepg->rg_replay_threads) {
@@ -3599,9 +3603,16 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 
 		prepg->rg_timebuf = KMALLOC(sizeof(struct replay_timing)*REPLAY_TIMEBUF_ENTRIES, GFP_KERNEL);
 		if (prepg->rg_timebuf == NULL) printk ("Cannot allocate timing buffer\n");
-		
-		init_record_perf_event_wrapper(&(prepg->rg_perf_event_wrapper), record_perf_event_sampling_period);
-		record_perf_event_wrapper_start_sampling(&(prepg->rg_perf_event_wrapper));
+		//we know that we want to record timings, we need to know if we should sample
+		if (replay_perf_sample) { 
+		        init_replay_perf_wrapper(&(prepg->rg_perf_wrapper), 
+						 precg->rg_logdir,
+						 replay_perf_sampling_type, 
+						 replay_perf_sampling_config,
+						 replay_perf_sampling_period,
+						 replay_perf_data_size);
+			replay_perf_wrapper_start_sampling(&(prepg->rg_perf_wrapper));
+		}
 	}
 
 	if (ckpt_at > 0) prepg->rg_checkpoint_at = ckpt_at;
@@ -5615,13 +5626,15 @@ record_timings (struct replay_thread* prept, short syscall)
 	prepg->rg_timebuf[prepg->rg_timecnt].pid = prept->rp_record_thread->rp_record_pid;
 	prepg->rg_timebuf[prepg->rg_timecnt].index = prept->rp_record_thread->rp_count;
 	prepg->rg_timebuf[prepg->rg_timecnt].syscall = syscall;
-	prepg->rg_timebuf[prepg->rg_timecnt].ut = ut;		
+	prepg->rg_timebuf[prepg->rg_timecnt++].ut = ut;		
 
 
-	//iterate and print out ips
-	record_perf_event_wrapper_stop_sampling(&(prepg->rg_perf_event_wrapper));
-//	record_perf_event_wrapper_iterate(&(prepg->rg_perf_event_wrapper));
-	record_perf_event_wrapper_start_sampling(&(prepg->rg_perf_event_wrapper));
+	if (is_perf_sampling())
+	{
+	       replay_perf_wrapper_stop_sampling(&(prepg->rg_perf_wrapper));
+	       replay_perf_wrapper_iterate(&(prepg->rg_perf_wrapper));
+	       replay_perf_wrapper_start_sampling(&(prepg->rg_perf_wrapper));
+	}
 
 	if (prepg->rg_timecnt == REPLAY_TIMEBUF_ENTRIES) write_timings (prepg);
 }
@@ -7043,7 +7056,12 @@ recplay_exit_middle(void)
 				current->replay_thrd->rp_group->rg_rec_group->rg_save_mmap_flag = 0;
 				rg_unlock (current->replay_thrd->rp_group->rg_rec_group);
 			}
-			if (current->replay_thrd->rp_group->rg_timebuf) write_timings (current->replay_thrd->rp_group);
+			if (current->replay_thrd->rp_group->rg_timebuf) {
+				write_timings (current->replay_thrd->rp_group);
+				if (is_perf_sampling()){
+					destroy_replay_perf_wrapper(&(current->replay_thrd->rp_group->rg_perf_wrapper));
+				}
+			}
 		}
 		MPRINT ("Replay thread %d recpid %d in middle of exit\n", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid);	
 
@@ -8803,8 +8821,13 @@ replay_execve(const char *filename, const char __user *const __user *__argv, con
 		}
 
 		if (is_perf_sampling()) { 
-			init_record_perf_event_wrapper(&(prt->rp_group->rg_perf_event_wrapper), record_perf_event_sampling_period);
-			record_perf_event_wrapper_start_sampling(&(prt->rp_group->rg_perf_event_wrapper));
+		        init_replay_perf_wrapper(&(prt->rp_group->rg_perf_wrapper), 
+						 prt->rp_record_thread->rp_group->rg_logdir,
+						 replay_perf_sampling_type, 
+						 replay_perf_sampling_config,
+						 replay_perf_sampling_period,
+						 replay_perf_data_size);
+			replay_perf_wrapper_start_sampling(&(prt->rp_group->rg_perf_wrapper));
 		}
 
 	}
@@ -13452,9 +13475,9 @@ replay_fcntl64 (unsigned int fd, unsigned int cmd, unsigned long arg)
 		argsconsume(current->replay_thrd->rp_record_thread, sizeof(u_long) + bytes);
 	}
 
-	MPRINT("%d: rp_fcntl fd %d, cmd %u and arg %lu returning %ld\n",current->pid,fd,cmd,arg, rc);
+//	MPRINT("%d: rp_fcntl fd %d, cmd %u and arg %lu returning %ld\n",current->pid,fd,cmd,arg, rc);
 	if (cmd == F_SETLK64) { 
-		MPRINT("%d: set_lock to %d,%d (%lu,%lu)\n",current->pid, ((struct flock64*)arg)->l_type,((struct flock64*)arg)->l_whence, ((struct flock64*)arg)->l_start, ((struct flock64*)arg)->l_len);
+//		MPRINT("%d: set_lock to %d,%d (%lu,%lu)\n",current->pid, ((struct flock64*)arg)->l_type,((struct flock64*)arg)->l_whence, ((struct flock64*)arg)->l_start, ((struct flock64*)arg)->l_len);
 	}
 
 	return rc;
@@ -15607,14 +15630,40 @@ static struct ctl_table replay_ctl[] = {
 		.proc_handler	= &proc_dointvec,
 	},
 	{
-		.procname	= "sampling_period",
-		.data		= &record_perf_event_sampling_period,
+		.procname	= "replay_perf_sample",
+		.data		= &replay_perf_sample,
 		.maxlen		= sizeof(unsigned int),
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec,
 	},
-
-
+	{
+		.procname	= "replay_perf_sampling_period",
+		.data		= &replay_perf_sampling_period,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "replay_perf_sampling_type",
+		.data		= &replay_perf_sampling_type,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "replay_perf_sampling_config",
+		.data		= &replay_perf_sampling_config,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.procname	= "replay_perf_data_size",
+		.data		= &replay_perf_data_size,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+	},
 	{0, },
 };
 

@@ -4,23 +4,33 @@
 #include <linux/perf_event.h>
 
 
+#define PERF_OUTBUF_ENTRIES 10000
 #define BUFFER_SIZE 512
-#define DATA_PAGES 2
-#define DATA_SIZE (2 * PAGE_SIZE)
-#define MMAP_SIZE (3 * PAGE_SIZE)
 
-struct record_perf_event_wrapper { 
+struct replay_perf_wrapper { 
 	int perf_fd;
 	int first_time;
-	struct page *mapping_shared_pages;
-	struct vm_area_struct *vmas;
+	int overflow_count;
+	u_int data_size;
+
+	char *logdir; //pointer to the log_dir for this wrapper's replay
+	__u32 *outbuf; //pointer to buffer of things to write to file
+	__u32  bufcnt; //index within above buffer
+	loff_t outpos; //index within our output file
+
 	struct perf_event_mmap_page *mapping;
 };
 
-int init_record_perf_event_wrapper(struct record_perf_event_wrapper *wrapper, unsigned int sampling_period);
-void destroy_record_perf_event_wrapper(struct record_perf_event_wrapper *wrapper);
-void record_perf_event_wrapper_start_sampling(struct record_perf_event_wrapper *wrapper);
-void record_perf_event_wrapper_stop_sampling(struct record_perf_event_wrapper *wrapper);
-void record_perf_event_wrapper_iterate(struct record_perf_event_wrapper *wrapper);
+int init_replay_perf_wrapper(struct replay_perf_wrapper *wrapper, 
+			     char *logdir,
+			     unsigned int sample_type, 
+			     unsigned int  config,
+			     unsigned int sample_period,
+			     unsigned int data_size);
+
+void destroy_replay_perf_wrapper(struct replay_perf_wrapper *wrapper);
+void replay_perf_wrapper_start_sampling(struct replay_perf_wrapper *wrapper);
+void replay_perf_wrapper_stop_sampling(struct replay_perf_wrapper *wrapper);
+void replay_perf_wrapper_iterate(struct replay_perf_wrapper *wrapper);
 
 #endif /* REPLAY_PERF_EVENT_WRAPPER_H */
