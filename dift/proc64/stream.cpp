@@ -137,7 +137,7 @@ u_long send_idle = 0, recv_idle = 0, new_live_set_send_idle = 0, new_live_set_re
 u_long atokens = 0, passthrus = 0, aresolved = 0, aindirects = 0, unmodified = 0, written = 0;
 u_long prune_cnt = 0, simplify_cnt = 0;
 u_long new_live_no_changes = 0, new_live_zeros = 0, new_live_inputs = 0, new_live_merges = 0, new_live_merge_zeros = 0, new_live_notlive = 0;
-u_long live_set_size = 0, revindex_multimap_size = 0;
+u_long live_set_size = 0;
 u_long values_sent = 0, values_rcvd = 0;
 u_long prune_lookup = 0, prune_indirect = 0;
 u_long total_address_ms = 0, longest_address_ms = 0, total_output_ms = 0, longest_output_ms = 0, total_new_live_set_ms = 0, longest_new_live_set_ms = 0, total_prune_1_ms = 0, longest_prune_1_ms = 0, total_prune_2_ms = 0;
@@ -3326,8 +3326,83 @@ static int insert_live_set (bitmap& live_set, int cnt)
     return live_set_size;
 }
 
+struct revindex_node {
+    uint32_t              val;
+    struct revindex_node* next;
+};
+struct revindex_table {
+    struct revindex_node* ptrs[1024];
+};
+
+#define REVCACHE_NODES 2047
+struct revindex_node_cache {
+    struct revindex_node a[REVCACHE_NODES];
+    struct revindex_node_cache* next;
+};
+
+struct revindex_table* paged_rindex[0x300000];
+struct revindex_node_cache* prcache = NULL;
+int revindex_node_cache_cnt = REVCACHE_NODES; // Force allocate on first access
+
+static inline void prindex_insert (uint32_t val, uint32_t rval)
+{
+    uint32_t ndx = val>>10;
+    if (paged_rindex[ndx] == NULL) {
+	paged_rindex[ndx] = (struct revindex_table *) calloc(1,sizeof(struct revindex_table));
+	assert (paged_rindex[ndx]);
+    }
+    if (revindex_node_cache_cnt == REVCACHE_NODES) {
+	struct revindex_node_cache* pnew = (struct revindex_node_cache *) malloc(sizeof(struct revindex_node_cache));
+	pnew->next = prcache;
+	prcache = pnew;
+	revindex_node_cache_cnt = 0;
+    }
+    struct revindex_node* pnew = &prcache->a[revindex_node_cache_cnt++];
+    pnew->val = rval;
+    pnew->next = paged_rindex[ndx]->ptrs[val%1024];
+    paged_rindex[ndx]->ptrs[val%1024] = pnew;
+}
+
+static inline struct revindex_node* prindex_lookup (uint32_t val)
+{
+    uint32_t ndx = val>>10;
+    if (paged_rindex[ndx] == NULL) return NULL;
+    return paged_rindex[ndx]->ptrs[val%1024];
+}
+
+static inline void prindex_free (void)
+{
+    for (int i = 0; i < 0x300000; i++) {
+	if (paged_rindex[i]) free(paged_rindex[i]);
+    }
+    while (prcache) {
+	struct revindex_node_cache* tmp = prcache;
+	prcache = prcache->next;
+	free (tmp);
+    }
+}
+
+static inline void mrindex_insert (struct revindex_node* mrindex, uint32_t val, uint32_t rval)
+{
+    struct revindex_node* pnode = mrindex + (val-0xe0000001);
+    if (pnode->val == 0) {
+	pnode->val = rval;
+    } else {
+	if (revindex_node_cache_cnt == REVCACHE_NODES) {
+	    struct revindex_node_cache* pnew = (struct revindex_node_cache *) malloc(sizeof(struct revindex_node_cache));
+	    pnew->next = prcache;
+	    prcache = pnew;
+	    revindex_node_cache_cnt = 0;
+	}
+	struct revindex_node* pnew = &prcache->a[revindex_node_cache_cnt++];
+	pnew->val = rval;
+	pnew->next = pnode->next;
+	pnode->next = pnew;
+    }
+}
+
 // This creates a reverse index
-unordered_multimap<taint_t,uint32_t> revindex;
+//unordered_multimap<taint_t,uint32_t> revindex;
 long make_rev_index (const char* dirname, u_long mdatasize, taint_entry* ts_log, u_long adatasize, bitmap& live_set)
 {
     uint32_t write_cnt = 0, write_stop = 0;
@@ -3344,6 +3419,10 @@ long make_rev_index (const char* dirname, u_long mdatasize, taint_entry* ts_log,
 #endif
     mmarked.resize(entries, false);
 
+    memset (paged_rindex, 0, sizeof(paged_rindex));
+    struct revindex_node* mrindex = (struct revindex_node *) calloc(sizeof(struct revindex_node), entries);
+    assert (mrindex);
+
     for (u_long i = 0; i < entries; i++) {
 	taint_t val = merge_log[i].p1;
 	if (val < 0xc0000000) {
@@ -3352,7 +3431,8 @@ long make_rev_index (const char* dirname, u_long mdatasize, taint_entry* ts_log,
 		mmarked[i] = true;
 	    } else {
 		// Points to input address, add to address's reverse index
-		revindex.insert(make_pair(val,0xe0000001+i));
+		prindex_insert (val, 0xe0000001+i);
+		//revindex.insert(make_pair(val,0xe0000001+i));
 	    }
 	} else if (val < 0xe0000000) {
 	    // Points to input, so live
@@ -3362,7 +3442,8 @@ long make_rev_index (const char* dirname, u_long mdatasize, taint_entry* ts_log,
 		// Points to live merge log entry, so also live
 		mmarked[i] = true;
 	    } else {
-		revindex.insert(make_pair(val,0xe0000001+i));
+		mrindex_insert (mrindex, val, 0xe0000001+i);
+		//revindex.insert(make_pair(val,0xe0000001+i));
 	    }
 	}		
 	if (!mmarked[i]) {
@@ -3373,7 +3454,8 @@ long make_rev_index (const char* dirname, u_long mdatasize, taint_entry* ts_log,
 		    mmarked[i] = true;
 		} else {
 		    // Points to input address, add to address's reverse index
-		    revindex.insert(make_pair(val,0xe0000001+i));
+		    prindex_insert (val, 0xe0000001+i);
+		    //revindex.insert(make_pair(val,0xe0000001+i));
 		}
 	    } else if (val < 0xe0000000) {
 		// Points to input, so live
@@ -3383,7 +3465,7 @@ long make_rev_index (const char* dirname, u_long mdatasize, taint_entry* ts_log,
 		    // Points to live merge log entry, so also live
 		    mmarked[i] = true;
 		} else {
-		    revindex.insert(make_pair(val,0xe0000001+i));
+		    mrindex_insert (mrindex, val, 0xe0000001+i);
 		}
 	    }	
 	}	
@@ -3404,7 +3486,8 @@ long make_rev_index (const char* dirname, u_long mdatasize, taint_entry* ts_log,
 		    PUT_QVALUEB(ts_log[i].p1, inputq_hdr, inputq_buf, iqfd, write_cnt, write_stop);			
 		} else {
 		    // Points to input address, add to input address's reverse index
-		    revindex.insert(make_pair(val,ts_log[i].p1));
+		    prindex_insert (val,ts_log[i].p1);
+		    //revindex.insert(make_pair(val,ts_log[i].p1));
 		}
 	    } else if (val < 0xe0000000) {
 		// Points to input, so live
@@ -3420,7 +3503,8 @@ long make_rev_index (const char* dirname, u_long mdatasize, taint_entry* ts_log,
 		    olive_set.insert(ts_log[i].p1);
 #endif
 		} else {
-		    revindex.insert(make_pair(val,ts_log[i].p1));
+		    mrindex_insert (mrindex, val, ts_log[i].p1);
+		    //revindex.insert(make_pair(val,ts_log[i].p1));
 		}
 	    }		
 	}
@@ -3428,7 +3512,6 @@ long make_rev_index (const char* dirname, u_long mdatasize, taint_entry* ts_log,
 
 #ifdef STATS    
     gettimeofday(&revindex_addr_build_done_tv, NULL);
-    revindex_multimap_size = revindex.size();
 #endif
 
     // Now, read in the live set values from prior epoch
@@ -3443,10 +3526,16 @@ long make_rev_index (const char* dirname, u_long mdatasize, taint_entry* ts_log,
 #ifdef STATS
 	    live_set_size++;
 #endif
-	    auto pr = revindex.equal_range(val);
+	    struct revindex_node* pnode;
+	    if (val < 0xe0000000) {
+		pnode = prindex_lookup (val);
+	    } else {
+		pnode = &mrindex[val-0xe0000001];
+	    }
+		
 	    stack_depth = 0;
-	    for (auto it = pr.first; it != pr.second; ++it) {
-		uint32_t mval = it->second;
+	    while (pnode) {
+		uint32_t mval = pnode->val;
 		if (mval < 0xe0000000) {
 		    // This address is now live
 		    PUT_QVALUEB(mval, inputq_hdr, inputq_buf, iqfd, write_cnt, write_stop);			
@@ -3456,14 +3545,15 @@ long make_rev_index (const char* dirname, u_long mdatasize, taint_entry* ts_log,
 		} else {
 		    stack[stack_depth++] = mval;
 		}
-	    }
+		pnode = pnode->next;
+	    };
 
 	    while (stack_depth) {
 		uint32_t sval = stack[--stack_depth];
 		if (!mmarked[sval-0xe0000001]) {
-		    auto pr = revindex.equal_range(sval);
-		    for (auto it = pr.first; it != pr.second; ++it) {
-			uint32_t mval = it->second;
+		    struct revindex_node* pnode = &mrindex[sval-0xe0000001];
+		    do {
+			uint32_t mval = pnode->val;
 			if (mval < 0xe0000000) {
 			    // This address is now live
 			    PUT_QVALUEB(mval, inputq_hdr, inputq_buf, iqfd, write_cnt, write_stop);			
@@ -3474,7 +3564,8 @@ long make_rev_index (const char* dirname, u_long mdatasize, taint_entry* ts_log,
 			    stack[stack_depth++] = mval;
 			    assert (stack_depth < STACK_SIZE);
 			}
-		    }
+			pnode = pnode->next;
+		    } while (pnode);
 		    mmarked[sval-0xe0000001] = true;
 		}
 	    }
@@ -3492,6 +3583,9 @@ long make_rev_index (const char* dirname, u_long mdatasize, taint_entry* ts_log,
 
     PUT_QVALUEB(TERM_VAL, inputq_hdr, inputq_buf, iqfd, write_cnt, write_stop);
     bucket_term (inputq_hdr, inputq_buf, iqfd, write_cnt, write_stop);
+
+    prindex_free ();
+    free (mrindex);
 
 #ifdef STATS
     gettimeofday(&revindex_done_tv, NULL);
@@ -3572,15 +3666,30 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	if (!finish_flag) {
 	    make_rev_index(dirname, mdatasize, (taint_entry *) ts_log, adatasize, live_set);
 	} else {
+#ifdef STATS    
+	    gettimeofday(&revindex_start_tv, NULL);
+	    gettimeofday(&revindex_merge_build_done_tv, NULL);
+	    gettimeofday(&revindex_addr_build_done_tv, NULL);
+#endif
 	    uint32_t val, rbucket_cnt = 0, rbucket_stop = 0;
 	    GET_QVALUEB(val, outputq_hdr, outputq_buf, iqfd, rbucket_cnt, rbucket_stop);
 	    while (val != TERM_VAL) {
 		live_set.set(val);
 		GET_QVALUEB(val, outputq_hdr, outputq_buf, iqfd, rbucket_cnt, rbucket_stop);
 	    }
+#ifdef STATS
+	    gettimeofday(&revindex_done_tv, NULL);
+#endif
+
 	}
 	if (!start_flag) {
-	    prune_range_pass_both (merge_log, merge_log + mdatasize/sizeof(struct taint_entry), live_set);
+#ifdef STATS
+	    gettimeofday(&prune_1_start_tv, NULL);
+#endif
+	    prune_range_pass_both (merge_log, merge_log + mdatasize/sizeof(struct taint_entry), live_set);	
+#ifdef STATS
+	    gettimeofday(&prune_2_end_tv, NULL);
+#endif
 	    //prune_merge_log(mdatasize, live_set);
 	}
     } else {
