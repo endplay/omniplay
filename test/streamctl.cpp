@@ -133,7 +133,7 @@ int main (int argc, char* argv[])
 {
     int rc;
     char dirname[80];
-    int wait_for_response = 0, validate = 0, get_stats = 0, sync_files = 0, nw_compress = 0, low_memory = 0, filter_inet = 0;
+    int wait_for_response = 0, validate = 0, get_stats = 0, sync_files = 0, nw_compress = 0, low_memory = 0, filter_inet = 0, stream_ls = 0;
     char* filter_part = NULL;
     char* dest_dir, *cmp_dir;
     struct vector<struct replay_path> log_files;
@@ -158,6 +158,8 @@ int main (int argc, char* argv[])
 	    nw_compress = 1;
 	} else if (!strcmp (argv[i], "-lowmem")) {
 	    low_memory = 1;
+	} else if (!strcmp (argv[i], "-streamls")) {
+	    stream_ls = 1;
 	} else if (!strcmp (argv[i], "-filter_inet")) {
 	    filter_inet = 1;
 	} else if (!strcmp (argv[i], "-filter_part")) {
@@ -375,6 +377,7 @@ int main (int argc, char* argv[])
 	if (get_stats) ehdr.flags |= SEND_STATS;
 	if (nw_compress) ehdr.flags |= NW_COMPRESS;
 	if (low_memory) ehdr.flags |= LOW_MEMORY;
+	if (stream_ls) ehdr.flags |= STREAM_LS;
 	
 	ehdr.filter_flags = 0;
 	if (filter_inet) ehdr.filter_flags |= FILTER_INET;

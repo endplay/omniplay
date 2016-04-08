@@ -543,6 +543,9 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	    if (ehdr.flags&NW_COMPRESS) {
 		args[argcnt++] = "-compress";
 	    }
+	    if (ehdr.flags&STREAM_LS) {
+		args[argcnt++] = "-streamls";
+	    }
 	    args[argcnt++] = "-par";
 	    sprintf (parstring, "%d", ehdr.parallelize);
 	    args[argcnt++] = parstring;
@@ -579,6 +582,9 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	    }
 	    if (ehdr.flags&NW_COMPRESS) {
 		args[argcnt++] = "-compress";
+	    }
+	    if (ehdr.flags&STREAM_LS) {
+		args[argcnt++] = "-streamls";
 	    }
 	    args[argcnt++] = "-par";
 	    sprintf (parstring, "%d", ehdr.parallelize);
@@ -627,6 +633,9 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	    }
 	    if (ehdr.flags&LOW_MEMORY) {
 		args[argcnt++] = "-lowmem";
+	    }
+	    if (ehdr.flags&STREAM_LS) {
+		args[argcnt++] = "-streamls";
 	    }
 	    args[argcnt++] = "-par";
 	    sprintf (parstring, "%d", ehdr.parallelize);
