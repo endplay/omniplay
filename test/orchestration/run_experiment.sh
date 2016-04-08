@@ -1,28 +1,39 @@
 #!/bin/bash
-BASE="$OMNIPLAY_DIR/test/experiment_config_files"
+
+BASE="../experiment_config_files"
+
 HOST=".$1"
-NUM_HOSTS="32"
+NUM_HOSTS="35"
+ROUND="no_seq"
 
-GS=$BASE"/gzip.rec.2"
-GS_NAME="ghostscript"
+NAMES[1]="gzip"
+#NAMES[1]="mongo"
+#NAMES[1]="firefox"
+#NAMES[1]="openoffice"
+#NAMES[1]="evince"
+#NAMES[1]="gs"
 
-GZIP=$BASE"/gzip.rec.52"
-GZIP_NAME="gzip"
-
-EVINCE=$BASE"/evince.rec.61441"
-EVINCE_NAME="evince"
-
-NGINX=$BASE"/mine.rec.73731"
-NGINX_NAME="nginx"
-
-TEST=$GZIP
-NAME=$GZIP_NAME
 
 echo -n "Password:"
 read -s password
 
-OUTPUT="emulab_output_$NAME"
+for i in {1..1}; do 
+    NAME=${NAMES[$i]}
+    TEST=$BASE"/"$NAME;
+    OUTPUT_COMPRESS=emulab_output/"$NAME"_compress_"$ROUND";
+    OUTPUT_PREPRUNE=emulab_output/"$NAME"_partitions_"$ROUND";
+    
+    echo "$TEST"
+    if [ "$NAME" == "nginx" ]
+    then
+	python emulab_experiment.py $TEST/experiment.config -o $OUTPUT_PREPRUNE --hs=$HOST -n $NUM_HOSTS -c $TEST/seqtt.results -s --password $password;
+    else
+	python emulab_experiment.py $TEST/experiment.config -o $OUTPUT_PREPRUNE --hs=$HOST -n $NUM_HOSTS -c $TEST/seqtt.results -s --password $password; 
+    fi	
+  
+    python emulab_experiment.py $TEST/experiment.config -o $OUTPUT_COMPRESS --hs=$HOST -c $TEST/seqtt.results -n $NUM_HOSTS --password $password -r 2 --compress;
 
-python emulab_experiment.py $TEST/experiment.config -o $OUTPUT -p $TEST/prefix.tar.gz --hs=$HOST -n $NUM_HOSTS -c $TEST/seqtt.results -s --password $password
-python emulab_experiment.py $TEST/experiment.config -o $OUTPUT --hs=$HOST -c $TEST/seqtt.results -n $NUM_HOSTS --password $password -r 2
-
+    pushd ../;
+   ./switch.py ${NAMES[$((i+1))]} ${NAMES[$i]};
+    popd;
+done;

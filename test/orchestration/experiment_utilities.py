@@ -1,4 +1,5 @@
 import paramiko
+import os
 import spur
 
 
@@ -17,6 +18,25 @@ def put_file(host, user, password, local_file, remote_file):
     sftp = ssh.open_sftp()
     sftp.put(local_file, remote_file)
     sftp.close()
+
+
+def put_files(host, user, password, local_dir, remote_dir):
+
+    print "remote_dir",remote_dir
+    print "local_dir",local_dir
+    ssh = open_paramiko_ssh_session(host, user, password)
+    sftp = ssh.open_sftp()
+    try:
+        sftp.mkdir(remote_dir)
+    except:
+        print "seqtt.reults must have already existed" 
+    
+    for fname in os.listdir(local_dir): 
+        sftp.put(local_dir + "/" + fname, remote_dir + "/" + fname)    
+
+    sftp.close()
+
+
 
 def get_file(host, user, password, local_file, remote_file):
     ssh = open_paramiko_ssh_session(host, user, password)

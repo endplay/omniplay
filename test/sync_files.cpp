@@ -107,7 +107,7 @@ int get_needed_files(struct vector<struct replay_path> &log_files,
 		    }
 		} else if (res->psr.sysnum == 11) {
 		    struct execve_retvals* pretvals = (struct execve_retvals *) res->retparams;
-		    if (pretvals) {
+		    if (pretvals && !pretvals->is_new_group) {
 			cinfo.dev = pretvals->data.same_group.dev;
 			cinfo.ino = pretvals->data.same_group.ino;
 			cinfo.mtime = pretvals->data.same_group.mtime;
