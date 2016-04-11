@@ -4135,11 +4135,11 @@ int connect_output_queue (struct senddata* data)
     memcpy (&addr.sin_addr, hp->h_addr, hp->h_length);
 
 
-    struct timeval tv;
-    tv.tv_sec = 120;  /* 30 Secs Timeout */
-    tv.tv_usec = 0;  // Not init'ing this can cause strange errors
-    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (char *)&tv,sizeof(struct timeval));
-    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (char *)&tv,sizeof(struct timeval));
+//    struct timeval tv;
+//    tv.tv_sec = 120;  /* 30 Secs Timeout */
+//    tv.tv_usec = 0;  // Not init'ing this can cause strange errors
+//    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (char *)&tv,sizeof(struct timeval));
+//    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (char *)&tv,sizeof(struct timeval));
 
 
     // Receiver may not be started, so spin until connection is accepted
@@ -4195,11 +4195,11 @@ int connect_input_queue (struct recvdata* data)
 	fprintf (stderr, "Cannot accept connection, errno=%d\n", errno);
 	return s;
     }
-    struct timeval tv;
-    tv.tv_sec = 120;  /* 2 mins Secs Timeout */
-    tv.tv_usec = 0;  // Not init'ing this can cause strange errors
-    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (char *)&tv,sizeof(struct timeval));
-    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (char *)&tv,sizeof(struct timeval));
+//    struct timeval tv;
+//    tv.tv_sec = 120;  /* 2 mins Secs Timeout */
+//    tv.tv_usec = 0;  // Not init'ing this can cause strange errors
+//    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (char *)&tv,sizeof(struct timeval));
+//    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (char *)&tv,sizeof(struct timeval));
 
     close (c);
     return s;

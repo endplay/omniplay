@@ -146,6 +146,8 @@ int main (int argc, char* argv[])
 	format();
     }
 
+    const char* host_suffix; 
+
     const char* epoch_filename = argv[1];
     const char* config_filename = argv[2];
 
@@ -167,6 +169,9 @@ int main (int argc, char* argv[])
 	    i++;
 	} else if (!strcmp (argv[i], "-stats")) {
 	    get_stats = 1;
+	} else if (!strcmp (argv[i], "-hs")) {
+	  host_suffix = argv[i+1];
+	  i++;
 	} else if (!strcmp (argv[i], "-v")) {
 	    i++;
 	    if (i < argc) {
@@ -404,7 +409,14 @@ int main (int argc, char* argv[])
 	ehdr.parallelize = conf.aggregators[i]->num_epochs;
 	if (ehdr.parallelize > parallelize) parallelize = ehdr.parallelize;
 
-	conf.aggregators[i]->s = connect_to_server (conf.aggregators[i]->hostname, conf.aggregators[i]->port);
+	char real_host[1024];
+	if (host_suffix && strstr(conf.aggregators[i]->hostname, ".net") == NULL) 
+	  sprintf(real_host,"%s%s",conf.aggregators[i]->hostname,host_suffix);
+	else
+	  sprintf(real_host,"%s",conf.aggregators[i]->hostname);
+
+
+	    conf.aggregators[i]->s = connect_to_server (real_host, conf.aggregators[i]->port);
 	if (conf.aggregators[i]->s < 0) return conf.aggregators[i]->s;
 
 	rc = safe_write (conf.aggregators[i]->s, &ehdr, sizeof(ehdr));
@@ -420,7 +432,13 @@ int main (int argc, char* argv[])
     u_int agg_cnt = 0;
     u_int cur_agg_epochs = 0;
     for (u_int i = 0; i < conf.difts.size(); i++) {
-	conf.difts[i]->s = connect_to_server (conf.difts[i]->hostname, STREAMSERVER_PORT);
+	char real_host[1024];
+	if (host_suffix && strstr(conf.difts[i]->hostname, ".net") == NULL) 
+	  sprintf(real_host,"%s%s",conf.difts[i]->hostname,host_suffix);
+	else
+	  sprintf(real_host,"%s",conf.difts[i]->hostname);
+
+	conf.difts[i]->s = connect_to_server (real_host, STREAMSERVER_PORT);
 	if (conf.difts[i]->s < 0) return conf.difts[i]->s;
 
 	struct epoch_hdr ehdr;
