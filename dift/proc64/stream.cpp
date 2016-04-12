@@ -158,6 +158,9 @@ u_long preprune_prior_mdatasize = 0;
 
 u_long most_prune_lookups = 0, first_pass_prune_lookups = 0, most_prune_cnt = 0, first_pass_prune_cnt = 0, most_simplify_cnt = 0, first_pass_simplify_cnt = 0;
 
+u_long rlive_set_send_idle = 0, rlive_set_recv_idle = 0;
+
+
 struct timeval start_tv, recv_done_tv, finish_start_tv, end_tv;
 struct timeval live_receive_start_tv = {0,0}, live_receive_end_tv = {0,0};
 struct timeval live_insert_start_tv = {0,0}, live_first_byte_tv = {0,0};
@@ -1910,6 +1913,9 @@ print_stats (const char* dirname, u_long mdatasize, u_long odatasize, u_long ida
     fprintf (statsfile, "Total live set make time %ld ms longest thread %ld ms, send idle %ld recv idle %ld comp time %ld\n", 
 	     total_new_live_set_ms, longest_new_live_set_ms, new_live_set_send_idle, new_live_set_recv_idle, 
 	     total_new_live_set_ms - new_live_set_send_idle - new_live_set_recv_idle);
+
+    fprintf (statsfile, "Total rlive set send idle %ld, recv idle %ld, comp time %ld",rlive_set_recv_idle, rlive_set_send_idle, ms_diff(revindex_done_tv, revindex_addr_build_done_tv) - rlive_set_recv_idle - rlive_set_send_idle);
+
     fprintf (statsfile, "Total output time %ld ms longest thread %ld ms, send idle %ld recv idle %ld comp time %ld\n", 
 	     total_output_ms, longest_output_ms, output_send_idle, output_recv_idle, total_output_ms - output_send_idle - output_recv_idle);
     fprintf (statsfile, "Total address time %ld ms longest thread %ld ms, send idle %ld recv idle %ld comp time %ld\n", 
@@ -3779,6 +3785,7 @@ long make_rev_index_lowmem (const char* dirname, u_long mdatasize, taint_entry* 
 
 #ifdef STATS    
     gettimeofday(&revindex_addr_build_done_tv, NULL);
+    recv_idle = send_idle = 0;
 #endif
 
     // Now, read in the live set values from prior epoch
@@ -3805,7 +3812,7 @@ long make_rev_index_lowmem (const char* dirname, u_long mdatasize, taint_entry* 
 		uint32_t mval = pnode->val;
 		if (mval < 0xe0000000) {
 		    // This address is now live
-		    PUT_QVALUEB(mval, inputq_hdr, inputq_buf, iqfd, write_cnt, write_stop);			
+		    PUT_QVALUEB(mval, inputq_hdr, inputq_buf, iqfd, write_cnt, write_stop);
 #ifdef LS_DETAIL
 		    olive_set.insert(mval);
 #endif
@@ -3863,6 +3870,8 @@ long make_rev_index_lowmem (const char* dirname, u_long mdatasize, taint_entry* 
 
 #ifdef STATS
     gettimeofday(&revindex_done_tv, NULL);
+    rlive_set_send_idle = send_idle;
+    rlive_set_recv_idle = recv_idle;
 #endif
 
 #ifdef LS_DETAIL
