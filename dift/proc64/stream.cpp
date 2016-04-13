@@ -1914,7 +1914,7 @@ print_stats (const char* dirname, u_long mdatasize, u_long odatasize, u_long ida
 	     total_new_live_set_ms, longest_new_live_set_ms, new_live_set_send_idle, new_live_set_recv_idle, 
 	     total_new_live_set_ms - new_live_set_send_idle - new_live_set_recv_idle);
 
-    fprintf (statsfile, "Total rlive set send idle %ld, recv idle %ld, comp time %ld",rlive_set_recv_idle, rlive_set_send_idle, ms_diff(revindex_done_tv, revindex_addr_build_done_tv) - rlive_set_recv_idle - rlive_set_send_idle);
+    fprintf (statsfile, "Total rlive set send idle %ld, recv idle %ld, comp time %ld\n",rlive_set_send_idle, rlive_set_recv_idle, ms_diff(revindex_done_tv, revindex_addr_build_done_tv) - rlive_set_recv_idle - rlive_set_send_idle);
 
     fprintf (statsfile, "Total output time %ld ms longest thread %ld ms, send idle %ld recv idle %ld comp time %ld\n", 
 	     total_output_ms, longest_output_ms, output_send_idle, output_recv_idle, total_output_ms - output_send_idle - output_recv_idle);
@@ -3554,6 +3554,7 @@ long make_rev_index (const char* dirname, u_long mdatasize, taint_entry* ts_log,
 
 #ifdef STATS    
     gettimeofday(&revindex_addr_build_done_tv, NULL);
+    recv_idle = send_idle = 0;
 #endif
 
     // Now, read in the live set values from prior epoch
@@ -3631,6 +3632,8 @@ long make_rev_index (const char* dirname, u_long mdatasize, taint_entry* ts_log,
 
 #ifdef STATS
     gettimeofday(&revindex_done_tv, NULL);
+    rlive_set_send_idle = send_idle;
+    rlive_set_recv_idle = recv_idle;
 #endif
 
 #ifdef LS_DETAIL
