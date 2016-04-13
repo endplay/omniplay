@@ -134,6 +134,7 @@ int main (int argc, char* argv[])
     int rc;
     char dirname[80];
     int wait_for_response = 0, validate = 0, get_stats = 0, sync_files = 0, nw_compress = 0, low_memory = 0, filter_inet = 0, stream_ls = 0;
+    bool record_trace = false;
     char* filter_part = NULL;
     char* dest_dir, *cmp_dir;
     struct vector<struct replay_path> log_files;
@@ -167,6 +168,8 @@ int main (int argc, char* argv[])
 	    i++;
 	} else if (!strcmp (argv[i], "-stats")) {
 	    get_stats = 1;
+	} else if (!strcmp (argv[i], "-record_trace")) {
+	    record_trace = true;
 	} else if (!strcmp (argv[i], "-v")) {
 	    i++;
 	    if (i < argc) {
@@ -429,6 +432,7 @@ int main (int argc, char* argv[])
 	ehdr.flags = 0;
 	if (sync_files) ehdr.flags |= SYNC_LOGFILES;
 	if (get_stats) ehdr.flags |= SEND_STATS;
+	ehdr.record_trace = record_trace;
 	strcpy (ehdr.dirname, dirname);
 	ehdr.epochs = conf.difts[i]->num_epochs;
 	if (i == 0) {
@@ -613,6 +617,22 @@ int main (int argc, char* argv[])
 	    if (fetch_file(conf.epochs[i].pdift->s, "/tmp") < 0) return -1;
 	    rc = rename ("/tmp/taint-stats", statfile);
 	    if (rc < 0) printf ("Unable to rename dift stats file, rc=%d, errno=%d\n", rc, errno);
+	}
+    }
+
+    if (record_trace) {
+	// Fetch trace files into the tmp directory
+	for (u_long i = 0; i < conf.epochs.size(); i++) {
+	    char statfile[256];
+	    sprintf (statfile, "/tmp/trace-exec-%lu", i);
+	    if (fetch_file(conf.epochs[i].pdift->s, "/tmp") < 0) return -1;
+	    rc = rename ("/tmp/trace_exec", statfile);
+	    if (rc < 0) printf ("Unable to rename trace execution file, rc=%d, errno=%d\n", rc, errno);
+
+	    sprintf (statfile, "/tmp/trace-inst-%lu", i);
+	    if (fetch_file(conf.epochs[i].pdift->s, "/tmp") < 0) return -1;
+	    rc = rename ("/tmp/trace_inst", statfile);
+	    if (rc < 0) printf ("Unable to rename trace instruction count file, rc=%d, errno=%d\n", rc, errno);
 	}
     }
 

@@ -62,6 +62,7 @@ int s = -1;
 // #define CTRL_FLOW                    // direct control flow
 // #define ALT_PATH_EXPLORATION         // indirect control flow
 // #define CONFAID
+#define RECORD_TRACE_INFO 
 
 //#define LOGGING_ON
 #define LOG_F log_f
@@ -152,6 +153,11 @@ u_long num_merge_entries = 0x40000000/(sizeof(taint_t)*2);
 u_long inst_cnt = 0;
 map<pid_t,struct thread_data*> active_threads;
 u_long* ppthread_log_clock = NULL;
+#ifdef RECORD_TRACE_INFO
+bool record_trace_info = false;
+static u_long trace_total_count = 0;
+static u_long trace_inst_total_count = 0;
+#endif
 
 //added for multi-process replay
 const char* fork_flags = NULL;
@@ -216,7 +222,11 @@ KNOB<int> KnobNWPort(KNOB_MODE_WRITEONCE,
 KNOB<string> KnobForkFlags(KNOB_MODE_WRITEONCE,
     "pintool", "fork_flags", "",
     "flags for which way to go on each fork");
-
+#ifdef RECORD_TRACE_INFO
+KNOB<bool> KnobRecordTraceInfo(KNOB_MODE_WRITEONCE,
+    "pintool", "rectrace", "",
+    "record trace information");
+#endif
 
 //FIXME: take into consideration offset of being attached later. Remember, this is to specify where to kill application.
 
@@ -284,6 +294,10 @@ extern int dump_reg_taints (int fd, taint_t* pregs, int thread_ndx);
 extern int dump_mem_taints_start (int fd);
 extern int dump_reg_taints_start (int fd, taint_t* pregs, int thread_ndx);
 extern taint_t taint_num;
+#ifdef RECORD_TRACE_INFO 
+static inline void flush_trace_hash ();
+static inline void term_trace_buf ();
+#endif
 
 #ifdef TAINT_DEBUG
 extern void print_taint_debug_reg (int tid, taint_t* pregs);
@@ -373,7 +387,9 @@ static void dift_done ()
 	output_finish (outfd);
     }
 #endif
-
+#ifdef RECORD_TRACE_INFO
+    if (record_trace_info) term_trace_buf ();
+#endif
 #ifdef TAINT_STATS
 #ifndef USE_FILE
     if (tokens_fd != -99999 && outfd != -99999 && s != -99999) { 
@@ -383,6 +399,9 @@ static void dift_done ()
 	gettimeofday(&end_tv, NULL);
 	fprintf (stats_f, "Instructions instrumented: %ld\n", inst_instrumented);
 	fprintf (stats_f, "Traces instrumented: %ld\n", traces_instrumented);
+#ifdef RECORD_TRACE_INFO
+	fprintf (stats_f, "Traces executed: %ld\n", trace_total_count/sizeof(u_long));
+#endif
 	fprintf (stats_f, "Instrument time: %lld us\n", instrument_time);
 	fprintf (stats_f, "DIFT began at %ld.%06ld\n", begin_tv.tv_sec, begin_tv.tv_usec);
 	fprintf (stats_f, "DIFT ended at %ld.%06ld\n", end_tv.tv_sec, end_tv.tv_usec);
@@ -444,10 +463,16 @@ static inline void increment_syscall_cnt (int syscall_num)
             if (!(*(int *)(current_thread->ignore_flag))) {
                 global_syscall_cnt++;
                 current_thread->syscall_cnt++;
+#ifdef RECORD_TRACE_INFO
+		if (record_trace_info) flush_trace_hash();
+#endif
             }
         } else {
             global_syscall_cnt++;
             current_thread->syscall_cnt++;
+#ifdef RECORD_TRACE_INFO
+	    if (record_trace_info) flush_trace_hash();
+#endif
         }
 #if 0
 #ifdef TAINT_DEBUG
@@ -1327,8 +1352,164 @@ void instrument_syscall(ADDRINT syscall_num,
     tdata->app_syscall = syscall_num;
 }
 
+#ifdef RECORD_TRACE_INFO
+
+#define MAX_TRACE_INST_SIZE 0x1000000
+#define MAX_TRACE_SIZE 0x40000000
+#define TRACE_ENTRIES (1024*1024)
+#define TRACE_BUF_SIZE (TRACE_ENTRIES*sizeof(u_long))
+static u_long* trace_buf;
+static u_long* trace_inst_buf;
+int trace_buf_fd = -1;
+int trace_inst_fd = -1;
+u_long trace_cnt = 0;
+u_long trace_inst_cnt = 0;
+
+#define TRACE_HASH_ENTRIES 65536
+u_long trace_hash[TRACE_HASH_ENTRIES];
+
+static void init_trace_buf (void)
+{
+    char trace_buf_file[256];
+    snprintf(trace_buf_file, 256, "/trace_exec_%s", group_directory);
+    for (u_int i = 1; i < strlen(trace_buf_file); i++) {
+	if (trace_buf_file[i] == '/') trace_buf_file[i] = '.';
+    }
+
+    trace_buf_fd = shm_open(trace_buf_file, O_CREAT | O_TRUNC | O_RDWR, 0644);
+    if (trace_buf_fd < 0) {
+	fprintf(stderr, "could not open taint shmem %s, errno %d\n", trace_buf_file, errno);
+	assert(0);
+    }
+
+    int rc = ftruncate64 (trace_buf_fd, MAX_TRACE_SIZE);
+    if (rc < 0) {
+	fprintf(stderr, "could not truncate shmem %s, errno %d\n", trace_buf_file, errno);
+	assert(0);
+    }
+
+    trace_buf = (u_long *) mmap (0, TRACE_BUF_SIZE, PROT_READ|PROT_WRITE, MAP_SHARED, trace_buf_fd, 0);
+    if (trace_buf == MAP_FAILED) {
+	fprintf (stderr, "could not map trace buffer, errno=%d\n", errno);
+	assert (0);
+    }
+
+    flush_trace_hash();
+
+    snprintf(trace_buf_file, 256, "/trace_inst_%s", group_directory);
+    for (u_int i = 1; i < strlen(trace_buf_file); i++) {
+	if (trace_buf_file[i] == '/') trace_buf_file[i] = '.';
+    }
+
+    trace_inst_fd = shm_open(trace_buf_file, O_CREAT | O_TRUNC | O_RDWR, 0644);
+    if (trace_inst_fd < 0) {
+	fprintf(stderr, "could not open taint shmem %s, errno %d\n", trace_buf_file, errno);
+	assert(0);
+    }
+
+    rc = ftruncate64 (trace_inst_fd, MAX_TRACE_SIZE);
+    if (rc < 0) {
+	fprintf(stderr, "could not truncate shmem %s, errno %d\n", trace_buf_file, errno);
+	assert(0);
+    }
+
+    trace_inst_buf = (u_long *) mmap (0, TRACE_BUF_SIZE, PROT_READ|PROT_WRITE, MAP_SHARED, trace_inst_fd, 0);
+    if (trace_inst_buf == MAP_FAILED) {
+	fprintf (stderr, "could not map trace buffer, errno=%d\n", errno);
+	assert (0);
+    }
+
+}
+
+static void term_trace_buf()
+{
+    trace_total_count += trace_cnt*sizeof(u_long);
+    long rc = ftruncate64 (trace_buf_fd, trace_total_count); 
+    if (rc < 0) {
+	fprintf (stderr, "Cannot ftruncate trace buffer, errno=%d\n", errno);
+    }
+    close (trace_buf_fd);
+
+    trace_inst_total_count += trace_inst_cnt*sizeof(u_long);
+    rc = ftruncate64 (trace_inst_fd, trace_inst_total_count); 
+    if (rc < 0) {
+	fprintf (stderr, "Cannot ftruncate trace instruction buffer, errno=%d\n", errno);
+    }
+    close (trace_inst_fd);
+}
+
+static void flush_trace_buf (void)
+{
+    trace_total_count += trace_cnt*sizeof(u_long);
+
+    // Check for overflow
+    if (trace_total_count >= MAX_TRACE_SIZE) {
+	fprintf (stderr, "Cannot allocate any more trace buffer than %ld bytes\n", trace_total_count);
+	assert (0);
+    }
+
+    // Unmap the current region
+    if (munmap (trace_buf, TRACE_BUF_SIZE) < 0) {
+	fprintf (stderr, "could not munmap trace buffer, errno=%d\n", errno);
+	assert (0);
+    }
+
+    // Map in the next region
+    trace_buf = (u_long *) mmap (0, TRACE_BUF_SIZE, PROT_READ|PROT_WRITE, MAP_SHARED, trace_buf_fd, trace_total_count);
+    if (trace_buf == MAP_FAILED) {
+	fprintf (stderr, "could not map trace buffer, errno=%d\n", errno);
+	assert (0);
+    }
+    trace_cnt = 0;
+}
+
+static void flush_trace_inst_buf (void)
+{
+    trace_inst_total_count += trace_inst_cnt*sizeof(u_long);
+
+    // Check for overflow
+    if (trace_inst_total_count >= MAX_TRACE_SIZE) {
+	fprintf (stderr, "Cannot allocate any more trace instruction buffer than %ld bytes\n", trace_inst_total_count);
+	assert (0);
+    }
+
+    // Unmap the current region
+    if (munmap (trace_inst_buf, TRACE_BUF_SIZE) < 0) {
+	fprintf (stderr, "could not munmap trace instruction buffer, errno=%d\n", errno);
+	assert (0);
+    }
+
+    // Map in the next region
+    trace_inst_buf = (u_long *) mmap (0, TRACE_BUF_SIZE, PROT_READ|PROT_WRITE, MAP_SHARED, trace_inst_fd, trace_inst_total_count);
+    if (trace_inst_buf == MAP_FAILED) {
+	fprintf (stderr, "could not map trace instruction buffer, errno=%d\n", errno);
+	assert (0);
+    }
+    trace_inst_cnt = 0;
+}
+
+static inline void flush_trace_hash ()
+{
+    memset (trace_hash, 0, sizeof(trace_hash));
+    trace_buf[trace_cnt++] = 0; // Denote new system call by writing 0 and syscall # to the log
+    if (trace_cnt == TRACE_ENTRIES) flush_trace_buf();
+    trace_buf[trace_cnt++] = global_syscall_cnt;
+    if (trace_cnt == TRACE_ENTRIES) flush_trace_buf();
+}
+#endif
+
 static void syscall_after_redo (ADDRINT ip)
 {
+#ifdef RECORD_TRACE_INFO
+    if (record_trace_info) {
+	if (trace_hash[ip%TRACE_HASH_ENTRIES] != ip) {
+	    trace_hash[ip%TRACE_HASH_ENTRIES] = ip;
+	    trace_buf[trace_cnt++] = ip;
+	    if (trace_cnt == TRACE_ENTRIES) flush_trace_buf();
+	}
+    }
+#endif
+
     if (redo_syscall) {
 	u_long rc, len, retval;
 	if (check_for_redo (dev_fd) == 192) {
@@ -13922,6 +14103,11 @@ void trace_instrumentation(TRACE trace, void* v)
 {
     struct timeval tv_end, tv_start;
 
+#ifdef RECORD_TRACE_INFO
+    u_long instrumented_cnt = 0;
+    u_long first_instrumented = 0;
+#endif
+
     gettimeofday (&tv_start, NULL);
     TRACE_InsertCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_after_redo, IARG_INST_PTR, IARG_END);
     //TRACE_InsertCall(trace, IPOINT_BEFORE, (AFUNPTR) syscall_after, IARG_INST_PTR, IARG_END);
@@ -13929,9 +14115,21 @@ void trace_instrumentation(TRACE trace, void* v)
     for (BBL bbl = TRACE_BblHead(trace); BBL_Valid(bbl); bbl = BBL_Next(bbl)) {
 	for (INS ins = BBL_InsHead(bbl); INS_Valid(ins); ins = INS_Next(ins)) {
 	    instruction_instrumentation (ins, NULL);
+#ifdef RECORD_TRACE_INFO
+	    instrumented_cnt++;
+	    if (!first_instrumented) first_instrumented = INS_Address(ins);
+#endif
 	}
     }
     gettimeofday (&tv_end, NULL);
+
+#ifdef RECORD_TRACE_INFO
+    if (record_trace_info) {
+	trace_inst_buf[trace_inst_cnt++] = instrumented_cnt;
+	trace_inst_buf[trace_inst_cnt++] = first_instrumented;
+	if (trace_inst_cnt == TRACE_ENTRIES) flush_trace_inst_buf();
+    }
+#endif
 
     traces_instrumented++;
     instrument_time += tv_end.tv_usec - tv_start.tv_usec + (tv_end.tv_sec - tv_start.tv_sec) * 1000000;
@@ -14202,6 +14400,9 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
 	outfd = -99999;
 	tokens_fd = -99999;
 	s = -99999;
+#ifdef RECORD_TRACE_INFO
+	record_trace_info = false;
+#endif
     }
     else { 
 	PRINTX(stderr, "\tfollowing child\n");
@@ -14285,6 +14486,9 @@ void AfterForkInParent(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
 	outfd = -99999; //wait a minute... how? 
 	tokens_fd = -99999;
 	s = -99999;
+#ifdef RECORD_TRACE_INFO
+	record_trace_info = false;
+#endif
     }
     else { 
 	PRINTX(stderr, "\tfollowing parent\n");
@@ -14623,8 +14827,10 @@ int main(int argc, char** argv)
     splice_output = KnobSpliceOutput.Value();
     all_output = KnobAllOutput.Value();
     fork_flags = KnobForkFlags.Value().c_str();
+#ifdef RECORD_TRACE_INFO
+    record_trace_info = KnobRecordTraceInfo.Value();
+#endif
     fork_flags_index = 0;   
-    
 
     if (KnobMergeEntries.Value() > 0) {
 	num_merge_entries = KnobMergeEntries.Value();
@@ -14759,6 +14965,10 @@ int main(int argc, char** argv)
 	// Right now, only used when this config variable set
 	RTN_AddInstrumentFunction(track_function, 0);
     }
+
+#ifdef RECORD_TRACE_INFO
+    if (record_trace_info) init_trace_buf();
+#endif
 
 #if 0
     IMG_AddInstrumentFunction (ImageLoad, 0);

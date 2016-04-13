@@ -51,6 +51,7 @@ struct epoch_hdr {
     u_char   parallelize;
     u_char   flags;
     u_char   filter_flags;
+    u_char   record_trace;
     char     filter_data[NAMELEN];
     char     dirname[NAMELEN];
     char     prev_host[NAMELEN];
