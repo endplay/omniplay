@@ -34,6 +34,7 @@ using namespace std;
 typedef PagedBitmap<MAX_TAINTS, PAGE_BITS> bitmap;
 
 //#define DEBUG(x) ((x)==0x70 || (x)==0x119)
+//#define TRACE
 #define STATS
 
 #define PREPRUNE_NONE   0
@@ -458,7 +459,7 @@ spawn_map_thread (unordered_map<taint_t,taint_t>* paddress_map, taint_t* ts_log,
 int*       outrfds;
 uint32_t** outptrs;
 uint32_t** outstops;
-uint32_t*  out_total_counts;
+uint64_t*  out_total_counts;
 const u_long OUTENTRIES = 0x100000; // 4MB size
 const u_long OUTBYTES = OUTENTRIES*sizeof(uint32_t);
 
@@ -470,7 +471,7 @@ output_init (const char* dirname)
     outrfds = new int[parallelize];
     outptrs = new uint32_t *[parallelize];
     outstops = new uint32_t *[parallelize];
-    out_total_counts = new uint32_t[parallelize];
+    out_total_counts = new uint64_t[parallelize];
 
     // Open parallel output files and initalize memory
     for (int i = 0; i < parallelize; i++) {
@@ -786,6 +787,10 @@ read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, ta
 {
     char group_directory[256];
 
+#ifdef TRACE
+    fprintf (stderr, "read_inputs begins\n");
+#endif
+
     if (setup_shmem(port, group_directory) < 0) return -1;
 
     token_log = (char *) map_buffer ("tokens", group_directory, idatasize, ifd);
@@ -794,6 +799,9 @@ read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, ta
     merge_log = (taint_entry *) map_buffer ("node_nums", group_directory, mdatasize, mfd);
 #ifdef DEBUG
     fprintf (debugfile, "i %ld o %ld a %ld m %ld\n", idatasize, odatasize, adatasize, mdatasize);	       
+#endif
+#ifdef TRACE
+    fprintf (stderr, "i %ld o %ld a %ld m %ld\n", idatasize, odatasize, adatasize, mdatasize);	       
 #endif
 
     return 0;
@@ -3915,6 +3923,9 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	preprune_global (mdatasize, output_log, odatasize, ts_log, adatasize);
 	bucket_init();
     }
+#ifdef TRACE
+    fprintf (stderr, "preprune done\n");
+#endif
 
     if (!low_memory && !finish_flag) build_map_tid = spawn_map_thread (&address_map, ts_log, adatasize);
 
@@ -4001,10 +4012,16 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
     gettimeofday(&live_done_tv, NULL);
 #endif
     
+#ifdef TRACE
+    fprintf (stderr, "liveset done\n");
+#endif
     bucket_write_init();
 
     output_token = process_outputs (output_log, output_log + odatasize, &live_set, dirname, do_outputs_seq);
 
+#ifdef TRACE
+    fprintf (stderr, "outputs done\n");
+#endif
     if (!finish_flag) {
 
 #ifdef STATS

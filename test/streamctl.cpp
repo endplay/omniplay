@@ -136,6 +136,7 @@ int main (int argc, char* argv[])
     int wait_for_response = 0, validate = 0, get_stats = 0, sync_files = 0, nw_compress = 0, low_memory = 0, filter_inet = 0, stream_ls = 0;
     bool record_trace = false;
     char* filter_part = NULL;
+    char* filter_output_after = NULL;
     char* dest_dir, *cmp_dir;
     struct vector<struct replay_path> log_files;
     struct vector<struct cache_info> cache_files;
@@ -165,6 +166,9 @@ int main (int argc, char* argv[])
 	    filter_inet = 1;
 	} else if (!strcmp (argv[i], "-filter_part")) {
 	    filter_part = argv[i+1];
+	    i++;
+	} else if (!strcmp (argv[i], "-filter_output_after")) {
+	    filter_output_after = argv[i+1];
 	    i++;
 	} else if (!strcmp (argv[i], "-stats")) {
 	    get_stats = 1;
@@ -388,6 +392,10 @@ int main (int argc, char* argv[])
 	if (filter_part) {
 	    ehdr.filter_flags |= FILTER_PART;
 	    strcpy (ehdr.filter_data, filter_part);
+	}
+	if (filter_output_after) {
+	    ehdr.filter_flags |= FILTER_OUT;
+	    strcpy (ehdr.filter_data, filter_output_after);
 	}
 
 	strcpy (ehdr.dirname, dirname);

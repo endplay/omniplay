@@ -153,6 +153,7 @@ u_long num_merge_entries = 0x40000000/(sizeof(taint_t)*2);
 u_long inst_cnt = 0;
 map<pid_t,struct thread_data*> active_threads;
 u_long* ppthread_log_clock = NULL;
+u_long filter_outputs_before = 0;  // Only trace outputs starting at this value
 #ifdef RECORD_TRACE_INFO
 bool record_trace_info = false;
 static u_long trace_total_count = 0;
@@ -192,9 +193,9 @@ KNOB<string> KnobFilterByteRange(KNOB_MODE_APPEND,
 KNOB<string> KnobFilterReadFile(KNOB_MODE_WRITEONCE,
     "pintool", "rf", "",
     "filename of filter-file to get bytes to filter input on, only valid with -i on");
-KNOB<int> KnobFilterOutputSyscall(KNOB_MODE_WRITEONCE,
-    "pintool", "ofs", "",
-    "if set, specific syscall for which to report output taint");
+KNOB<unsigned int> KnobFilterOutputsBefore(KNOB_MODE_WRITEONCE,
+    "pintool", "ofb", "",
+    "if set, specific clock before which we do not report output taints");
 KNOB<bool> KnobTraceX(KNOB_MODE_WRITEONCE,
     "pintool", "x", "",
     "output taints to X");
@@ -825,7 +826,9 @@ static inline void sys_write_stop(int rc)
         tci.fileno = channel_fileno;
 
         LOG_PRINT ("Output buffer result syscall %ld, %#lx\n", tci.syscall_cnt, (u_long) wi->buf);
-        output_buffer_result (wi->buf, rc, &tci, outfd);
+	if (*ppthread_log_clock >= filter_outputs_before) {
+	    output_buffer_result (wi->buf, rc, &tci, outfd);
+	}
     }
 }
 
@@ -876,11 +879,13 @@ static inline void sys_writev_stop(int rc)
                 }
             }
         } else {
-            for (int i = 0; i < wvi->count; i++) {
-                struct iovec* vi = (wvi->vi + i);
-                output_buffer_result(vi->iov_base, vi->iov_len, &tci, outfd);
-                tci.offset += vi->iov_len;
-            }
+	    if (*ppthread_log_clock >= filter_outputs_before) {
+		for (int i = 0; i < wvi->count; i++) {
+		    struct iovec* vi = (wvi->vi + i);
+		    output_buffer_result(vi->iov_base, vi->iov_len, &tci, outfd);
+		    tci.offset += vi->iov_len;
+		}
+	    }
         }
     }
     memset(&current_thread->writev_info_cache, 0, sizeof(struct writev_info));
@@ -1168,11 +1173,13 @@ static void sys_sendmsg_stop(int rc)
         tci.offset = 0;
         tci.fileno = channel_fileno;
 
-        for (i = 0; i < smi->msg->msg_iovlen; i++) {
-            struct iovec* vi = (smi->msg->msg_iov + i);
-            output_buffer_result(vi->iov_base, vi->iov_len, &tci, outfd);
-            tci.offset += vi->iov_len;
-        }
+	if (*ppthread_log_clock >= filter_outputs_before) {
+	    for (i = 0; i < smi->msg->msg_iovlen; i++) {
+		struct iovec* vi = (smi->msg->msg_iov + i);
+		output_buffer_result(vi->iov_base, vi->iov_len, &tci, outfd);
+		tci.offset += vi->iov_len;
+	    }
+	}
     }
     SYSCALL_DEBUG (stderr, "sys_sendmsg_stop done\n");
     free(smi);
@@ -14934,13 +14941,12 @@ int main(int argc, char** argv)
         }
 
         // output filters
+	filter_outputs_before = KnobFilterOutputsBefore.Value();
+	if (filter_outputs_before) {
+	    fprintf (stderr, "Filtering to outputs on or after %lu\n", filter_outputs_before);
+	}
         if (trace_x) {
 	    set_filter_outputs(1, -1);
-        } else {
-	    int filter_syscall = KnobFilterOutputSyscall.Value();
-	    if (filter_syscall > 0) {
-		set_filter_outputs(0, filter_syscall);
-	    }
 	}
     }
 

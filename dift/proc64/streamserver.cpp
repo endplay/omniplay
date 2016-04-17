@@ -367,6 +367,10 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 			    args[argcnt++] = "-e";
 			    args[argcnt++] = ehdr.filter_data;
 			}
+			if (ehdr.filter_flags&FILTER_OUT) {
+			    args[argcnt++] = "-ofb";
+			    args[argcnt++] = ehdr.filter_data;
+			}
 			if (ehdr.record_trace) {
 			    args[argcnt++] = "-rectrace";
 			}
