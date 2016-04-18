@@ -90,6 +90,56 @@ void format ()
     exit (22);
 }
 
+
+
+int cmp (const void* a, const void* b)
+{
+    const struct ckpt* c1 = (const struct ckpt *) a;
+    const struct ckpt* c2 = (const struct ckpt *) b;
+    return c1->clock - c2->clock;
+}
+
+static long read_ckpts (char* dirname)
+{
+    char filename[80];
+    DIR* dir;
+    struct dirent* de;
+    int fd;
+    struct ckpt_proc_data cpd;
+    long rc;
+
+    dir = opendir (dirname);
+    if (dir == NULL) {
+	fprintf (stderr, "Cannot open dir %s\n", dirname);
+	return -1;
+    }
+    
+    while ((de = readdir (dir)) != NULL) {
+	if (!strncmp(de->d_name, "ckpt.", 5)) {
+	    sprintf (filename, "%s/%s", dirname, de->d_name);
+	    fd = open (filename, O_RDONLY);
+	    if (fd < 0) {
+		fprintf (stderr, "Cannot open %s, rc=%ld, errno=%d\n", filename, rc, errno);
+		return fd;
+	    }
+	    rc = pread (fd, &cpd, sizeof(cpd), sizeof(struct ckpt_data));
+	    if (rc != sizeof(cpd)) {
+		fprintf (stderr, "Cannot read ckpt_data, rc=%ld, errno=%d\n", rc, errno);
+		return rc;
+	    }
+	    strcpy (ckpts[ckpt_cnt].name, de->d_name+5);
+	    ckpts[ckpt_cnt].clock = cpd.outptr;
+	    ckpt_cnt++;
+
+	    close (fd);
+	}
+    }
+    
+    qsort (ckpts, ckpt_cnt, sizeof(struct ckpt), cmp);
+    closedir (dir);
+    return 0;
+}
+
 static long ms_diff (struct timeval tv1, struct timeval tv2)
 {
     return ((tv1.tv_sec - tv2.tv_sec) * 1000 + (tv1.tv_usec - tv2.tv_usec) / 1000);
@@ -734,6 +784,10 @@ int main (int argc, char* argv[])
 	else if (!strcmp(argv[i], "-v")) {
 	    details = 1;
 	}
+	else if (!strcmp(argv[i], "-c")) {
+	    use_ckpt = 1;
+	}
+
 	else if (!strcmp(argv[i], "-s")) {
 	    do_split = 1;
 	}
@@ -743,6 +797,8 @@ int main (int argc, char* argv[])
 	}
     }
     
+    if (use_ckpt) read_ckpts(argv[1]);
+
     fd = open (filename, O_RDONLY);
     if (fd < 0) {
 	fprintf (stderr, "Cannot open timing file %s, rc=%d, errno=%d\n", filename, fd, errno);

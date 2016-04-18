@@ -26,6 +26,9 @@ def get_stats(num_epochs, input_base_dir, output_f):
     make = []
     send = []
     other = []
+    rindexmerge = []
+    rindexaddr = []
+    rindexstream = []
 
 
     #for data sizes
@@ -112,6 +115,12 @@ def get_stats(num_epochs, input_base_dir, output_f):
                   address.append(int(line.split()[3]))
               if line[:12] == "Finish time:":
                   finish.append(int(line.split()[2]))
+              if line[:23] == "Make rindex merge time:":
+                  rindexmerge.append(int(line.split()[4]))
+              if line[:22] == "Make rindex addr time:":
+                  rindexaddr.append(int(line.split()[4]))
+              if line[:24] == "Make rindex stream time:":
+                  rindexstream.append(int(line.split()[4]))
 
               if line[:15] == "Address tokens ":
                   tokens.append(int(line.split()[2]))
@@ -164,18 +173,29 @@ def get_stats(num_epochs, input_base_dir, output_f):
 
     for i in range(epochs):
         preprune[i] += prepruneg[i]
-        other.append(total[i]-recv[i]-preprune[i]-pwait[i]-receive[i]-insert[i]-prune[i]-make[i]-send[i]-output[i]-index[i]-address[i]-finish[i])
+        other.append(total[i]-recv[i]-preprune[i]-pwait[i]-receive[i]-insert[i]-prune[i]-make[i]-send[i]-output[i]-index[i]-address[i]-finish[i]-rindexmerge[i]-rindexaddr[i]-rindexstream[i])
         recv[i] -= dift[i]
 
 
 #    print "%7s %6s %6s %7s %6s %6s %6s %6s %6d %6d %6d %7d %6d %6d %7d"%(len(dift),len(recv),len(preprune),len(pwait),len(receive),len(insert),len(prune),len(make),len(send),len(output),len(index),len(address),len(finish),len(other),len(total))
 
-    print >>output_f, "Epoch    DIFT     FF     PP    Wait  Recv. Insert  Prune   Make   Send Output  Index Address Finish  Other   Total"
-    for i in range(epochs):
-        print >>output_f, "%5s %7s %6s %6s %7s %6s %6s %6s %6s %6d %6d %6d %7d %6d %6d %7d"%(i,dift[i],recv[i],preprune[i],pwait[i],receive[i],insert[i],prune[i],make[i],send[i],output[i],index[i],address[i],finish[i],other[i], total[i])
-    print>>output_f,"  Max %7d %6d %6d %7d %6d %6d %6d %6d %6d %6d %6d %7d %6d %6d %7d"%(max(dift),max(recv),max(preprune),max(pwait),max(receive),max(insert),max(prune),max(make),max(send),max(output),max(index),max(address),max(finish),max(other),max(total))
-    print>>output_f,"Total %7d %6d %6d %7d %6d %6d %6d %6d %6d %6d %6d %7d %6d %6d %7d"%(sum(dift),sum(recv),sum(preprune),sum(pwait),sum(receive),sum(insert),sum(prune),sum(make),sum(send),sum(output),sum(index),sum(address),sum(finish),sum(other), sum(total))
-    print>>output_f," Core %7d %6d %6d %7d %6d %6d %6d %6d %6d %6d %6d %7d %6d %6d %7d"%(sum(dift)/epochs,sum(recv)/epochs,sum(preprune)/epochs,sum(pwait)/epochs,sum(receive)/epochs,sum(insert)/epochs,sum(prune)/epochs,sum(make)/epochs,sum(send)/epochs,sum(output)/epochs,sum(index)/epochs,sum(address)/epochs,sum(finish)/epochs,sum(other)/epochs,sum(total)/epochs)
+
+    if (sum(rindexstream)+sum(rindexaddr)+sum(rindexmerge) > 0):
+        print>>output_f, "Epoch    DIFT     FF     PP  RMerge  RAddr Stream  Prune   Make   Send Output  Index Address Finish  Other   Total"
+        for i in range(epochs):
+            print>>output_f, "%5s %7s %6s %6s %7s %6s %6s %6s %6s %6d %6d %6d %7d %6d %6d %7d"%(i,dift[i],recv[i],preprune[i],rindexmerge[i],rindexaddr[i],rindexstream[i],prune[i],make[i],send[i],output[i],index[i],address[i],finish[i],other[i], total[i])
+        print>>output_f, "  Max %7d %6d %6d %7d %6d %6d %6d %6d %6d %6d %6d %7d %6d %6d %7d"%(max(dift),max(recv),max(preprune),max(rindexmerge),max(rindexaddr),max(rindexstream),max(prune),max(make),max(send),max(output),max(index),max(address),max(finish),max(other),max(total))
+        print>>output_f, "Total %7d %6d %6d %7d %6d %6d %6d %6d %6d %6d %6d %7d %6d %6d %7d"%(sum(dift),sum(recv),sum(preprune),sum(rindexmerge),sum(rindexaddr),sum(rindexstream),sum(prune),sum(make),sum(send),sum(output),sum(index),sum(address),sum(finish),sum(other), sum(total))
+        print>>output_f, " Core %7d %6d %6d %7d %6d %6d %6d %6d %6d %6d %6d %7d %6d %6d %7d"%(sum(dift)/epochs,sum(recv)/epochs,sum(preprune)/epochs,sum(rindexmerge)/epochs,sum(rindexaddr)/epochs,sum(insert)/epochs,sum(prune)/epochs,sum(make)/epochs,sum(send)/epochs,sum(output)/epochs,sum(index)/epochs,sum(rindexstream)/epochs,sum(finish)/epochs,sum(other)/epochs,sum(total)/epochs)
+    else:
+        print>>output_f, "Epoch    DIFT     FF     PP    Wait  Recv. Insert  Prune   Make   Send Output  Index Address Finish  Other   Total"
+        for i in range(epochs):
+            print>>output_f, "%5s %7s %6s %6s %7s %6s %6s %6s %6s %6d %6d %6d %7d %6d %6d %7d"%(i,dift[i],recv[i],preprune[i],pwait[i],receive[i],insert[i],prune[i],make[i],send[i],output[i],index[i],address[i],finish[i],other[i], total[i])
+        print>>output_f, "  Max %7d %6d %6d %7d %6d %6d %6d %6d %6d %6d %6d %7d %6d %6d %7d"%(max(dift),max(recv),max(preprune),max(pwait),max(receive),max(insert),max(prune),max(make),max(send),max(output),max(index),max(address),max(finish),max(other),max(total))
+        print>>output_f, "Total %7d %6d %6d %7d %6d %6d %6d %6d %6d %6d %6d %7d %6d %6d %7d"%(sum(dift),sum(recv),sum(preprune),sum(pwait),sum(receive),sum(insert),sum(prune),sum(make),sum(send),sum(output),sum(index),sum(address),sum(finish),sum(other), sum(total))
+        print>>output_f, " Core %7d %6d %6d %7d %6d %6d %6d %6d %6d %6d %6d %7d %6d %6d %7d"%(sum(dift)/epochs,sum(recv)/epochs,sum(preprune)/epochs,sum(pwait)/epochs,sum(receive)/epochs,sum(insert)/epochs,sum(prune)/epochs,sum(make)/epochs,sum(send)/epochs,sum(output)/epochs,sum(index)/epochs,sum(address)/epochs,sum(finish)/epochs,sum(other)/epochs,sum(total)/epochs)
+
+
 
 
     print >> output_f,""
