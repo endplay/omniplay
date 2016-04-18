@@ -373,6 +373,13 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 			    args[argcnt++] = "-e";
 			    args[argcnt++] = ehdr.filter_data;
 			}
+			if (ehdr.filter_flags&FILTER_OUT) {
+			    args[argcnt++] = "-ofb";
+			    args[argcnt++] = ehdr.filter_data;
+			}
+			if (ehdr.record_trace) {
+			    args[argcnt++] = "-rectrace";
+			}
 			args[argcnt++] = NULL;
 			rc = execv ("../../../../pin/pin", (char **) args);
 			fprintf (stderr, "execv of pin tool failed, rc=%d, errno=%d\n", rc, errno);
@@ -421,8 +428,6 @@ void do_dift (int s, struct epoch_hdr& ehdr)
     if (ehdr.flags&SEND_STATS) {
 	for (u_long i = 0; i < epochs; i++) {
 	    char pathname[PATHLEN]; 
-//some logic to figure out the right group dir right there vvv
-	    
 	    sprintf (pathname, "/tmp/%d/taint_stats", ectl[i].cpid);
 	    if (send_file (s, pathname, "taint-stats") < 0) { 
 		fprintf (stderr,"couldn't find /tmp/%d, howabout /tmp/%d?\n",ectl[i].cpid, ectl[i].attach_pid);
@@ -431,6 +436,18 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 	    }
 	}
     }
+
+    // Send trace recordings if requested
+    if (ehdr.record_trace) {
+	for (u_long i = 0; i < epochs; i++) {
+	    char pathname[PATHLEN];
+	    sprintf (pathname, "/trace_exec_.tmp.%d", ectl[i].cpid);
+	    send_shmem (s, pathname, "trace_exec");
+	    sprintf (pathname, "/trace_inst_.tmp.%d", ectl[i].cpid);
+	    send_shmem (s, pathname, "trace_inst");
+	}
+    }
+
 
     close (s);
     close (fd);

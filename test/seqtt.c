@@ -23,7 +23,9 @@ int main (int argc, char* argv[])
     char cache_dir[BUFFER_SIZE] = "";
 
     pid_t cpid, mpid, ppid;
-    int fd, rc, status, filter_syscall = 0, filter_inet = 0;
+    int fd, rc, status, filter_inet = 0;
+    u_long filter_output_after = 0;
+    char* filter_output_after_str = NULL;
     char* filter_partfile = NULL;
     int next_child = 0, i;
     size_t n = BUFFER_SIZE;
@@ -32,7 +34,7 @@ int main (int argc, char* argv[])
     int post_process_pids[MAX_PROCESSES];
 
     if (argc < 2) {
-	fprintf (stderr, "format: seqtt <replay dir> [filter syscall] [--cache_dir cache_dir]\n");
+	fprintf (stderr, "format: seqtt <replay dir> [filter syscall] [--cache_dir cache_dir] [-filter_inet] [-filter_partfile xxx] [-filter_output_after clock]\n");
 	return -1;
     }
 
@@ -46,13 +48,18 @@ int main (int argc, char* argv[])
 		index++;
 	    } else if (!strncmp(argv[index],"-filter_inet",BUFFER_SIZE)) {
 		filter_inet = 1;
-	    } else if (!strncmp(argv[index],"-filter_part",BUFFER_SIZE)) {
+		index++;
+	    } else if (!strncmp(argv[index],"-filter_partfile",BUFFER_SIZE)) {
 		filter_partfile = argv[index+1];
 		index++;
-	    } else { 
-		filter_syscall = atoi(argv[index]);
+	    } else if (!strncmp(argv[index],"-filter_output_after",BUFFER_SIZE)) {
+		filter_output_after_str = argv[index+1];
+		filter_output_after = atoi(argv[index+1]);
+		index += 2;
+	    } else {
+		fprintf (stderr, "format: seqtt <replay dir> [filter syscall] [--cache_dir cache_dir] [-filter_inet] [-filter_partfile xxx] [-filter_output_after clock]\n");
+		return -1;
 	    }
-	    index++;
 	}
     }
 
@@ -85,18 +92,32 @@ int main (int argc, char* argv[])
 
     mpid = fork();
     if (mpid == 0) {
+	const char* args[256];
+	u_int argcnt = 0;
+
+	args[argcnt++] = "pin";
+	args[argcnt++] = "-pid";
 	sprintf (cpids, "%d", cpid);
-	if (filter_syscall) {
-	    rc = execl ("../../../pin/pin", "pin", "-pid", cpids, "-t", "../dift/obj-ia32/linkage_data.so", "-ofs", argv[2], NULL);
-	} else if (filter_inet) {
-	    rc = execl ("../../../pin/pin", "pin", "-pid", cpids, "-t", "../dift/obj-ia32/linkage_data.so", "-i", "-f", "inetsocket", NULL);
+	args[argcnt++] = cpids;
+	args[argcnt++] = "-t";
+	args[argcnt++] = "../dift/obj-ia32/linkage_data.so";
+	if (filter_output_after) {
+	    args[argcnt++] = "-ofb";
+	    args[argcnt++] = filter_output_after_str;
+	} 
+	if (filter_inet) {
+	    args[argcnt++] = "-i";
+	    args[argcnt++] = "-f";
+	    args[argcnt++] = "inetsocket";
 	} else if (filter_partfile) {
-	    rc = execl ("../../../pin/pin", "pin", "-pid", cpids, "-t", "../dift/obj-ia32/linkage_data.so", "-i", "-e", filter_partfile, NULL);
-	} else {
-	    rc = execl ("../../../pin/pin", "pin", "-pid", cpids, "-t", "../dift/obj-ia32/linkage_data.so", NULL);
+	    args[argcnt++] = "-i";
+	    args[argcnt++] = "-e";
+	    args[argcnt++] = filter_partfile;
 	}
-	  
-	fprintf (stderr, "execl of pin tool failed, rc=%d, errno=%d\n", rc, errno);
+
+	args[argcnt++] = NULL;
+	rc = execv ("../../../pin/pin", (char **) args);
+	fprintf (stderr, "execv of pin tool failed, rc=%d, errno=%d\n", rc, errno);
 	return -1;
     }
 

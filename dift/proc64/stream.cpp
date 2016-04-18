@@ -39,14 +39,11 @@ using namespace std;
 //#define LS_DETAIL
 
 
-//macro for progression debuging 
-//#define PROG
-
 typedef PagedBitmap<MAX_TAINTS, PAGE_BITS> bitmap;
 
 
 //#define DEBUG(x) ((x)==0x70 || (x)==0x119)
-
+//#define TRACE
 #define STATS
 
 #define PREPRUNE_NONE   0
@@ -475,7 +472,7 @@ spawn_map_thread (unordered_map<taint_t,taint_t>* paddress_map, taint_t* ts_log,
 int*       outrfds;
 uint32_t** outptrs;
 uint32_t** outstops;
-uint32_t*  out_total_counts;
+uint64_t*  out_total_counts;
 const u_long OUTENTRIES = 0x100000; // 4MB size
 const u_long OUTBYTES = OUTENTRIES*sizeof(uint32_t);
 
@@ -487,7 +484,7 @@ output_init (const char* dirname)
     outrfds = new int[parallelize];
     outptrs = new uint32_t *[parallelize];
     outstops = new uint32_t *[parallelize];
-    out_total_counts = new uint32_t[parallelize];
+    out_total_counts = new uint64_t[parallelize];
 
     // Open parallel output files and initalize memory
     for (int i = 0; i < parallelize; i++) {
@@ -803,6 +800,10 @@ read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, ta
 {
     char group_directory[256];
 
+#ifdef TRACE
+    fprintf (stderr, "read_inputs begins\n");
+#endif
+
     if (setup_shmem(port, group_directory) < 0) return -1;
 
     token_log = (char *) map_buffer ("tokens", group_directory, idatasize, ifd);
@@ -811,6 +812,9 @@ read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, ta
     merge_log = (taint_entry *) map_buffer ("node_nums", group_directory, mdatasize, mfd);
 #ifdef DEBUG
     fprintf (debugfile, "i %ld o %ld a %ld m %ld\n", idatasize, odatasize, adatasize, mdatasize);	       
+#endif
+#ifdef TRACE
+    fprintf (stderr, "i %ld o %ld a %ld m %ld\n", idatasize, odatasize, adatasize, mdatasize);	       
 #endif
 
     return 0;
@@ -2673,9 +2677,6 @@ make_new_live_set (taint_t* p, taint_t* pend, u_long lsvalues, bitmap &live_set,
     }
 #endif
     bucket_complete_write (inputq_hdr, inputq_buf, wbucket_cnt);
-#ifdef PROG
-    fprintf(stderr, "%d make_live_set bc %u wi %u \n",getpid(),wbucket_cnt, wbucket_cnt / TAINTBUCKETENTRIES + 1);
-#endif   
 
 #ifdef STATS
     gettimeofday(&new_live_end_tv, NULL);
@@ -3917,9 +3918,6 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
     rc = read_inputs (port, token_log, output_log, ts_log, merge_log,
 		      mdatasize, odatasize, idatasize, adatasize, mfd, ofd, ifd, afd);
     if (rc < 0) return rc;
-#ifdef PROG
-    fprintf(stderr, "%d: finished read_inputs\n",getpid());
-#endif
 
 #ifdef PARANOID
     if (adatasize > 0) {
@@ -3949,11 +3947,9 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	preprune_global (mdatasize, output_log, odatasize, ts_log, adatasize);
 	bucket_init();
     }
-
-#ifdef PROG
-    fprintf(stderr, "%d: finished preprune\n",getpid());
+#ifdef TRACE
+    fprintf (stderr, "preprune done\n");
 #endif
-
 
     if (!low_memory && !finish_flag) build_map_tid = spawn_map_thread (&address_map, ts_log, adatasize);
 
@@ -4040,13 +4036,15 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
     gettimeofday(&live_done_tv, NULL);
 #endif
     
+#ifdef TRACE
+    fprintf (stderr, "liveset done\n");
+#endif
     bucket_write_init();
 
     output_token = process_outputs (output_log, output_log + odatasize, &live_set, dirname, do_outputs_seq);
-#ifdef PROG
-    fprintf(stderr, "%d: finished process_outputs\n",getpid());
+#ifdef TRACE
+    fprintf (stderr, "outputs done\n");
 #endif
-
     if (!finish_flag) {
 
 #ifdef STATS
@@ -4078,9 +4076,6 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	} else {
 	    process_addresses (output_token, address_map);	    
 	}
-#ifdef PROG
-    fprintf(stderr, "%d: finished process_addresses\n",getpid());
-#endif
 
 
     } else if (!start_flag) {
@@ -4109,9 +4104,6 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
     }
 
     finish_aggregation (addrsfd, inputfd, outputfd, output_token, tokens, token_log, idatasize, output_log, odatasize);
-#ifdef PROG
-    fprintf(stderr, "%d: finished finish_aggregation\n",getpid());
-#endif
 
 #ifdef STATS
     gettimeofday(&end_tv, NULL);
@@ -4264,10 +4256,6 @@ void send_stream (int s, struct taintq_hdr* qh, uint32_t* qb)
 	pthread_cond_signal(&(qh->full));
 	pthread_mutex_unlock(&(qh->lock));
     }
-#ifdef PROG
-    fprintf(stderr, "%d finished with send_stream, sent %lu bytes\n",getpid(),bytes_sent);
-#endif
-
 }
 
 void send_stream_compress (int s, struct taintq_hdr* qh, uint32_t* qb)
@@ -4433,9 +4421,6 @@ void recv_stream (int s, struct taintq_hdr* qh, uint32_t* qb)
 	pthread_cond_signal(&(qh->empty));
 	pthread_mutex_unlock(&(qh->lock));
     }
-#ifdef PROG    
-    fprintf(stderr, "%d finished with recv_stream, recvd %lu bytes\n",getpid(),bytes_rcvd);
-#endif
 }
 
 void recv_stream_compress (int s, struct taintq_hdr* qh, uint32_t* qb)

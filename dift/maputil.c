@@ -1,3 +1,4 @@
+#define _LARGEFILE64_SOURCE
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
@@ -10,17 +11,17 @@
 
 int map_file (const char* filename, int* pfd, u_long* pdatasize, u_long* pmapsize, char** pbuf)
 {
-    struct stat st;
+    struct stat64 st;
     u_long size;
     int fd, rc;
     char* buf;
 
-    fd = open (filename, O_RDONLY);
+    fd = open (filename, O_RDONLY | O_LARGEFILE);
     if (fd < 0) {
-	fprintf (stderr, "Unable to open %s, rc=%d, errno=%d\n", filename, fd, errno);
+	fprintf (stderr, "map_file: unable to open %s, rc=%d, errno=%d\n", filename, fd, errno);
 	return fd;
     }
-    rc = fstat(fd, &st);
+    rc = fstat64(fd, &st);
     if (rc < 0) {
 	fprintf (stderr, "Unable to stat %s, rc=%d, errno=%d\n", filename, rc, errno);
 	return rc;
