@@ -86,7 +86,7 @@ static int count;
 
 void format ()
 {
-    fprintf (stderr, "Format: mkpartition <timing dir> <# of partitions> [-g group_by] [-f filter syscall] [-s split at user-level] [-v verbose] <list of pids to track >\n");
+    fprintf (stderr, "Format: mkpartition <timing dir> <# of partitions> [-g group_by] [-f filter syscall] [-s split at user-level] [-v verbose] [--fork fork_flags] [--stop stop_tracking_clock] <list of pids to track >\n");
     exit (22);
 }
 
