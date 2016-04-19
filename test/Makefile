@@ -10,7 +10,7 @@ KERN_CONFIG := replay_headers/include/linux/replay_configs.h
 DEPS_DIR := .deps
 
 TARGETS=parseklog parseulog parsemlog launcher resume parseckpt \
-	getstats filemap replay_pause reset_ndx currentpid seqtt partt fulltt fullsend mkpartition streamtt streamctl sync_files read_trace
+	getstats filemap replay_pause reset_ndx currentpid seqtt partt fulltt fullsend mkpartition streamtt streamctl sync_files read_trace retaint
 
 # For automatic .h dependency tracking... may not work perfectly for launcher as
 #    the include path changes for it
@@ -48,6 +48,9 @@ currentpid: libutil.a
 
 seqtt: libutil.a 
 seqtt: LDLIBS += -lrt 
+
+retaint: libutil.a
+retaint: LDLIBS += -lrt 
 
 partt: libutil.a
 partt: LDFLAGS += -pthread

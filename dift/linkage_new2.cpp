@@ -38,7 +38,6 @@ using namespace std;
 #include "splice.h"
 #include "taint_nw.h"
 
-
 #define PIN_NORMAL         0
 #define PIN_ATTACH_RUNNING 1
 #define PIN_ATTACH_BLOCKED 2
@@ -223,6 +222,11 @@ KNOB<int> KnobNWPort(KNOB_MODE_WRITEONCE,
 KNOB<string> KnobForkFlags(KNOB_MODE_WRITEONCE,
     "pintool", "fork_flags", "",
     "flags for which way to go on each fork");
+#ifdef RETAINT
+KNOB<string> KnobRetaintEpochs(KNOB_MODE_WRITEONCE,
+    "pintool", "retaint", "",
+    "list of clock values to retaint on");
+#endif
 #ifdef RECORD_TRACE_INFO
 KNOB<bool> KnobRecordTraceInfo(KNOB_MODE_WRITEONCE,
     "pintool", "rectrace", "",
@@ -288,6 +292,13 @@ static void copy_file(FILE* src, FILE* dest) {
 #endif
 #endif
 
+#ifdef RETAINT
+void reset_taints ();
+const char* retaint;
+char* retaint_str;
+u_long retaint_next_clock = 0;
+u_long retaint_us = 0;
+#endif
 
 static int terminated = 0;
 extern int dump_mem_taints (int fd);
@@ -406,6 +417,12 @@ static void dift_done ()
 	fprintf (stats_f, "Instrument time: %lld us\n", instrument_time);
 	fprintf (stats_f, "DIFT began at %ld.%06ld\n", begin_tv.tv_sec, begin_tv.tv_usec);
 	fprintf (stats_f, "DIFT ended at %ld.%06ld\n", end_tv.tv_sec, end_tv.tv_usec);
+#ifdef RETAINT
+	float retaint_time = end_tv.tv_sec - begin_tv.tv_sec;
+	retaint_time += (float) (end_tv.tv_usec - begin_tv.tv_usec)/1000000.0;
+	retaint_time -= (float) retaint_us/1000000.0;
+	fprintf (stats_f, "Retaint execution time: %.3f seconds\n", retaint_time);
+#endif
 	finish_and_print_taint_stats(stats_f);
 	fclose (stats_f);
     }
@@ -419,6 +436,7 @@ static void dift_done ()
 
     printf("DIFT done at %ld\n", *ppthread_log_clock);
 
+#ifndef RETAINT
 #ifdef USE_SHMEM
     // Send "done" message to aggregator
     if (s != -99999) {
@@ -427,6 +445,7 @@ static void dift_done ()
 	    fprintf (stderr, "write of directory failed, rc=%d, errno=%d\n", rc, errno);
 	}
     }
+#endif
 #endif
 }
 
@@ -475,6 +494,8 @@ static inline void increment_syscall_cnt (int syscall_num)
 	    if (record_trace_info) flush_trace_hash();
 #endif
         }
+	fprintf (stderr, "pid %d syscall %d global syscall cnt %lu num %d clock %ld\n", current_thread->record_pid, 
+		 current_thread->syscall_cnt, global_syscall_cnt, syscall_num, *ppthread_log_clock);
 #if 0
 #ifdef TAINT_DEBUG
 	fprintf (debug_f, "pid %d syscall %d global syscall cnt %lu num %d clock %ld\n", current_thread->record_pid, 
@@ -512,7 +533,7 @@ static void create_connect_info_name(char* connect_info_name, int domain,
 static inline void sys_open_start(struct thread_data* tdata, char* filename, int flags)
 {
     SYSCALL_DEBUG (stderr, "open_start: filename %s\n", filename);
-    struct open_info* oi = (struct open_info *) get_slice(&open_info_alloc);
+    struct open_info* oi = (struct open_info *) malloc (sizeof(struct open_info));
     strncpy(oi->name, filename, OPEN_PATH_LEN);
     oi->flags = flags;
     oi->fileno = open_file_cnt;
@@ -549,7 +570,7 @@ char* get_file_ext(char* filename){
 static inline void sys_open_stop(int rc)
 {
     if (rc > 0) {
-        struct open_info* oi = (struct open_info *) current_thread->save_syscall_info;
+      struct open_info* oi = (struct open_info *) current_thread->save_syscall_info; 
         monitor_add_fd(open_fds, rc, 0, current_thread->save_syscall_info);
 	SYSCALL_DEBUG(stderr, "open: added fd %d\n", rc);
 #ifdef OUTPUT_FILENAMES
@@ -578,8 +599,7 @@ static inline void sys_close_stop(int rc)
     if (!rc) {
         if (monitor_has_fd(open_fds, fd)) {
             struct open_info* oi = (struct open_info *) monitor_get_fd_data(open_fds, fd);
-            assert(oi);
-            // free(oi);
+	    free (oi);
             monitor_remove_fd(open_fds, fd);
 	    SYSCALL_DEBUG (stderr, "close: remove fd %d\n", fd);
         } 
@@ -783,6 +803,25 @@ static void sys_mmap_stop(int rc)
     clear_mem_taints (rc, mmi->length);
 #endif
 }
+
+#if 0
+static void sys_munmap_start(struct thread_data* tdata, u_long addr, int len)
+{
+    struct mmap_info* mmi = &tdata->mmap_info_cache;
+    mmi->addr = addr;
+    mmi->length = len;
+    tdata->save_syscall_info = (void *) mmi;
+}
+
+static void sys_munmap_stop(int rc)
+{
+    struct mmap_info* mmi = (struct mmap_info*) current_thread->save_syscall_info;
+    if (rc == 0) {
+	fprintf (stderr, "munmap at clock %ld addr %lx len %x\n", *ppthread_log_clock, mmi->addr, mmi->length);
+    }
+    //unset_mem_taints (rc, mmi->length);
+}
+#endif
 
 static inline void sys_write_start(struct thread_data* tdata, int fd, char* buf, int size)
 {
@@ -1251,6 +1290,11 @@ void syscall_start(struct thread_data* tdata, int sysnum, ADDRINT syscallarg0, A
         case SYS_mmap2:
             sys_mmap_start(tdata, (u_long)syscallarg0, (int)syscallarg1, (int)syscallarg2, (int)syscallarg4);
             break;
+#if 0
+        case SYS_munmap:
+	    sys_munmap_start(tdata, (u_long)syscallarg0, (int)syscallarg1);
+	    break;
+#endif
     }
 }
 
@@ -1290,6 +1334,11 @@ void syscall_end(int sysnum, ADDRINT ret_value)
         case SYS_mmap2:
             sys_mmap_stop(rc);
             break;
+#if 0
+        case SYS_munmap:
+            sys_munmap_stop(rc);
+            break;
+#endif
         case SYS_socketcall:
         {
             switch (current_thread->socketcall) {
@@ -1342,6 +1391,18 @@ void instrument_syscall(ADDRINT syscall_num,
 	check_clock_before_syscall (dev_fd, (int) syscall_num);
     }
     if (sysnum == 252) dift_done();
+
+#ifdef RETAINT
+    if (retaint_next_clock && *ppthread_log_clock == retaint_next_clock) {
+	reset_taints();
+	char* p;
+	for (p = retaint_str; *p != '\0' && *p != ','; p++);
+	*p = '\0';
+	retaint_next_clock = strtoul(retaint_str, NULL, 10);
+	if (retaint_next_clock) fprintf (stderr, "Next epoch to retaint: %lu\n", retaint_next_clock);
+	retaint_str = p+1;
+    }
+#endif
 
     if (segment_length && *ppthread_log_clock >= segment_length) {
 	// Done with this replay - do exit stuff now because we may not get clean unwind
@@ -12763,7 +12824,10 @@ void instrument_addorsub(INS ins)
         }
         INSTRUMENT_PRINT(log_f, "instrument_addorsub: op1 is register and op2 is mem\n");
         addrsize = INS_MemoryReadSize(ins);
-        assert (addrsize == REG_Size(reg));
+	if (addrsize != REG_Size(reg)) {
+	  fprintf (stderr, "addrsize is %u reg size is %u\n", addrsize, REG_Size(reg));
+	}
+        //assert (addrsize == REG_Size(reg));
         instrument_taint_add_mem2reg(ins, reg);
     } else if(op1reg && op2reg) {
         REG reg;
@@ -14503,6 +14567,33 @@ void AfterForkInParent(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
 }
 #endif
 
+#ifdef RETAINT
+extern void reset_mem_taints();
+void reset_taints ()
+{
+    struct timeval tv1, tv2;
+
+    gettimeofday(&tv1, NULL);
+    fprintf (stderr, "Reset taints begins\n");
+    // For testing purposes, reset all the taints to simulate new epoch
+    int base = 0;
+    for (map<pid_t,struct thread_data*>::iterator iter = active_threads.begin(); 
+	 iter != active_threads.end(); iter++) {
+	// Not sure that the order matters here for this test...
+	for (int i = 0; i < NUM_REGS * REG_SIZE; i++) {
+	    iter->second->shadow_reg_table[i] = base+i+1; 
+	}
+	base += NUM_REGS*REG_SIZE;
+    }
+    reset_mem_taints();
+    splice_output = 1;
+    fprintf (stderr, "Reset taints ends\n");
+    gettimeofday(&tv2, NULL);
+    retaint_us += tv2.tv_usec - tv1.tv_usec;
+    retaint_us += (tv2.tv_sec - tv1.tv_sec)*1000000;
+}
+#endif
+
 void thread_start (THREADID threadid, CONTEXT* ctxt, INT32 flags, VOID* v)
 {
     struct thread_data* ptdata;
@@ -14834,6 +14925,18 @@ int main(int argc, char** argv)
     splice_output = KnobSpliceOutput.Value();
     all_output = KnobAllOutput.Value();
     fork_flags = KnobForkFlags.Value().c_str();
+
+#ifdef RETAINT
+    retaint = KnobRetaintEpochs.Value().c_str();
+    retaint_str = (char *) retaint;
+    char* p;
+    for (p = retaint_str; *p != '\0' && *p != ','; p++);
+    *p = '\0';
+    retaint_next_clock = strtoul(retaint_str, NULL, 10);
+    fprintf (stderr, "Next epoch to retaint: %lu\n", retaint_next_clock);
+    retaint_str = p+1;
+#endif      
+    
 #ifdef RECORD_TRACE_INFO
     record_trace_info = KnobRecordTraceInfo.Value();
 #endif
@@ -14856,6 +14959,7 @@ int main(int argc, char** argv)
     // Determine open file descriptors for filters
     if (splice_output) get_open_file_descriptors();
 
+#ifndef RETAINT
 #if defined(USE_NW) || defined(USE_SHMEM)
     // Open a connection to the 64-bit consumer process
     const char* hostname = KnobNWHostname.Value().c_str();
@@ -14892,6 +14996,7 @@ int main(int argc, char** argv)
 	return -1;
     }
 
+#endif
 #endif
 
 #ifndef NO_FILE_OUTPUT

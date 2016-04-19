@@ -114,6 +114,19 @@ void* get_slice(struct slab_alloc* alloc)
     return pos;
 }
 
+void free_slices(struct slab_alloc* alloc)
+{
+    struct slab* s;
+    struct slab* t;
+    list_for_each_entry_safe (s, t, &(alloc->list), list) {
+	assert (munmap (s->start, alloc->slab_size) == 0);
+    }
+    alloc->current_slab = new_slab(alloc->alloc_name, alloc->slab_size);
+    list_add(&alloc->current_slab->list, &alloc->list);
+    alloc->pos = alloc->current_slab->start;
+    alloc->num_slabs = 1;
+}
+
 int serialize_slab_alloc(int outfd, struct slab_alloc* alloc)
 {
     int rc = 0;
