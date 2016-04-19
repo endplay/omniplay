@@ -18,6 +18,7 @@
 #define FILTER_NONE 0x00
 #define FILTER_INET 0x01
 #define FILTER_PART 0x02
+#define FILTER_OUT  0x03
 
 #define NAMELEN 256
 #define PATHLEN 512
@@ -51,6 +52,7 @@ struct epoch_hdr {
     u_char   parallelize;
     u_char   flags;
     u_char   filter_flags;
+    u_char   record_trace;
     char     filter_data[NAMELEN];
     char     dirname[NAMELEN];
     char     prev_host[NAMELEN];

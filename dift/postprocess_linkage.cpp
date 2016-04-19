@@ -1,3 +1,4 @@
+#define _LARGEFILE64_SOURCE
 #include <stdio.h>
 #include <errno.h>
 #include <stdint.h>
@@ -1517,7 +1518,7 @@ int map_shmem (char* filename, int* pfd, u_long* pdatasize, u_long* pmapsize, ch
     int fd, rc;
     char* buf;
 
-    fd = open (filename, O_RDONLY, 0);
+    fd = open (filename, O_RDONLY | O_LARGEFILE, 0);
     if (fd < 0) {
 	fprintf (stderr, "Unable to open %s, rc=%d, errno=%d\n", filename, fd, errno);
 	return fd;

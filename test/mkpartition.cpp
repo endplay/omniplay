@@ -193,10 +193,12 @@ static inline void print_utimings (vector<struct timing_data> &td, int start, in
 static double estimate_dift(vector<struct timing_data> &td, int i, int j)
 { 
     double utime = td[j].dtiming - td[i].dtiming;
-    u_long taint_out = td[j].taint_out - td[i].taint_out; 
-    u_long cache_misses = td[j].cache_misses - td[i].cache_misses; 
+//    u_long taint_out = td[j].taint_out - td[i].taint_out; 
+//    u_long cache_misses = td[j].cache_misses - td[i].cache_misses; 
+//   double rtn_val = (220 * utime) + ( 0.000241 * taint_out) + (.594 * cache_misses) ;
 
-    double rtn_val = (220 * utime) + ( 0.000241 * taint_out) + (.594 * cache_misses) ;
+
+    double rtn_val = utime;
 
     return rtn_val;
 }
@@ -204,7 +206,7 @@ static double estimate_dift(vector<struct timing_data> &td, int i, int j)
 inline static void print_timing (vector<struct timing_data> &td, int start, int end, char* fork_flags)
 { 
 
-    fprintf(stderr,"%lu %lu a1 %lu a2 %lu\n", td[start].start_clock, td[end].start_clock, td[start].aindex, td[end].aindex);
+//    fprintf(stderr,"%lu %lu a1 %lu a2 %lu\n", td[start].start_clock, td[end].start_clock, td[start].aindex, td[end].aindex);
 
     count++;
     printf ("%5d k %6lu k %6lu ", td[start].pid, td[start].start_clock, td[end].start_clock);
@@ -420,6 +422,7 @@ public:
 // There seems to be a better way of doing this by keeping multiple klog
 // files open at the same time. Then we only iterate through the timings list once. 
 int parse_klogs(vector<struct timing_data> &td,
+		const u_long stop_clock,
 		const char* dir, 
 		const char* fork_flags, 
 		const set<pid_t> procs)
@@ -462,8 +465,12 @@ int parse_klogs(vector<struct timing_data> &td,
 		lindex++;
 	    }
 	    if (lindex >= td.size() || td[lindex].start_clock > stop_looking_index) break;
+	    	    
 
 	    pop_with_kres(td, most_recent_clock, lindex, res);
+	    if (stop_clock && td[lindex].start_clock > stop_clock) {		
+		td[lindex].should_track = false; 	       
+	    }
 
 	    //we found a fork
 	    if (res->psr.sysnum == 120 && procs.count(res->retval) > 0) { 
@@ -743,6 +750,8 @@ int main (int argc, char* argv[])
     struct extra_data* edata;
     struct stat st;
     int fd, rc, num, i, parts;
+    u_long stop_clock = 0;
+
     char following[256];   
     set<pid_t> procs;
     struct timeval start_tv, read_and_copy_tv, pklog_tv, pulog_tv, ptiming_tv, gen_timings_tv;
@@ -764,10 +773,20 @@ int main (int argc, char* argv[])
 		format();
 	    }
 	}
-	else if(!strcmp(argv[i], "-fork")) { 
+	else if(!strcmp(argv[i], "--fork")) { 
 	    i++;
 	    if (i < argc) {
 		strcpy(following,argv[i]);
+	    } else {
+		format();
+	    }
+	
+	}
+	else if(!strcmp(argv[i], "--stop")) { 
+	    i++;
+	    if (i < argc) {
+		stop_clock = atoi(argv[i]);
+		fprintf(stderr, "stop clock is %lu\n",stop_clock);
 	    } else {
 		format();
 	    }
@@ -856,7 +875,7 @@ int main (int argc, char* argv[])
     }
     gettimeofday(&read_and_copy_tv, NULL);
     
-    rc = parse_klogs(td, argv[1], following, procs);
+    rc = parse_klogs(td, stop_clock,argv[1], following, procs);
     gettimeofday(&pklog_tv, NULL);
 
     rc = parse_ulogs(td, argv[1]);     
@@ -866,34 +885,6 @@ int main (int argc, char* argv[])
     gettimeofday(&ptiming_tv, NULL);
 
 
-/*
-    for (auto t : td) { 
-	if (bad_syscalls.count(t.syscall) > 0 && t.should_track) { 
-	    for (auto t2 : td) { 
-		if (t2.start_clock > t.call_clock && t2.start_clock < t.stop_clock) { 
-//		    fprintf(stderr,"bad syscall %d @ (%d,%lu) and syscall (%d,%lu)\n",t.syscall,t.pid, t.start_clock, t2.pid, t2.start_clock);
-		    assert(!t2.can_attach);//step one
-		}
-	    }
-	}
-    }
-<<<<<<< HEAD
-    
-    i = 0;
-    int cant_attach = 0;
-    if(details) {
-	for (auto t : td) { 
-//	    assert(t.should_track);
-//	    assert(t.should_track || (!t.should_track && t.pid == 1531)); only for firefox
-	    fprintf (stderr,"%d: %d %lu %lu, %lu, (%lf %lu %lu %llu), %d, %d\n", i, t.pid, t.call_clock, t.start_clock, t.stop_clock, t.dtiming, t.taint_in, t.taint_out, t.cache_misses, t.should_track, t.can_attach);
-	    if (!t.can_attach) {
-		cant_attach++;
-	    }
-				   
-	    i++;
-=======
-*/
-
     if(details) {
 	for (auto t : td) { 
 	    printf ("%d %lu %lu, %lu, (%lf %lu %lu %llu), %d\n", t.pid, t.call_clock, t.start_clock, t.stop_clock, t.dtiming, t.taint_in, t.taint_out, t.cache_misses, t.should_track);
@@ -901,8 +892,15 @@ int main (int argc, char* argv[])
 	}
     }
 
+
+    //get final index:
+    int lindex = td.size() - 1;
+    while(td[lindex].aindex == 0) {
+	lindex --;
+    }
+
     printf ("%s\n", argv[1]);
-    gen_timings(td, 0, td.size() - 1, parts, following);
+    gen_timings(td, 0, lindex, parts, following);
     gettimeofday(&gen_timings_tv, NULL);
 
     fprintf(stderr, "read_and_copy_time %ld\n",ms_diff(read_and_copy_tv, start_tv));

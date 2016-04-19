@@ -39,14 +39,11 @@ using namespace std;
 //#define LS_DETAIL
 
 
-//macro for progression debuging 
-//#define PROG
-
 typedef PagedBitmap<MAX_TAINTS, PAGE_BITS> bitmap;
 
 
 //#define DEBUG(x) ((x)==0x70 || (x)==0x119)
-
+//#define TRACE
 #define STATS
 
 #define PREPRUNE_NONE   0
@@ -157,6 +154,9 @@ u_long total_address_ms = 0, longest_address_ms = 0, total_output_ms = 0, longes
 u_long preprune_prior_mdatasize = 0;
 
 u_long most_prune_lookups = 0, first_pass_prune_lookups = 0, most_prune_cnt = 0, first_pass_prune_cnt = 0, most_simplify_cnt = 0, first_pass_simplify_cnt = 0;
+
+u_long rlive_set_send_idle = 0, rlive_set_recv_idle = 0;
+
 
 struct timeval start_tv, recv_done_tv, finish_start_tv, end_tv;
 struct timeval live_receive_start_tv = {0,0}, live_receive_end_tv = {0,0};
@@ -472,7 +472,7 @@ spawn_map_thread (unordered_map<taint_t,taint_t>* paddress_map, taint_t* ts_log,
 int*       outrfds;
 uint32_t** outptrs;
 uint32_t** outstops;
-uint32_t*  out_total_counts;
+uint64_t*  out_total_counts;
 const u_long OUTENTRIES = 0x100000; // 4MB size
 const u_long OUTBYTES = OUTENTRIES*sizeof(uint32_t);
 
@@ -484,7 +484,7 @@ output_init (const char* dirname)
     outrfds = new int[parallelize];
     outptrs = new uint32_t *[parallelize];
     outstops = new uint32_t *[parallelize];
-    out_total_counts = new uint32_t[parallelize];
+    out_total_counts = new uint64_t[parallelize];
 
     // Open parallel output files and initalize memory
     for (int i = 0; i < parallelize; i++) {
@@ -800,6 +800,10 @@ read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, ta
 {
     char group_directory[256];
 
+#ifdef TRACE
+    fprintf (stderr, "read_inputs begins\n");
+#endif
+
     if (setup_shmem(port, group_directory) < 0) return -1;
 
     token_log = (char *) map_buffer ("tokens", group_directory, idatasize, ifd);
@@ -808,6 +812,9 @@ read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, ta
     merge_log = (taint_entry *) map_buffer ("node_nums", group_directory, mdatasize, mfd);
 #ifdef DEBUG
     fprintf (debugfile, "i %ld o %ld a %ld m %ld\n", idatasize, odatasize, adatasize, mdatasize);	       
+#endif
+#ifdef TRACE
+    fprintf (stderr, "i %ld o %ld a %ld m %ld\n", idatasize, odatasize, adatasize, mdatasize);	       
 #endif
 
     return 0;
@@ -1910,6 +1917,9 @@ print_stats (const char* dirname, u_long mdatasize, u_long odatasize, u_long ida
     fprintf (statsfile, "Total live set make time %ld ms longest thread %ld ms, send idle %ld recv idle %ld comp time %ld\n", 
 	     total_new_live_set_ms, longest_new_live_set_ms, new_live_set_send_idle, new_live_set_recv_idle, 
 	     total_new_live_set_ms - new_live_set_send_idle - new_live_set_recv_idle);
+
+    fprintf (statsfile, "Total rlive set send idle %ld, recv idle %ld, comp time %ld\n",rlive_set_send_idle, rlive_set_recv_idle, ms_diff(revindex_done_tv, revindex_addr_build_done_tv) - rlive_set_recv_idle - rlive_set_send_idle);
+
     fprintf (statsfile, "Total output time %ld ms longest thread %ld ms, send idle %ld recv idle %ld comp time %ld\n", 
 	     total_output_ms, longest_output_ms, output_send_idle, output_recv_idle, total_output_ms - output_send_idle - output_recv_idle);
     fprintf (statsfile, "Total address time %ld ms longest thread %ld ms, send idle %ld recv idle %ld comp time %ld\n", 
@@ -2667,9 +2677,6 @@ make_new_live_set (taint_t* p, taint_t* pend, u_long lsvalues, bitmap &live_set,
     }
 #endif
     bucket_complete_write (inputq_hdr, inputq_buf, wbucket_cnt);
-#ifdef PROG
-    fprintf(stderr, "%d make_live_set bc %u wi %u \n",getpid(),wbucket_cnt, wbucket_cnt / TAINTBUCKETENTRIES + 1);
-#endif   
 
 #ifdef STATS
     gettimeofday(&new_live_end_tv, NULL);
@@ -3548,6 +3555,7 @@ long make_rev_index (const char* dirname, u_long mdatasize, taint_entry* ts_log,
 
 #ifdef STATS    
     gettimeofday(&revindex_addr_build_done_tv, NULL);
+    recv_idle = send_idle = 0;
 #endif
 
     // Now, read in the live set values from prior epoch
@@ -3625,6 +3633,8 @@ long make_rev_index (const char* dirname, u_long mdatasize, taint_entry* ts_log,
 
 #ifdef STATS
     gettimeofday(&revindex_done_tv, NULL);
+    rlive_set_send_idle = send_idle;
+    rlive_set_recv_idle = recv_idle;
 #endif
 
 #ifdef LS_DETAIL
@@ -3779,6 +3789,7 @@ long make_rev_index_lowmem (const char* dirname, u_long mdatasize, taint_entry* 
 
 #ifdef STATS    
     gettimeofday(&revindex_addr_build_done_tv, NULL);
+    recv_idle = send_idle = 0;
 #endif
 
     // Now, read in the live set values from prior epoch
@@ -3805,7 +3816,7 @@ long make_rev_index_lowmem (const char* dirname, u_long mdatasize, taint_entry* 
 		uint32_t mval = pnode->val;
 		if (mval < 0xe0000000) {
 		    // This address is now live
-		    PUT_QVALUEB(mval, inputq_hdr, inputq_buf, iqfd, write_cnt, write_stop);			
+		    PUT_QVALUEB(mval, inputq_hdr, inputq_buf, iqfd, write_cnt, write_stop);
 #ifdef LS_DETAIL
 		    olive_set.insert(mval);
 #endif
@@ -3863,6 +3874,8 @@ long make_rev_index_lowmem (const char* dirname, u_long mdatasize, taint_entry* 
 
 #ifdef STATS
     gettimeofday(&revindex_done_tv, NULL);
+    rlive_set_send_idle = send_idle;
+    rlive_set_recv_idle = recv_idle;
 #endif
 
 #ifdef LS_DETAIL
@@ -3905,9 +3918,6 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
     rc = read_inputs (port, token_log, output_log, ts_log, merge_log,
 		      mdatasize, odatasize, idatasize, adatasize, mfd, ofd, ifd, afd);
     if (rc < 0) return rc;
-#ifdef PROG
-    fprintf(stderr, "%d: finished read_inputs\n",getpid());
-#endif
 
 #ifdef PARANOID
     if (adatasize > 0) {
@@ -3937,11 +3947,9 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	preprune_global (mdatasize, output_log, odatasize, ts_log, adatasize);
 	bucket_init();
     }
-
-#ifdef PROG
-    fprintf(stderr, "%d: finished preprune\n",getpid());
+#ifdef TRACE
+    fprintf (stderr, "preprune done\n");
 #endif
-
 
     if (!low_memory && !finish_flag) build_map_tid = spawn_map_thread (&address_map, ts_log, adatasize);
 
@@ -4028,13 +4036,15 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
     gettimeofday(&live_done_tv, NULL);
 #endif
     
+#ifdef TRACE
+    fprintf (stderr, "liveset done\n");
+#endif
     bucket_write_init();
 
     output_token = process_outputs (output_log, output_log + odatasize, &live_set, dirname, do_outputs_seq);
-#ifdef PROG
-    fprintf(stderr, "%d: finished process_outputs\n",getpid());
+#ifdef TRACE
+    fprintf (stderr, "outputs done\n");
 #endif
-
     if (!finish_flag) {
 
 #ifdef STATS
@@ -4066,9 +4076,6 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	} else {
 	    process_addresses (output_token, address_map);	    
 	}
-#ifdef PROG
-    fprintf(stderr, "%d: finished process_addresses\n",getpid());
-#endif
 
 
     } else if (!start_flag) {
@@ -4097,9 +4104,6 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
     }
 
     finish_aggregation (addrsfd, inputfd, outputfd, output_token, tokens, token_log, idatasize, output_log, odatasize);
-#ifdef PROG
-    fprintf(stderr, "%d: finished finish_aggregation\n",getpid());
-#endif
 
 #ifdef STATS
     gettimeofday(&end_tv, NULL);
@@ -4135,11 +4139,11 @@ int connect_output_queue (struct senddata* data)
     memcpy (&addr.sin_addr, hp->h_addr, hp->h_length);
 
 
-    struct timeval tv;
-    tv.tv_sec = 120;  /* 30 Secs Timeout */
-    tv.tv_usec = 0;  // Not init'ing this can cause strange errors
-    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (char *)&tv,sizeof(struct timeval));
-    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (char *)&tv,sizeof(struct timeval));
+//    struct timeval tv;
+//    tv.tv_sec = 120;  /* 30 Secs Timeout */
+//    tv.tv_usec = 0;  // Not init'ing this can cause strange errors
+//    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (char *)&tv,sizeof(struct timeval));
+//    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (char *)&tv,sizeof(struct timeval));
 
 
     // Receiver may not be started, so spin until connection is accepted
@@ -4195,11 +4199,11 @@ int connect_input_queue (struct recvdata* data)
 	fprintf (stderr, "Cannot accept connection, errno=%d\n", errno);
 	return s;
     }
-    struct timeval tv;
-    tv.tv_sec = 120;  /* 2 mins Secs Timeout */
-    tv.tv_usec = 0;  // Not init'ing this can cause strange errors
-    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (char *)&tv,sizeof(struct timeval));
-    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (char *)&tv,sizeof(struct timeval));
+//    struct timeval tv;
+//    tv.tv_sec = 120;  /* 2 mins Secs Timeout */
+//    tv.tv_usec = 0;  // Not init'ing this can cause strange errors
+//    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (char *)&tv,sizeof(struct timeval));
+//    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (char *)&tv,sizeof(struct timeval));
 
     close (c);
     return s;
@@ -4252,10 +4256,6 @@ void send_stream (int s, struct taintq_hdr* qh, uint32_t* qb)
 	pthread_cond_signal(&(qh->full));
 	pthread_mutex_unlock(&(qh->lock));
     }
-#ifdef PROG
-    fprintf(stderr, "%d finished with send_stream, sent %lu bytes\n",getpid(),bytes_sent);
-#endif
-
 }
 
 void send_stream_compress (int s, struct taintq_hdr* qh, uint32_t* qb)
@@ -4421,9 +4421,6 @@ void recv_stream (int s, struct taintq_hdr* qh, uint32_t* qb)
 	pthread_cond_signal(&(qh->empty));
 	pthread_mutex_unlock(&(qh->lock));
     }
-#ifdef PROG    
-    fprintf(stderr, "%d finished with recv_stream, recvd %lu bytes\n",getpid(),bytes_rcvd);
-#endif
 }
 
 void recv_stream_compress (int s, struct taintq_hdr* qh, uint32_t* qb)
