@@ -43,7 +43,7 @@ typedef PagedBitmap<MAX_TAINTS, PAGE_BITS> bitmap;
 
 
 //#define DEBUG(x) ((x)==0x70 || (x)==0x119)
-//#define TRACE
+#define TRACE
 #define STATS
 
 #define PREPRUNE_NONE   0
@@ -811,10 +811,10 @@ read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, ta
     ts_log = (taint_t *) map_buffer ("taint_structures", group_directory, adatasize, afd);
     merge_log = (taint_entry *) map_buffer ("node_nums", group_directory, mdatasize, mfd);
 #ifdef DEBUG
-    fprintf (debugfile, "i %ld o %ld a %ld m %ld\n", idatasize, odatasize, adatasize, mdatasize);	       
+    fprintf (debugfile, "i %lu o %lu a %lu m %lu\n", idatasize, odatasize, adatasize, mdatasize);	       
 #endif
 #ifdef TRACE
-    fprintf (stderr, "i %ld o %ld a %ld m %ld\n", idatasize, odatasize, adatasize, mdatasize);	       
+    fprintf (stderr, "i %lu o %lu a %lu m %lu\n", idatasize, odatasize, adatasize, mdatasize);	       
 #endif
 
     return 0;

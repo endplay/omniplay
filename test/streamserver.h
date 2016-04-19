@@ -53,7 +53,8 @@ struct epoch_hdr {
     u_char   flags;
     u_char   filter_flags;
     u_char   record_trace;
-    char     filter_data[NAMELEN];
+    char     filter_part[NAMELEN];
+    char     filter_output_after[NAMELEN];
     char     dirname[NAMELEN];
     char     prev_host[NAMELEN];
     char     next_host[NAMELEN];

@@ -41,6 +41,8 @@ void* get_slice(struct slab_alloc* alloc);
 
 int serialize_slab_alloc(int outd, struct slab_alloc* alloc);
 
+void free_slices(struct slab_alloc* alloc);
+
 #ifdef __cplusplus
 }
 #endif

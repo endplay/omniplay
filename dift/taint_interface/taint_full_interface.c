@@ -424,7 +424,13 @@ static inline taint_t merge_taints(taint_t dst, taint_t src)
 static inline taint_t* new_leaf_table(u_long memloc)
 {
     // TODO use a slab allocator
+#ifdef RETAINT
+    taint_t* leaf_table = (taint_t *) malloc(LEAF_TABLE_SIZE * sizeof(taint_t));
+#else
     taint_t* leaf_table = (taint_t *) get_slice(&leaf_table_alloc);
+#endif
+    assert (leaf_table);
+
     if (splice_output) {
 	memloc &= ROOT_INDEX_MASK;
 	for (int i = 0; i < LEAF_TABLE_SIZE; i++) {
@@ -605,7 +611,7 @@ static void flush_dumpbuf(int dumpfd)
 
     // Check for overflow
     if (dump_total_count >= MAX_DUMP_SIZE) {
-	fprintf (stderr, "Cannot allocate any more dump buffer than %ld bytes\n", (u_long) dump_total_count);
+	fprintf (stderr, "Cannot allocate any more dump buffer than %lu bytes\n", (u_long) dump_total_count);
 	assert (0);
     }
 
@@ -674,8 +680,8 @@ int dump_mem_taints(int fd)
     }
 
 #ifdef USE_SHMEM
-    if (ftruncate (fd, dump_total_count+(dumpindex*sizeof(taint_t)))) {
-	fprintf (stderr, "Could not truncate dump mem to %ld\n", dump_total_count+(dumpindex*sizeof(taint_t)));
+    if (ftruncate64 (fd, dump_total_count+(dumpindex*sizeof(taint_t)))) {
+	fprintf (stderr, "Could not truncate dump mem to %lu\n", dump_total_count+(dumpindex*sizeof(taint_t)));
 	assert (0);
     }
     close (fd);
@@ -726,6 +732,23 @@ int dump_mem_taints_start(int fd)
 
     return 0;
 }
+
+#ifdef RETAINT
+// This resets all the taints (for testing purposes only)
+void reset_mem_taints()
+{
+    // Remove all leafs
+    for (int index = 0; index < ROOT_TABLE_SIZE; index++) {
+	if (mem_root[index]) {
+	    free (mem_root[index]);
+	    mem_root[index] = NULL;
+	}
+    }
+    // Prevents overflow
+    merge_control_shm->merge_buffer_count = 0;
+    merge_control_shm->merge_total_count = 0xe0000001;
+}
+#endif
 
 int dump_reg_taints (int fd, taint_t* pregs, int thread_ndx)
 {

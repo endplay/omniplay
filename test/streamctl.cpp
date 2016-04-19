@@ -395,11 +395,11 @@ int main (int argc, char* argv[])
 	if (filter_inet) ehdr.filter_flags |= FILTER_INET;
 	if (filter_part) {
 	    ehdr.filter_flags |= FILTER_PART;
-	    strcpy (ehdr.filter_data, filter_part);
+	    strcpy (ehdr.filter_part, filter_part);
 	}
 	if (filter_output_after) {
 	    ehdr.filter_flags |= FILTER_OUT;
-	    strcpy (ehdr.filter_data, filter_output_after);
+	    strcpy (ehdr.filter_output_after, filter_output_after);
 	}
 
 	strcpy (ehdr.dirname, dirname);
