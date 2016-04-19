@@ -903,12 +903,14 @@ int main (int argc, char* argv[])
     gen_timings(td, 0, lindex, parts, following);
     gettimeofday(&gen_timings_tv, NULL);
 
-    fprintf(stderr, "read_and_copy_time %ld\n",ms_diff(read_and_copy_tv, start_tv));
-    fprintf(stderr, "pklog_time %ld\n",ms_diff(pklog_tv, read_and_copy_tv));
-    fprintf(stderr, "pulog_time %ld\n",ms_diff(pulog_tv, pklog_tv));
-    fprintf(stderr, "ptiming_time %ld\n",ms_diff(ptiming_tv, pulog_tv));
-    fprintf(stderr, "gen_timings_time %ld\n",ms_diff(gen_timings_tv, ptiming_tv));
-
+    //to get the compiler to shut up
+    if (details){ 
+	fprintf(stderr, "read_and_copy_time %ld\n",ms_diff(read_and_copy_tv, start_tv));
+	fprintf(stderr, "pklog_time %ld\n",ms_diff(pklog_tv, read_and_copy_tv));
+	fprintf(stderr, "pulog_time %ld\n",ms_diff(pulog_tv, pklog_tv));
+	fprintf(stderr, "ptiming_time %ld\n",ms_diff(ptiming_tv, pulog_tv));
+	fprintf(stderr, "gen_timings_time %ld\n",ms_diff(gen_timings_tv, ptiming_tv));
+    }
     return 0;
 }
 
