@@ -509,8 +509,6 @@ static inline void increment_syscall_cnt (int syscall_num)
 	    if (record_trace_info) flush_trace_hash();
 #endif
         }
-	fprintf (stderr, "pid %d syscall %d global syscall cnt %lu num %d clock %ld\n", current_thread->record_pid, 
-		 current_thread->syscall_cnt, global_syscall_cnt, syscall_num, *ppthread_log_clock);
 #if 0
 #ifdef TAINT_DEBUG
 	fprintf (debug_f, "pid %d syscall %d global syscall cnt %lu num %d clock %ld\n", current_thread->record_pid, 
@@ -860,35 +858,35 @@ static inline void sys_write_stop(int rc)
     struct write_info* wi = (struct write_info *) &current_thread->write_info_cache;
     int channel_fileno = -1;
     if (rc > 0) {
-        struct taint_creation_info tci;
-        SYSCALL_DEBUG (stderr, "write_stop: sucess write of size %d\n", rc);
-
-        if (monitor_has_fd(open_fds, wi->fd)) {
-            struct open_info* oi;
-            oi = (struct open_info *) monitor_get_fd_data(open_fds, wi->fd);
-            assert(oi);
-            channel_fileno = oi->fileno;
-        } else if (wi->fd == fileno(stdout)) {
-            channel_fileno = FILENO_STDOUT;
-        } else if (wi->fd == fileno(stderr)) {
-            channel_fileno = FILENO_STDERR;
-        } else if (wi->fd == fileno(stdin)) {
-            channel_fileno = FILENO_STDIN;
-        } else {
-            channel_fileno = -1;
-        }
-        tci.type = 0;
-        tci.rg_id = current_thread->rg_id;
-        tci.record_pid = current_thread->record_pid;
-        tci.syscall_cnt = current_thread->syscall_cnt;
-	if (!current_thread->syscall_in_progress) {
-	    tci.syscall_cnt--; // Weird restart issue
-	}
-        tci.offset = 0;
-        tci.fileno = channel_fileno;
-
-        LOG_PRINT ("Output buffer result syscall %ld, %#lx\n", tci.syscall_cnt, (u_long) wi->buf);
 	if (*ppthread_log_clock >= filter_outputs_before) {
+	    struct taint_creation_info tci;
+	    SYSCALL_DEBUG (stderr, "write_stop: sucess write of size %d\n", rc);
+	    
+	    if (monitor_has_fd(open_fds, wi->fd)) {
+		struct open_info* oi;
+		oi = (struct open_info *) monitor_get_fd_data(open_fds, wi->fd);
+		assert(oi);
+		channel_fileno = oi->fileno;
+	    } else if (wi->fd == fileno(stdout)) {
+		channel_fileno = FILENO_STDOUT;
+	    } else if (wi->fd == fileno(stderr)) {
+		channel_fileno = FILENO_STDERR;
+	    } else if (wi->fd == fileno(stdin)) {
+		channel_fileno = FILENO_STDIN;
+	    } else {
+		channel_fileno = -1;
+	    }
+	    tci.type = 0;
+	    tci.rg_id = current_thread->rg_id;
+	    tci.record_pid = current_thread->record_pid;
+	    tci.syscall_cnt = current_thread->syscall_cnt;
+	    if (!current_thread->syscall_in_progress) {
+		tci.syscall_cnt--; // Weird restart issue
+	    }
+	    tci.offset = 0;
+	    tci.fileno = channel_fileno;
+	    
+	    LOG_PRINT ("Output buffer result syscall %ld, %#lx\n", tci.syscall_cnt, (u_long) wi->buf);
 	    output_buffer_result (wi->buf, rc, &tci, outfd);
 	}
     }
@@ -909,39 +907,39 @@ static inline void sys_writev_stop(int rc)
 {
     // If syscall cnt = 0, then write handled in previous epoch
     if (rc > 0) {
-        struct taint_creation_info tci;
-        struct writev_info* wvi = (struct writev_info *) &current_thread->writev_info_cache;
-        int channel_fileno = -1;
-        if (monitor_has_fd(open_fds, wvi->fd)) {
-            struct open_info* oi;
-            oi = (struct open_info *) monitor_get_fd_data(open_fds, wvi->fd);
-            assert(oi);
-            channel_fileno = oi->fileno;
-        } if (monitor_has_fd(open_socks, wvi->fd)) {
-            struct socket_info* si;
-            si = (struct socket_info *) monitor_get_fd_data(open_socks, wvi->fd);
-            channel_fileno = si->fileno;
-        } else {
-            channel_fileno = -1;
-        }
-
-        tci.type = 0;
-        tci.rg_id = current_thread->rg_id;
-        tci.record_pid = current_thread->record_pid;
-        tci.syscall_cnt = current_thread->syscall_cnt;
-        tci.offset = 0;
-        tci.fileno = channel_fileno;
-
-        if (filter_x) {
-            if (!monitor_has_fd(open_x_fds, wvi->fd)) {
-                for (int i = 0; i < wvi->count; i++) {
-                    struct iovec* vi = (wvi->vi + i);
-                    output_buffer_result(vi->iov_base, vi->iov_len, &tci, outfd);
-                    tci.offset += vi->iov_len;
-                }
-            }
-        } else {
-	    if (*ppthread_log_clock >= filter_outputs_before) {
+	if (*ppthread_log_clock >= filter_outputs_before) {
+	    struct taint_creation_info tci;
+	    struct writev_info* wvi = (struct writev_info *) &current_thread->writev_info_cache;
+	    int channel_fileno = -1;
+	    if (monitor_has_fd(open_fds, wvi->fd)) {
+		struct open_info* oi;
+		oi = (struct open_info *) monitor_get_fd_data(open_fds, wvi->fd);
+		assert(oi);
+		channel_fileno = oi->fileno;
+	    } if (monitor_has_fd(open_socks, wvi->fd)) {
+		struct socket_info* si;
+		si = (struct socket_info *) monitor_get_fd_data(open_socks, wvi->fd);
+		channel_fileno = si->fileno;
+	    } else {
+		channel_fileno = -1;
+	    }
+	    
+	    tci.type = 0;
+	    tci.rg_id = current_thread->rg_id;
+	    tci.record_pid = current_thread->record_pid;
+	    tci.syscall_cnt = current_thread->syscall_cnt;
+	    tci.offset = 0;
+	    tci.fileno = channel_fileno;
+	    
+	    if (filter_x) {
+		if (!monitor_has_fd(open_x_fds, wvi->fd)) {
+		    for (int i = 0; i < wvi->count; i++) {
+			struct iovec* vi = (wvi->vi + i);
+			output_buffer_result(vi->iov_base, vi->iov_len, &tci, outfd);
+			tci.offset += vi->iov_len;
+		    }
+		}
+	    } else {
 		for (int i = 0; i < wvi->count; i++) {
 		    struct iovec* vi = (wvi->vi + i);
 		    output_buffer_result(vi->iov_base, vi->iov_len, &tci, outfd);
@@ -1218,24 +1216,24 @@ static void sys_sendmsg_stop(int rc)
 
     // If syscall cnt = 0, then write handled in previous epoch
     if (rc > 0) {
-        struct taint_creation_info tci;
-        SYSCALL_DEBUG (stderr, "sendmsg_stop: sucess sendmsg of size %d\n", rc);
-        if (monitor_has_fd(open_socks, smi->fd)) {
-            struct socket_info* si;
-            si = (struct socket_info *) monitor_get_fd_data(open_socks, smi->fd);
-            channel_fileno = si->fileno;
-        } else {
-            channel_fileno = -1;
-        }
-
-        tci.type = 0;
-        tci.rg_id = current_thread->rg_id;
-        tci.record_pid = current_thread->record_pid;
-        tci.syscall_cnt = current_thread->syscall_cnt;
-        tci.offset = 0;
-        tci.fileno = channel_fileno;
-
 	if (*ppthread_log_clock >= filter_outputs_before) {
+	    struct taint_creation_info tci;
+	    SYSCALL_DEBUG (stderr, "sendmsg_stop: sucess sendmsg of size %d\n", rc);
+	    if (monitor_has_fd(open_socks, smi->fd)) {
+		struct socket_info* si;
+		si = (struct socket_info *) monitor_get_fd_data(open_socks, smi->fd);
+		channel_fileno = si->fileno;
+	    } else {
+		channel_fileno = -1;
+	    }
+	    
+	    tci.type = 0;
+	    tci.rg_id = current_thread->rg_id;
+	    tci.record_pid = current_thread->record_pid;
+	    tci.syscall_cnt = current_thread->syscall_cnt;
+	    tci.offset = 0;
+	    tci.fileno = channel_fileno;
+	    
 	    for (i = 0; i < smi->msg->msg_iovlen; i++) {
 		struct iovec* vi = (smi->msg->msg_iov + i);
 		output_buffer_result(vi->iov_base, vi->iov_len, &tci, outfd);
@@ -1269,35 +1267,37 @@ static void sys_send_stop(int rc)
 
     SYSCALL_DEBUG (stderr, "Pid %d syscall send %d \n", PIN_GetPid(), rc);
     if (rc > 0) {
-        struct taint_creation_info tci;
-        SYSCALL_DEBUG (stderr, "send_stop: sucess write of size %d\n", rc);
-
-        if (monitor_has_fd(open_fds, si->fd)) {
-            struct open_info* oi;
-            oi = (struct open_info *) monitor_get_fd_data(open_fds, si->fd);
-            assert(oi);
-            channel_fileno = oi->fileno;
-        } else if (si->fd == fileno(stdout)) {
-            channel_fileno = FILENO_STDOUT;
-        } else if (si->fd == fileno(stderr)) {
-            channel_fileno = FILENO_STDERR;
-        } else if (si->fd == fileno(stdin)) {
-            channel_fileno = FILENO_STDIN;
-        } else {
-            channel_fileno = -1;
-        }
-        tci.type = 0;
-        tci.rg_id = current_thread->rg_id;
-        tci.record_pid = current_thread->record_pid;
-        tci.syscall_cnt = current_thread->syscall_cnt;
-	if (!current_thread->syscall_in_progress) {
-	    tci.syscall_cnt--; // Weird restart issue
+	if (*ppthread_log_clock >= filter_outputs_before) {
+	    struct taint_creation_info tci;
+	    SYSCALL_DEBUG (stderr, "send_stop: sucess write of size %d\n", rc);
+	    
+	    if (monitor_has_fd(open_fds, si->fd)) {
+		struct open_info* oi;
+		oi = (struct open_info *) monitor_get_fd_data(open_fds, si->fd);
+		assert(oi);
+		channel_fileno = oi->fileno;
+	    } else if (si->fd == fileno(stdout)) {
+		channel_fileno = FILENO_STDOUT;
+	    } else if (si->fd == fileno(stderr)) {
+		channel_fileno = FILENO_STDERR;
+	    } else if (si->fd == fileno(stdin)) {
+		channel_fileno = FILENO_STDIN;
+	    } else {
+		channel_fileno = -1;
+	    }
+	    tci.type = 0;
+	    tci.rg_id = current_thread->rg_id;
+	    tci.record_pid = current_thread->record_pid;
+	    tci.syscall_cnt = current_thread->syscall_cnt;
+	    if (!current_thread->syscall_in_progress) {
+		tci.syscall_cnt--; // Weird restart issue
+	    }
+	    tci.offset = 0;
+	    tci.fileno = channel_fileno;
+	    
+	    LOG_PRINT ("Output buffer result syscall %u, %#lx\n", tci.syscall_cnt, (u_long) si->buf);
+	    output_buffer_result (si->buf, rc, &tci, outfd);
 	}
-        tci.offset = 0;
-        tci.fileno = channel_fileno;
-
-        LOG_PRINT ("Output buffer result syscall %u, %#lx\n", tci.syscall_cnt, (u_long) si->buf);
-        output_buffer_result (si->buf, rc, &tci, outfd);
     }
     free(si);
 }

@@ -603,7 +603,6 @@ unsigned int replay_min_debug_low = 0;
 unsigned int replay_min_debug_high = 0;
 unsigned long argsalloc_size = (512*1024);
 
-
 unsigned int replay_perf_sample = 0; //whether or not to do the perf_event_sampling (default to not doing it)
 unsigned int replay_perf_sampling_period = 4096; //idk what to start this with
 unsigned int replay_perf_sampling_type = PERF_TYPE_HARDWARE; //default to counting instructions
