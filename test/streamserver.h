@@ -18,7 +18,7 @@
 #define FILTER_NONE 0x00
 #define FILTER_INET 0x01
 #define FILTER_PART 0x02
-#define FILTER_OUT  0x03
+#define FILTER_OUT  0x04
 
 #define NAMELEN 256
 #define PATHLEN 512

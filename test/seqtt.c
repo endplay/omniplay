@@ -25,6 +25,7 @@ int main (int argc, char* argv[])
     pid_t cpid, mpid, ppid;
     int fd, rc, status, filter_inet = 0;
     u_long filter_output_after = 0;
+    char* stop_at = NULL;
     char* filter_output_after_str = NULL;
     char* filter_partfile = NULL;
     int next_child = 0, i;
@@ -46,12 +47,15 @@ int main (int argc, char* argv[])
 	    if(!strncmp(argv[index],"--cache_dir",BUFFER_SIZE)) {
 		strncpy(cache_dir,argv[index + 1],BUFFER_SIZE); 
 		index++;
+	    } else if (!strncmp(argv[index],"-stop_at",BUFFER_SIZE)) {
+		stop_at = argv[index+1];
+		index += 2;
 	    } else if (!strncmp(argv[index],"-filter_inet",BUFFER_SIZE)) {
 		filter_inet = 1;
 		index++;
 	    } else if (!strncmp(argv[index],"-filter_partfile",BUFFER_SIZE)) {
 		filter_partfile = argv[index+1];
-		index++;
+		index += 2;
 	    } else if (!strncmp(argv[index],"-filter_output_after",BUFFER_SIZE)) {
 		filter_output_after_str = argv[index+1];
 		filter_output_after = atoi(argv[index+1]);
@@ -114,7 +118,10 @@ int main (int argc, char* argv[])
 	    args[argcnt++] = "-e";
 	    args[argcnt++] = filter_partfile;
 	}
-
+	if (stop_at) {
+	    args[argcnt++] = "-l";
+	    args[argcnt++] = stop_at;
+	}
 	args[argcnt++] = NULL;
 	rc = execv ("../../../pin/pin", (char **) args);
 	fprintf (stderr, "execv of pin tool failed, rc=%d, errno=%d\n", rc, errno);
