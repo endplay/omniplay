@@ -43,6 +43,7 @@ using namespace std;
 #define PIN_ATTACH_BLOCKED 2
 #define PIN_ATTACH_REDO    4
 
+
 u_int redo_syscall = 0;
 
 #if defined(USE_NW) || defined(USE_SHMEM)
@@ -313,7 +314,7 @@ extern int dump_mem_taints_start (int fd);
 extern int dump_reg_taints_start (int fd, taint_t* pregs, int thread_ndx);
 extern taint_t taint_num;
 #ifdef RECORD_TRACE_INFO 
-static inline void flush_trace_hash ();
+static inline void flush_trace_hash (int sysnum);
 static inline void term_trace_buf ();
 #endif
 
@@ -440,6 +441,13 @@ static int dift_done ()
 	finish_and_print_taint_stats(stats_f);
 	fclose (stats_f);
     }
+#ifdef RETAINT
+	float retaint_time = end_tv.tv_sec - begin_tv.tv_sec;
+	retaint_time += (float) (end_tv.tv_usec - begin_tv.tv_usec)/1000000.0;
+	retaint_time -= (float) retaint_us/1000000.0;
+	fprintf (stats_f, "Retaint execution time: %.3f seconds\n", retaint_time);
+#endif
+
 #else
     finish_and_print_taint_stats(stdout);
 #endif
@@ -498,16 +506,20 @@ static inline void increment_syscall_cnt (int syscall_num)
             if (!(*(int *)(current_thread->ignore_flag))) {
                 global_syscall_cnt++;
                 current_thread->syscall_cnt++;
+/*
 #ifdef RECORD_TRACE_INFO
 		if (record_trace_info) flush_trace_hash();
 #endif
+*/
             }
         } else {
             global_syscall_cnt++;
             current_thread->syscall_cnt++;
+/*
 #ifdef RECORD_TRACE_INFO
 	    if (record_trace_info) flush_trace_hash();
 #endif
+*/
         }
 #if 0
 #ifdef TAINT_DEBUG
@@ -1468,6 +1480,26 @@ void instrument_syscall(ADDRINT syscall_num,
     struct thread_data* tdata = (struct thread_data *) PIN_GetThreadData(tls_key, PIN_ThreadId());
     tdata->sysnum = sysnum;
     tdata->syscall_in_progress = true;
+
+#ifdef RECORD_TRACE_INFO
+    if (record_trace_info &&
+	!(sysnum == 17 || sysnum == 31 || sysnum == 32 ||
+	  sysnum == 35 || sysnum == 44 || sysnum == 53 ||
+          sysnum == 56 || sysnum == 58 || sysnum == 98 ||
+          sysnum == 119 || sysnum == 123 || sysnum == 127 ||
+	  sysnum == 186 || sysnum == 243 || sysnum == 244)) {
+
+	if (current_thread->ignore_flag) {
+	    if (!(*(int *)(current_thread->ignore_flag))) {
+		flush_trace_hash(sysnum);
+	    }
+        } else {
+	    flush_trace_hash(sysnum);
+        }
+    }
+#endif
+
+
 #ifdef TAINT_DEBUG
       fprintf (debug_f, "Thread %d sees sysnum %d in progress\n", tdata->record_pid, sysnum);
       if (current_thread != tdata) fprintf (debug_f, "current thread %d tdata %d\n", current_thread->record_pid, tdata->record_pid);
@@ -1482,8 +1514,10 @@ void instrument_syscall(ADDRINT syscall_num,
     }
     if (sysnum == 252) dift_done();
 
+
 #ifdef RETAINT
-    if (retaint_next_clock && *ppthread_log_clock == retaint_next_clock) {
+    if (retaint_next_clock && *ppthread_log_clock >= retaint_next_clock) {
+	fprintf(stderr,"resetting taints\n");
 	reset_taints();
 	char* p;
 	for (p = retaint_str; *p != '\0' && *p != ','; p++);
@@ -1491,6 +1525,7 @@ void instrument_syscall(ADDRINT syscall_num,
 	retaint_next_clock = strtoul(retaint_str, NULL, 10);
 	if (retaint_next_clock) fprintf (stderr, "Next epoch to retaint: %lu\n", retaint_next_clock);
 	retaint_str = p+1;
+	fprintf(stderr, "merrily we go along\n");
     }
 #endif
 
@@ -1566,7 +1601,7 @@ static void init_trace_buf (void)
 	assert (0);
     }
 
-    flush_trace_hash();
+    flush_trace_hash(0);
 
     snprintf(trace_buf_file, 256, "/trace_inst_%s", group_directory);
     for (u_int i = 1; i < strlen(trace_buf_file); i++) {
@@ -1660,13 +1695,26 @@ static void flush_trace_inst_buf (void)
     trace_inst_cnt = 0;
 }
 
-static inline void flush_trace_hash ()
+static inline void flush_trace_hash (int sysnum)
 {
     memset (trace_hash, 0, sizeof(trace_hash));
     trace_buf[trace_cnt++] = 0; // Denote new system call by writing 0 and syscall # to the log
     if (trace_cnt == TRACE_ENTRIES) flush_trace_buf();
-    trace_buf[trace_cnt++] = global_syscall_cnt;
+    trace_buf[trace_cnt++] = get_record_pid(); //global_syscall_cnt; //Changed this to the clock
     if (trace_cnt == TRACE_ENTRIES) flush_trace_buf();
+    trace_buf[trace_cnt++] = *ppthread_log_clock; //global_syscall_cnt; //Changed this to the clock
+    if (trace_cnt == TRACE_ENTRIES) flush_trace_buf();
+    trace_buf[trace_cnt++] = sysnum; //global_syscall_cnt; //Changed this to the clock
+
+    if (trace_cnt == TRACE_ENTRIES) flush_trace_buf();
+
+    trace_buf[trace_cnt++] = get_num_merges(); //global_syscall_cnt; //Changed this to the clock
+    if (trace_cnt == TRACE_ENTRIES) flush_trace_buf();
+    trace_buf[trace_cnt++] = get_num_merges_saved(); //global_syscall_cnt; //Changed this to the clock
+    if (trace_cnt == TRACE_ENTRIES) flush_trace_buf();
+
+
+
 }
 #endif
 
@@ -14694,9 +14742,10 @@ void AfterForkInParent(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
 	close(tokens_fd);
 #endif 
 //	close(s); //shouldn't I close this? 
-	outfd = -99999; //wait a minute... how? 
+	outfd = -99999;
 	tokens_fd = -99999;
 	s = -99999;
+
 #ifdef RECORD_TRACE_INFO
 	record_trace_info = false;
 #endif

@@ -52,6 +52,8 @@ void print_options(FILE* fp, taint_t t);
 void taint_fini(void);
 
 void finish_and_print_taint_stats(FILE* fp);
+u_long get_num_merges();
+u_long get_num_merges_saved();
 taint_t* get_reg_taints(int reg);
 
 /* Clear size bytes of the register. (starts from the LSB) */

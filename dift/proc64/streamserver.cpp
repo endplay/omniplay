@@ -228,7 +228,7 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 {
 #ifndef BUILD_64
     int rc;
-    struct timeval tv_start;
+    struct timeval tv_start, tv_done;
     gettimeofday (&tv_start, NULL);
 
     int fd = open ("/dev/spec0", O_RDWR);
@@ -275,9 +275,11 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 		args[argcnt++] = attach;
 	    }
 
+
 	    if (edata[i].ckpt != 0) { 
 		sprintf (ckpt, "--from_ckpt=%u", edata[i].ckpt);
 		args[argcnt++] = ckpt;
+		fprintf(stderr, "ckpt: %s\n",ckpt);
 	    }
 	    if (edata[i].start_level == 'u' && edata[i].stop_level == 'u') {
 		sprintf (fake, "--fake_calls=%u,%u", edata[i].start_clock, edata[i].stop_clock);
@@ -411,10 +413,33 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 #ifdef DETAILS
 	    printf ("DIFT of epoch %lu is done\n", i);
 #endif
+	    gettimeofday (&ectl[i].tv_done, NULL);			
 	    ectl[i].status = STATUS_DONE;
 	    epochs_done++;	
 	}
     }
+
+    gettimeofday (&tv_done, NULL);
+    printf ("Dift start time: %ld.%06ld\n", tv_start.tv_sec, tv_start.tv_usec);
+    printf ("Dift end time: %ld.%06ld\n", tv_done.tv_sec, tv_done.tv_usec);
+
+    for (u_long i = 0; i < epochs; i++) { 
+	printf ("epoch %lu resume start  time: %ld.%06ld\n",i, ectl[i].tv_start.tv_sec, ectl[i].tv_start.tv_usec);
+	printf ("epoch %lu pin start  time: %ld.%06ld\n", i, ectl[i].tv_start_dift.tv_sec, ectl[i].tv_start_dift.tv_usec);
+	printf ("epoch %lu done  time: %ld.%06ld\n", i, ectl[i].tv_done.tv_sec, ectl[i].tv_done.tv_usec);
+	gettimeofday (&ectl[i].tv_start_dift, NULL);			
+
+    }
+
+
+    if (tv_done.tv_usec >= tv_start.tv_usec) {
+	printf ("Dift time: %ld.%06ld second\n", tv_done.tv_sec-tv_start.tv_sec, tv_done.tv_usec-tv_start.tv_usec);
+    } else {
+	printf ("Dift time: %ld.%06ld second\n", tv_done.tv_sec-tv_start.tv_sec-1, tv_done.tv_usec+1000000-tv_start.tv_usec);
+    }
+    
+    fflush(stdout);
+
 
     if (ehdr.flags&SEND_ACK) {
 	long retval = 0;
@@ -442,9 +467,24 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 	for (u_long i = 0; i < epochs; i++) {
 	    char pathname[PATHLEN];
 	    sprintf (pathname, "/trace_exec_.tmp.%d", ectl[i].cpid);
-	    send_shmem (s, pathname, "trace_exec");
+	    fprintf(stderr, "sending %s for %lu trace\n",pathname, i);
+	    if (send_shmem (s, pathname, "trace_exec") < 0) { 
+		fprintf (stderr,"couldn't find /trace_exec_.tmp.%d, howabout /trace_exec_.tmp.%d?\n",
+			 ectl[i].cpid, ectl[i].attach_pid);
+		sprintf (pathname, "/trace_exec_.tmp.%d", ectl[i].attach_pid);
+		send_shmem (s, pathname, "trace_exec");
+	    }
+
+
 	    sprintf (pathname, "/trace_inst_.tmp.%d", ectl[i].cpid);
-	    send_shmem (s, pathname, "trace_inst");
+	    fprintf(stderr, "sending %s for %lu trace\n",pathname, i);	   
+	    if (send_shmem (s, pathname, "trace_inst") < 0) { 
+		fprintf (stderr,"couldn't find /trace_inst_.tmp.%d, howabout /trace_inst_.tmp.%d?\n",
+			 ectl[i].cpid, ectl[i].attach_pid);
+		sprintf (pathname, "/trace_inst_.tmp.%d", ectl[i].attach_pid);
+		send_shmem (s, pathname, "trace_inst");
+	    }
+
 	}
     }
 

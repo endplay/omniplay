@@ -1885,7 +1885,9 @@ print_stats (const char* dirname, u_long mdatasize, u_long odatasize, u_long ida
 	fprintf (stderr, "Cannot create %s, errno=%d\n", statsname, errno);
 	return;
     }
-
+    fprintf (statsfile, "Start time:              %ld.%06ld ms\n",  start_tv.tv_sec, start_tv.tv_usec);
+    fprintf (statsfile, "Recv  time:              %ld.%06ld ms\n",  recv_done_tv.tv_sec, recv_done_tv.tv_usec);
+    fprintf (statsfile, "End   time:              %ld.%06ld ms\n",  end_tv.tv_sec, end_tv.tv_usec);
     fprintf (statsfile, "Total time:              %6ld ms\n", ms_diff (end_tv, start_tv));
     fprintf (statsfile, "Receive time:            %6ld ms\n", ms_diff (recv_done_tv, start_tv));
     fprintf (statsfile, "Preprune local time:     %6ld ms\n", ms_diff (preprune_local_end_tv, preprune_local_start_tv));

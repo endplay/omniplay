@@ -135,6 +135,7 @@ int main (int argc, char* argv[])
     char dirname[80];
     int wait_for_response = 0, validate = 0, get_stats = 0, sync_files = 0, nw_compress = 0, low_memory = 0, filter_inet = 0, stream_ls = 0;
     bool record_trace = false;
+    int pid = -1; //used for the out2mergecmp
     char* filter_part = NULL;
     char* filter_output_after = NULL;
     char* dest_dir, *cmp_dir;
@@ -160,6 +161,9 @@ int main (int argc, char* argv[])
 	    sync_files = 1;
 	} else if (!strcmp (argv[i], "-c")) {
 	    nw_compress = 1;
+	} else if (!strcmp (argv[i], "-p")) {
+	    pid = atoi(argv[i+1]);
+	    i++;
 	} else if (!strcmp (argv[i], "-lowmem")) {
 	    low_memory = 1;
 	} else if (!strcmp (argv[i], "-streamls")) {
@@ -620,7 +624,11 @@ int main (int argc, char* argv[])
 
 	// Now actually do the comaprison
 	char cmd[512];
-	sprintf (cmd, "../dift/proc64/out2mergecmp %d %s -d %s", parallelize, cmp_dir, dest_dir);
+	if (pid < 0)
+	    sprintf (cmd, "../dift/proc64/out2mergecmp %d %s -d %s", parallelize, cmp_dir, dest_dir);
+	else
+	    sprintf (cmd, "../dift/proc64/out2mergecmp %d %s -p %d -d %s", parallelize, cmp_dir, pid, dest_dir);
+
 	for (u_long i = 0; i < conf.epochs.size(); i++) {
 	    char add[64];
 	    sprintf (add, " %lu", i);

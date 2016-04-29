@@ -75,7 +75,8 @@ struct ckpt_proc_data {
 #define MAX_CKPT_CNT 1024
 struct ckpt {
     char   name[20];
-    u_long clock;
+    u_long index;
+    u_long rp_clock; //moved this around a bit b/c I've found the index to be a pain to use. 
 };
 struct ckpt ckpts[MAX_CKPT_CNT];
 int ckpt_cnt = 0;
@@ -96,7 +97,7 @@ int cmp (const void* a, const void* b)
 {
     const struct ckpt* c1 = (const struct ckpt *) a;
     const struct ckpt* c2 = (const struct ckpt *) b;
-    return c1->clock - c2->clock;
+    return c1->index - c2->index;
 }
 
 static long read_ckpts (char* dirname)
@@ -128,7 +129,8 @@ static long read_ckpts (char* dirname)
 		return rc;
 	    }
 	    strcpy (ckpts[ckpt_cnt].name, de->d_name+5);
-	    ckpts[ckpt_cnt].clock = cpd.outptr;
+	    ckpts[ckpt_cnt].index = cpd.outptr;
+	    sscanf(ckpts[ckpt_cnt].name, "%lu", &(ckpts[ckpt_cnt].rp_clock));
 	    ckpt_cnt++;
 
 	    close (fd);
@@ -223,7 +225,7 @@ inline static void print_timing (vector<struct timing_data> &td, int start, int 
     if (use_ckpt > 0) {
 	int i;
 	for (i = 0; i < ckpt_cnt; i++) {
-	    if (td[start].index <= ckpts[i].clock) {
+	    if (td[start].start_clock <= ckpts[i].rp_clock) { //why is this check against index? 
 		if (i > 0) {
 		    printf (" %6s", ckpts[i-1].name);
 		} else {

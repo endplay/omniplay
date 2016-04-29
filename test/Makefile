@@ -1,6 +1,6 @@
 CC := gcc
 
-CFLAGS := -Wall -Werror -g
+CFLAGS :=  -g
 LDFLAGS := -Wall -Werror -g 
 
 #LDLIBS := libutil.a
@@ -10,7 +10,7 @@ KERN_CONFIG := replay_headers/include/linux/replay_configs.h
 DEPS_DIR := .deps
 
 TARGETS=parseklog parseulog parsemlog launcher resume parseckpt \
-	getstats filemap replay_pause reset_ndx currentpid seqtt partt fulltt fullsend mkpartition streamtt streamctl sync_files read_trace retaint
+	getstats filemap replay_pause reset_ndx currentpid seqtt partt fulltt fullsend mkpartition streamtt streamctl sync_files read_trace retaint thread_test
 
 # For automatic .h dependency tracking... may not work perfectly for launcher as
 #    the include path changes for it
@@ -49,17 +49,23 @@ currentpid: libutil.a
 seqtt: libutil.a 
 seqtt: LDLIBS += -lrt 
 
-retaint: libutil.a
-retaint: LDLIBS += -lrt 
-
 partt: libutil.a
 partt: LDFLAGS += -pthread
+
+
+thread_test: LDFLAGS += -pthread 
+
+
 
 streamtt: libutil.a streamtt.cpp 
 	c++ -std=c++0x streamtt.cpp libutil.a -pthread -lrt -o streamtt -Wall -Werror
 
 streamctl: streamctl.cpp streamserver.h parseklib.o streamnw.cpp streamnw.h
 	c++ -Wall -Werror -std=c++0x streamctl.cpp streamnw.cpp parseklib.o -o streamctl -g
+
+retaint: retaint_test.cpp libutil.a
+	c++ -Wall -Werror -std=c++0x retaint_test.cpp parseklib.o libutil.a -o retaint -g
+
 
 fulltt: libutil.a
 
@@ -70,6 +76,9 @@ read_trace: read_trace.cpp
 
 mkpartition: libutil.a mkpartition.cpp 
 	c++ -Wall -Werror -std=c++0x mkpartition.cpp libutil.a -pthread -lrt -o mkpartition -O8 
+
+mkpartition_utils.o: mkpartition_utils.cpp mkpartition_utils.h
+	c++ -std=c++0x mkpartition_utils.cpp -o mkpartition_utils.o -c -O8
 
 
 sync_files: sync_files.cpp streamserver.h parseklib.o streamnw.cpp streamnw.h

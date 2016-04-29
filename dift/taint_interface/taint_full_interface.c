@@ -192,7 +192,7 @@ flush_merge_buffer ()
     // Check for overflow
     if ((merge_control_shm->merge_total_count-0xe0000001) >= MAX_MERGES) {
 	fprintf (stderr, "Cannot allocate any more merges than %ld\n", (u_long) (merge_control_shm->merge_total_count-0xe0000001));
-	printf("sycall_cnt %ld clock %ld\n", global_syscall_cnt, *ppthread_log_clock);
+	fprintf(stderr,"sycall_cnt %ld clock %ld\n", global_syscall_cnt, *ppthread_log_clock);
 	assert (0);
     }
 
@@ -429,7 +429,12 @@ static inline taint_t* new_leaf_table(u_long memloc)
 #else
     taint_t* leaf_table = (taint_t *) get_slice(&leaf_table_alloc);
 #endif
-    assert (leaf_table);
+    if (!leaf_table) {
+	fprintf (stderr, "Cannot allocate leaf_table, sec_marges %ld\n", 
+	    tsp.num_second_tables);
+	fprintf(stderr,"sycall_cnt %ld clock %ld\n", global_syscall_cnt, *ppthread_log_clock);
+	assert (0);
+    }
 
     if (splice_output) {
 	memloc &= ROOT_INDEX_MASK;
@@ -479,6 +484,19 @@ void finish_and_print_taint_stats(FILE* fp)
     fprintf(fp, "Num merges saved:        %lu\n", tsp.merges_saved);
     fflush(fp);
 #endif
+}
+
+u_long get_num_merges(){ 
+#ifdef TAINT_STATS
+    return tsp.merges;
+#endif
+    return 0;
+}
+u_long get_num_merges_saved(){ 
+#ifdef TAINT_STATS
+    return tsp.merges_saved;
+#endif
+    return 0;
 }
 
 #ifdef TAINT_DEBUG
@@ -747,6 +765,7 @@ void reset_mem_taints()
     // Prevents overflow
     merge_control_shm->merge_buffer_count = 0;
     merge_control_shm->merge_total_count = 0xe0000001;
+
 }
 #endif
 

@@ -1,4 +1,4 @@
-TARGETS=out2mergecmp streamserver stream recv_replay_files
+TARGETS=out2mergecmp streamserver stream recv_replay_files pound_cpu
 LBITS:= $(shell getconf LONG_BIT)
 ifeq ($(LBITS),64)
 	LIBUTIL:=
