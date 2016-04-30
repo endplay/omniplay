@@ -603,6 +603,7 @@ unsigned int replay_min_debug_low = 0;
 unsigned int replay_min_debug_high = 0;
 unsigned long argsalloc_size = (512*1024);
 
+
 unsigned int replay_perf_sample = 0; //whether or not to do the perf_event_sampling (default to not doing it)
 unsigned int replay_perf_sampling_period = 4096; //idk what to start this with
 unsigned int replay_perf_sampling_type = PERF_TYPE_HARDWARE; //default to counting instructions
@@ -3820,6 +3821,7 @@ struct ckpt_waiter {
 	struct replay_group* prepg;                      // Replay group being restored
 	loff_t               pos;                        // Position in ckpt file to start reading from
 	pid_t                clock_pid;                  // Pid used for setting up the clock pid
+	u_int                procs_left;                 // The number of procs that still need to attach to this ckpt
 	struct semaphore     sem;                        // On which procs wait during restore
 	struct semaphore     sem2;                       // On which procs wait during restore
 };
@@ -3846,7 +3848,7 @@ long
 replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* linker, int fd, 
 			 int follow_splits, int save_mmap, loff_t attach_index, int attach_pid)
 {
-	struct ckpt_waiter* pckpt_waiter = NULL;
+	struct ckpt_waiter* pckpt_waiter = NULL, *curr_waiter = NULL;
 	struct record_group* precg; 
 	struct record_thread* prect;
 	struct replay_group* prepg;
@@ -3858,6 +3860,8 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* 
 	u_long consumed, num_procs;
 	loff_t pos;
 	int clock, i;
+	int found = 0;
+	ds_list_iter_t* iter;
 
 	MPRINT ("In replay_full_ckpt_wakeup\n");
 	if (current->record_thrd || current->replay_thrd) {
@@ -3909,7 +3913,7 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* 
 	current->replay_thrd->rp_record_thread->rp_group->rg_id = rg_id;
 	atomic_set(precg->rg_pkrecord_clock, clock);
 
-	MPRINT ("Number of checkpoint processes %lu\n", num_procs);
+	printk("Number of checkpoint processes %lu\n", num_procs);
 	if (num_procs > 1) {
 	        mutex_lock(&ckpt_mutex);
 		__init_ckpt_waiters();
@@ -3922,11 +3926,13 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* 
 		strcpy (pckpt_waiter->ckpt, ckpt);
 		pckpt_waiter->prepg = prepg;
 		pckpt_waiter->clock_pid = current->pid;
+		pckpt_waiter->procs_left = num_procs - 1; //there are num_procs - 1 procs waiting to be assigned to this ckpt
 		ds_list_insert (ckpt_waiters, pckpt_waiter);
 		num_ckpts++;
 		wake_up_interruptible (&ckpt_waitq);
 		sema_init(&pckpt_waiter->sem, 0);
 		sema_init(&pckpt_waiter->sem2, 0);
+		printk("we made ckpt_waiter %p\n",pckpt_waiter);
 		mutex_unlock(&ckpt_mutex);
 	}
 						  
@@ -3953,16 +3959,17 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* 
 	}
 	
 	if (num_procs > 1) {
-		DPRINT ("Pid %d: waking %lu checkpoint processes\n", current->pid, num_procs-1);
+		printk("Pid %d: waking %lu checkpoint processes\n", current->pid, num_procs-1);
+
 		pckpt_waiter->pos = pos;
 		for (i = 0; i < num_procs-1; i++) {
 			up (&pckpt_waiter->sem);
 		}
-		DPRINT ("Pid %d: waiting for %lu wakeups\n", current->pid, num_procs-1);
+		printk ("Pid %d: waiting for %lu wakeups\n", current->pid, num_procs-1);
 		for (i = 0; i < num_procs-1; i++) {
 			down (&pckpt_waiter->sem2);
 		}
-		DPRINT ("Pid %d: got wakeups\n", current->pid);
+		printk ("Pid %d: got wakeups\n", current->pid);
 	}
 		
 	/*
@@ -4000,6 +4007,33 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* 
 	}
 	set_thread_flag(TIF_IRET); // We are updating regs so need full iret
 
+
+	//we  destroy the ckpt we made: 
+        mutex_lock(&ckpt_mutex);
+	iter = ds_list_iter_create(ckpt_waiters);
+	found = 0;
+	while ((curr_waiter = ds_list_iter_next(iter)) != NULL) {	
+		if (curr_waiter == pckpt_waiter) { 
+			found = 1;
+			break;
+		}
+	}
+	ds_list_iter_destroy(iter);
+	if (!found){
+		printk("we couldn't find our ckpt!\n");
+	}
+	else { 
+		printk("destroying %p\n", pckpt_waiter);
+		BUG_ON(ds_list_remove(ckpt_waiters, pckpt_waiter) == NULL); //this is weird...
+		kfree(pckpt_waiter);
+
+	}
+
+	mutex_unlock(&ckpt_mutex);
+
+
+
+
 	if (fd >= 0) {
 		rc = sys_close (fd);
 		if (rc < 0) printk ("replay_full_ckpt_wakeup: unable to close fd %d, rc=%ld\n", fd, rc);
@@ -4034,7 +4068,9 @@ replay_full_ckpt_proc_wakeup (char* logdir, char* filename, int fd)
 		iter = ds_list_iter_create(ckpt_waiters);
 		found = 0;
 		while ((pckpt_waiter = ds_list_iter_next(iter)) != NULL) {	
-			if (!strcmp(pckpt_waiter->ckpt, ckpt)) {
+			if (!strcmp(pckpt_waiter->ckpt, ckpt) && pckpt_waiter->procs_left > 0) {
+				//claim this spot: 
+				pckpt_waiter->procs_left -= 1;
 				found = 1;
 				break;
 			}
@@ -4050,9 +4086,12 @@ replay_full_ckpt_proc_wakeup (char* logdir, char* filename, int fd)
 	} while (!found);
 
 	mutex_unlock(&ckpt_mutex);
+	printk("We found the ckpt_waiter %p\n",pckpt_waiter); 
 
+	printk("%d waiting on ckpt_waiter->sem",current->pid);
 	// Wait for our turn to read the checkpoint file
 	down (&pckpt_waiter->sem);
+	printk("%d woken up!",current->pid);
 
 	if (pckpt_waiter->prepg == NULL) return -EINVAL;
 
@@ -5216,7 +5255,7 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 
 		if (prt->rp_status == REPLAY_STATUS_RESTART_CKPT) {
 			// We can continue
-			MPRINT ("Pid %d signals restart\n", current->pid);
+			printk ("Pid %d signals restart\n", current->pid);
 			up (prt->rp_ckpt_restart_sem);
 			is_restart = 1;
 		}
@@ -14999,7 +15038,7 @@ skip_and_read_log_data (struct record_thread* prect)
 			goto error;
 		}
 
-		MPRINT ("skip_and_read_log_data syscall count is %d\n", count);
+//		MPRINT ("skip_and_read_log_data syscall count is %d\n", count);
 		
 		rc = vfs_read (file, (char *) &psr[0], sizeof(struct syscall_result)*count, &pos);
 		if (rc != sizeof(struct syscall_result)*count) {
