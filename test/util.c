@@ -168,6 +168,11 @@ long redo_mmap (int fd_spec, u_long* prc, u_long* plen)
     *plen = redo.len;
     return retval;
 }
+long redo_munmap (int fd_spec) 
+{
+    long retval =  ioctl (fd_spec, SPECI_REDO_MUNMAP);
+    return retval;
+}
 
 int get_log_id (int fd_spec)
 {

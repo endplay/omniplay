@@ -966,6 +966,11 @@ struct mmap_attach_parms {
 	u_long pgoff;
 };	
 
+struct munmap_attach_parms { 
+	unsigned long addr;
+	size_t len;
+};
+
 // This has replay thread specific data
 struct replay_thread {
 	struct replay_group* rp_group; // Points to replay group
@@ -1007,7 +1012,10 @@ struct replay_thread {
 	int is_pin_vfork;		// Set 1 when Pin calls clone instead of vfork
 	int rp_pin_attaching;           // Set to 1 when Pin attaching to multithread program
 	int rp_pin_attach_ndx;          // Used to order threads for multi-threaded attach
+
 	struct mmap_attach_parms* rp_pin_attach_redo_mmap; // Saves parms if we need to reattach after mmap
+	struct munmap_attach_parms * rp_pin_attach_redo_munmap; //save params if we need to reattach after munmap
+
 	u_long rp_pin_thread_data;      // Address of thread-specific Pin data
 	u_long __user* rp_pin_curthread_ptr;// Pin TLS ptr to update on context switch
 	int rp_pin_switch_before_attach; // Used for "lost wakeup" problem where attach happens after switch
@@ -1047,6 +1055,8 @@ static int record_execve(const char *filename, const char __user *const __user *
 static int replay_execve(const char *filename, const char __user *const __user *__argv, const char __user *const __user *__envp, struct pt_regs *regs);
 static asmlinkage long replay_poll (struct pollfd __user *ufds, unsigned int nfds, long timeout_msecs);
 static asmlinkage long replay_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, unsigned long flags, unsigned long fd, unsigned long pgoff);
+static asmlinkage long replay_munmap (unsigned long addr, size_t len);
+
 
 /* Return values for complex system calls */
 struct gettimeofday_retvals {
@@ -2174,6 +2184,8 @@ new_replay_thread (struct replay_group* prg, struct record_thread* prec_thrd, u_
 	prp->is_pin_vfork = 0;
 	prp->rp_pin_attaching = PIN_ATTACHING_NONE;
 	prp->rp_pin_attach_redo_mmap = NULL;
+	prp->rp_pin_attach_redo_munmap = NULL;
+
 	prp->rp_pin_thread_data = 0;
 	prp->rp_pin_curthread_ptr = NULL;
 
@@ -2271,7 +2283,8 @@ __destroy_replay_thread (struct replay_thread* prp)
 
 	put_replay_cache_files (prp->rp_cache_files);
 	put_replay_cache_files (prp->rp_mmap_files);
-	if (prp->rp_pin_attach_redo_mmap) KFREE (prp->rp_pin_attach_redo_mmap);
+	if (prp->rp_pin_attach_redo_mmap) KFREE (prp->rp_pin_attach_redo_mmap)
+;	if (prp->rp_pin_attach_redo_munmap) KFREE (prp->rp_pin_attach_redo_munmap);
 
 	// Decrement the record thread's refcnt and maybe destroy it.
 	__destroy_record_thread (prp->rp_record_thread);
@@ -2924,7 +2937,7 @@ int set_pin_address (u_long pin_address, u_long thread_data, u_long __user* curt
 		}
 		if (prept->rp_pin_attaching) {
 			int flags = 0;
-			if (prept->rp_pin_attach_redo_mmap) {
+			if (prept->rp_pin_attach_redo_mmap || prept->rp_pin_attach_redo_munmap) {
 				MPRINT ("Pid %d: Need to redo mmap on PIN restart\n", current->pid);
 				flags = PIN_ATTACH_REDO;
 			}
@@ -3821,7 +3834,6 @@ struct ckpt_waiter {
 	struct replay_group* prepg;                      // Replay group being restored
 	loff_t               pos;                        // Position in ckpt file to start reading from
 	pid_t                clock_pid;                  // Pid used for setting up the clock pid
-	u_int                procs_left;                 // The number of procs that still need to attach to this ckpt
 	struct semaphore     sem;                        // On which procs wait during restore
 	struct semaphore     sem2;                       // On which procs wait during restore
 };
@@ -3848,7 +3860,7 @@ long
 replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* linker, int fd, 
 			 int follow_splits, int save_mmap, loff_t attach_index, int attach_pid)
 {
-	struct ckpt_waiter* pckpt_waiter = NULL, *curr_waiter = NULL;
+	struct ckpt_waiter* pckpt_waiter = NULL;
 	struct record_group* precg; 
 	struct record_thread* prect;
 	struct replay_group* prepg;
@@ -3860,8 +3872,6 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* 
 	u_long consumed, num_procs;
 	loff_t pos;
 	int clock, i;
-	int found = 0;
-	ds_list_iter_t* iter;
 
 	MPRINT ("In replay_full_ckpt_wakeup\n");
 	if (current->record_thrd || current->replay_thrd) {
@@ -3913,7 +3923,7 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* 
 	current->replay_thrd->rp_record_thread->rp_group->rg_id = rg_id;
 	atomic_set(precg->rg_pkrecord_clock, clock);
 
-	printk("Number of checkpoint processes %lu\n", num_procs);
+	MPRINT ("Number of checkpoint processes %lu\n", num_procs);
 	if (num_procs > 1) {
 	        mutex_lock(&ckpt_mutex);
 		__init_ckpt_waiters();
@@ -3926,13 +3936,11 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* 
 		strcpy (pckpt_waiter->ckpt, ckpt);
 		pckpt_waiter->prepg = prepg;
 		pckpt_waiter->clock_pid = current->pid;
-		pckpt_waiter->procs_left = num_procs - 1; //there are num_procs - 1 procs waiting to be assigned to this ckpt
 		ds_list_insert (ckpt_waiters, pckpt_waiter);
 		num_ckpts++;
 		wake_up_interruptible (&ckpt_waitq);
 		sema_init(&pckpt_waiter->sem, 0);
 		sema_init(&pckpt_waiter->sem2, 0);
-		printk("we made ckpt_waiter %p\n",pckpt_waiter);
 		mutex_unlock(&ckpt_mutex);
 	}
 						  
@@ -3959,17 +3967,16 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* 
 	}
 	
 	if (num_procs > 1) {
-		printk("Pid %d: waking %lu checkpoint processes\n", current->pid, num_procs-1);
-
+		DPRINT ("Pid %d: waking %lu checkpoint processes\n", current->pid, num_procs-1);
 		pckpt_waiter->pos = pos;
 		for (i = 0; i < num_procs-1; i++) {
 			up (&pckpt_waiter->sem);
 		}
-		printk ("Pid %d: waiting for %lu wakeups\n", current->pid, num_procs-1);
+		DPRINT ("Pid %d: waiting for %lu wakeups\n", current->pid, num_procs-1);
 		for (i = 0; i < num_procs-1; i++) {
 			down (&pckpt_waiter->sem2);
 		}
-		printk ("Pid %d: got wakeups\n", current->pid);
+		DPRINT ("Pid %d: got wakeups\n", current->pid);
 	}
 		
 	/*
@@ -4007,33 +4014,6 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* 
 	}
 	set_thread_flag(TIF_IRET); // We are updating regs so need full iret
 
-
-	//we  destroy the ckpt we made: 
-        mutex_lock(&ckpt_mutex);
-	iter = ds_list_iter_create(ckpt_waiters);
-	found = 0;
-	while ((curr_waiter = ds_list_iter_next(iter)) != NULL) {	
-		if (curr_waiter == pckpt_waiter) { 
-			found = 1;
-			break;
-		}
-	}
-	ds_list_iter_destroy(iter);
-	if (!found){
-		printk("we couldn't find our ckpt!\n");
-	}
-	else { 
-		printk("destroying %p\n", pckpt_waiter);
-		BUG_ON(ds_list_remove(ckpt_waiters, pckpt_waiter) == NULL); //this is weird...
-		kfree(pckpt_waiter);
-
-	}
-
-	mutex_unlock(&ckpt_mutex);
-
-
-
-
 	if (fd >= 0) {
 		rc = sys_close (fd);
 		if (rc < 0) printk ("replay_full_ckpt_wakeup: unable to close fd %d, rc=%ld\n", fd, rc);
@@ -4068,9 +4048,7 @@ replay_full_ckpt_proc_wakeup (char* logdir, char* filename, int fd)
 		iter = ds_list_iter_create(ckpt_waiters);
 		found = 0;
 		while ((pckpt_waiter = ds_list_iter_next(iter)) != NULL) {	
-			if (!strcmp(pckpt_waiter->ckpt, ckpt) && pckpt_waiter->procs_left > 0) {
-				//claim this spot: 
-				pckpt_waiter->procs_left -= 1;
+			if (!strcmp(pckpt_waiter->ckpt, ckpt)) {
 				found = 1;
 				break;
 			}
@@ -4086,12 +4064,9 @@ replay_full_ckpt_proc_wakeup (char* logdir, char* filename, int fd)
 	} while (!found);
 
 	mutex_unlock(&ckpt_mutex);
-	printk("We found the ckpt_waiter %p\n",pckpt_waiter); 
 
-	printk("%d waiting on ckpt_waiter->sem",current->pid);
 	// Wait for our turn to read the checkpoint file
 	down (&pckpt_waiter->sem);
-	printk("%d woken up!",current->pid);
 
 	if (pckpt_waiter->prepg == NULL) return -EINVAL;
 
@@ -5255,7 +5230,7 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 
 		if (prt->rp_status == REPLAY_STATUS_RESTART_CKPT) {
 			// We can continue
-			printk ("Pid %d signals restart\n", current->pid);
+			MPRINT ("Pid %d signals restart\n", current->pid);
 			up (prt->rp_ckpt_restart_sem);
 			is_restart = 1;
 		}
@@ -6037,6 +6012,7 @@ long check_for_redo (void)
 	if (prt == NULL) return -EINVAL;
 
 	if (prt->rp_pin_attach_redo_mmap) return 192; // Redo should be done
+	if (prt->rp_pin_attach_redo_munmap) return 91; // Redo munmap
 
 	return 0; // Don't redo this one
 }
@@ -6071,6 +6047,34 @@ long redo_mmap (u_long __user * prc, u_long __user * plen)
 	}
 }
 EXPORT_SYMBOL(redo_mmap);
+
+
+long redo_munmap ()
+{
+	u_long syscall, retval;
+	struct replay_thread* prt = current->replay_thrd;
+
+	if (prt == NULL) return -EINVAL;
+
+	if (prt->rp_pin_attach_redo_munmap) {
+		MPRINT ("Pid %d trying to redo munmap after attach\n", current->pid);
+		syscall = 91;
+		check_clock_before_syscall (syscall);
+		retval = replay_munmap(prt->rp_pin_attach_redo_munmap->addr,
+				       prt->rp_pin_attach_redo_munmap->len);
+		MPRINT ("Pid %d: mmap after attach returns %lx\n", current->pid, retval);
+//		put_user (retval, prc);
+//		put_user (prt->rp_pin_attach_redo_mmap->len, plen);
+		KFREE (prt->rp_pin_attach_redo_munmap);
+		prt->rp_pin_attach_redo_munmap = NULL;
+		check_clock_after_syscall (syscall);
+		return 0;
+	} else {
+		return -ENOENT;
+	}
+}
+EXPORT_SYMBOL(redo_munmap);
+
 
 long check_clock_after_syscall (int syscall)
 {
@@ -9689,7 +9693,18 @@ replay_munmap (unsigned long addr, size_t len)
 		(*(int*)(current->replay_thrd->app_syscall_addr)) = 999;
 	} else {
 		rc = get_next_syscall (91, NULL);
-		if (rc == -EINTR && current->replay_thrd->rp_pin_attaching) return rc;
+		if (rc == -EINTR && current->replay_thrd->rp_pin_attaching) {
+			//save params for an munmap after attach! 
+			current->replay_thrd->rp_pin_attach_redo_munmap = KMALLOC(sizeof(struct munmap_attach_parms), GFP_KERNEL);
+			if (current->replay_thrd->rp_pin_attach_redo_munmap == NULL) {
+				printk ("kmalloc of munmap attach parms failed\n");
+				return -ENOMEM;
+			}
+			current->replay_thrd->rp_pin_attach_redo_munmap->addr = addr;
+			current->replay_thrd->rp_pin_attach_redo_munmap->len = len;
+			MPRINT ("munmap attach return %lx\n", current->replay_thrd->rp_saved_rc);
+			return current->replay_thrd->rp_saved_rc; // Since pin won't redo system call, use real return code now
+		}
 	}
 
 	retval = sys_munmap (addr, len);
@@ -15038,7 +15053,7 @@ skip_and_read_log_data (struct record_thread* prect)
 			goto error;
 		}
 
-//		MPRINT ("skip_and_read_log_data syscall count is %d\n", count);
+		MPRINT ("skip_and_read_log_data syscall count is %d\n", count);
 		
 		rc = vfs_read (file, (char *) &psr[0], sizeof(struct syscall_result)*count, &pos);
 		if (rc != sizeof(struct syscall_result)*count) {

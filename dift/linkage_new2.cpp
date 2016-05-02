@@ -1709,8 +1709,8 @@ static inline void flush_trace_hash (int sysnum)
     if (trace_cnt == TRACE_ENTRIES) flush_trace_buf();
 
     trace_buf[trace_cnt++] = get_num_merges(); //global_syscall_cnt; //Changed this to the clock
-    if (trace_cnt == TRACE_ENTRIES) flush_trace_buf();
-    trace_buf[trace_cnt++] = get_num_merges_saved(); //global_syscall_cnt; //Changed this to the clock
+//    if (trace_cnt == TRACE_ENTRIES) flush_trace_buf();
+//    trace_buf[trace_cnt++] = get_num_merges_saved(); //global_syscall_cnt; //Changed this to the clock
     if (trace_cnt == TRACE_ENTRIES) flush_trace_buf();
 
 
@@ -1732,7 +1732,8 @@ static void syscall_after_redo (ADDRINT ip)
 
     if (redo_syscall) {
 	u_long rc, len, retval;
-	if (check_for_redo (dev_fd) == 192) {
+	int syscall_to_redo = check_for_redo(dev_fd);
+	if (syscall_to_redo == 192) {
 	    redo_syscall--;
 	    //fprintf (stderr, "Instruction %x redo mmap please %d\n", ip, redo_syscall);
 	    retval = redo_mmap (dev_fd, &rc, &len);
@@ -1746,6 +1747,20 @@ static void syscall_after_redo (ADDRINT ip)
 	    clear_mem_taints (rc, len);
 	    current_thread->app_syscall = 0;  
 	}
+	else if(syscall_to_redo == 91) { 
+	    redo_syscall--;
+	    //fprintf (stderr, "Instruction %x redo mmap please %d\n", ip, redo_syscall);
+	    retval = redo_munmap (dev_fd);
+	    fprintf(stderr, "running the redo_munmap!\n");
+	    if (retval) fprintf (stderr, "redo_mmap failed, rc=%ld\n", retval);
+#if 0
+	    fprintf (stderr, "syscall_after, eax is %x\n", PIN_GetContextReg(ctxt, LEVEL_BASE::REG_EAX));
+	    fprintf (stderr, "syscall_after, ebx is %x\n", PIN_GetContextReg(ctxt, LEVEL_BASE::REG_EBX));
+	    fprintf (stderr, "syscall_after, ecx is %x\n", PIN_GetContextReg(ctxt, LEVEL_BASE::REG_ECX));
+#endif
+	    //fprintf (stderr, "Clearing taints %lx,%lx\n", rc, len);
+	    current_thread->app_syscall = 0;
+	}      
     } else if (current_thread->app_syscall == 999) {
 	check_clock_after_syscall (dev_fd);
 	current_thread->app_syscall = 0;  

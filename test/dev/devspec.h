@@ -126,5 +126,6 @@ struct redo_mmap_data {
 #define SPECI_CHECK_FOR_REDO _IO('u', 24)
 #define SPECI_REDO_MMAP _IOW('u', 25, struct redo_mmap_data)
 #define SPECI_IS_PIN_ATTACHING _IO('u', 26)
+#define SPECI_REDO_MUNMAP _IO('u', 27)
 
 #endif

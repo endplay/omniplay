@@ -45,6 +45,7 @@ typedef PagedBitmap<MAX_TAINTS, PAGE_BITS> bitmap;
 //#define DEBUG(x) ((x)==0x70 || (x)==0x119)
 #define TRACE
 #define STATS
+//#define WAIT_FOR 240 //wait for 10 mins
 
 #define PREPRUNE_NONE   0
 #define PREPRUNE_LOCAL  1
@@ -175,6 +176,24 @@ struct timeval revindex_start_tv = {0,0}, revindex_merge_build_done_tv = {0, 0},
 static long ms_diff (struct timeval tv1, struct timeval tv2)
 {
     return ((tv1.tv_sec - tv2.tv_sec) * 1000 + (tv1.tv_usec - tv2.tv_usec) / 1000);
+}
+#endif
+
+#ifdef WAIT_FOR
+static inline void remove_intv (struct timeval *start, struct timeval *end, struct timeval *wait)
+{
+
+    if (start->tv_usec > end->tv_usec){ 
+	start->tv_usec += 1000000;
+	start->tv_sec -=1;//prepare for caryover
+    }
+    int diff = end->tv_usec - start->tv_usec; 
+    if (diff){
+	wait->tv_usec = 1000000 - diff;
+	wait->tv_sec -=1;
+    }
+
+    wait->tv_sec -= end->tv_sec - start->tv_sec;
 }
 #endif
 
@@ -1987,6 +2006,26 @@ long stream_epoch (const char* dirname, int port)
 #ifdef STATS
     gettimeofday(&recv_done_tv, NULL);
 #endif
+#ifdef WAIT_FOR
+    struct timeval wait;
+    wait.tv_sec = WAIT_FOR;
+    u_long recv_ms = ms_diff(recv_done_tv, start_tv);    
+    if (recv_ms > (WAIT_FOR * 1000)) { 
+	fprintf(stderr, "houston, we have a problem! it took %lu ms for us to recv!\n",recv_ms);
+    }
+    else { 
+	fprintf(stderr, "we're waiting!\n");
+	remove_intv(&start_tv,&recv_done_tv,&wait);
+	select(0, NULL, NULL, NULL,&wait );
+    }
+
+//regrab this so that our stats are easier to parse
+#ifdef STATS
+    gettimeofday(&recv_done_tv, NULL);
+#endif
+#endif
+
+
 
     if (!finish_flag) build_map_tid = spawn_map_thread (&address_map, ts_log, adatasize);
 
@@ -3937,6 +3976,24 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
       
 #ifdef STATS
     gettimeofday(&recv_done_tv, NULL);
+#endif
+
+#ifdef WAIT_FOR
+    struct timeval wait;
+    wait.tv_sec = WAIT_FOR;
+    u_long recv_ms = ms_diff(recv_done_tv, start_tv);    
+    if (recv_ms > (WAIT_FOR * 1000)) { 
+	fprintf(stderr, "houston, we have a problem! it took %lu ms for us to recv!\n",recv_ms);
+    }
+    else { 
+	fprintf(stderr, "we're waiting!\n");
+	remove_intv(&start_tv,&recv_done_tv,&wait);
+	select(0, NULL, NULL, NULL,&wait );
+    }
+#ifdef STATS
+    gettimeofday(&recv_done_tv, NULL);
+#endif
+
 #endif
 
     bucket_init();

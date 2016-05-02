@@ -46,6 +46,7 @@ long check_clock_before_syscall (int syscall);
 long check_clock_after_syscall (int syscall);
 long check_for_redo (void);
 long redo_mmap (u_long __user * prc, u_long __user * plen);
+long redo_munmap (void);
 long get_used_addresses (struct used_address __user * plist, int listsize);
 void print_memory_areas (void);
 

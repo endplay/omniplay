@@ -360,6 +360,12 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 		retval = redo_mmap (&rd->rc, &rd->len);
 		return retval;
 	}
+
+	case SPECI_REDO_MUNMAP: {
+	    retval = redo_munmap ();
+		return retval;
+	}
+
 	default:
 		return -EINVAL;
 	}
