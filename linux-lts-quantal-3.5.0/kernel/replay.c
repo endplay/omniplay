@@ -3834,6 +3834,7 @@ struct ckpt_waiter {
 	struct replay_group* prepg;                      // Replay group being restored
 	loff_t               pos;                        // Position in ckpt file to start reading from
 	pid_t                clock_pid;                  // Pid used for setting up the clock pid
+	int                  procs_left;                 // The number of processes that have yet to be attached to this ckpt_waiter
 	struct semaphore     sem;                        // On which procs wait during restore
 	struct semaphore     sem2;                       // On which procs wait during restore
 };
@@ -3936,11 +3937,14 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* 
 		strcpy (pckpt_waiter->ckpt, ckpt);
 		pckpt_waiter->prepg = prepg;
 		pckpt_waiter->clock_pid = current->pid;
+		pckpt_waiter->procs_left = num_procs - 1; //we start with a full house... except for ourself!
 		ds_list_insert (ckpt_waiters, pckpt_waiter);
 		num_ckpts++;
 		wake_up_interruptible (&ckpt_waitq);
 		sema_init(&pckpt_waiter->sem, 0);
 		sema_init(&pckpt_waiter->sem2, 0);
+
+		printk("%d made ckpt_waiter %p\n",current->pid, pckpt_waiter);
 		mutex_unlock(&ckpt_mutex);
 	}
 						  
@@ -4014,6 +4018,15 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* 
 	}
 	set_thread_flag(TIF_IRET); // We are updating regs so need full iret
 
+	//finally, remove the ckpt_waiter entry we created: 
+	if (ds_list_remove(ckpt_waiters, pckpt_waiter) == NULL) { 
+		printk("hmm... couldn't remove?");
+	}
+	else { 
+		KFREE(pckpt_waiter);
+	}
+
+
 	if (fd >= 0) {
 		rc = sys_close (fd);
 		if (rc < 0) printk ("replay_full_ckpt_wakeup: unable to close fd %d, rc=%ld\n", fd, rc);
@@ -4048,7 +4061,8 @@ replay_full_ckpt_proc_wakeup (char* logdir, char* filename, int fd)
 		iter = ds_list_iter_create(ckpt_waiters);
 		found = 0;
 		while ((pckpt_waiter = ds_list_iter_next(iter)) != NULL) {	
-			if (!strcmp(pckpt_waiter->ckpt, ckpt)) {
+			if (!strcmp(pckpt_waiter->ckpt, ckpt) && pckpt_waiter->procs_left > 0) {
+				pckpt_waiter->procs_left--; //claim our spot!
 				found = 1;
 				break;
 			}
@@ -4062,9 +4076,9 @@ replay_full_ckpt_proc_wakeup (char* logdir, char* filename, int fd)
 			mutex_lock(&ckpt_mutex); 
 		}
 	} while (!found);
-
+	printk("%d: we found waiter %p\n",current->pid,pckpt_waiter);
 	mutex_unlock(&ckpt_mutex);
-
+	
 	// Wait for our turn to read the checkpoint file
 	down (&pckpt_waiter->sem);
 
