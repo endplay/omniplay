@@ -4019,13 +4019,14 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* 
 	set_thread_flag(TIF_IRET); // We are updating regs so need full iret
 
 	//finally, remove the ckpt_waiter entry we created: 
-	if (ds_list_remove(ckpt_waiters, pckpt_waiter) == NULL) { 
-		printk("hmm... couldn't remove?");
+	if (num_procs > 1) { 
+		if (ds_list_remove(ckpt_waiters, pckpt_waiter) == NULL) { 
+			printk("hmm... couldn't remove?");
+		}
+		else { 
+			KFREE(pckpt_waiter);
+		}
 	}
-	else { 
-		KFREE(pckpt_waiter);
-	}
-
 
 	if (fd >= 0) {
 		rc = sys_close (fd);
