@@ -1126,6 +1126,14 @@ static void sys_recv_stop(int rc)
 	    } else {
 		channel_name = (char *) "recvsocket";
 	    }
+	    //not sure why we'd need this... but I can't get the filter inets to work out for me
+        }
+
+	else if (monitor_has_fd(open_fds, ri->fd)) {
+            struct open_info* oi;
+            oi = (struct open_info *)monitor_get_fd_data(open_fds, ri->fd);
+            read_fileno = oi->fileno;
+            channel_name = oi->name;
         }
 
         tci.rg_id = current_thread->rg_id;

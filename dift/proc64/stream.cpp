@@ -19,9 +19,13 @@
 
 #include <unordered_set>
 #include <unordered_map>
+#include <map>
 #include <set>
 #include <vector>
 #include <atomic>
+#include <mutex>
+#include <condition_variable>
+
 using namespace std;
 
 #include "streamnw.h"
@@ -42,10 +46,12 @@ using namespace std;
 typedef PagedBitmap<MAX_TAINTS, PAGE_BITS> bitmap;
 
 
-//#define DEBUG(x) ((x)==0x70 || (x)==0x119)
-#define TRACE
+//#define DEBUG(x) ((x)==0x8 || (x)==0x20cd459)
+//#define TRACE
+#define USE_CACHE
+
 #define STATS
-//#define WAIT_FOR 240 //wait for 10 mins
+//#define WAIT_FOR 300 //wait for 5 mins
 
 #define PREPRUNE_NONE   0
 #define PREPRUNE_LOCAL  1
@@ -157,6 +163,19 @@ u_long preprune_prior_mdatasize = 0;
 u_long most_prune_lookups = 0, first_pass_prune_lookups = 0, most_prune_cnt = 0, first_pass_prune_cnt = 0, most_simplify_cnt = 0, first_pass_simplify_cnt = 0;
 
 u_long rlive_set_send_idle = 0, rlive_set_recv_idle = 0;
+
+u_long upairs= 0, umerges = 0;
+u_long cache_hits = 0;
+u_long skips = 0;
+
+//std::mutex gp_lock; 
+//set<pair<taint_t, taint_t>> global_pairs;
+
+
+//std::mutex ms_lock;
+//unordered_map<taint_t, u_long> global_ms_sizes;
+//unordered_map<taint_t, u_long> global_ms_chains;
+//map<taint_t, u_long> global_ms_count;
 
 
 struct timeval start_tv, recv_done_tv, finish_start_tv, end_tv;
@@ -840,6 +859,8 @@ read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, ta
 }
 #endif
 
+
+
 #ifdef STATS
 static void map_iter_par (taint_t value, uint32_t output_token, taint_t* stack, uint32_t& bucket_cnt, uint32_t& bucket_stop, uint32_t*& resolvedptr, uint32_t*& resolvedstop, 
 			  u_long& lvalues_sent, ulong& lmerges)
@@ -851,11 +872,10 @@ static void map_iter_par (taint_t value, uint32_t output_token, taint_t* stack, 
     unordered_set<taint_t> seen_indices;
     struct taint_entry* pentry;
     uint32_t stack_depth = 0;
-	
+    u_long  num_iterations = 0;
 #ifdef STATS
     merges++;
 #endif
-
     pentry = &merge_log[value-0xe0000001];
 #ifdef DEBUG
     if (DEBUG(output_token)) {
@@ -866,6 +886,7 @@ static void map_iter_par (taint_t value, uint32_t output_token, taint_t* stack, 
     stack[stack_depth++] = pentry->p2;
     
     do {
+	num_iterations ++;
 	value = stack[--stack_depth];
 	assert (stack_depth < STACK_SIZE);
 	
@@ -887,6 +908,13 @@ static void map_iter_par (taint_t value, uint32_t output_token, taint_t* stack, 
 	    }
 	}
     } while (stack_depth);
+
+//    ms_lock.lock();
+//    global_ms_sizes[stvalue] = pset.size();
+//    global_ms_chains[stvalue] = num_iterations;
+//    ms_lock.unlock();
+	
+	
 
     pset.erase(0);
     for (auto iter2 = pset.begin(); iter2 != pset.end(); iter2++) {
@@ -919,6 +947,258 @@ static void map_iter_par (taint_t value, uint32_t output_token, taint_t* stack, 
 	}
     }
 }
+
+
+//dumb dumb dumb but c++11 doesn't have what I want want want
+class read_rwlock;
+class write_rwlock;
+class rwlock {
+public:
+    rwlock();
+    rwlock(const rwlock &rhs) = delete;
+    rwlock(rwlock &&rhs) = default;
+    ~rwlock();
+
+    read_rwlock get_read_locker();
+    read_rwlock get_write_locker();
+
+    void read_lock();
+    void write_lock();
+    void read_unlock();
+    void write_unlock();
+
+private:
+    mutex lock;
+    condition_variable reader_queue;
+    condition_variable writer_queue;
+
+    int nreaders;
+    int nwriters;
+    int writers_waiting;
+};
+
+
+class read_rwlock {
+public:
+    read_rwlock(rwlock &r) : lk(r) { }
+    read_rwlock(const read_rwlock &r) = default;
+    read_rwlock(read_rwlock &&r) = default;
+
+    void lock() { lk.read_lock(); }
+    void unlock() { lk.read_unlock(); }
+    
+private:
+    rwlock &lk;
+};
+
+/* BasicLockable interface for rwlock.write_lock() */
+class write_rwlock {
+public:
+    write_rwlock(rwlock &r) : lk(r) { }
+    write_rwlock(const write_rwlock &r) = default;
+    write_rwlock(write_rwlock &&r) = default;
+
+    void lock() { lk.write_lock(); }
+    void unlock() { lk.write_unlock(); }
+
+private:
+    rwlock &lk;
+};
+
+rwlock::rwlock() : nreaders(0), nwriters(0), writers_waiting(0) { }
+rwlock::~rwlock() { }
+
+void rwlock::read_lock() {
+    unique_lock<mutex> lk(lock);
+
+    // Wait until there is no one writing or waiting to write
+    while (nwriters != 0 || writers_waiting != 0) {
+	reader_queue.wait(lk);
+    }
+
+    // Increment the number of readers
+    nreaders++;
+}
+
+void rwlock::write_lock() {
+    unique_lock<mutex> lk(lock);
+
+    // Note there is a waiting writer
+    writers_waiting++;
+    // Wait until there are no readers and no writersr
+    while (nreaders != 0 || nwriters != 0) {
+	writer_queue.wait(lk);
+    }
+    // We're no longer waiting
+    writers_waiting--;
+
+    // Increment the number of readers
+    nwriters++;
+}
+
+void rwlock::read_unlock() {
+    unique_lock<mutex> lk(lock);
+
+    nreaders--;
+
+    writer_queue.notify_one();
+    reader_queue.notify_all();
+}
+
+void rwlock::write_unlock() {
+    unique_lock<mutex> lk(lock);
+
+    nwriters--;
+
+    writer_queue.notify_one();
+    reader_queue.notify_all();
+}
+
+struct set_hasher {
+    size_t operator()(const uint32_t&arg) const { 
+	size_t ret = arg * 2654435761u; 
+	return ret ^ ret >> 11;
+    }
+};
+
+
+#ifdef USE_CACHE
+typedef unordered_set<uint32_t, set_hasher> fast_set;
+
+#define CACHE_ENTRIES 1024
+struct addr_cache_entry { 
+    taint_t start_value; 
+    fast_set *pset;
+    rwlock lock; //this is our hacked together reader writer lock! 
+    bool initialized; //just in cases
+};
+
+addr_cache_entry addr_cache[CACHE_ENTRIES]; 
+
+
+
+
+#ifdef STATS
+static void map_iter_par_addr (taint_t value, uint32_t output_token, taint_t* stack, uint32_t& bucket_cnt, uint32_t& bucket_stop, uint32_t*& resolvedptr, uint32_t*& resolvedstop, 
+			  u_long& lvalues_sent, ulong& lmerges)
+#else
+static void map_iter_par_addr (taint_t value, uint32_t output_token, taint_t* stack, uint32_t& bucket_cnt, uint32_t& bucket_stop, uint32_t*& resolvedptr, uint32_t*& resolvedstop)
+#endif
+{
+    fast_set *pset = NULL;
+    fast_set seen_indices;
+//    unordered_set<uint32_t> seen_indices;
+    struct taint_entry* pentry;
+    uint32_t stack_depth = 0;
+    taint_t stvalue = value;
+    bool cached = false; 
+
+
+    //check to see if we're in the addr_cache
+    addr_cache[stvalue % CACHE_ENTRIES].lock.read_lock();
+    if (addr_cache[stvalue % CACHE_ENTRIES].start_value == stvalue && 
+	addr_cache[stvalue % CACHE_ENTRIES].initialized) { 
+
+#ifdef STATS
+	cache_hits++;
+#endif	
+	pset = addr_cache[value % CACHE_ENTRIES].pset; 
+	cached = true;
+    }
+    else {
+	//we aren't using this entry... yet. We'll deal with writing when we're done! 
+	addr_cache[stvalue % CACHE_ENTRIES].lock.read_unlock();
+	cached = false;
+	pset = new fast_set();
+#ifdef STATS
+	lmerges++;
+#endif
+	pentry = &merge_log[value-0xe0000001];
+#ifdef DEBUG
+	if (DEBUG(output_token)) {
+	    fprintf (debugfile, "%x -> %x,%x (%u)\n", value, pentry->p1, pentry->p2, stack_depth);
+	}
+#endif
+	stack[stack_depth++] = pentry->p1;
+	stack[stack_depth++] = pentry->p2;
+	
+	do {
+	    value = stack[--stack_depth];
+	    assert (stack_depth < STACK_SIZE);
+	    
+	    if (value <= 0xe0000000) {
+		pset->insert(value);
+	    } else {
+		if (seen_indices.insert(value).second) {
+		    pentry = &merge_log[value-0xe0000001];
+#ifdef DEBUG
+		if (DEBUG(output_token)) {
+		    fprintf (debugfile, "%x -> %x,%x (%u)\n", value, pentry->p1, pentry->p2, stack_depth);
+		}
+#endif
+#ifdef STATS
+		lmerges++;
+#endif
+		stack[stack_depth++] = pentry->p1;
+		stack[stack_depth++] = pentry->p2;
+		}
+	    }
+	} while (stack_depth);
+	pset->erase(0);	
+    }	
+
+
+    for (auto iter2 = pset->begin(); iter2 != pset->end(); iter2++) {
+	if (*iter2 < 0xc0000000 && !start_flag) {
+	    PUT_QVALUE2 (output_token,*iter2,outputq_hdr,outputq_buf,bucket_cnt, bucket_stop);
+#ifdef STATS
+	    lvalues_sent += 2;
+#endif
+#ifdef DEBUG
+	    if (DEBUG(output_token)) {
+		fprintf (debugfile, "output %x to unresolved value %x (merge)\n", output_token, *iter2);
+	    }
+#endif
+	} else {
+	    if (start_flag) {
+		PRINT_RVALUE2 (output_token,*iter2,resolvedptr,resolvedstop);
+#ifdef DEBUG
+		if (DEBUG(output_token)) {
+		    fprintf (debugfile, "output %x to resolved start input %x (merge)\n", output_token, *iter2);
+		}
+#endif
+	    } else {
+		PRINT_RVALUE2 (output_token,*iter2-0xc0000000,resolvedptr,resolvedstop);
+#ifdef DEBUG
+		if (DEBUG(output_token)) {
+		    fprintf (debugfile, "output %x to resolved input %x (merge)\n", output_token,*iter2-0xc0000000);
+		}
+#endif
+	    }
+	}
+    }
+    if (cached) { 
+	addr_cache[stvalue % CACHE_ENTRIES].lock.read_unlock(); //we're done!
+    }
+    else { 
+	//we need to add ourselves to the cache:
+	addr_cache[stvalue % CACHE_ENTRIES].lock.write_lock();
+	
+	//if this isn't true than someone else updated it while we were building!
+	if(addr_cache[stvalue % CACHE_ENTRIES].start_value != stvalue) { 
+	    if (addr_cache[stvalue % CACHE_ENTRIES].initialized) {
+		delete addr_cache[stvalue %CACHE_ENTRIES].pset; 
+	    }
+	    
+	    addr_cache[stvalue % CACHE_ENTRIES].start_value = stvalue;
+	    addr_cache[stvalue % CACHE_ENTRIES].pset = pset;
+	    addr_cache[stvalue % CACHE_ENTRIES].initialized = true;
+	}
+	addr_cache[stvalue % CACHE_ENTRIES].lock.write_unlock();
+    }
+}
+#endif
+
 
 static long 
 setup_aggregation (const char* dirname, int& outputfd, int& inputfd, int& addrsfd)
@@ -1425,10 +1705,24 @@ struct address_par_data {
     u_long                          laresolved;
     u_long                          laindirects;
     u_long                          lmerges;
+    u_long                          lupairs; 
+    u_long                          lumerges; 
     struct timeval                  tv_start;
     struct timeval                  tv_end;
 #endif
 };
+
+
+struct pair_entry { 
+    mutex lock;
+    u_long otoken;
+    u_long value;
+    bool initialized;
+};
+#define PAIR_ENTRIES (1<<13)   
+struct pair_entry pair_cache[PAIR_ENTRIES];
+
+
 
 static void* 
 do_addresses (void* pdata)
@@ -1463,6 +1757,34 @@ do_addresses (void* pdata)
 	    fprintf (debugfile, "otoken %x(%x/%x) to value %lx\n", otoken+output_token, otoken, output_token, (long) value);
 	}
 #endif
+
+#ifdef USE_CACHE
+
+	u_long h1 = set_hasher()(otoken);
+	u_long h2 = set_hasher()(value);
+	h1 ^= (h1 >> 11); 
+
+	u_long cindex = (h1 ^ h2) % PAIR_ENTRIES; 
+	pair_cache[cindex].lock.lock();
+	if (pair_cache[cindex].otoken == otoken &&
+	    pair_cache[cindex].value == value && 
+	    pair_cache[cindex].initialized) { 
+	    //we're done! we've already processed this before
+	    pair_cache[cindex].lock.unlock();
+#ifdef STATS
+	    skips ++;
+#endif
+	   
+	    continue;
+	}
+	else { 
+	    pair_cache[cindex].otoken = otoken;
+	    pair_cache[cindex].value = value;
+	    pair_cache[cindex].initialized = true;
+	    pair_cache[cindex].lock.unlock();
+	}
+#endif	           
+
 	auto iter = paddress_map->find(value);
 	if (iter == paddress_map->end()) {
 #ifdef DEBUG
@@ -1542,6 +1864,13 @@ do_addresses (void* pdata)
 		// Maps to merge
 #ifdef STATS
 		laindirects++;
+
+		//add this to the seen merges
+//		seen_merges.insert(iter->second);
+//		ms_lock.lock();
+//		global_ms_count[iter->second] ++; //this apparently works! 
+//		ms_lock.unlock();
+
 #endif
 #ifdef DEBUG
 		if (DEBUG(otoken+output_token)||DEBUG(otoken)) {
@@ -1555,7 +1884,11 @@ do_addresses (void* pdata)
 		}
 #endif
 #ifdef STATS
-		map_iter_par (iter->second, otoken+output_token, *stack, wbucket_cnt, wbucket_stop, resolvedptr, resolvedstop, lvalues_sent, lmerges);
+#ifdef USE_CACHE
+		map_iter_par_addr(iter->second, otoken+output_token, *stack, wbucket_cnt, wbucket_stop, resolvedptr, resolvedstop, lvalues_sent, lmerges);
+#else
+		map_iter_par(iter->second, otoken+output_token, *stack, wbucket_cnt, wbucket_stop, resolvedptr, resolvedstop, lvalues_sent, lmerges);
+#endif
 #else
 		map_iter_par (iter->second, otoken+output_token, *stack, wbucket_cnt, wbucket_stop, resolvedptr, resolvedstop);
 #endif
@@ -1575,7 +1908,9 @@ do_addresses (void* pdata)
     apdata->lunmodified = lunmodified;
     apdata->laresolved = laresolved;
     apdata->laindirects = laindirects;
-    apdata->lmerges = lmerges;
+    apdata->lmerges = lmerges; //lmerges 
+//    apdata->lumerges = seen_merges.size();
+//    apdata->lupairs = seen_pairs.size();
 #endif
     return NULL;
 }
@@ -1633,6 +1968,8 @@ void process_addresses (uint32_t output_token, unordered_map<taint_t,taint_t>& a
 	aresolved += address_data[i].laresolved;
 	aindirects += address_data[i].laindirects;
 	merges += address_data[i].lmerges;
+//	upairs += address_data[i].lupairs;
+//	umerges += address_data[i].lumerges; 
 	u_long ms = ms_diff(address_data[i].tv_end, address_data[i].tv_start);
 	total_address_ms += ms;
 	if (ms > longest_address_ms) longest_address_ms = ms;
@@ -1969,9 +2306,26 @@ print_stats (const char* dirname, u_long mdatasize, u_long odatasize, u_long ida
 	     new_live_inputs, new_live_merges, new_live_merge_zeros, new_live_notlive);
     fprintf (statsfile, "Unique indirects %ld\n", (long) resolved.size());
     fprintf (statsfile, "Values rcvd %lu sent %lu\n", values_rcvd, values_sent);
+    
+    fprintf (statsfile, "Cache hits %lu\n", cache_hits);
+    fprintf (statsfile, "skips %lu\n",skips);
+//    fprintf (statsfile, "Unique pairs %ld\n",upairs);
+//    fprintf (statsfile, "Unique merges %ld\n",umerges);
+//    fprintf (statsfile, "Global Unique pairs %u\n",global_pairs.size());
 
+//    fprintf (statsfile, "there are %u entries in global_ms_count\n",
+//	     global_ms_count.size());
 
+//    for (auto t : global_ms_count){
+//	fprintf(statsfile,"0x%x occurs %lu times, resolves to %lu, has %lu chains\n",
+//		t.first, t.second, global_ms_sizes[t.first], global_ms_chains[t.first]);
+//    }
 
+//    for (auto t : global_ms_sizes){
+//	fprintf(statsfile,"0x%x resolves to %lu entries\n",
+//		t.first, t.second);
+//    }
+    
 
     if (preprune_prior_mdatasize) {
 	fprintf (statsfile, "Local preprune reduced merge data size from %lu to %lu (%.3lf%%)\n", preprune_prior_mdatasize, mdatasize, 
