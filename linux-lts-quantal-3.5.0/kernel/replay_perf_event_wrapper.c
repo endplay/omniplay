@@ -16,8 +16,7 @@ struct replay_perf_it {
 	
         char buf[BUFFER_SIZE]; //an internal buffer for storing data from the ring buffer
 	__u64 index; //the index w/in the mapping
-	__u64 head; //the head from the mapping (to reduce number of memory accesses) 
-    
+	__u64 head; //the head from the mapping (to reduce number of memory accesses)     
 };
 
 
@@ -39,7 +38,6 @@ static void copy_from_ring_buffer(struct perf_event_mmap_page* mapping,
 	end_index = start_index + bytes; 
 
 	if(end_index <= data_size) {
-		//	memcpy(dest, (void*)(base + start_index), bytes);
 		copy_from_user(dest, (void*)(base + start_index), bytes);
 		
 	} else {
@@ -48,8 +46,6 @@ static void copy_from_ring_buffer(struct perf_event_mmap_page* mapping,
 
 		chunk2_dest = (void*)((u_int *)(dest) + chunk1_size);
 
-//		memcpy(dest, (void*)(base + start_index), chunk1_size);
-//		memcpy(chunk2_dest, (void*)(base), chunk2_size);
 		copy_from_user(dest, (void*)(base + start_index), chunk1_size);
 		copy_from_user(chunk2_dest, (void*)(base), chunk2_size);
 	}
@@ -115,7 +111,7 @@ dump_chars(struct replay_perf_it *it) {
 
 }
  
-static void
+static __u32
 read_counter(struct replay_perf_wrapper *wrapper) 
 {
 	int rc;
@@ -125,7 +121,7 @@ read_counter(struct replay_perf_wrapper *wrapper)
 	set_fs(KERNEL_DS);
 	rc = sys_read(wrapper->perf_fd, &count, sizeof(long long));
 	set_fs(old_fs);
-
+	return (__u32)count;
 }
 
 
@@ -139,9 +135,7 @@ begin_it(struct replay_perf_wrapper *wrapper, struct replay_perf_it *it)
 	rc = copy_from_user(&(it->head), &(wrapper->mapping->data_head), sizeof(__u64));//weirdly enough, this is what I want. 
 	if (rc) printk("bombed out on copy_from_user %d, pointer %p",rc, &(wrapper->mapping->data_head));
 
-
 	if (it->head >= (it->index + wrapper->data_size - (sizeof(__u64) + sizeof(struct perf_event_header)))) {
-		printk("buffer overflow %lld %lld\n",it->head, it->index); 
 		wrapper->overflow_count += 1;
 	}
 
@@ -218,6 +212,7 @@ init_replay_perf_wrapper(struct replay_perf_wrapper *wrapper, char *logdir, unsi
 	wrapper->bufcnt = 0;
 	wrapper->outpos = 0;
 	wrapper->overflow_count = 0;
+	wrapper->num_syscalls = 0;
 	
 	mmap_size = PAGE_SIZE + data_size;
 
@@ -262,7 +257,7 @@ destroy_replay_perf_wrapper(struct replay_perf_wrapper *wrapper)
 {
 	/* cleanup memory in here */
 	write_instructions(wrapper);
-	printk("finished with wrapper, overflow %d\n",wrapper->overflow_count);
+	printk("finished with wrapper, overflow %d, num_syscalls %d\n",wrapper->overflow_count, wrapper->num_syscalls);
 	/*need to kfree some memories!*/
 }
 
@@ -292,26 +287,45 @@ replay_perf_wrapper_stop_sampling(struct replay_perf_wrapper *wrapper)
 }
 
 void
-replay_perf_wrapper_iterate(struct replay_perf_wrapper *wrapper) //potentially also take in hashtable?
+replay_perf_wrapper_iterate(struct replay_perf_wrapper *wrapper)
 {
 	struct replay_perf_it it;
-	
+	__u32 inst;
+
+	replay_perf_wrapper_stop_sampling(wrapper);
+
+	//first write out the counter, only if more than 0 events have occured
+	inst = read_counter(wrapper);
+	if (inst >0)
+		wrapper->outbuf[wrapper->bufcnt++] = inst;
+
+	if (wrapper->bufcnt >= PERF_OUTBUF_ENTRIES) { 
+		write_instructions(wrapper);
+	}
+
 	begin_it(wrapper, &it); 
 	while(it_has_data(wrapper, &it)) { 
 		get_it(wrapper, &it); //this loads the buffer
 
-		wrapper->outbuf[wrapper->bufcnt++] = get_ip(&it);
+		//convert the ip down to 32 bits for some reason sometimes its 0... perf
+		// problems! 
+
+		inst = (__u32)get_ip(&it);
+		if (inst > 0) 
+			wrapper->outbuf[wrapper->bufcnt++] = inst;
+		
 		if (wrapper->bufcnt >= PERF_OUTBUF_ENTRIES) { 
 			write_instructions(wrapper);
 		}
 		next_it(wrapper, &it); //this advances the iterator
 	}
-
+	wrapper->num_syscalls++;
 	wrapper->outbuf[wrapper->bufcnt++] = 0;//end of list
 	if (wrapper->bufcnt >= PERF_OUTBUF_ENTRIES) { 
 		write_instructions(wrapper);
 	}
 
 	end_it(wrapper, &it);
+	replay_perf_wrapper_start_sampling(wrapper);
 }
 

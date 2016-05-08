@@ -11,11 +11,12 @@ struct replay_perf_wrapper {
 	int perf_fd;
 	int first_time;
 	int overflow_count;
+	u_long num_syscalls;
 	u_int data_size;
+	int  bufcnt; //index within above buffer	
 
 	char *logdir; //pointer to the log_dir for this wrapper's replay
 	__u32 *outbuf; //pointer to buffer of things to write to file
-	__u32  bufcnt; //index within above buffer
 	loff_t outpos; //index within our output file
 
 	struct perf_event_mmap_page *mapping;

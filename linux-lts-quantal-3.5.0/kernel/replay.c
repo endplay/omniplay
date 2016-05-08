@@ -5800,9 +5800,7 @@ record_timings (struct replay_thread* prept, short syscall)
 
 	if (is_perf_sampling())
 	{
-	       replay_perf_wrapper_stop_sampling(&(prepg->rg_perf_wrapper));
 	       replay_perf_wrapper_iterate(&(prepg->rg_perf_wrapper));
-	       replay_perf_wrapper_start_sampling(&(prepg->rg_perf_wrapper));
 	}
 
 	if (prepg->rg_timecnt == REPLAY_TIMEBUF_ENTRIES) write_timings (prepg);
