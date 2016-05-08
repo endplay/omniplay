@@ -380,7 +380,6 @@ int arch_restore_additional_pages (void* addr)
 				      VM_MAYREAD|VM_MAYWRITE|VM_MAYEXEC,
 				      vdso32_pages);
 	if (ret) goto up_fail;
-
 	current_thread_info()->sysenter_return = VDSO32_SYMBOL((u_long) addr, SYSENTER_RETURN);
 
 up_fail:
@@ -391,6 +390,12 @@ up_fail:
 
 	return ret;
 }
+
+int arch_restore_sysenter_return(void *addr) 
+{
+	current_thread_info()->sysenter_return = VDSO32_SYMBOL((u_long) addr, SYSENTER_RETURN);
+}
+
 // REPLAY END
 
 #ifdef CONFIG_X86_64

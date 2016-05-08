@@ -13,6 +13,7 @@
 #define PIN_ATTACH_BLOCKED 2
 #define PIN_ATTACH_REDO    4
 
+
 #include <linux/signal.h>
 #include <linux/mm_types.h>
 
@@ -26,9 +27,9 @@ int fork_replay (char __user * logdir, const char __user *const __user *args,
 long replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 			 int follow_splits, int save_mmap, loff_t syscall_index, int attach_pid, int ckpt_at, int record_timing,
 			 u_long nfake_calls, u_long* fake_call_points);
-long replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char* linker, int fd, 
+long replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char *uniqueid, char* linker, int fd, 
 			      int follow_splits, int save_mmap, loff_t syscall_index, int attach_pid);
-long replay_full_ckpt_proc_wakeup (char* logdir, char* filename, int fd);
+long replay_full_ckpt_proc_wakeup (char* logdir, char* filename, char *uniqueid,int fd, int is_thread);
 
 /* Returns linker for exec to use */
 char* get_linker (void);
@@ -107,10 +108,14 @@ int make_logdir_for_replay_id (__u64 id, char* buf);
 char* copy_args (const char __user* const __user* args, const char __user* const __user* env, int* buflen);
 long replay_checkpoint_to_disk (char* filename, char* execname, char* buf, int buflen, __u64 parent_rg_id);
 long replay_resume_from_disk (char* filename, char** execname, char*** argsp, char*** envp, __u64* prg_id);
-long replay_full_resume_hdr_from_disk (char* filename, __u64* prg_id, int* pclock, u_long* pproccount, loff_t* ppos);
-long replay_full_checkpoint_hdr_to_disk (char* filename, __u64 rg_id, int clock, u_long proc_count, loff_t* ppos);
-long replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pid_t record_pid, long retval, loff_t logpos, u_long outptr, u_long consumed, u_long expclock, loff_t* ppos);
-long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, long* pretval, loff_t* plogpos, u_long* poutptr, u_long* pconsumed, u_long* pexpclock, loff_t* ppos);
+
+
+long replay_full_resume_hdr_from_disk (char* filename, __u64* prg_id, int* pclock, u_long* pproc_count, loff_t* ppos);
+long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_thread, long* pretval, loff_t* plogpos, u_long* poutptr, u_long* pconsumed, u_long* pexpclock, u_long* pthreadclock, u_long *ignore_flag, u_long *user_log_addr, u_long *child_tid,u_long *replay_hook, loff_t* ppos);
+
+long replay_full_checkpoint_hdr_to_disk (char* filename, __u64 rg_id, int clock, u_long proc_count, int use_threads, loff_t* ppos);
+long replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pid_t record_pid, int is_thread, long retval, loff_t logpos, u_long outptr, u_long consumed, u_long expclock, u_long pthread_block_clock, u_long ignore_flag, u_long user_log_addr,u_long replay_hook, loff_t* ppos);
+
 
 /* Helper functions for checkpoint/resotre */
 int checkpoint_replay_cache_files (struct task_struct* tsk, struct file* cfile, loff_t* ppos);

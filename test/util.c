@@ -105,7 +105,7 @@ int resume (int fd_spec, int pin, int gdb, int follow_splits, int save_mmap,
 }
 
 int resume_after_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int save_mmap, 
-		       char* logdir, char* linker, char* filename, loff_t attach_index, int attach_pid)
+		       char* logdir, char* linker, char* filename,char* uniqueid, loff_t attach_index, int attach_pid)
 {
     fprintf(stderr, "calling resume_after_ckpt\n");
     struct wakeup_ckpt_data data;
@@ -114,6 +114,7 @@ int resume_after_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int sav
     data.logdir = logdir;
     data.filename = filename;
     data.linker = linker;
+    data.uniqueid = uniqueid;
     data.fd = fd_spec;
     data.follow_splits = follow_splits;
     data.save_mmap = save_mmap;
@@ -123,11 +124,13 @@ int resume_after_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int sav
 
 }
 
-int resume_proc_after_ckpt (int fd_spec, char* logdir, char* filename)
+int resume_proc_after_ckpt (int fd_spec, char* logdir, char* filename, char* uniqueid, int is_thread)
 {
     struct wakeup_ckpt_data data;
     data.logdir = logdir;
     data.filename = filename;
+    data.uniqueid = uniqueid;
+    data.is_thread = is_thread;
     data.fd = fd_spec;
     return ioctl (fd_spec, SPECI_CKPT_PROC_RESUME, &data);    
 }

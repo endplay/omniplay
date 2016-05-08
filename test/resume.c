@@ -11,10 +11,37 @@
 
 #include <sys/types.h>
 
+#define MAX_THREADS 128 //arbitrary... but works
+
 void print_help(const char *program) {
 	fprintf (stderr, "format: %s <logdir> [-p] [-f] [-m] [-g] [--pthread libdir] [--attach_offset=pid,sysnum] [--ckpt_at=replay_clock_val] [--from_ckpt=replay_clock-val] [--fake_calls=c1,c2...] \n",
 			program);
 }
+
+
+struct ckpt_data { 
+    int fd;
+    char logdir[4096];
+    char filename[4096];
+    char uniqueid[4096];       
+};
+
+
+
+void *start_thread(void *td) {
+    int rc;
+    struct ckpt_data *cd = (struct ckpt_data *) td;
+    
+    fprintf(stderr,"starting thread\n");
+    rc = resume_proc_after_ckpt (cd->fd, cd->logdir, cd->filename, cd->uniqueid, 1);
+    if (rc < 0) {
+	perror ("resume after ckpt");
+	exit (-1);
+    }
+}
+
+
+
 
 int main (int argc, char* argv[])
 {
@@ -30,10 +57,19 @@ int main (int argc, char* argv[])
 	int ckpt_at = 0;
 	int from_ckpt = 0;
 	int record_timing = 0;
-	char filename[4096], pathname[4096];
+	int use_threads = 0;
+	char filename[4096], pathname[4096], uniqueid[4096];
 	u_long proc_count, i;
 	u_long nfake_calls = 0;
 	u_long* fake_calls = NULL;
+
+	struct ckpt_data cd; 
+	pthread_t thread[MAX_THREADS];
+
+	srand(getpid());
+	sprintf(uniqueid,"%d",rand()); //psuedo-randomly generated uniqueid
+
+
 
 	struct option long_options[] = {
 		{"pthread", required_argument, 0, 0},
@@ -191,19 +227,47 @@ int main (int argc, char* argv[])
 			perror ("read proc count");
 			return rc;
 		}
+		rc = read (cfd, &use_threads, sizeof(use_threads));
+		if (rc != sizeof(use_threads)) {
+			perror ("read use threads");
+			return rc;
+		}
 		close(cfd);
-		for (i = 1; i < proc_count; i++) {
+
+
+
+		if (use_threads) {
+		    if (proc_count > MAX_THREADS) { 
+			perror("we need more threads!");
+			return -1;
+		    }
+
+		    cd.fd = fd;
+		    strcpy(cd.logdir, argv[base]);
+		    strcpy(cd.filename, filename);
+		    strcpy(cd.uniqueid,uniqueid);
+		    for (i = 1; i < proc_count; i++) {
+			rc = pthread_create(&thread[i], NULL, start_thread,(void *)&cd);
+			if (rc) { 
+			    printf("hmm... what rc is %d\n",rc);
+			    exit(-1);		
+			}
+
+		    }
+		}
+		else {
+		    for (i = 1; i < proc_count; i++) {
 			pid = fork ();
 			if (pid == 0) {
-				rc = resume_proc_after_ckpt (fd, argv[base], filename);
-				if (rc < 0) {
-					perror ("resume after ckpt");
+			    rc = resume_proc_after_ckpt (fd, argv[base], filename, uniqueid, 0);
+			    if (rc < 0) {
+				perror ("resume after ckpt");
 					exit (-1);
-				}
+			    }
 			}
+		    }
 		}
-		rc = resume_after_ckpt (fd, attach_pin, attach_gdb, follow_splits, save_mmap, argv[base], libdir, filename,
-					attach_index, attach_pid);
+		rc = resume_after_ckpt (fd, attach_pin, attach_gdb, follow_splits, save_mmap, argv[base], libdir, filename, uniqueid,attach_index, attach_pid);
 	} else {
 		rc = resume_with_ckpt (fd, attach_pin, attach_gdb, follow_splits, save_mmap, argv[base], libdir,
 				       attach_index, attach_pid, ckpt_at, record_timing, nfake_calls, fake_calls);

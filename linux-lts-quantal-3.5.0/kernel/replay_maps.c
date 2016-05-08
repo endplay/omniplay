@@ -296,3 +296,9 @@ int open_mmap_cache_file (dev_t dev, u_long ino, struct timespec mtime, int is_w
 
 	return fd;
 }
+
+
+int get_next_mmap_file(void) { 
+	int c_val = atomic_inc_return(&counter);
+	return c_val;
+}	

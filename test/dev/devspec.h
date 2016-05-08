@@ -23,6 +23,7 @@ struct wakeup_data {
 	int             gdb;
 	char __user *   logdir;
 	char __user *   linker;
+        char __user *   uniqueid;
 	int             fd;
 	int             follow_splits;
 	loff_t          attach_index;
@@ -40,11 +41,13 @@ struct wakeup_ckpt_data {
 	char __user * logdir;
 	char __user * filename;
 	char __user * linker;
+        char __user * uniqueid;
 	int           fd;
 	int           follow_splits;
 	loff_t        attach_index;
 	int           attach_pid;
 	int	      save_mmap;
+        int           is_thread;
 };
 
 struct get_used_addr_data {
