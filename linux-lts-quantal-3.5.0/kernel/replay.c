@@ -1063,7 +1063,7 @@ struct replay_thread {
 	long rp_ckpt_save_expected_clock; // Really hard to get this info on restore, so save it
 	struct semaphore* rp_ckpt_restart_sem; // Really hard to get this info on restore, so save it
 
-
+	atomic_t ckpt_restore_done;            // finished with checkpoint restore
 	u_long rp_ckpt_pthread_block_clock; //it doesn't seem to be saved anywhere, and seems are to get; 
 
         struct replay_cache_files* rp_cache_files; // Info about open cache files
@@ -2230,7 +2230,7 @@ new_replay_thread (struct replay_group* prg, struct record_thread* prec_thrd, u_
 	prp->rp_pin_attach_redo_munmap = NULL;
 
 	prp->rp_ckpt_pthread_block_clock = 0;
-
+	atomic_set(&prp->ckpt_restore_done,1); //assume there isn't a checkpoint
 	prp->rp_pin_thread_data = 0;
 	prp->rp_pin_curthread_ptr = NULL;
 
@@ -3962,6 +3962,7 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char *
 		return -EINVAL;
 	}
 
+	printk("%d in replay_full_ckpt_wakeup\n",current->pid);
 	// First create a record group and thread for this replay
 	precg = new_record_group (logdir);
 	if (precg == NULL) return -ENOMEM;
@@ -3985,15 +3986,20 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char *
 		destroy_record_group (precg);
 		return -ENOMEM;
 	}
+
+
+
+	//I grab the lock just so that get_attach status doesn't freak out. 
+	rg_lock (precg);
 	
 	//we shouldn't recheckpoint:
 	prepg->finished_ckpt = 1;
 
-
 	prept->rp_status = REPLAY_STATUS_RUNNING;
 	// Since there is no recording going on, we need to dec record_thread's refcnt
 	atomic_dec(&prect->rp_refcnt);
-	
+	atomic_set(&prept->ckpt_restore_done,0);  //we aren't done restoring
+
 
 	// Restore the checkpoint
 	strcpy (ckpt, logdir);
@@ -4010,6 +4016,7 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char *
 	MPRINT ("Pid %d set_record_group_id to %llu\n", current->pid, rg_id);
 	current->replay_thrd->rp_record_thread->rp_group->rg_id = rg_id;
 	atomic_set(precg->rg_pkrecord_clock, clock);
+	rg_unlock (precg); //I'm worried that the other threads might need to grab the lock later	
 
 	MPRINT ("Number of checkpoint processes %lu\n", num_procs);
 	if (num_procs > 1) {
@@ -4066,8 +4073,9 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char *
 		strncpy (current->replay_thrd->rp_group->rg_rec_group->rg_linker, linker, MAX_LOGDIR_STRLEN);
 		MPRINT ("Set linker for replay process to %s\n", linker);
 	}
-	
+
 	if (num_procs > 1) {
+
 		DPRINT ("Pid %d: waking %lu checkpoint processes\n", current->pid, num_procs-1);
 		pckpt_waiter->pos = pos;
 		for (i = 0; i < num_procs-1; i++) {
@@ -4129,7 +4137,10 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char *
 		rc = sys_close (fd);
 		if (rc < 0) printk ("replay_full_ckpt_wakeup: unable to close fd %d, rc=%ld\n", fd, rc);
 	}
+
 	MPRINT ("replay_full_ckpt_wakeup returning retval %ld\n", retval);
+	atomic_set(&prept->ckpt_restore_done,1);
+
 	return retval;
 }
 EXPORT_SYMBOL(replay_full_ckpt_wakeup);
@@ -4207,9 +4218,12 @@ replay_full_ckpt_proc_wakeup (char* logdir, char* filename, char *uniqueid, int 
 	atomic_dec(&prect->rp_refcnt);
 
 	// Fix up the circular thread list
+	rg_lock (pckpt_waiter->prepg->rg_rec_group); //I'm worried that the other threads might need to grab the lock later
+
 	tmp = ds_list_first(pckpt_waiter->prepg->rg_replay_threads);
 	prept->rp_next_thread = tmp->rp_next_thread;
 	tmp->rp_next_thread = prept;
+	rg_unlock (pckpt_waiter->prepg->rg_rec_group); //I'm worried that the other threads might need to grab the lock later
 
 	mutex_lock(&ckpt_mutex); 
 	record_pid = replay_full_resume_proc_from_disk (pckpt_waiter->ckpt, pckpt_waiter->clock_pid, is_thread,&retval, &prect->rp_read_log_pos, 
@@ -4231,6 +4245,7 @@ replay_full_ckpt_proc_wakeup (char* logdir, char* filename, char *uniqueid, int 
 	prect->rp_record_pid = record_pid;
 	rc = skip_and_read_log_data (prect);
 	if (rc < 0) return rc;
+
 
 	// Restart the system call - assume sysenter as a hack
 	get_pt_regs(NULL)->ip -= 2;
@@ -6081,21 +6096,29 @@ get_attach_status(pid_t pid)
 {
 	struct task_struct* tsk;
 	struct replay_thread* tmp;
+	int cdone = 0;
 
 	tsk = find_task_by_vpid(pid);
 	if (tsk) {
-		if (tsk->replay_thrd && tsk->replay_thrd->rp_group) {
-			if (tsk->replay_thrd->rp_group->rg_attach_device == ATTACH_PIN) {
-				tmp = tsk->replay_thrd;
-				do {
-				    if (tmp->app_syscall_addr) return tmp->rp_replay_pid;
-				    tmp = tmp->rp_next_thread;
-				} while (tmp != tsk->replay_thrd);
+		if (tsk->replay_thrd) { 
+			cdone = atomic_read(&tsk->replay_thrd->ckpt_restore_done);
+			if (cdone && tsk->replay_thrd->rp_group) {
+				if (tsk->replay_thrd->rp_group->rg_attach_device == ATTACH_PIN) {
+					tmp = tsk->replay_thrd;
+					do {
+						if (tmp->app_syscall_addr) {
+							return tmp->rp_replay_pid;
+							
+						}
+						tmp = tmp->rp_next_thread;
+					} while (tmp != tsk->replay_thrd);
+				}
+				return 0;
+			} else {
+				return -EINVAL; // Not a replay task
 			}
-			return 0;
-		} else {
-			return -EINVAL; // Not a replay task
 		}
+		return -EINVAL;
 	} else {
 		return -ESRCH;
 	}
