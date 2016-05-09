@@ -3935,6 +3935,8 @@ __init_ckpt_waiters (void) // Requires ckpt_lock be locked
 {
 	if (ckpt_waiters == NULL) {
 		ckpt_waiters = ds_list_create (NULL, 0, 1);
+
+		printk("ckpt_waiters is %p\n",ckpt_waiters);
 		if (ckpt_waiters == NULL) {
 			printk ("Cannot allocate ckpt wait list\n");
 			return -ENOMEM;
