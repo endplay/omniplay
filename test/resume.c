@@ -66,10 +66,7 @@ int main (int argc, char* argv[])
 	struct ckpt_data cd; 
 	pthread_t thread[MAX_THREADS];
 
-	srand(getpid());
-	sprintf(uniqueid,"%d",rand()); //psuedo-randomly generated uniqueid
-
-
+	sprintf(uniqueid,"%d",getpid()); //use the parent's pid as the uniqueid
 
 	struct option long_options[] = {
 		{"pthread", required_argument, 0, 0},
@@ -267,7 +264,7 @@ int main (int argc, char* argv[])
 			}
 		    }
 		}
-		rc = resume_after_ckpt (fd, attach_pin, attach_gdb, follow_splits, save_mmap, argv[base], libdir, filename, uniqueid,attach_index, attach_pid);
+		rc = resume_after_ckpt (fd, attach_pin, attach_gdb, follow_splits, save_mmap, argv[base], libdir, filename, uniqueid,attach_index, attach_pid,nfake_calls,fake_calls);
 	} else {
 		rc = resume_with_ckpt (fd, attach_pin, attach_gdb, follow_splits, save_mmap, argv[base], libdir,
 				       attach_index, attach_pid, ckpt_at, record_timing, nfake_calls, fake_calls);

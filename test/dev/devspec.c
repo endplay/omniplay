@@ -188,10 +188,19 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 		} else {
 			device = 0; //NONE
 		}
+		if (wcdata.nfake_calls) {
+		    fake_calls = kmalloc (wcdata.nfake_calls*sizeof(u_long), GFP_KERNEL);
+		    if (fake_calls == NULL) return -ENOMEM;
+		    if (copy_from_user (fake_calls, wcdata.fake_calls, wcdata.nfake_calls*sizeof(u_long))) {
+			kfree (fake_calls);
+			return -EFAULT;
+		    }
+		}
+
 
 		rc = replay_full_ckpt_wakeup(device, logdir, filename, tmp, uniqueid, wcdata.fd,
 					     wcdata.follow_splits, wcdata.save_mmap, wcdata.attach_index,
-					     wcdata.attach_pid);
+					     wcdata.attach_pid,wcdata.nfake_calls, fake_calls);
 
 		if (tmp) putname (tmp);
 		return rc;

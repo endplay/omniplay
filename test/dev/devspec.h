@@ -48,6 +48,8 @@ struct wakeup_ckpt_data {
 	int           attach_pid;
 	int	      save_mmap;
         int           is_thread;
+	u_long          nfake_calls;
+	u_long __user * fake_calls;    
 };
 
 struct get_used_addr_data {

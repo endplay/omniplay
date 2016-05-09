@@ -647,6 +647,8 @@ unsigned int replay_perf_sampling_type = PERF_TYPE_HARDWARE; //default to counti
 unsigned int replay_perf_sampling_config = PERF_COUNT_HW_INSTRUCTIONS; //default to counting instructions
 unsigned int replay_perf_data_size = (2 * PAGE_SIZE); //default to counting instructions
 
+unsigned int replay_ckpt_dir = 0;  //this means do nothing
+
 
 // If the replay clock is greater than this value, MPRINT out the syscalls made by pin
 unsigned long pin_debug_clock = LONG_MAX;
@@ -3826,8 +3828,11 @@ replay_full_ckpt (long rc)
 	prepg = prept->rp_group;
 	precg = prepg->rg_rec_group;
 	clock = atomic_read (precg->rg_pkrecord_clock);
-	sprintf (ckpt, "%s/ckpt.%d", precg->rg_logdir, clock);
-
+	if(replay_ckpt_dir != 0) {
+		sprintf (ckpt, "%s/%d/ckpt.%d", precg->rg_logdir, replay_ckpt_dir,clock);
+	}else {
+		sprintf (ckpt, "%s/ckpt.%d", precg->rg_logdir, clock);
+	}
 	MPRINT ("replay_full_ckpt saving rc %ld\n", rc);
 	// Determine how many processes to checkpoint - could make this more efficient of course
 	iter = ds_list_iter_create(current->replay_thrd->rp_group->rg_replay_threads);
@@ -3909,8 +3914,8 @@ replay_full_ckpt (long rc)
 
 // For processes waiting for a checkpoint restore
 struct ckpt_waiter {
-	char                 ckpt[MAX_LOGDIR_STRLEN+20]; // Checkpoint being restored
-	char                 uniqueid[MAX_LOGDIR_STRLEN+20]; //the unique id of this checkpoint
+	char                 ckpt[MAX_LOGDIR_STRLEN+1024]; // Checkpoint being restored
+	char                 uniqueid[MAX_LOGDIR_STRLEN+1024]; //the unique id of this checkpoint not sure
 	struct replay_group* prepg;                      // Replay group being restored
 	loff_t               pos;                        // Position in ckpt file to start reading from
 	pid_t                clock_pid;                  // Pid used for setting up the clock pid
@@ -3941,7 +3946,7 @@ __init_ckpt_waiters (void) // Requires ckpt_lock be locked
 
 long
 replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char *linker, char* uniqueid, int fd, 
-			 int follow_splits, int save_mmap, loff_t attach_index, int attach_pid)
+			 int follow_splits, int save_mmap, loff_t attach_index, int attach_pid, u_long nfake_calls, u_long *fake_call_points)
 {
 	struct ckpt_waiter* pckpt_waiter = NULL;
 	struct record_group* precg; 
@@ -4028,8 +4033,8 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char *
 			printk ("replay_full_ckpt_wakeup cannot allocate wait structure\n");
 			return -ENOMEM;
 		}
-		strcpy (pckpt_waiter->ckpt, ckpt);
-		strcpy (pckpt_waiter->uniqueid, uniqueid);
+		strncpy (pckpt_waiter->ckpt, ckpt, MAX_LOGDIR_STRLEN+1024);
+		strncpy (pckpt_waiter->uniqueid, uniqueid, MAX_LOGDIR_STRLEN+1024);
 		pckpt_waiter->prepg = prepg;
 		pckpt_waiter->clock_pid = current->pid;
 		pckpt_waiter->procs_left = num_procs - 1; //we start with a full house... except for ourself!
@@ -4123,8 +4128,17 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char *
 	}
 	set_thread_flag(TIF_IRET); // We are updating regs so need full iret
 
+
+	if (nfake_calls) {
+		prepg->rg_nfake_calls = nfake_calls;
+		prepg->rg_fake_calls = fake_call_points;
+		atomic_set(precg->rg_pkrecord_clock+1,fake_call_points[0]);        
+	}
+
+
+
 	//finally, remove the ckpt_waiter entry we created: 
-	if (num_procs > 1) { 
+	if (num_procs > 1) { 		
 		if (ds_list_remove(ckpt_waiters, pckpt_waiter) == NULL) { 
 			printk("hmm... couldn't remove?");
 		}
@@ -6445,7 +6459,7 @@ sys_pthread_block (u_long clock)
 	prt = current->replay_thrd;
 	prg = prt->rp_group;
 	
-	if (prt->rp_ckpt_pthread_block_clock) { 
+	if (prt->rp_status == REPLAY_STATUS_RESTART_CKPT && prt->rp_ckpt_pthread_block_clock) { 
 		printk("hmm... this guy is a restart huh? %d wants to wait until %lu\n",current->pid, prt->rp_ckpt_pthread_block_clock);
 		clock = prt->rp_ckpt_pthread_block_clock; 
 	}
@@ -15909,6 +15923,14 @@ static struct ctl_table replay_ctl[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec,
 	},
+	{
+		.procname	= "replay_ckpt_dir",
+		.data		= &replay_ckpt_dir,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+	},
+
 	{0, },
 };
 
