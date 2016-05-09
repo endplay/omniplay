@@ -4138,13 +4138,15 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char *
 
 
 	//finally, remove the ckpt_waiter entry we created: 
-	if (num_procs > 1) { 		
+	if (num_procs > 1) { 	
+		mutex_lock(&ckpt_mutex); 	
 		if (ds_list_remove(ckpt_waiters, pckpt_waiter) == NULL) { 
 			printk("hmm... couldn't remove?");
 		}
 		else { 
 			KFREE(pckpt_waiter);
 		}
+		mutex_unlock(&ckpt_mutex); 	
 	}
 
 	if (fd >= 0) {
