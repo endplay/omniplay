@@ -51,7 +51,7 @@ typedef PagedBitmap<MAX_TAINTS, PAGE_BITS> bitmap;
 #define USE_CACHE
 
 #define STATS
-//#define WAIT_FOR 300 //wait for 5 mins
+//#define WAIT_FOR 240 //wait for 5 mins
 
 #define PREPRUNE_NONE   0
 #define PREPRUNE_LOCAL  1

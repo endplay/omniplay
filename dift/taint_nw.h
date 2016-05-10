@@ -7,8 +7,8 @@ extern "C" {
 
 /* Note: define exactly 1 of these 4 */
 //#define USE_NW
-#define USE_SHMEM
-//#define USE_FILE
+//#define USE_SHMEM
+#define USE_FILE
 //#define USE_NULL
 
 //#define RETAINT

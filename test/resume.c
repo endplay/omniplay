@@ -13,6 +13,9 @@
 
 #define MAX_THREADS 128 //arbitrary... but works
 
+
+#define USEMEM //use a ramfs? 
+
 void print_help(const char *program) {
 	fprintf (stderr, "format: %s <logdir> [-p] [-f] [-m] [-g] [--pthread libdir] [--attach_offset=pid,sysnum] [--ckpt_at=replay_clock_val] [--from_ckpt=replay_clock-val] [--fake_calls=c1,c2...] \n",
 			program);
@@ -59,6 +62,7 @@ int main (int argc, char* argv[])
 	int record_timing = 0;
 	int use_threads = 0;
 	char filename[4096], pathname[4096], uniqueid[4096];
+	int use_dir = 0;
 	u_long proc_count, i;
 	u_long nfake_calls = 0;
 	u_long* fake_calls = NULL;
@@ -173,6 +177,7 @@ int main (int argc, char* argv[])
 			break;
 		}
 	}
+
 	base = optind;
 
 	if (argc-base != 1) {
@@ -203,6 +208,7 @@ int main (int argc, char* argv[])
 		exit(EXIT_FAILURE);
 	}
 	pid = getpid();
+
 #if 0
 	printf("libdir: %s, ldpath: %s\n", libdir, ldpath);
 	printf("resume pid %d follow %d\n", pid, follow_splits);
@@ -211,8 +217,14 @@ int main (int argc, char* argv[])
 		attach_pid);
 #endif
 	if (from_ckpt > 0) {
+	    
 		sprintf (filename, "ckpt.%d", from_ckpt);
+#ifdef USEMEM
+		sprintf (pathname, "%s/7/ckpt.%d", argv[base], from_ckpt);
+#else
 		sprintf (pathname, "%s/ckpt.%d", argv[base], from_ckpt);
+#endif
+
 		printf ("restoring from %s\n", pathname);
 		cfd = open (pathname, O_RDONLY);
 		if (cfd < 0) {

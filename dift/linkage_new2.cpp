@@ -331,6 +331,9 @@ struct timeval begin_tv, end_tv;
 u_long inst_instrumented = 0;
 u_long traces_instrumented = 0;
 uint64_t instrument_time = 0;
+u_long collisions = 0;
+u_long hash_flushes = 0;
+//u_long entries = 0;
 FILE* stats_f;
 #endif
 
@@ -428,8 +431,11 @@ static int dift_done ()
 	fprintf (stats_f, "Traces instrumented: %ld\n", traces_instrumented);
 #ifdef RECORD_TRACE_INFO
 	fprintf (stats_f, "Traces executed: %ld\n", trace_total_count/sizeof(u_long));
+	fprintf (stats_f, "collisions: %lu us\n", collisions);
+	fprintf (stats_f, "has_flushes: %lu us\n", hash_flushes);
 #endif
 	fprintf (stats_f, "Instrument time: %lld us\n", instrument_time);
+
 	fprintf (stats_f, "DIFT began at %ld.%06ld\n", begin_tv.tv_sec, begin_tv.tv_usec);
 	fprintf (stats_f, "DIFT ended at %ld.%06ld\n", end_tv.tv_sec, end_tv.tv_usec);
 #ifdef RETAINT
@@ -1571,7 +1577,8 @@ void instrument_syscall(ADDRINT syscall_num,
 
 #define MAX_TRACE_INST_SIZE 0x1000000
 #define MAX_TRACE_SIZE 0x40000000
-#define TRACE_ENTRIES (1024*1024)
+#define TRACE_ENTRIES (1024*1024 * 2)
+
 #define TRACE_BUF_SIZE (TRACE_ENTRIES*sizeof(u_long))
 static u_long* trace_buf;
 static u_long* trace_inst_buf;
@@ -1580,7 +1587,9 @@ int trace_inst_fd = -1;
 u_long trace_cnt = 0;
 u_long trace_inst_cnt = 0;
 
-#define TRACE_HASH_ENTRIES 65536
+
+//make this bigger, see what happens!
+#define TRACE_HASH_ENTRIES 2048
 u_long trace_hash[TRACE_HASH_ENTRIES];
 
 static void init_trace_buf (void)
@@ -1705,14 +1714,17 @@ static void flush_trace_inst_buf (void)
 
 static inline void flush_trace_hash (int sysnum)
 {
-    memset (trace_hash, 0, sizeof(trace_hash));
+#ifdef TAINT_STATS
+    hash_flushes++;
+#endif
+    memset (trace_hash, 0, sizeof(trace_hash)); //maybe smaller would actually help? 
     trace_buf[trace_cnt++] = 0; // Denote new system call by writing 0 and syscall # to the log
-    if (trace_cnt == TRACE_ENTRIES) flush_trace_buf();
-    trace_buf[trace_cnt++] = get_record_pid(); //global_syscall_cnt; //Changed this to the clock
+//    if (trace_cnt == TRACE_ENTRIES) flush_trace_buf();
+//    trace_buf[trace_cnt++] = get_record_pid(); //global_syscall_cnt; //Changed this to the clock (prolly don't need)
     if (trace_cnt == TRACE_ENTRIES) flush_trace_buf();
     trace_buf[trace_cnt++] = *ppthread_log_clock; //global_syscall_cnt; //Changed this to the clock
-    if (trace_cnt == TRACE_ENTRIES) flush_trace_buf();
-    trace_buf[trace_cnt++] = sysnum; //global_syscall_cnt; //Changed this to the clock
+//    if (trace_cnt == TRACE_ENTRIES) flush_trace_buf();
+    //   trace_buf[trace_cnt++] = sysnum; //global_syscall_cnt; //Changed this to the clock
 
     if (trace_cnt == TRACE_ENTRIES) flush_trace_buf();
 
@@ -1730,8 +1742,9 @@ static void syscall_after_redo (ADDRINT ip)
 {
 #ifdef RECORD_TRACE_INFO
     if (record_trace_info) {
-	if (trace_hash[ip%TRACE_HASH_ENTRIES] != ip) {
-	    trace_hash[ip%TRACE_HASH_ENTRIES] = ip;
+	u_int index = ip ^ (ip >> 11); //fold ourself!
+	if (trace_hash[index%TRACE_HASH_ENTRIES] != ip) {
+	    trace_hash[index%TRACE_HASH_ENTRIES] = ip;
 	    trace_buf[trace_cnt++] = ip;
 	    if (trace_cnt == TRACE_ENTRIES) flush_trace_buf();
 	}

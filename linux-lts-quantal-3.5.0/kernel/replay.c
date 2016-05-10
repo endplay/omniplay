@@ -4189,9 +4189,12 @@ replay_full_ckpt_proc_wakeup (char* logdir, char* filename, char *uniqueid, int 
 	u_long cur_ckpts, consumed;
 	u_char ch, ch2;
 
-	strcpy (ckpt, logdir);
-	strcat (ckpt, "/");
-	strcat (ckpt, filename);
+	// Restore the checkpoint
+	if(replay_ckpt_dir != 0) {
+		sprintf (ckpt, "%s/%d/%s", logdir, replay_ckpt_dir,filename);
+	}else {
+		sprintf (ckpt, "%s/%s",logdir, filename);
+	}
 
 
 	printk("%d new ckpt_proc, ckpt %s, uniqueid %s\n",current->pid, ckpt, uniqueid);
