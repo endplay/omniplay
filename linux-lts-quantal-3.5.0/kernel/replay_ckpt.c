@@ -596,12 +596,14 @@ replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pi
 		goto exit;
 	}
 
-	// Write out the replay cache state
-	checkpoint_replay_cache_files (tsk, file, ppos);
-	down_read (&tsk->mm->mmap_sem);
 
 
 	if (!is_thread) { 
+
+		// Write out the replay cache state
+		printk("%d(%d) is checkpointing cache files\n",current->pid, record_pid);
+		checkpoint_replay_cache_files (tsk, file, ppos);
+		down_read (&tsk->mm->mmap_sem);
 
 		// Next - number of VM area
 		copied = vfs_write(file, (char *) &tsk->mm->map_count, sizeof(int), ppos);
@@ -647,7 +649,7 @@ replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pi
 			else {
 				pvmas->vmas_file[0] = '\0';
 			}
-
+ 
 			copied = vfs_write(file, (char *) pvmas, sizeof(struct vma_stats), ppos);
 			if (copied != sizeof(struct vma_stats)) {
 				printk ("replay_full_checkpoint_proc_to_disk: tried to write vma info, got rc %d\n", copied);
@@ -656,12 +658,11 @@ replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pi
 			}
 			
 			if(!strncmp(pvmas->vmas_file, "/dev/zero", 9)) continue; /* Skip writing this one */
-			if (pvmas->vmas_flags & VM_MAYSHARE && strncmp(pvmas->vmas_file, "/run/shm/uclock", 15)) {
+/*			if (pvmas->vmas_flags & VM_MAYSHARE && strncmp(pvmas->vmas_file, "/run/shm/uclock", 15)) {
 				printk ("Warning: pid %d region %lx-%lx is shared\n", record_pid, pvmas->vmas_start, pvmas->vmas_end);
-				printk("writable: %x? ", pvmas->vmas_flags & VM_WRITE);
 				if (pvmas->vmas_file) printk ("File: %s\n", pvmas->vmas_file);
 			}
-			if (!(pvmas->vmas_flags & VM_READ)) {
+*/			if (!(pvmas->vmas_flags & VM_READ)) {
 				printk ("Pid %d skipping non-readable region %lx-%lx\n", record_pid, pvmas->vmas_start, pvmas->vmas_end);
 				continue;
 			}
@@ -743,6 +744,10 @@ replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pi
 			rc = copied;
 			goto freemem;
 		}
+	}
+	else { 
+		//we didn't do this in the if above ^^ 
+		down_read (&tsk->mm->mmap_sem);
 	}
 
 	// Write out TLS info
@@ -929,10 +934,13 @@ long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_
 		goto exit;
 	}
 
-	// Write out the replay cache state
-	restore_replay_cache_files (file, ppos);
 
 	if (!is_thread) { 
+		
+		// Write out the replay cache state (this is going to be done on per thread basis)
+		printk("%d(%d) is restoring cache files\n",current->pid, record_pid);
+		restore_replay_cache_files (file, ppos);
+
 		// Delete all the vm areas of current process 
 		down_write (&current->mm->mmap_sem);
 		vma = current->mm->mmap;
@@ -970,11 +978,6 @@ long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_
 			
 			if (pvmas->vmas_file[0]) { 
 				flags = O_RDONLY;
-				if (pvmas->vmas_flags & VM_MAYSHARE) {
-					flags = O_RDWR; //this is a weird one. 
-					printk("weird case for %s\n",pvmas->vmas_file);
-				}
-
 				if (!strncmp(pvmas->vmas_file, "/dev/zero", 9)) {
 					MPRINT ("special vma for /dev/zero!\n");
 					map_file = NULL;
@@ -1020,27 +1023,24 @@ long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_
 				map_file = NULL;
 			}
 
+
 			MPRINT ("About to do mmap: map_file %p start %lx len %lx flags %x writable? %d shar %x pgoff %lx\n", 
 				map_file, pvmas->vmas_start, pvmas->vmas_end-pvmas->vmas_start, 
 				(pvmas->vmas_flags&(VM_READ|VM_WRITE|VM_EXEC)), 
 				(pvmas->vmas_flags & VM_WRITE),
-				((pvmas->vmas_flags&VM_MAYSHARE) ? MAP_SHARED : MAP_PRIVATE)|MAP_FIXED, pvmas->vmas_pgoff);
+				((pvmas->vmas_flags&VM_MAYSHARE) ? MAP_SHARED : MAP_PRIVATE) | MAP_FIXED, pvmas->vmas_pgoff);
 			
-			flags = (pvmas->vmas_flags&(VM_READ|VM_WRITE|VM_EXEC));
-			//the kernel treats these differently and won't let us mprotect write permissions later. 
-			if (pvmas->vmas_flags &VM_MAYSHARE) { 
-				flags |= VM_WRITE;
-			}
 
 			addr = do_mmap_pgoff(map_file, pvmas->vmas_start, pvmas->vmas_end - pvmas->vmas_start, 
-					     flags,
-					     ((pvmas->vmas_flags&VM_MAYSHARE) ? MAP_SHARED : MAP_PRIVATE)|MAP_FIXED, pvmas->vmas_pgoff);
+					     (pvmas->vmas_flags&(VM_READ|VM_WRITE|VM_EXEC)), 
+					     ((pvmas->vmas_flags&VM_MAYSHARE) ? MAP_SHARED : MAP_PRIVATE) | MAP_FIXED, 
+					     pvmas->vmas_pgoff);
 			
 			
 			if (map_file) filp_close (map_file, NULL);
 			if (IS_ERR((char *) addr)) {
 				printk ("replay_full_resume_proc_from_disk: mmap error %ld\n", PTR_ERR((char *) addr));
-//				if (map_file) filp_close (map_file, NULL);
+				if (map_file) filp_close (map_file, NULL);
 				rc = addr;
 				goto freemem;
 			}
@@ -1052,8 +1052,8 @@ long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_
 			
 			if (!(pvmas->vmas_flags&VM_WRITE)){
 				rc = sys_mprotect (pvmas->vmas_start, pvmas->vmas_end - pvmas->vmas_start, PROT_WRITE); // force it to writable temproarilly
-//				printk("forcing this to be writable!?\n");
-//				printk("sys_mprotect on (%p, %p) length %lu returned %d\n",(char *)pvmas->vmas_start, (char *)pvmas->vmas_end, pvmas->vmas_end - pvmas->vmas_start, rc);
+				printk("forcing this to be writable!?\n");
+				printk("sys_mprotect on (%p, %p) length %lu returned %d\n",(char *)pvmas->vmas_start, (char *)pvmas->vmas_end, pvmas->vmas_end - pvmas->vmas_start, rc);
 			}
 
 
@@ -1065,8 +1065,16 @@ long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_
 			set_fs(KERNEL_DS);
 			if (copied != pvmas->vmas_end - pvmas->vmas_start) {
 				printk ("replay_full_resume_proc_from_disk: tried to read vma data, got rc %d\n", copied);
-				rc = copied;
-				goto freemem;
+
+				if (pvmas->vmas_flags & VM_MAYSHARE &&
+				    strncmp(pvmas->vmas_file, "/tmp/replay_mmap_",17)) {
+					printk("its okay, we're in that weird case for %s, incrementing ppos from %lld to %lld\n",pvmas->vmas_file, *ppos, *ppos + (pvmas->vmas_end - pvmas->vmas_start));
+					*ppos += (pvmas->vmas_end - pvmas->vmas_start);
+				}
+				else{
+					rc = copied;
+					goto freemem;
+				}
 			}
 			if (!(pvmas->vmas_flags&VM_WRITE)) rc = sys_mprotect (pvmas->vmas_start, pvmas->vmas_end - pvmas->vmas_start, pvmas->vmas_flags&(VM_READ|VM_WRITE|VM_EXEC)); // restore old protections
 

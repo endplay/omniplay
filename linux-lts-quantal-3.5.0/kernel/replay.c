@@ -1764,8 +1764,10 @@ checkpoint_replay_cache_files (struct task_struct* tsk, struct file* cfile, loff
 		if (tsk->replay_thrd->rp_cache_files->data[i] >= 0) {
 			file = fcheck_files (tsk->files, tsk->replay_thrd->rp_cache_files->data[i]);
 			if (file) {
-				copyed = vfs_write(cfile, (char *) &tsk->replay_thrd->rp_cache_files->data[i], 
-						   sizeof(tsk->replay_thrd->rp_cache_files->data[i]), ppos);
+//				copyed = vfs_write(cfile, (char *) &tsk->replay_thrd->rp_cache_files->data[i], 
+//						   sizeof(tsk->replay_thrd->rp_cache_files->data[i]), ppos);
+				copyed = vfs_write(cfile, (char *) &i, sizeof(i), ppos);
+				
 				if (copyed != sizeof(tsk->replay_thrd->rp_cache_files->data[i])) {
 					printk ("checkpoint_replay_cache_files: tried to write path len, got rc %d\n", copyed);
 					goto out;
@@ -3845,7 +3847,7 @@ replay_full_ckpt (long rc)
 			while ((tmp2 = ds_list_iter_next(iter2)) != NULL && tmp != tmp2) {
 				tsk2 = pid_task (find_vpid(tmp2->rp_replay_pid), PIDTYPE_PID);
 				if (tsk2 && tsk2->mm == tsk->mm) {
-					printk("doing multithread checkpoint\n");
+//					printk("doing multithread checkpoint\n");
 					use_threads = 1;
 				}
 			}
@@ -3920,6 +3922,7 @@ struct ckpt_waiter {
 	loff_t               pos;                        // Position in ckpt file to start reading from
 	pid_t                clock_pid;                  // Pid used for setting up the clock pid
 	int                  procs_left;                 // The number of processes that have yet to be attached to this ckpt_waiter
+        struct replay_cache_files* rp_cache_files;       // The process's rp_cache_files. 
 	struct semaphore     sem;                        // On which procs wait during restore
 	struct semaphore     sem2;                       // On which procs wait during restore
 	struct semaphore     wproc_sem;                  // On which the main proc waits for everyone to enter the kernel
@@ -4009,9 +4012,12 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char *
 
 
 	// Restore the checkpoint
-	strcpy (ckpt, logdir);
-	strcat (ckpt, "/");
-	strcat (ckpt, filename);
+	if(replay_ckpt_dir != 0) {
+		sprintf (ckpt, "%s/%d/%s", logdir, replay_ckpt_dir,filename);
+	}else {
+		sprintf (ckpt, "%s/%s",logdir, filename);
+	}
+
 
 	// Create a replay group and thread for this process
 	current->replay_thrd = prept;
@@ -4047,6 +4053,8 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char *
 		sema_init(&pckpt_waiter->sem2, 0);
 		sema_init(&pckpt_waiter->wproc_sem, 0);
 
+
+
 		printk("%d made ckpt_waiter %p, unique id %s\n",current->pid, pckpt_waiter, pckpt_waiter->uniqueid);
 		mutex_unlock(&ckpt_mutex);
 	}
@@ -4061,6 +4069,11 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char *
 	//this first one is never a thread! 
 	record_pid = replay_full_resume_proc_from_disk(ckpt, current->pid, 0,&retval, &prect->rp_read_log_pos, &prept->rp_out_ptr, &consumed, &prept->rp_expected_clock, &prept->rp_ckpt_pthread_block_clock, (u_long*)&prect->rp_ignore_flag_addr, (u_long*)&prect->rp_user_log_addr,(u_long *)&current->clear_child_tid, (u_long *)&prept->rp_replay_hook,&pos);
 	MPRINT ("Pid %d gets record_pid %ld exp clock %ld\n", current->pid, record_pid, prept->rp_expected_clock);
+
+
+
+	pckpt_waiter->rp_cache_files = prept->rp_cache_files;       // The process's rp_cache_files. 
+	printk("%d(%ld) assigning pckpt_waiter's cache_files to %p\n",current->pid, record_pid, pckpt_waiter->rp_cache_files);
 	if (record_pid < 0) {
 		if (num_procs > 1) pckpt_waiter->prepg = NULL;
 		return record_pid;
@@ -4290,6 +4303,13 @@ replay_full_ckpt_proc_wakeup (char* logdir, char* filename, char *uniqueid, int 
 		rc = sys_close (fd);
 		if (rc < 0) printk ("replay_full_ckpt_wakeup: unable to close fd %d, rc=%ld\n", fd, rc);
 	}
+
+	else if (is_thread) { 
+		//we need to share cache_files: 
+		prept->rp_cache_files = pckpt_waiter->rp_cache_files; 
+		printk("%d(%ld) taking pckpt_waiter's cache_files %p\n",current->pid, record_pid, prept->rp_cache_files);
+	}
+
 
 	MPRINT ("Pid %d replay_full_ckpt_proc_wakeup restarting syscall %d w/ expected clock %lu\n", current->pid, prect->rp_log[prept->rp_out_ptr].sysnum, prect->rp_expected_clock);
 	MPRINT ("and we have ignore_addr 0x%lx, user_addr 0x%lx, clear_child_tid 0x%lx\n", (u_long)prect->rp_ignore_flag_addr,  (u_long) prect->rp_user_log_addr, (u_long)current->clear_child_tid);
