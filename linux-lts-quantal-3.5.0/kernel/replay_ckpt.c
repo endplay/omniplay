@@ -1052,8 +1052,6 @@ long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_
 			
 			if (!(pvmas->vmas_flags&VM_WRITE)){
 				rc = sys_mprotect (pvmas->vmas_start, pvmas->vmas_end - pvmas->vmas_start, PROT_WRITE); // force it to writable temproarilly
-				printk("forcing this to be writable!?\n");
-				printk("sys_mprotect on (%p, %p) length %lu returned %d\n",(char *)pvmas->vmas_start, (char *)pvmas->vmas_end, pvmas->vmas_end - pvmas->vmas_start, rc);
 			}
 
 
@@ -1065,10 +1063,9 @@ long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_
 			set_fs(KERNEL_DS);
 			if (copied != pvmas->vmas_end - pvmas->vmas_start) {
 				printk ("replay_full_resume_proc_from_disk: tried to read vma data, got rc %d\n", copied);
-
 				if (pvmas->vmas_flags & VM_MAYSHARE &&
 				    strncmp(pvmas->vmas_file, "/tmp/replay_mmap_",17)) {
-					printk("its okay, we're in that weird case for %s, incrementing ppos from %lld to %lld\n",pvmas->vmas_file, *ppos, *ppos + (pvmas->vmas_end - pvmas->vmas_start));
+					printk("its okay");//, we're in that weird case for %s, incrementing ppos from %lld to %lld\n",pvmas->vmas_file, *ppos, *ppos + (pvmas->vmas_end - pvmas->vmas_start));
 					*ppos += (pvmas->vmas_end - pvmas->vmas_start);
 				}
 				else{
