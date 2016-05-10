@@ -1,0 +1,1682 @@
+[  324.280670] preallocating mmap_pgoff returned address b30a000 and len 21000
+[  324.280673] Considering pre-allocation from b32b000 to b34e000
+[  324.280675] 	Consider vma from 8048000 to 804b000
+[  324.280677] 	Consider vma from 804b000 to 804c000
+[  324.280679] 	Consider vma from 804c000 to 804d000
+[  324.280681] 	Consider vma from b265000 to b32b000
+[  324.280683] 	Consider vma from 95422000 to b6a17000
+[  324.280685] preallocating mmap_pgoff with address b32b000 and len 23000
+[  324.280687] preallocating mmap_pgoff returned address b32b000 and len 23000
+[  324.280693] Replay Pid 2617, index 0 sys 11
+[  324.280696] Replay Pid 2617, index 0 sys 11 retval 0
+[  324.308320] 2617: exiting task, child_tid 0xb75d1728, flags 4202496, mm e74fb2c0
+[  324.308483] 2619: exiting task, child_tid 0xb754d728, flags 4202496, mm e82c7800
+[  324.308546] 2621: exiting task, child_tid 0xb756a728, flags 4202496, mm e74f9500
+[  324.361133] 2619 ckpt: is_thread? 0 ignore_flag_addr 0x0, user_log_addr 0x0, clear_child_tid 0x0
+[  324.361545] 2621 ckpt: is_thread? 0 ignore_flag_addr 0x0, user_log_addr 0x0, clear_child_tid 0x0
+[  324.361640] 2617 ckpt: is_thread? 0 ignore_flag_addr 0x0, user_log_addr 0x0, clear_child_tid 0x0
+[  324.769850] Pid 2615 woken up.
+[  324.769854] Replay Pid 2615, index 0 sys 11
+[  324.769855] Replay Pid 2615, index 0 sys 11 retval 0
+[  324.770024] 2615: exiting task, child_tid 0xb759a728, flags 4202496, mm e42d2300
+[  324.783590] in shim_ptrace with detach request, syscall_addr 1, on pid 2615
+[  324.830467] Pid 3498 skipping non-readable region b265000-b34e000
+[  324.830475] Pid 3498 skipping non-readable region 95422000-b6a17000
+[  324.830483] Pid 3498 skipping non-readable region b6a18000-b771b000
+[  324.852139] Pid 3498 skipping non-readable region b265000-b34e000
+[  324.852145] Pid 3498 skipping non-readable region 95422000-b6a17000
+[  324.852162] Pid 3498 skipping non-readable region b6a18000-b771b000
+[  324.868654] do_mmap_pgoff returned 0x92e0000, we asked for 0x92e0000
+[  324.869388] do_mmap_pgoff returned 0x92e0000, we asked for 0x92e0000
+[  324.869483] do_mmap_pgoff returned 0x92e0000, we asked for 0x92e0000
+[  324.869516] do_mmap_pgoff returned 0x92e0000, we asked for 0x92e0000
+[  324.906578] Pid 3498 skipping non-readable region b265000-b34e000
+[  324.906584] Pid 3498 skipping non-readable region 95422000-b6a17000
+[  324.906591] Pid 3498 skipping non-readable region b6a18000-b771b000
+[  325.003035] do_mmap_pgoff returned 0x9321000, we asked for 0x9321000
+[  325.003058] do_mmap_pgoff returned 0x9321000, we asked for 0x9321000
+[  325.003084] do_mmap_pgoff returned 0x9321000, we asked for 0x9321000
+[  325.003088] do_mmap_pgoff returned 0x9327000, we asked for 0x9327000
+[  325.003110] do_mmap_pgoff returned 0x9327000, we asked for 0x9327000
+[  325.003142] do_mmap_pgoff returned 0x9327000, we asked for 0x9327000
+[  325.003158] do_mmap_pgoff returned 0xb265000, we asked for 0xb265000
+[  325.003180] do_mmap_pgoff returned 0xb265000, we asked for 0xb265000
+[  325.003206] do_mmap_pgoff returned 0xb265000, we asked for 0xb265000
+[  325.003479] do_mmap_pgoff returned 0x9321000, we asked for 0x9321000
+[  325.003527] do_mmap_pgoff returned 0x9327000, we asked for 0x9327000
+[  325.003591] do_mmap_pgoff returned 0xb265000, we asked for 0xb265000
+[  325.106710] do_mmap_pgoff returned 0x95422000, we asked for 0x95422000
+[  325.106719] do_mmap_pgoff returned 0x99a99000, we asked for 0x99a99000
+[  325.107599] do_mmap_pgoff returned 0x95422000, we asked for 0x95422000
+[  325.107608] do_mmap_pgoff returned 0x99a99000, we asked for 0x99a99000
+[  325.107730] do_mmap_pgoff returned 0x95422000, we asked for 0x95422000
+[  325.107739] do_mmap_pgoff returned 0x99a99000, we asked for 0x99a99000
+[  325.107774] do_mmap_pgoff returned 0x95422000, we asked for 0x95422000
+[  325.107781] do_mmap_pgoff returned 0x99a99000, we asked for 0x99a99000
+[  325.405191] Pid 2617 (recpid 3498) clock 18192 log_clock 18191 replays: getaddrinfo
+[  325.405194] Pid 2617 (recpid 3498) clock 18194 log_clock 18193 replays: getaddrinfo 2
+[  325.405195] Pid 2617 (recpid 3498) clock 18196 log_clock 18195 replays: getaddrinfo 3
+[  325.405199] Pid 2617 (recpid 3498) clock 18198 log_clock 18197 replays: gaih_inet
+[  325.405544] Pid 2621 (recpid 3498) clock 18192 log_clock 18191 replays: getaddrinfo
+[  325.405546] Pid 2621 (recpid 3498) clock 18194 log_clock 18193 replays: getaddrinfo 2
+[  325.405548] Pid 2621 (recpid 3498) clock 18196 log_clock 18195 replays: getaddrinfo 3
+[  325.405550] Pid 2621 (recpid 3498) clock 18198 log_clock 18197 replays: gaih_inet
+[  325.405553] Pid 2617 prlimit64 is pulling from retparams
+[  325.405610] Pid 2619 (recpid 3498) clock 18192 log_clock 18191 replays: getaddrinfo
+[  325.405613] Pid 2619 (recpid 3498) clock 18194 log_clock 18193 replays: getaddrinfo 2
+[  325.405614] Pid 2619 (recpid 3498) clock 18196 log_clock 18195 replays: getaddrinfo 3
+[  325.405617] Pid 2619 (recpid 3498) clock 18198 log_clock 18197 replays: gaih_inet
+[  325.405702] Pid 2619 prlimit64 is pulling from retparams
+[  325.405768] Pid 2621 prlimit64 is pulling from retparams
+[  325.409958] currp2617, replay_clone: new Pid 2680, record Pid 3499, parent pid 2617 flags 3d0f00 child_tidptr b548aba8
+[  325.410274] currp2619, replay_clone: new Pid 2681, record Pid 3499, parent pid 2619 flags 3d0f00 child_tidptr b548aba8
+[  325.410381] currp2621, replay_clone: new Pid 2682, record Pid 3499, parent pid 2621 flags 3d0f00 child_tidptr b548aba8
+[  325.430288] currp2617, replay_clone: new Pid 2683, record Pid 3500, parent pid 2617 flags 3d0f00 child_tidptr b4280ba8
+[  325.430646] currp2621, replay_clone: new Pid 2684, record Pid 3500, parent pid 2621 flags 3d0f00 child_tidptr b4280ba8
+[  325.430651] currp2619, replay_clone: new Pid 2685, record Pid 3500, parent pid 2619 flags 3d0f00 child_tidptr b4280ba8
+[  325.443060] currp2619, replay_clone: new Pid 2686, record Pid 3501, parent pid 2619 flags 3d0f00 child_tidptr b2cffba8
+[  325.444403] currp2617, replay_clone: new Pid 2687, record Pid 3501, parent pid 2617 flags 3d0f00 child_tidptr b2cffba8
+[  325.444605] currp2619, replay_clone: new Pid 2688, record Pid 3502, parent pid 2619 flags 3d0f00 child_tidptr b1af5ba8
+[  325.444769] currp2621, replay_clone: new Pid 2689, record Pid 3501, parent pid 2621 flags 3d0f00 child_tidptr b2cffba8
+[  325.445127] currp2617, replay_clone: new Pid 2690, record Pid 3502, parent pid 2617 flags 3d0f00 child_tidptr b1af5ba8
+[  325.445307] currp2621, replay_clone: new Pid 2691, record Pid 3502, parent pid 2621 flags 3d0f00 child_tidptr b1af5ba8
+[  325.452291] currp2621, replay_clone: new Pid 2692, record Pid 3503, parent pid 2621 flags 3d0f00 child_tidptr b06ffba8
+[  325.452397] currp2619, replay_clone: new Pid 2693, record Pid 3503, parent pid 2619 flags 3d0f00 child_tidptr b06ffba8
+[  325.452737] currp2617, replay_clone: new Pid 2694, record Pid 3503, parent pid 2617 flags 3d0f00 child_tidptr b06ffba8
+[  325.453703] currp2619, replay_clone: new Pid 2695, record Pid 3504, parent pid 2619 flags 3d0f00 child_tidptr af4f5ba8
+[  325.453806] currp2621, replay_clone: new Pid 2696, record Pid 3504, parent pid 2621 flags 3d0f00 child_tidptr af4f5ba8
+[  325.453855] currp2617, replay_clone: new Pid 2697, record Pid 3504, parent pid 2617 flags 3d0f00 child_tidptr af4f5ba8
+[  325.456741] currp2617, replay_clone: new Pid 2698, record Pid 3505, parent pid 2617 flags 3d0f00 child_tidptr ae0ffba8
+[  325.456908] currp2621, replay_clone: new Pid 2699, record Pid 3505, parent pid 2621 flags 3d0f00 child_tidptr ae0ffba8
+[  325.457025] currp2619, replay_clone: new Pid 2700, record Pid 3505, parent pid 2619 flags 3d0f00 child_tidptr ae0ffba8
+[  325.468902] currp2617, replay_clone: new Pid 2701, record Pid 3506, parent pid 2617 flags 3d0f00 child_tidptr acaffba8
+[  325.469130] currp2621, replay_clone: new Pid 2702, record Pid 3506, parent pid 2621 flags 3d0f00 child_tidptr acaffba8
+[  325.469450] currp2621, replay_clone: new Pid 2703, record Pid 3507, parent pid 2621 flags 3d0f00 child_tidptr ab8f5ba8
+[  325.469586] currp2617, replay_clone: new Pid 2704, record Pid 3507, parent pid 2617 flags 3d0f00 child_tidptr ab8f5ba8
+[  325.469630] currp2619, replay_clone: new Pid 2705, record Pid 3506, parent pid 2619 flags 3d0f00 child_tidptr acaffba8
+[  325.469761] currp2619, replay_clone: new Pid 2706, record Pid 3507, parent pid 2619 flags 3d0f00 child_tidptr ab8f5ba8
+[  325.478862] Pid 2619 prlimit64 is pulling from retparams
+[  325.478888] Pid 2621 prlimit64 is pulling from retparams
+[  325.478938] Pid 2619 (recpid 3498) clock 85368 log_clock 85367 replays: getaddrinfo
+[  325.478940] Pid 2619 (recpid 3498) clock 85376 log_clock 85375 replays: getaddrinfo 2
+[  325.478967] Pid 2621 (recpid 3498) clock 85368 log_clock 85367 replays: getaddrinfo
+[  325.478971] Pid 2621 (recpid 3498) clock 85376 log_clock 85375 replays: getaddrinfo 2
+[  325.478978] Pid 2619 (recpid 3498) clock 85386 log_clock 85385 replays: getaddrinfo 3
+[  325.478980] Pid 2619 (recpid 3498) clock 85394 log_clock 85393 replays: gaih_inet
+[  325.479006] Pid 2621 (recpid 3498) clock 85386 log_clock 85385 replays: getaddrinfo 3
+[  325.479011] Pid 2621 (recpid 3498) clock 85394 log_clock 85393 replays: gaih_inet
+[  325.479269] Pid 2617 prlimit64 is pulling from retparams
+[  325.479347] Pid 2617 (recpid 3498) clock 85368 log_clock 85367 replays: getaddrinfo
+[  325.479349] Pid 2617 (recpid 3498) clock 85376 log_clock 85375 replays: getaddrinfo 2
+[  325.479383] Pid 2617 (recpid 3498) clock 85386 log_clock 85385 replays: getaddrinfo 3
+[  325.479385] Pid 2617 (recpid 3498) clock 85394 log_clock 85393 replays: gaih_inet
+[  325.480609] 2703: exiting task, child_tid 0xab8f5ba8, flags 4202564, mm e82664c0
+[  325.480962] 2706: exiting task, child_tid 0xab8f5ba8, flags 4202564, mm e81f6840
+[  325.482317] 2619: mmaped /tmp/replay_mmap_1 for /replay_cache/800001_6c0004_1461989738_115273780
+[  325.482549] 2704: exiting task, child_tid 0xab8f5ba8, flags 4202564, mm e82439c0
+[  325.482978] 2621: mmaped /tmp/replay_mmap_2 for /replay_cache/800001_6c0004_1461989738_115273780
+[  325.484722] 2617: mmaped /tmp/replay_mmap_3 for /replay_cache/800001_6c0004_1461989738_115273780
+[  325.661429] set_pin_address: pin address for pid 2615 is 953f900c attaching 0 status 0
+[  325.708939] 2627 it was /tmp/replay_mmap_32creating /tmp/replay_mmap_4
+[  325.708968] do_mmap_pgoff returned 0x9e100000, we asked for 0x9e100000
+[  325.709252] 2629 it was /tmp/replay_mmap_32creating /tmp/replay_mmap_5
+[  325.709272] do_mmap_pgoff returned 0x9e100000, we asked for 0x9e100000
+[  325.709360] 2623 it was /tmp/replay_mmap_32creating /tmp/replay_mmap_6
+[  325.709382] do_mmap_pgoff returned 0x9e100000, we asked for 0x9e100000
+[  325.709505] 2625 it was /tmp/replay_mmap_32creating /tmp/replay_mmap_7
+[  325.709519] do_mmap_pgoff returned 0x9e100000, we asked for 0x9e100000
+[  325.770895] 2615 ckpt: is_thread? 0 ignore_flag_addr 0x0, user_log_addr 0x0, clear_child_tid 0x950f4768
+[  325.811414] Pid 3498 skipping non-readable region 16bc000-16bd000
+[  325.853663] Pid 3498 skipping non-readable region b265000-b34e000
+[  325.900887] Warning: pid 3498 region 81d1e000-81d1f000 is shared
+[  325.900891] File: /run/shm/taint_shm.tmp.2615
+[  326.556100] Warning: pid 3498 region 8442f000-84c2f000 is shared
+[  326.556102] File: /run/shm/node_nums_shm.tmp.2615
+[  327.035449] Pid 3498 skipping non-readable region 86c42000-86c43000
+[  328.961197] mmap using cache file 9 for fd 9
+[  328.961331] mmap using cache file 9 for fd 9
+[  328.961602] mmap using cache file 9 for fd 9
+[  328.962751] 2621: mmaped /tmp/replay_mmap_8 for /replay_cache/800001_6c0006_1461989738_447107785
+[  328.962798] 2619: mmaped /tmp/replay_mmap_9 for /replay_cache/800001_6c0006_1461989738_447107785
+[  328.963294] 2617: mmaped /tmp/replay_mmap_10 for /replay_cache/800001_6c0006_1461989738_447107785
+[  329.815766] Pid 3498 skipping non-readable region 953c0000-953c1000
+[  329.817106] Pid 3498 skipping non-readable region 95422000-b6a17000
+[  329.817135] Pid 3498 skipping non-readable region b6a18000-b771b000
+[  333.420862] mmap using cache file 10 for fd 11
+[  333.421000] mmap using cache file 10 for fd 11
+[  333.421184] mmap using cache file 10 for fd 11
+[  333.423439] Pid 2621 prlimit64 is pulling from retparams
+[  333.424469] currp2621, replay_clone: new Pid 2707, record Pid 3738, parent pid 2621 flags 3d0f00 child_tidptr ab0ecba8
+[  333.424915] Pid 2617 prlimit64 is pulling from retparams
+[  333.424981] currp2617, replay_clone: new Pid 2708, record Pid 3738, parent pid 2617 flags 3d0f00 child_tidptr ab0ecba8
+[  333.426574] Pid 2619 prlimit64 is pulling from retparams
+[  333.427244] currp2619, replay_clone: new Pid 2709, record Pid 3738, parent pid 2619 flags 3d0f00 child_tidptr ab0ecba8
+[  333.462877] Pid 2619 prlimit64 is pulling from retparams
+[  333.462912] currp2619, replay_clone: new Pid 2710, record Pid 3739, parent pid 2619 flags 3d0f00 child_tidptr a4af6ba8
+[  333.463061] Pid 2617 prlimit64 is pulling from retparams
+[  333.463129] currp2617, replay_clone: new Pid 2711, record Pid 3739, parent pid 2617 flags 3d0f00 child_tidptr a4af6ba8
+[  333.463132] Pid 2621 prlimit64 is pulling from retparams
+[  333.463169] currp2621, replay_clone: new Pid 2712, record Pid 3739, parent pid 2621 flags 3d0f00 child_tidptr a4af6ba8
+[  333.525583] 2623 it was /tmp/replay_mmap_31creating /tmp/replay_mmap_11
+[  333.525671] do_mmap_pgoff returned 0xa2100000, we asked for 0xa2100000
+[  333.525739] 2629 it was /tmp/replay_mmap_31creating /tmp/replay_mmap_12
+[  333.525763] do_mmap_pgoff returned 0xa2100000, we asked for 0xa2100000
+[  333.566344] 2627 it was /tmp/replay_mmap_31creating /tmp/replay_mmap_13
+[  333.566375] do_mmap_pgoff returned 0xa2100000, we asked for 0xa2100000
+[  333.612439] 2625 it was /tmp/replay_mmap_31creating /tmp/replay_mmap_14
+[  333.612519] do_mmap_pgoff returned 0xa2100000, we asked for 0xa2100000
+[  333.780457] Pid 2621 prlimit64 is pulling from retparams
+[  333.780482] Pid 2617 prlimit64 is pulling from retparams
+[  333.780533] currp2621, replay_clone: new Pid 2713, record Pid 3740, parent pid 2621 flags 3d0f00 child_tidptr a3fecba8
+[  333.780535] currp2617, replay_clone: new Pid 2714, record Pid 3740, parent pid 2617 flags 3d0f00 child_tidptr a3fecba8
+[  333.780588] Pid 2619 prlimit64 is pulling from retparams
+[  333.780684] currp2619, replay_clone: new Pid 2715, record Pid 3740, parent pid 2619 flags 3d0f00 child_tidptr a3fecba8
+[  333.969223] 2711: mmaped /tmp/replay_mmap_15 for /replay_cache/800001_6c0007_1461989752_92282020
+[  333.970282] 2710: mmaped /tmp/replay_mmap_16 for /replay_cache/800001_6c0007_1461989752_92282020
+[  333.970401] 2712: mmaped /tmp/replay_mmap_17 for /replay_cache/800001_6c0007_1461989752_92282020
+[  334.278635] do_mmap_pgoff returned 0xa3100000, we asked for 0xa3100000
+[  334.278756] do_mmap_pgoff returned 0xa3121000, we asked for 0xa3121000
+[  334.278759] do_mmap_pgoff returned 0xa3200000, we asked for 0xa3200000
+[  334.278762] do_mmap_pgoff returned 0xa3300000, we asked for 0xa3300000
+[  334.279892] do_mmap_pgoff returned 0xa3321000, we asked for 0xa3321000
+[  334.279896] do_mmap_pgoff returned 0xa3400000, we asked for 0xa3400000
+[  334.279899] do_mmap_pgoff returned 0xa34b3000, we asked for 0xa34b3000
+[  334.300443] do_mmap_pgoff returned 0xa3100000, we asked for 0xa3100000
+[  334.300530] do_mmap_pgoff returned 0xa3121000, we asked for 0xa3121000
+[  334.300533] do_mmap_pgoff returned 0xa3200000, we asked for 0xa3200000
+[  334.300535] do_mmap_pgoff returned 0xa3300000, we asked for 0xa3300000
+[  334.300620] do_mmap_pgoff returned 0xa3321000, we asked for 0xa3321000
+[  334.300622] do_mmap_pgoff returned 0xa3400000, we asked for 0xa3400000
+[  334.300626] do_mmap_pgoff returned 0xa34b3000, we asked for 0xa34b3000
+[  334.325623] do_mmap_pgoff returned 0xa3100000, we asked for 0xa3100000
+[  334.325792] do_mmap_pgoff returned 0xa3121000, we asked for 0xa3121000
+[  334.325797] do_mmap_pgoff returned 0xa3200000, we asked for 0xa3200000
+[  334.325799] do_mmap_pgoff returned 0xa3300000, we asked for 0xa3300000
+[  334.325967] do_mmap_pgoff returned 0xa3321000, we asked for 0xa3321000
+[  334.325969] do_mmap_pgoff returned 0xa3400000, we asked for 0xa3400000
+[  334.325971] do_mmap_pgoff returned 0xa34b3000, we asked for 0xa34b3000
+[  334.403682] do_mmap_pgoff returned 0xa3100000, we asked for 0xa3100000
+[  334.403972] do_mmap_pgoff returned 0xa3121000, we asked for 0xa3121000
+[  334.403979] do_mmap_pgoff returned 0xa3200000, we asked for 0xa3200000
+[  334.403985] do_mmap_pgoff returned 0xa3300000, we asked for 0xa3300000
+[  334.404176] do_mmap_pgoff returned 0xa3321000, we asked for 0xa3321000
+[  334.404183] do_mmap_pgoff returned 0xa3400000, we asked for 0xa3400000
+[  334.404189] do_mmap_pgoff returned 0xa34b3000, we asked for 0xa34b3000
+[  334.696518] do_mmap_pgoff returned 0xa3eec000, we asked for 0xa3eec000
+[  334.696529] do_mmap_pgoff returned 0xa3eed000, we asked for 0xa3eed000
+[  334.696876] do_mmap_pgoff returned 0xa3eec000, we asked for 0xa3eec000
+[  334.696886] do_mmap_pgoff returned 0xa3eed000, we asked for 0xa3eed000
+[  334.701212] do_mmap_pgoff returned 0xa3eec000, we asked for 0xa3eec000
+[  334.701217] do_mmap_pgoff returned 0xa3eed000, we asked for 0xa3eed000
+[  334.701231] do_mmap_pgoff returned 0xa3eec000, we asked for 0xa3eec000
+[  334.701235] do_mmap_pgoff returned 0xa3eed000, we asked for 0xa3eed000
+[  334.948540] mmap using cache file 11 for fd 15
+[  334.948549] mmap using cache file 11 for fd 15
+[  334.948599] mmap using cache file 11 for fd 15
+[  334.948711] do_mmap_pgoff returned 0xa49f6000, we asked for 0xa49f6000
+[  334.948716] do_mmap_pgoff returned 0xa49f7000, we asked for 0xa49f7000
+[  334.949573] do_mmap_pgoff returned 0xa49f6000, we asked for 0xa49f6000
+[  334.949577] do_mmap_pgoff returned 0xa49f7000, we asked for 0xa49f7000
+[  334.949611] do_mmap_pgoff returned 0xa49f6000, we asked for 0xa49f6000
+[  334.949615] do_mmap_pgoff returned 0xa49f7000, we asked for 0xa49f7000
+[  334.949643] 2710: mmaped /tmp/replay_mmap_18 for /replay_cache/800001_6c0008_1461989752_344156025
+[  334.949668] do_mmap_pgoff returned 0xa49f6000, we asked for 0xa49f6000
+[  334.949677] do_mmap_pgoff returned 0xa49f7000, we asked for 0xa49f7000
+[  334.949727] 2711: mmaped /tmp/replay_mmap_19 for /replay_cache/800001_6c0008_1461989752_344156025
+[  334.949884] 2712: mmaped /tmp/replay_mmap_20 for /replay_cache/800001_6c0008_1461989752_344156025
+[  335.459679] 2629 it was /tmp/replay_mmap_30creating /tmp/replay_mmap_21
+[  335.459726] do_mmap_pgoff returned 0xa5500000, we asked for 0xa5500000
+[  335.460432] 2625 it was /tmp/replay_mmap_30creating /tmp/replay_mmap_22
+[  335.460457] do_mmap_pgoff returned 0xa5500000, we asked for 0xa5500000
+[  335.460710] 2623 it was /tmp/replay_mmap_30creating /tmp/replay_mmap_23
+[  335.460741] do_mmap_pgoff returned 0xa5500000, we asked for 0xa5500000
+[  335.461503] 2627 it was /tmp/replay_mmap_30creating /tmp/replay_mmap_24
+[  335.461537] do_mmap_pgoff returned 0xa5500000, we asked for 0xa5500000
+[  336.564450] Pid 2615 (recpid 3498) clock 18192 log_clock 18191 replays: getaddrinfo
+[  336.567222] Pid 2615 (recpid 3498) clock 18194 log_clock 18193 replays: getaddrinfo 2
+[  336.567886] Pid 2615 (recpid 3498) clock 18196 log_clock 18195 replays: getaddrinfo 3
+[  336.580806] Pid 2615 (recpid 3498) clock 18198 log_clock 18197 replays: gaih_inet
+[  336.979134] Pid 2615 prlimit64 is pulling from retparams
+[  338.878479] mmap using cache file 12 for fd 16
+[  338.878950] mmap using cache file 12 for fd 16
+[  338.880748] mmap using cache file 12 for fd 16
+[  338.907929] 2625 it was /tmp/replay_mmap_29creating /tmp/replay_mmap_25
+[  338.907980] do_mmap_pgoff returned 0xa9500000, we asked for 0xa9500000
+[  338.908118] 2629 it was /tmp/replay_mmap_29creating /tmp/replay_mmap_26
+[  338.908184] do_mmap_pgoff returned 0xa9500000, we asked for 0xa9500000
+[  338.908892] 2627 it was /tmp/replay_mmap_29creating /tmp/replay_mmap_27
+[  338.908987] do_mmap_pgoff returned 0xa9500000, we asked for 0xa9500000
+[  338.916356] 2623 it was /tmp/replay_mmap_29creating /tmp/replay_mmap_28
+[  338.916391] do_mmap_pgoff returned 0xa9500000, we asked for 0xa9500000
+[  339.697734] do_mmap_pgoff returned 0xaa500000, we asked for 0xaa500000
+[  339.697738] do_mmap_pgoff returned 0xaa500000, we asked for 0xaa500000
+[  339.697903] do_mmap_pgoff returned 0xaa521000, we asked for 0xaa521000
+[  339.697907] do_mmap_pgoff returned 0xaa600000, we asked for 0xaa600000
+[  339.697910] do_mmap_pgoff returned 0xaa6ec000, we asked for 0xaa6ec000
+[  339.697970] do_mmap_pgoff returned 0xaa521000, we asked for 0xaa521000
+[  339.697979] do_mmap_pgoff returned 0xaa600000, we asked for 0xaa600000
+[  339.697984] do_mmap_pgoff returned 0xaa6ec000, we asked for 0xaa6ec000
+[  339.698023] do_mmap_pgoff returned 0xaa500000, we asked for 0xaa500000
+[  339.698125] do_mmap_pgoff returned 0xaa521000, we asked for 0xaa521000
+[  339.698127] do_mmap_pgoff returned 0xaa600000, we asked for 0xaa600000
+[  339.698131] do_mmap_pgoff returned 0xaa6ec000, we asked for 0xaa6ec000
+[  339.698205] do_mmap_pgoff returned 0xaa500000, we asked for 0xaa500000
+[  339.698396] do_mmap_pgoff returned 0xaa521000, we asked for 0xaa521000
+[  339.698404] do_mmap_pgoff returned 0xaa600000, we asked for 0xaa600000
+[  339.698410] do_mmap_pgoff returned 0xaa6ec000, we asked for 0xaa6ec000
+[  339.945030] do_mmap_pgoff returned 0xaafec000, we asked for 0xaafec000
+[  339.945047] do_mmap_pgoff returned 0xaafec000, we asked for 0xaafec000
+[  339.945058] do_mmap_pgoff returned 0xaafed000, we asked for 0xaafed000
+[  339.945099] do_mmap_pgoff returned 0xaafed000, we asked for 0xaafed000
+[  339.945617] do_mmap_pgoff returned 0xaafec000, we asked for 0xaafec000
+[  339.945622] do_mmap_pgoff returned 0xaafed000, we asked for 0xaafed000
+[  339.945672] do_mmap_pgoff returned 0xaafec000, we asked for 0xaafec000
+[  339.945677] do_mmap_pgoff returned 0xaafed000, we asked for 0xaafed000
+[  339.951959] do_mmap_pgoff returned 0xab0f5000, we asked for 0xab0f5000
+[  339.951963] do_mmap_pgoff returned 0xab0f6000, we asked for 0xab0f6000
+[  339.952070] do_mmap_pgoff returned 0xab0f5000, we asked for 0xab0f5000
+[  339.952073] do_mmap_pgoff returned 0xab0f6000, we asked for 0xab0f6000
+[  339.952204] do_mmap_pgoff returned 0xab0f5000, we asked for 0xab0f5000
+[  339.952208] do_mmap_pgoff returned 0xab0f6000, we asked for 0xab0f6000
+[  339.952292] do_mmap_pgoff returned 0xab0f5000, we asked for 0xab0f5000
+[  339.952296] do_mmap_pgoff returned 0xab0f6000, we asked for 0xab0f6000
+[  340.114044] do_mmap_pgoff returned 0xac2ff000, we asked for 0xac2ff000
+[  340.114049] do_mmap_pgoff returned 0xac300000, we asked for 0xac300000
+[  340.114250] do_mmap_pgoff returned 0xac2ff000, we asked for 0xac2ff000
+[  340.114253] do_mmap_pgoff returned 0xac300000, we asked for 0xac300000
+[  340.114405] do_mmap_pgoff returned 0xac2ff000, we asked for 0xac2ff000
+[  340.114408] do_mmap_pgoff returned 0xac300000, we asked for 0xac300000
+[  340.114420] do_mmap_pgoff returned 0xac2ff000, we asked for 0xac2ff000
+[  340.114424] do_mmap_pgoff returned 0xac300000, we asked for 0xac300000
+[  340.197738] do_mmap_pgoff returned 0xacb00000, we asked for 0xacb00000
+[  340.197741] do_mmap_pgoff returned 0xacb00000, we asked for 0xacb00000
+[  340.198022] do_mmap_pgoff returned 0xacb00000, we asked for 0xacb00000
+[  340.198193] do_mmap_pgoff returned 0xacb00000, we asked for 0xacb00000
+[  340.198314] do_mmap_pgoff returned 0xacb21000, we asked for 0xacb21000
+[  340.198318] do_mmap_pgoff returned 0xacc00000, we asked for 0xacc00000
+[  340.198917] do_mmap_pgoff returned 0xacc21000, we asked for 0xacc21000
+[  340.198920] do_mmap_pgoff returned 0xacd00000, we asked for 0xacd00000
+[  340.199049] do_mmap_pgoff returned 0xacb21000, we asked for 0xacb21000
+[  340.199054] do_mmap_pgoff returned 0xacc00000, we asked for 0xacc00000
+[  340.199069] do_mmap_pgoff returned 0xacb21000, we asked for 0xacb21000
+[  340.199073] do_mmap_pgoff returned 0xacc00000, we asked for 0xacc00000
+[  340.199191] do_mmap_pgoff returned 0xacc21000, we asked for 0xacc21000
+[  340.199194] do_mmap_pgoff returned 0xacd00000, we asked for 0xacd00000
+[  340.199317] do_mmap_pgoff returned 0xacc21000, we asked for 0xacc21000
+[  340.199319] do_mmap_pgoff returned 0xacd00000, we asked for 0xacd00000
+[  340.199332] do_mmap_pgoff returned 0xacd21000, we asked for 0xacd21000
+[  340.199335] do_mmap_pgoff returned 0xace00000, we asked for 0xace00000
+[  340.199367] do_mmap_pgoff returned 0xacef6000, we asked for 0xacef6000
+[  340.199403] do_mmap_pgoff returned 0xacd21000, we asked for 0xacd21000
+[  340.199407] do_mmap_pgoff returned 0xace00000, we asked for 0xace00000
+[  340.199409] do_mmap_pgoff returned 0xacef6000, we asked for 0xacef6000
+[  340.199561] do_mmap_pgoff returned 0xacd21000, we asked for 0xacd21000
+[  340.199563] do_mmap_pgoff returned 0xace00000, we asked for 0xace00000
+[  340.199565] do_mmap_pgoff returned 0xacef6000, we asked for 0xacef6000
+[  340.199570] do_mmap_pgoff returned 0xacb21000, we asked for 0xacb21000
+[  340.199572] do_mmap_pgoff returned 0xacc00000, we asked for 0xacc00000
+[  340.199647] do_mmap_pgoff returned 0xacc21000, we asked for 0xacc21000
+[  340.199649] do_mmap_pgoff returned 0xacd00000, we asked for 0xacd00000
+[  340.200230] do_mmap_pgoff returned 0xacd21000, we asked for 0xacd21000
+[  340.200233] do_mmap_pgoff returned 0xace00000, we asked for 0xace00000
+[  340.200235] do_mmap_pgoff returned 0xacef6000, we asked for 0xacef6000
+[  340.280192] do_mmap_pgoff returned 0xad8ff000, we asked for 0xad8ff000
+[  340.280196] do_mmap_pgoff returned 0xad900000, we asked for 0xad900000
+[  340.280225] do_mmap_pgoff returned 0xad8ff000, we asked for 0xad8ff000
+[  340.280229] do_mmap_pgoff returned 0xad900000, we asked for 0xad900000
+[  340.280409] do_mmap_pgoff returned 0xad8ff000, we asked for 0xad8ff000
+[  340.280411] do_mmap_pgoff returned 0xad900000, we asked for 0xad900000
+[  340.280457] do_mmap_pgoff returned 0xad8ff000, we asked for 0xad8ff000
+[  340.280463] do_mmap_pgoff returned 0xad900000, we asked for 0xad900000
+[  340.320390] do_mmap_pgoff returned 0xae100000, we asked for 0xae100000
+[  340.320400] do_mmap_pgoff returned 0xae100000, we asked for 0xae100000
+[  340.320629] do_mmap_pgoff returned 0xae100000, we asked for 0xae100000
+[  340.321458] do_mmap_pgoff returned 0xae100000, we asked for 0xae100000
+[  340.321980] do_mmap_pgoff returned 0xae121000, we asked for 0xae121000
+[  340.321986] do_mmap_pgoff returned 0xae200000, we asked for 0xae200000
+[  340.321989] do_mmap_pgoff returned 0xae2ec000, we asked for 0xae2ec000
+[  340.321996] do_mmap_pgoff returned 0xae121000, we asked for 0xae121000
+[  340.321999] do_mmap_pgoff returned 0xae200000, we asked for 0xae200000
+[  340.322001] do_mmap_pgoff returned 0xae2ec000, we asked for 0xae2ec000
+[  340.322232] do_mmap_pgoff returned 0xae121000, we asked for 0xae121000
+[  340.322234] do_mmap_pgoff returned 0xae200000, we asked for 0xae200000
+[  340.322239] do_mmap_pgoff returned 0xae2ec000, we asked for 0xae2ec000
+[  340.322244] do_mmap_pgoff returned 0xae121000, we asked for 0xae121000
+[  340.322247] do_mmap_pgoff returned 0xae200000, we asked for 0xae200000
+[  340.322249] do_mmap_pgoff returned 0xae2ec000, we asked for 0xae2ec000
+[  340.386161] do_mmap_pgoff returned 0xaecf5000, we asked for 0xaecf5000
+[  340.386168] do_mmap_pgoff returned 0xaecf5000, we asked for 0xaecf5000
+[  340.386169] do_mmap_pgoff returned 0xaecf6000, we asked for 0xaecf6000
+[  340.386173] do_mmap_pgoff returned 0xaecf6000, we asked for 0xaecf6000
+[  340.386414] do_mmap_pgoff returned 0xaecf5000, we asked for 0xaecf5000
+[  340.386418] do_mmap_pgoff returned 0xaecf5000, we asked for 0xaecf5000
+[  340.386419] do_mmap_pgoff returned 0xaecf6000, we asked for 0xaecf6000
+[  340.386422] do_mmap_pgoff returned 0xaecf6000, we asked for 0xaecf6000
+[  340.624493] do_mmap_pgoff returned 0xafeff000, we asked for 0xafeff000
+[  340.624498] do_mmap_pgoff returned 0xaff00000, we asked for 0xaff00000
+[  340.624622] do_mmap_pgoff returned 0xafeff000, we asked for 0xafeff000
+[  340.624626] do_mmap_pgoff returned 0xaff00000, we asked for 0xaff00000
+[  340.624843] do_mmap_pgoff returned 0xafeff000, we asked for 0xafeff000
+[  340.624846] do_mmap_pgoff returned 0xaff00000, we asked for 0xaff00000
+[  340.625168] do_mmap_pgoff returned 0xafeff000, we asked for 0xafeff000
+[  340.625170] do_mmap_pgoff returned 0xaff00000, we asked for 0xaff00000
+[  340.723282] do_mmap_pgoff returned 0xb0700000, we asked for 0xb0700000
+[  340.723401] do_mmap_pgoff returned 0xb0700000, we asked for 0xb0700000
+[  340.723419] do_mmap_pgoff returned 0xb0700000, we asked for 0xb0700000
+[  340.723426] do_mmap_pgoff returned 0xb0700000, we asked for 0xb0700000
+[  340.723611] do_mmap_pgoff returned 0xb0721000, we asked for 0xb0721000
+[  340.723614] do_mmap_pgoff returned 0xb0800000, we asked for 0xb0800000
+[  340.723617] do_mmap_pgoff returned 0xb08ec000, we asked for 0xb08ec000
+[  340.723732] do_mmap_pgoff returned 0xb0721000, we asked for 0xb0721000
+[  340.723734] do_mmap_pgoff returned 0xb0800000, we asked for 0xb0800000
+[  340.723737] do_mmap_pgoff returned 0xb08ec000, we asked for 0xb08ec000
+[  340.723743] do_mmap_pgoff returned 0xb0721000, we asked for 0xb0721000
+[  340.723746] do_mmap_pgoff returned 0xb0721000, we asked for 0xb0721000
+[  340.723746] do_mmap_pgoff returned 0xb0800000, we asked for 0xb0800000
+[  340.723749] do_mmap_pgoff returned 0xb08ec000, we asked for 0xb08ec000
+[  340.723750] do_mmap_pgoff returned 0xb0800000, we asked for 0xb0800000
+[  340.723753] do_mmap_pgoff returned 0xb08ec000, we asked for 0xb08ec000
+[  341.309352] do_mmap_pgoff returned 0xb12f5000, we asked for 0xb12f5000
+[  341.309357] do_mmap_pgoff returned 0xb12f6000, we asked for 0xb12f6000
+[  341.309565] do_mmap_pgoff returned 0xb12f5000, we asked for 0xb12f5000
+[  341.309569] do_mmap_pgoff returned 0xb12f6000, we asked for 0xb12f6000
+[  341.309734] do_mmap_pgoff returned 0xb12f5000, we asked for 0xb12f5000
+[  341.309736] do_mmap_pgoff returned 0xb12f6000, we asked for 0xb12f6000
+[  341.309783] do_mmap_pgoff returned 0xb12f5000, we asked for 0xb12f5000
+[  341.309799] do_mmap_pgoff returned 0xb12f6000, we asked for 0xb12f6000
+[  341.497361] 2713: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e82664c0
+[  341.497418] 2712: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e82664c0
+[  341.497501] 2707: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e82664c0
+[  341.498541] Pid 2621 prlimit64 is pulling from retparams
+[  341.498675] currp2621, replay_clone: new Pid 2716, record Pid 3972, parent pid 2621 flags 3d0f00 child_tidptr ab0ecba8
+[  341.517655] Pid 2621 prlimit64 is pulling from retparams
+[  341.517678] currp2621, replay_clone: new Pid 2717, record Pid 3973, parent pid 2621 flags 3d0f00 child_tidptr a4af6ba8
+[  341.541760] 2714: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e82439c0
+[  341.541854] 2711: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e82439c0
+[  341.542005] 2708: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e82439c0
+[  341.543109] Pid 2617 prlimit64 is pulling from retparams
+[  341.543281] currp2617, replay_clone: new Pid 2718, record Pid 3972, parent pid 2617 flags 3d0f00 child_tidptr ab0ecba8
+[  341.543506] Pid 2617 prlimit64 is pulling from retparams
+[  341.543525] currp2617, replay_clone: new Pid 2719, record Pid 3973, parent pid 2617 flags 3d0f00 child_tidptr a4af6ba8
+[  341.554505] do_mmap_pgoff returned 0xb24ff000, we asked for 0xb24ff000
+[  341.554511] do_mmap_pgoff returned 0xb2500000, we asked for 0xb2500000
+[  341.554513] do_mmap_pgoff returned 0xb24ff000, we asked for 0xb24ff000
+[  341.554516] do_mmap_pgoff returned 0xb2500000, we asked for 0xb2500000
+[  341.554592] do_mmap_pgoff returned 0xb24ff000, we asked for 0xb24ff000
+[  341.554602] do_mmap_pgoff returned 0xb2500000, we asked for 0xb2500000
+[  341.554697] do_mmap_pgoff returned 0xb24ff000, we asked for 0xb24ff000
+[  341.554700] do_mmap_pgoff returned 0xb2500000, we asked for 0xb2500000
+[  341.662042] Pid 2621 prlimit64 is pulling from retparams
+[  341.662167] currp2621, replay_clone: new Pid 2720, record Pid 3974, parent pid 2621 flags 3d0f00 child_tidptr a3fecba8
+[  341.662337] Pid 2617 prlimit64 is pulling from retparams
+[  341.662457] currp2617, replay_clone: new Pid 2721, record Pid 3974, parent pid 2617 flags 3d0f00 child_tidptr a3fecba8
+[  341.678652] do_mmap_pgoff returned 0xb2d00000, we asked for 0xb2d00000
+[  341.678803] do_mmap_pgoff returned 0xb2d00000, we asked for 0xb2d00000
+[  341.678815] do_mmap_pgoff returned 0xb2d00000, we asked for 0xb2d00000
+[  341.678847] do_mmap_pgoff returned 0xb2d00000, we asked for 0xb2d00000
+[  341.678987] do_mmap_pgoff returned 0xb2d21000, we asked for 0xb2d21000
+[  341.678992] do_mmap_pgoff returned 0xb2e00000, we asked for 0xb2e00000
+[  341.679109] do_mmap_pgoff returned 0xb2d21000, we asked for 0xb2d21000
+[  341.679112] do_mmap_pgoff returned 0xb2e00000, we asked for 0xb2e00000
+[  341.679117] do_mmap_pgoff returned 0xb2d21000, we asked for 0xb2d21000
+[  341.679121] do_mmap_pgoff returned 0xb2e00000, we asked for 0xb2e00000
+[  341.679122] do_mmap_pgoff returned 0xb2d21000, we asked for 0xb2d21000
+[  341.679125] do_mmap_pgoff returned 0xb2e00000, we asked for 0xb2e00000
+[  341.680155] do_mmap_pgoff returned 0xb2e21000, we asked for 0xb2e21000
+[  341.680158] do_mmap_pgoff returned 0xb2f00000, we asked for 0xb2f00000
+[  341.680261] do_mmap_pgoff returned 0xb2f21000, we asked for 0xb2f21000
+[  341.680263] do_mmap_pgoff returned 0xb3000000, we asked for 0xb3000000
+[  341.680266] do_mmap_pgoff returned 0xb3077000, we asked for 0xb3077000
+[  341.680374] do_mmap_pgoff returned 0xb2e21000, we asked for 0xb2e21000
+[  341.680377] do_mmap_pgoff returned 0xb2f00000, we asked for 0xb2f00000
+[  341.680379] do_mmap_pgoff returned 0xb2e21000, we asked for 0xb2e21000
+[  341.680382] do_mmap_pgoff returned 0xb2f00000, we asked for 0xb2f00000
+[  341.680384] do_mmap_pgoff returned 0xb2e21000, we asked for 0xb2e21000
+[  341.680387] do_mmap_pgoff returned 0xb2f00000, we asked for 0xb2f00000
+[  341.680456] do_mmap_pgoff returned 0xb2f21000, we asked for 0xb2f21000
+[  341.680459] do_mmap_pgoff returned 0xb3000000, we asked for 0xb3000000
+[  341.680461] do_mmap_pgoff returned 0xb3077000, we asked for 0xb3077000
+[  341.680468] do_mmap_pgoff returned 0xb2f21000, we asked for 0xb2f21000
+[  341.680470] do_mmap_pgoff returned 0xb3000000, we asked for 0xb3000000
+[  341.680473] do_mmap_pgoff returned 0xb2f21000, we asked for 0xb2f21000
+[  341.680473] do_mmap_pgoff returned 0xb3077000, we asked for 0xb3077000
+[  341.680476] do_mmap_pgoff returned 0xb3000000, we asked for 0xb3000000
+[  341.680479] do_mmap_pgoff returned 0xb3077000, we asked for 0xb3077000
+[  341.777065] 2715: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e81f6840
+[  341.777131] 2710: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e81f6840
+[  341.777225] 2709: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e81f6840
+[  341.778451] Pid 2619 prlimit64 is pulling from retparams
+[  341.778573] currp2619, replay_clone: new Pid 2722, record Pid 3972, parent pid 2619 flags 3d0f00 child_tidptr ab0ecba8
+[  341.779071] Pid 2619 prlimit64 is pulling from retparams
+[  341.779097] currp2619, replay_clone: new Pid 2723, record Pid 3973, parent pid 2619 flags 3d0f00 child_tidptr a4af6ba8
+[  341.783044] Pid 2619 prlimit64 is pulling from retparams
+[  341.783127] currp2619, replay_clone: new Pid 2724, record Pid 3974, parent pid 2619 flags 3d0f00 child_tidptr a3fecba8
+[  341.814982] do_mmap_pgoff returned 0xb3a80000, we asked for 0xb3a80000
+[  341.814989] do_mmap_pgoff returned 0xb3a81000, we asked for 0xb3a81000
+[  341.815218] do_mmap_pgoff returned 0xb3a80000, we asked for 0xb3a80000
+[  341.815220] do_mmap_pgoff returned 0xb3a81000, we asked for 0xb3a81000
+[  341.815572] do_mmap_pgoff returned 0xb3a80000, we asked for 0xb3a80000
+[  341.815574] do_mmap_pgoff returned 0xb3a81000, we asked for 0xb3a81000
+[  341.815958] do_mmap_pgoff returned 0xb3a80000, we asked for 0xb3a80000
+[  341.815960] do_mmap_pgoff returned 0xb3a81000, we asked for 0xb3a81000
+[  342.139353] Pid 2721 about to sleep at index 7488527
+[  342.155083] Pid 2721 woken up - replay clock 7488527
+[  342.155085] Pid 2719(3973) status 2
+[  342.155086] Pid 2718(3972) status 2
+[  342.155089] Pid 2714(3740) status 3
+[  342.155090] Pid 2711(3739) status 3
+[  342.155091] Pid 2708(3738) status 3
+[  342.155092] Pid 2704(3507) status 3
+[  342.155093] Pid 2701(3506) status 2
+[  342.155094] Pid 2698(3505) status 2
+[  342.155095] Pid 2697(3504) status 2
+[  342.155096] Pid 2694(3503) status 2
+[  342.155097] Pid 2690(3502) status 2
+[  342.155098] Pid 2687(3501) status 2
+[  342.155099] Pid 2683(3500) status 2
+[  342.155101] Pid 2680(3499) status 2
+[  342.155102] Pid 2617(3498) status 2
+[  342.155172] Pid 2617: pin is attaching syscall 142 so interrupt exit and restart
+[  342.155173] Expected clock reset from 7493287 to 7465647
+[  342.155192] Pid 2680: pin is attaching syscall 177 so interrupt exit and restart
+[  342.155194] Expected clock reset from 68032342 to 78356
+[  342.155238] Pid 2683: pin is attaching syscall 162 so interrupt exit and restart
+[  342.155239] Expected clock reset from 15396274 to 79833
+[  342.155262] Pid 2687: pin is attaching at syscall 53 entrance so interrupt exit and restart
+[  342.155264] Expected clock reset from 68033753 to 107739
+[  342.155293] Pid 2690: pin is attaching at syscall 53 entrance so interrupt exit and restart
+[  342.155295] Expected clock reset from 68033749 to 83327
+[  342.155318] Pid 2694: pin is attaching syscall 162 so interrupt exit and restart
+[  342.155323] Expected clock reset from 10624114 to 7002791
+[  342.155351] Pid 2697: pin is attaching at user block so interrupt exit and restart
+[  342.155384] Pid 2698: pin is attaching syscall 162 so interrupt exit and restart
+[  342.155388] Expected clock reset from 15396476 to 84558
+[  342.155408] Pid 2701: pin is attaching at user block so interrupt exit and restart
+[  342.155445] Pid 2718: pin is attaching syscall 102 so interrupt exit and restart
+[  342.155447] Expected clock reset from 10621153 to 5861351
+[  342.155468] Pid 2719: pin is attaching syscall 102 so interrupt exit and restart
+[  342.155470] Expected clock reset from 7489143 to 7488282
+[  342.177203] in shim_ptrace with detach request, syscall_addr 1, on pid 2721
+[  342.185879] in shim_ptrace with detach request, syscall_addr 1, on pid 2617
+[  342.185909] in shim_ptrace with detach request, syscall_addr 1, on pid 2680
+[  342.185959] in shim_ptrace with detach request, syscall_addr 1, on pid 2683
+[  342.185967] in shim_ptrace with detach request, syscall_addr 1, on pid 2687
+[  342.193977] in shim_ptrace with detach request, syscall_addr 1, on pid 2690
+[  342.197300] in shim_ptrace with detach request, syscall_addr 1, on pid 2694
+[  342.206290] in shim_ptrace with detach request, syscall_addr 1, on pid 2697
+[  342.229085] in shim_ptrace with detach request, syscall_addr 1, on pid 2698
+[  342.237106] in shim_ptrace with detach request, syscall_addr 1, on pid 2701
+[  342.237123] in shim_ptrace with detach request, syscall_addr 1, on pid 2718
+[  342.237135] in shim_ptrace with detach request, syscall_addr 1, on pid 2719
+[  342.436659] currp2615, replay_clone: new Pid 2730, record Pid 3499, parent pid 2615 flags 350f00 child_tidptr b548aba8
+[  342.479931] do_mmap_pgoff returned 0xb4c8a000, we asked for 0xb4c8a000
+[  342.479936] do_mmap_pgoff returned 0xb4c8b000, we asked for 0xb4c8b000
+[  342.480516] do_mmap_pgoff returned 0xb4c8a000, we asked for 0xb4c8a000
+[  342.480519] do_mmap_pgoff returned 0xb4c8b000, we asked for 0xb4c8b000
+[  342.480702] do_mmap_pgoff returned 0xb4c8a000, we asked for 0xb4c8a000
+[  342.480707] do_mmap_pgoff returned 0xb4c8b000, we asked for 0xb4c8b000
+[  342.480910] do_mmap_pgoff returned 0xb4c8a000, we asked for 0xb4c8a000
+[  342.480912] do_mmap_pgoff returned 0xb4c8b000, we asked for 0xb4c8b000
+[  342.493559] currp2615, replay_clone: new Pid 2731, record Pid 3500, parent pid 2615 flags 350f00 child_tidptr b4280ba8
+[  342.673696] Pid 2615: I have pin thread data but switching thread 2731 (recpid 3500) does not
+[  342.673763] set_pin_address: pin address for pid 2731 is 8144500c attaching 0 status 0
+[  342.673765] switched before this attach so update current thread
+[  342.684265] Pid 2731: I have pin thread data but switching thread 2730 (recpid 3499) does not
+[  342.684292] set_pin_address: pin address for pid 2730 is 8142c00c attaching 0 status 0
+[  342.684293] switched before this attach so update current thread
+[  342.714133] set_pin_address: pin address for pid 2721 is 953f600c attaching 1 status 0
+[  342.715483] set_pin_address: pin address for pid 2718 is 953f200c attaching 1 status 2
+[  342.715540] Rolling back 8 bytes of log data
+[  342.715542] attaching pid 2718 has reached syscall exit
+[  342.715624] set_pin_address: pin address for pid 2680 is 9535700c attaching 1 status 2
+[  342.715675] Rolling back 12 bytes of log data
+[  342.715677] attaching pid 2680 has reached syscall exit
+[  342.715777] set_pin_address: pin address for pid 2687 is 9537700c attaching 1 status 2
+[  342.715868] Rolling back 4 bytes of log data
+[  342.715871] attaching pid 2687 has reached syscall entrance
+[  342.715872] Pid 2687 restarting start_clock 40e1cd8 attach_clock 72440f
+[  342.715873] Pid 2687 no longer attaching on enter
+[  342.715976] set_pin_address: pin address for pid 2701 is 953d700c attaching 1 status 2
+[  342.716036] hmm... this guy is a restart huh? 2701 wants to wait until 7973607
+[  342.716037] user-level-block: pid 2701 attaching now 0
+[  342.716191] set_pin_address: pin address for pid 2683 is 9537400c attaching 1 status 2
+[  342.716280] Rolling back 8 bytes of log data
+[  342.716284] attaching pid 2683 has reached syscall exit
+[  342.716381] set_pin_address: pin address for pid 2719 is 953f000c attaching 1 status 2
+[  342.716420] Rolling back 12 bytes of log data
+[  342.716422] attaching pid 2719 has reached syscall exit
+[  342.716493] set_pin_address: pin address for pid 2617 is 9535500c attaching 1 status 2
+[  342.716530] Rolling back 8 bytes of log data
+[  342.716531] attaching pid 2617 has reached syscall exit
+[  342.716634] set_pin_address: pin address for pid 2698 is 953d500c attaching 1 status 2
+[  342.716678] Rolling back 8 bytes of log data
+[  342.716680] attaching pid 2698 has reached syscall exit
+[  342.716765] set_pin_address: pin address for pid 2694 is 9539600c attaching 1 status 2
+[  342.716808] Rolling back 8 bytes of log data
+[  342.716810] attaching pid 2694 has reached syscall exit
+[  342.716911] set_pin_address: pin address for pid 2697 is 953d300c attaching 1 status 2
+[  342.716979] hmm... this guy is a restart huh? 2697 wants to wait until 15396411
+[  342.716980] user-level-block: pid 2697 attaching now 0
+[  342.717535] set_pin_address: pin address for pid 2690 is 9539400c attaching 1 status 2
+[  342.717579] Rolling back 4 bytes of log data
+[  342.717580] attaching pid 2690 has reached syscall entrance
+[  342.717581] Pid 2690 restarting start_clock 40e1cd4 attach_clock 72440f
+[  342.717582] Pid 2690 no longer attaching on enter
+[  342.717593] Rolling back 8 bytes of log data
+[  343.331088] do_mmap_pgoff returned 0xb6a17000, we asked for 0xb6a17000
+[  343.331103] do_mmap_pgoff returned 0xb6a18000, we asked for 0xb6a18000
+[  343.332081] do_mmap_pgoff returned 0xb6a17000, we asked for 0xb6a17000
+[  343.332093] do_mmap_pgoff returned 0xb6a18000, we asked for 0xb6a18000
+[  343.332152] do_mmap_pgoff returned 0xb6a17000, we asked for 0xb6a17000
+[  343.332154] do_mmap_pgoff returned 0xb6a17000, we asked for 0xb6a17000
+[  343.332159] do_mmap_pgoff returned 0xb6a18000, we asked for 0xb6a18000
+[  343.332160] do_mmap_pgoff returned 0xb6a18000, we asked for 0xb6a18000
+[  343.464624] do_mmap_pgoff returned 0xb7427000, we asked for 0xb7427000
+[  343.464626] do_mmap_pgoff returned 0xb7427000, we asked for 0xb7427000
+[  343.464667] do_mmap_pgoff returned 0xb7427000, we asked for 0xb7427000
+[  343.464976] do_mmap_pgoff returned 0xb7427000, we asked for 0xb7427000
+[  343.544584] do_mmap_pgoff returned 0xb75bf000, we asked for 0xb75bf000
+[  343.544607] do_mmap_pgoff returned 0xb75c1000, we asked for 0xb75c1000
+[  343.544610] do_mmap_pgoff returned 0xb75bf000, we asked for 0xb75bf000
+[  343.544623] do_mmap_pgoff returned 0xb75c2000, we asked for 0xb75c2000
+[  343.544636] do_mmap_pgoff returned 0xb75c1000, we asked for 0xb75c1000
+[  343.544644] do_mmap_pgoff returned 0xb75c2000, we asked for 0xb75c2000
+[  343.544657] do_mmap_pgoff returned 0xb75c5000, we asked for 0xb75c5000
+[  343.544660] do_mmap_pgoff returned 0xb75c5000, we asked for 0xb75c5000
+[  343.544670] do_mmap_pgoff returned 0xb75bf000, we asked for 0xb75bf000
+[  343.544683] do_mmap_pgoff returned 0xb75c1000, we asked for 0xb75c1000
+[  343.544690] do_mmap_pgoff returned 0xb75c2000, we asked for 0xb75c2000
+[  343.544701] do_mmap_pgoff returned 0xb75c5000, we asked for 0xb75c5000
+[  343.545379] do_mmap_pgoff returned 0xb75bf000, we asked for 0xb75bf000
+[  343.545402] do_mmap_pgoff returned 0xb75c1000, we asked for 0xb75c1000
+[  343.545409] do_mmap_pgoff returned 0xb75c2000, we asked for 0xb75c2000
+[  343.545426] do_mmap_pgoff returned 0xb75c5000, we asked for 0xb75c5000
+[  343.567738] do_mmap_pgoff returned 0xb75e7000, we asked for 0xb75e7000
+[  343.567750] do_mmap_pgoff returned 0xb75e7000, we asked for 0xb75e7000
+[  343.567752] do_mmap_pgoff returned 0xb75e8000, we asked for 0xb75e8000
+[  343.567761] do_mmap_pgoff returned 0xb75e9000, we asked for 0xb75e9000
+[  343.567785] do_mmap_pgoff returned 0xb75e8000, we asked for 0xb75e8000
+[  343.567789] do_mmap_pgoff returned 0xb75eb000, we asked for 0xb75eb000
+[  343.567806] do_mmap_pgoff returned 0xb75e9000, we asked for 0xb75e9000
+[  343.567825] do_mmap_pgoff returned 0xb75eb000, we asked for 0xb75eb000
+[  343.567847] do_mmap_pgoff returned 0xb75e7000, we asked for 0xb75e7000
+[  343.567856] do_mmap_pgoff returned 0xb75e8000, we asked for 0xb75e8000
+[  343.567862] do_mmap_pgoff returned 0xb75e9000, we asked for 0xb75e9000
+[  343.567871] do_mmap_pgoff returned 0xb75eb000, we asked for 0xb75eb000
+[  343.567916] do_mmap_pgoff returned 0xb7607000, we asked for 0xb7607000
+[  343.567925] do_mmap_pgoff returned 0xb7608000, we asked for 0xb7608000
+[  343.567929] do_mmap_pgoff returned 0xb7607000, we asked for 0xb7607000
+[  343.567933] do_mmap_pgoff returned 0xb7609000, we asked for 0xb7609000
+[  343.567938] do_mmap_pgoff returned 0xb7608000, we asked for 0xb7608000
+[  343.567946] do_mmap_pgoff returned 0xb7609000, we asked for 0xb7609000
+[  343.567955] do_mmap_pgoff returned 0xb7607000, we asked for 0xb7607000
+[  343.567964] do_mmap_pgoff returned 0xb7608000, we asked for 0xb7608000
+[  343.567971] do_mmap_pgoff returned 0xb7609000, we asked for 0xb7609000
+[  343.568111] do_mmap_pgoff returned 0xb75e7000, we asked for 0xb75e7000
+[  343.568119] do_mmap_pgoff returned 0xb75e8000, we asked for 0xb75e8000
+[  343.568126] do_mmap_pgoff returned 0xb75e9000, we asked for 0xb75e9000
+[  343.568137] do_mmap_pgoff returned 0xb75eb000, we asked for 0xb75eb000
+[  343.568256] do_mmap_pgoff returned 0xb7607000, we asked for 0xb7607000
+[  343.568264] do_mmap_pgoff returned 0xb7608000, we asked for 0xb7608000
+[  343.568270] do_mmap_pgoff returned 0xb7609000, we asked for 0xb7609000
+[  343.568605] do_mmap_pgoff returned 0xb7632000, we asked for 0xb7632000
+[  343.568615] do_mmap_pgoff returned 0xb7632000, we asked for 0xb7632000
+[  343.568618] do_mmap_pgoff returned 0xb7632000, we asked for 0xb7632000
+[  343.568620] do_mmap_pgoff returned 0xb7633000, we asked for 0xb7633000
+[  343.568627] do_mmap_pgoff returned 0xb7633000, we asked for 0xb7633000
+[  343.568628] do_mmap_pgoff returned 0xb7634000, we asked for 0xb7634000
+[  343.568629] do_mmap_pgoff returned 0xb7633000, we asked for 0xb7633000
+[  343.568638] do_mmap_pgoff returned 0xb7634000, we asked for 0xb7634000
+[  343.568641] do_mmap_pgoff returned 0xb7634000, we asked for 0xb7634000
+[  343.569551] do_mmap_pgoff returned 0xb7632000, we asked for 0xb7632000
+[  343.569569] do_mmap_pgoff returned 0xb7633000, we asked for 0xb7633000
+[  343.569580] do_mmap_pgoff returned 0xb7634000, we asked for 0xb7634000
+[  343.571404] do_mmap_pgoff returned 0xb770c000, we asked for 0xb770c000
+[  343.571408] do_mmap_pgoff returned 0xb770d000, we asked for 0xb770d000
+[  343.571415] do_mmap_pgoff returned 0xb770c000, we asked for 0xb770c000
+[  343.571421] do_mmap_pgoff returned 0xb770d000, we asked for 0xb770d000
+[  343.571431] do_mmap_pgoff returned 0xb7711000, we asked for 0xb7711000
+[  343.571438] do_mmap_pgoff returned 0xb7712000, we asked for 0xb7712000
+[  343.571441] do_mmap_pgoff returned 0xb7711000, we asked for 0xb7711000
+[  343.571449] do_mmap_pgoff returned 0xb7712000, we asked for 0xb7712000
+[  343.571689] do_mmap_pgoff returned 0xb770c000, we asked for 0xb770c000
+[  343.571696] do_mmap_pgoff returned 0xb770d000, we asked for 0xb770d000
+[  343.571731] do_mmap_pgoff returned 0xb7711000, we asked for 0xb7711000
+[  343.571741] do_mmap_pgoff returned 0xb7712000, we asked for 0xb7712000
+[  343.571829] do_mmap_pgoff returned 0xb771c000, we asked for 0xb771c000
+[  343.572430] do_mmap_pgoff returned 0xb773b000, we asked for 0xb773b000
+[  343.572439] do_mmap_pgoff returned 0xb773c000, we asked for 0xb773c000
+[  343.572446] do_mmap_pgoff returned 0xbfc77000, we asked for 0xbfc77000
+[  343.572548] 2625 arch_restore_add-pages before b774e424
+[  343.572549] 2625 arch_restore_add-pages after b771b424
+[  343.572613] do_mmap_pgoff returned 0xb771c000, we asked for 0xb771c000
+[  343.572687] do_mmap_pgoff returned 0xb770c000, we asked for 0xb770c000
+[  343.572715] do_mmap_pgoff returned 0xb773b000, we asked for 0xb773b000
+[  343.572718] do_mmap_pgoff returned 0xb771c000, we asked for 0xb771c000
+[  343.572724] do_mmap_pgoff returned 0xb773c000, we asked for 0xb773c000
+[  343.572731] do_mmap_pgoff returned 0xbfc77000, we asked for 0xbfc77000
+[  343.572812] 2623 arch_restore_add-pages before b7773424
+[  343.572813] 2623 arch_restore_add-pages after b771b424
+[  343.572814] do_mmap_pgoff returned 0xb773b000, we asked for 0xb773b000
+[  343.572826] do_mmap_pgoff returned 0xb773c000, we asked for 0xb773c000
+[  343.572836] do_mmap_pgoff returned 0xbfc77000, we asked for 0xbfc77000
+[  343.572926] 2629 arch_restore_add-pages before b7708424
+[  343.572927] 2629 arch_restore_add-pages after b771b424
+[  343.572944] do_mmap_pgoff returned 0xb770d000, we asked for 0xb770d000
+[  343.572960] do_mmap_pgoff returned 0xb7711000, we asked for 0xb7711000
+[  343.572968] do_mmap_pgoff returned 0xb7712000, we asked for 0xb7712000
+[  343.572997] do_mmap_pgoff returned 0xb771c000, we asked for 0xb771c000
+[  343.573134] do_mmap_pgoff returned 0xb773b000, we asked for 0xb773b000
+[  343.573148] do_mmap_pgoff returned 0xb773c000, we asked for 0xb773c000
+[  343.573154] do_mmap_pgoff returned 0xbfc77000, we asked for 0xbfc77000
+[  343.573257] 2627 arch_restore_add-pages before b77bf424
+[  343.573257] 2627 arch_restore_add-pages after b771b424
+[  343.669800] 2656 arch_restore_add-pages before b7708424
+[  343.669802] 2656 arch_restore_add-pages after b771b424
+[  343.669808] 2656 is waiting at a pthread block clock? 0
+[  343.669815] 2671 arch_restore_add-pages before b7708424
+[  343.669817] 2671 arch_restore_add-pages after b771b424
+[  343.669822] 2671 is waiting at a pthread block clock? 0
+[  343.669868] 2647 arch_restore_add-pages before b7708424
+[  343.669869] 2647 arch_restore_add-pages after b771b424
+[  343.669876] 2647 is waiting at a pthread block clock? 0
+[  343.669834] 2671 rolling back the out_ptr, we weren't waiting in pthread_block
+[  343.669884] 2647 rolling back the out_ptr, we weren't waiting in pthread_block2662 arch_restore_add-pages before b7708424
+[  343.669904] 2662 arch_restore_add-pages after b771b424
+[  343.669908] 2662 is waiting at a pthread block clock? 0
+[  343.669941] 2668 arch_restore_add-pages before b7708424
+[  343.669941] 2668 arch_restore_add-pages after b771b424
+[  343.669945] 2668 is waiting at a pthread block clock? 0
+[  343.669921] 2662 rolling back the out_ptr, we weren't waiting in pthread_block
+[  343.669954] 2668 rolling back the out_ptr, we weren't waiting in pthread_block2659 arch_restore_add-pages before b7708424
+[  343.669979] 2659 arch_restore_add-pages after b771b424
+[  343.669983] 2659 is waiting at a pthread block clock? 0
+[  343.670027] 2659 rolling back the out_ptr, we weren't waiting in pthread_block
+[  343.670030] 2656 rolling back the out_ptr, we weren't waiting in pthread_block2665 arch_restore_add-pages before b7708424
+[  343.670060] 2665 arch_restore_add-pages after b771b424
+[  343.670066] 2665 is waiting at a pthread block clock? 34598749
+[  343.670074] 2644 arch_restore_add-pages before b7708424
+[  343.670075] 2644 arch_restore_add-pages after b771b424
+[  343.670080] hmm... this guy is a restart huh? 2665 wants to wait until 34598749
+[  343.670083] 2644 is waiting at a pthread block clock? 0
+[  343.670131] 2653 arch_restore_add-pages before b7708424
+[  343.670132] 2653 arch_restore_add-pages after b771b424
+[  343.670137] 2653 is waiting at a pthread block clock? 30167086
+[  343.670159] hmm... this guy is a restart huh? 2653 wants to wait until 30167086
+[  343.670181] 2649 arch_restore_add-pages before b7708424
+[  343.670182] 2649 arch_restore_add-pages after b771b424
+[  343.670186] 2649 is waiting at a pthread block clock? 0
+[  343.670233] 2642 arch_restore_add-pages before b7708424
+[  343.670234] 2642 arch_restore_add-pages after b771b424
+[  343.670240] 2642 is waiting at a pthread block clock? 0
+[  343.670311] 2636 arch_restore_add-pages before b7773424
+[  343.670311] 2636 arch_restore_add-pages after b771b424
+[  343.670318] 2636 is waiting at a pthread block clock? 0
+[  343.670324] 2641 arch_restore_add-pages before b7773424
+[  343.670327] 2641 arch_restore_add-pages after b771b424
+[  343.670333] 2641 is waiting at a pthread block clock? 0
+[  343.670342] 2632 arch_restore_add-pages before b7773424
+[  343.670344] 2632 arch_restore_add-pages after b771b424
+[  343.670098] 2644 rolling back the out_ptr, we weren't waiting in pthread_block
+[  343.670347] 2641 rolling back the out_ptr, we weren't waiting in pthread_block2632 is waiting at a pthread block clock? 0
+[  343.670373] 2638 arch_restore_add-pages before b7773424
+[  343.670374] 2638 arch_restore_add-pages after b771b424
+[  343.670378] 2638 is waiting at a pthread block clock? 0
+[  343.670358] 2632 rolling back the out_ptr, we weren't waiting in pthread_block
+[  343.670385] 2638 rolling back the out_ptr, we weren't waiting in pthread_block2631 arch_restore_add-pages before b7773424
+[  343.670407] 2631 arch_restore_add-pages after b771b424
+[  343.670411] 2631 is waiting at a pthread block clock? 0
+[  343.670437] 2635 arch_restore_add-pages before b7773424
+[  343.670438] 2635 arch_restore_add-pages after b771b424
+[  343.670444] 2635 is waiting at a pthread block clock? 0
+[  343.670417] 2631 rolling back the out_ptr, we weren't waiting in pthread_block
+[  343.670492] 2635 rolling back the out_ptr, we weren't waiting in pthread_block2634 arch_restore_add-pages before b7773424
+[  343.670527] 2634 arch_restore_add-pages after b771b424
+[  343.670535] 2634 is waiting at a pthread block clock? 34598749
+[  343.670555] hmm... this guy is a restart huh? 2634 wants to wait until 34598749
+[  343.670571] 2633 arch_restore_add-pages before b7773424
+[  343.670572] 2633 arch_restore_add-pages after b771b424
+[  343.670576] 2633 is waiting at a pthread block clock? 0
+[  343.670520] 2636 rolling back the out_ptr, we weren't waiting in pthread_block
+[  343.670584] 2633 rolling back the out_ptr, we weren't waiting in pthread_block2637 arch_restore_add-pages before b7773424
+[  343.670605] 2637 arch_restore_add-pages after b771b424
+[  343.670609] 2637 is waiting at a pthread block clock? 30167086
+[  343.670631] hmm... this guy is a restart huh? 2637 wants to wait until 30167086
+[  343.670649] 2640 arch_restore_add-pages before b7773424
+[  343.670650] 2640 arch_restore_add-pages after b771b424
+[  343.670654] 2640 is waiting at a pthread block clock? 0
+[  343.670677] 2639 arch_restore_add-pages before b7773424
+[  343.670678] 2639 arch_restore_add-pages after b771b424
+[  343.670684] 2639 is waiting at a pthread block clock? 0
+[  343.670755] 2670 arch_restore_add-pages before b774e424
+[  343.670756] 2670 arch_restore_add-pages after b771b424
+[  343.670764] 2670 is waiting at a pthread block clock? 0
+[  343.670770] 2648 arch_restore_add-pages before b774e424
+[  343.670771] 2648 arch_restore_add-pages after b771b424
+[  343.670775] 2648 is waiting at a pthread block clock? 0
+[  343.670807] 2645 arch_restore_add-pages before b774e424
+[  343.670808] 2645 arch_restore_add-pages after b771b424
+[  343.670812] 2645 is waiting at a pthread block clock? 0
+[  343.670784] 2648 rolling back the out_ptr, we weren't waiting in pthread_block
+[  343.670819] 2645 rolling back the out_ptr, we weren't waiting in pthread_block2643 arch_restore_add-pages before b774e424
+[  343.670842] 2643 arch_restore_add-pages after b771b424
+[  343.670856] 2643 is waiting at a pthread block clock? 0
+[  343.670863] 2652 arch_restore_add-pages before b774e424
+[  343.670864] 2652 arch_restore_add-pages after b771b424
+[  343.670868] 2652 is waiting at a pthread block clock? 0
+[  343.670879] 2652 rolling back the out_ptr, we weren't waiting in pthread_block
+[  343.670894] 2643 rolling back the out_ptr, we weren't waiting in pthread_block2658 arch_restore_add-pages before b774e424
+[  343.670917] 2658 arch_restore_add-pages after b771b424
+[  343.670921] 2658 is waiting at a pthread block clock? 0
+[  343.670947] 2670 rolling back the out_ptr, we weren't waiting in pthread_block
+[  343.670960] 2658 rolling back the out_ptr, we weren't waiting in pthread_block2664 arch_restore_add-pages before b774e424
+[  343.671297] 2664 arch_restore_add-pages after b771b424
+[  343.671307] 2664 is waiting at a pthread block clock? 34598749
+[  343.671315] 2661 arch_restore_add-pages before b774e424
+[  343.671316] 2661 arch_restore_add-pages after b771b424
+[  343.671324] hmm... this guy is a restart huh? 2664 wants to wait until 34598749
+[  343.671326] 2661 is waiting at a pthread block clock? 0
+[  343.671376] 2650 arch_restore_add-pages before b774e424
+[  343.671377] 2650 arch_restore_add-pages after b771b424
+[  343.671381] 2650 is waiting at a pthread block clock? 30167086
+[  343.671393] 2667 arch_restore_add-pages before b774e424
+[  343.671394] 2667 arch_restore_add-pages after b771b424
+[  343.671398] 2667 is waiting at a pthread block clock? 0
+[  343.671421] hmm... this guy is a restart huh? 2650 wants to wait until 30167086
+[  343.671427] 2655 arch_restore_add-pages before b774e424
+[  343.671428] 2655 arch_restore_add-pages after b771b424
+[  343.671432] 2655 is waiting at a pthread block clock? 0
+[  343.671509] 2674 arch_restore_add-pages before b77bf424
+[  343.671510] 2674 arch_restore_add-pages after b771b424
+[  343.671517] 2674 is waiting at a pthread block clock? 0
+[  343.671521] 2672 arch_restore_add-pages before b77bf424
+[  343.671522] 2672 arch_restore_add-pages after b771b424
+[  343.671528] 2672 is waiting at a pthread block clock? 0
+[  343.671336] 2661 rolling back the out_ptr, we weren't waiting in pthread_block
+[  343.671551] 2672 rolling back the out_ptr, we weren't waiting in pthread_block2646 arch_restore_add-pages before b77bf424
+[  343.671569] 2646 arch_restore_add-pages after b771b424
+[  343.671581] 2646 is waiting at a pthread block clock? 0
+[  343.671590] 2651 arch_restore_add-pages before b77bf424
+[  343.671593] 2651 arch_restore_add-pages after b771b424
+[  343.671598] 2651 is waiting at a pthread block clock? 0
+[  343.671616] 2646 rolling back the out_ptr, we weren't waiting in pthread_block
+[  343.671618] 2651 rolling back the out_ptr, we weren't waiting in pthread_block2663 arch_restore_add-pages before b77bf424
+[  343.671661] 2663 arch_restore_add-pages after b771b424
+[  343.671677] 2663 is waiting at a pthread block clock? 0
+[  343.671723] 2654 arch_restore_add-pages before b77bf424
+[  343.671726] 2654 arch_restore_add-pages after b771b424
+[  343.671738] 2654 is waiting at a pthread block clock? 0
+[  343.671741] 2673 arch_restore_add-pages before b77bf424
+[  343.671743] 2673 arch_restore_add-pages after b771b424
+[  343.671747] 2673 is waiting at a pthread block clock? 34598749
+[  343.671753] 2657 arch_restore_add-pages before b77bf424
+[  343.671754] 2657 arch_restore_add-pages after b771b424
+[  343.671759] hmm... this guy is a restart huh? 2673 wants to wait until 34598749
+[  343.671760] 2657 is waiting at a pthread block clock? 0
+[  343.671699] 2663 rolling back the out_ptr, we weren't waiting in pthread_block
+[  343.671772] 2657 rolling back the out_ptr, we weren't waiting in pthread_block2660 arch_restore_add-pages before b77bf424
+[  343.671969] 2660 arch_restore_add-pages after b771b424
+[  343.671984] 2660 is waiting at a pthread block clock? 30167086
+[  343.672080] hmm... this guy is a restart huh? 2660 wants to wait until 30167086
+[  343.672145] 2666 arch_restore_add-pages before b77bf424
+[  343.672147] 2666 arch_restore_add-pages after b771b424
+[  343.672159] 2666 is waiting at a pthread block clock? 0
+[  343.671880] 2654 rolling back the out_ptr, we weren't waiting in pthread_block
+[  343.672201] 2674 rolling back the out_ptr, we weren't waiting in pthread_block2669 arch_restore_add-pages before b77bf424
+[  343.672223] 2669 arch_restore_add-pages after b771b424
+[  343.672235] 2669 is waiting at a pthread block clock? 0
+[  343.718484] 2649 rolling back the out_ptr, we weren't waiting in pthread_block
+[  343.718520] 2640 rolling back the out_ptr, we weren't waiting in pthread_block2667 rolling back the out_ptr, we weren't waiting in pthread_block
+[  343.718534] 2666 rolling back the out_ptr, we weren't waiting in pthread_block2720: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e82664c0
+[  343.803745] 2717: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e82664c0
+[  343.803892] 2716: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e82664c0
+[  343.805144] Pid 2621 prlimit64 is pulling from retparams
+[  343.805213] currp2621, replay_clone: new Pid 2732, record Pid 4206, parent pid 2621 flags 3d0f00 child_tidptr ab0ecba8
+[  343.862321] Pid 2621 prlimit64 is pulling from retparams
+[  343.862423] currp2621, replay_clone: new Pid 2733, record Pid 4207, parent pid 2621 flags 3d0f00 child_tidptr a4af6ba8
+[  343.869807] 2655 rolling back the out_ptr, we weren't waiting in pthread_block
+[  343.869822] 2669 rolling back the out_ptr, we weren't waiting in pthread_block2642 rolling back the out_ptr, we weren't waiting in pthread_blockDebugging device will be attached: Device - 1, Pid - 6558, Syscall Index - 59748231
+[  343.869831] Debugging device will be attached: Device - 1, Pid - 6089, Syscall Index - 51006169
+[  343.870112] Debugging device will be attached: Device - 1, Pid - 5147, Syscall Index - 34197579
+[  343.872358] Debugging device will be attached: Device - 1, Pid - 5616, Syscall Index - 42780503
+[  344.060258] Pid 2621 prlimit64 is pulling from retparams
+[  344.060296] currp2621, replay_clone: new Pid 2734, record Pid 4208, parent pid 2621 flags 3d0f00 child_tidptr a3fecba8
+[  344.159751] 2724: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e81f6840
+[  344.159836] 2723: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e81f6840
+[  344.160061] 2722: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e81f6840
+[  344.162729] Pid 2619 prlimit64 is pulling from retparams
+[  344.162806] currp2619, replay_clone: new Pid 2735, record Pid 4206, parent pid 2619 flags 3d0f00 child_tidptr ab0ecba8
+[  344.163331] Pid 2619 prlimit64 is pulling from retparams
+[  344.163470] currp2619, replay_clone: new Pid 2736, record Pid 4207, parent pid 2619 flags 3d0f00 child_tidptr a4af6ba8
+[  344.167281] Pid 2619 prlimit64 is pulling from retparams
+[  344.167341] currp2619, replay_clone: new Pid 2737, record Pid 4208, parent pid 2619 flags 3d0f00 child_tidptr a3fecba8
+[  344.838587] currp2615, replay_clone: new Pid 2738, record Pid 3501, parent pid 2615 flags 350f00 child_tidptr b2cffba8
+[  344.853665] Pid 2615: I have pin thread data but switching thread 2738 (recpid 3501) does not
+[  344.853708] set_pin_address: pin address for pid 2738 is 8049100c attaching 0 status 0
+[  344.853709] switched before this attach so update current thread
+[  345.476677] currp2615, replay_clone: new Pid 2739, record Pid 3502, parent pid 2615 flags 350f00 child_tidptr b1af5ba8
+[  345.482818] Pid 2615: I have pin thread data but switching thread 2739 (recpid 3502) does not
+[  345.482855] set_pin_address: pin address for pid 2739 is 7e1d400c attaching 0 status 0
+[  345.482856] switched before this attach so update current thread
+[  345.942732] Pid 2623 about to sleep at index 34197579
+[  345.963199] Pid 2623 woken up - replay clock 34197579
+[  345.963202] Pid 2639(5146) status 2
+[  345.963203] Pid 2640(5145) status 2
+[  345.963204] Pid 2637(3506) status 2
+[  345.963205] Pid 2633(3505) status 2
+[  345.963206] Pid 2634(3504) status 2
+[  345.963207] Pid 2635(3503) status 2
+[  345.963208] Pid 2631(3502) status 2
+[  345.963209] Pid 2638(3501) status 2
+[  345.963210] Pid 2632(3500) status 2
+[  345.963211] Pid 2641(3499) status 2
+[  345.963219] Pid 2636(3498) status 2
+[  345.963343] Pid 2631: pin is attaching at syscall 53 entrance so interrupt exit and restart
+[  345.963346] Expected clock reset from 68033749 to 83327
+[  345.963379] Pid 2632: pin is attaching syscall 162 so interrupt exit and restart
+[  345.963380] Expected clock reset from 34598634 to 24978170
+[  345.963401] Pid 2633: pin is attaching syscall 162 so interrupt exit and restart
+[  345.963405] Expected clock reset from 34598814 to 24977004
+[  345.963419] Pid 2634: pin is attaching at user block so interrupt exit and restart
+[  345.963438] Pid 2635: pin is attaching syscall 162 so interrupt exit and restart
+[  345.963439] Expected clock reset from 34558140 to 30360279
+[  345.963460] Pid 2636: pin is attaching syscall 142 so interrupt exit and restart
+[  345.963463] Expected clock reset from 34228599 to 34183978
+[  345.963487] Pid 2637: pin is attaching at user block so interrupt exit and restart
+[  345.963508] Pid 2638: pin is attaching at syscall 53 entrance so interrupt exit and restart
+[  345.963509] Expected clock reset from 68033753 to 107739
+[  343.870101] 2639 rolling back the out_ptr, we weren't waiting in pthread_blockPid 2639: pin is attaching at user block so interrupt exit and restart
+[  345.963552] Pid 2640: pin is attaching syscall 102 so interrupt exit and restart
+[  345.963553] Expected clock reset from 34555571 to 29780115
+[  345.963567] Pid 2641: pin is attaching syscall 177 so interrupt exit and restart
+[  345.963570] Expected clock reset from 68032342 to 78356
+[  345.987775] in shim_ptrace with detach request, syscall_addr 1, on pid 2623
+[  346.009281] in shim_ptrace with detach request, syscall_addr 1, on pid 2631
+[  346.009334] in shim_ptrace with detach request, syscall_addr 1, on pid 2632
+[  346.009360] in shim_ptrace with detach request, syscall_addr 1, on pid 2633
+[  346.017399] in shim_ptrace with detach request, syscall_addr 1, on pid 2634
+[  346.037376] in shim_ptrace with detach request, syscall_addr 1, on pid 2635
+[  346.037393] in shim_ptrace with detach request, syscall_addr 1, on pid 2636
+[  346.037401] in shim_ptrace with detach request, syscall_addr 1, on pid 2637
+[  346.037414] in shim_ptrace with detach request, syscall_addr 1, on pid 2638
+[  346.037427] in shim_ptrace with detach request, syscall_addr 1, on pid 2639
+[  346.037438] in shim_ptrace with detach request, syscall_addr 1, on pid 2640
+[  346.037453] in shim_ptrace with detach request, syscall_addr 1, on pid 2641
+[  346.190195] 2642: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e8241c00
+[  346.190261] 2629: exiting task, child_tid 0xa4af6ba8, flags 4202500, mm e8241c00
+[  346.190418] 2649: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e8241c00
+[  346.229500] Pid 2656 prlimit64 is pulling from retparams
+[  346.229987] currp2656, replay_clone: new Pid 2745, record Pid 5381, parent pid 2656 flags 3d0f00 child_tidptr ab0ecba8
+[  346.294662] Pid 2656 prlimit64 is pulling from retparams
+[  346.295151] currp2656, replay_clone: new Pid 2746, record Pid 5382, parent pid 2656 flags 3d0f00 child_tidptr a4af6ba8
+[  346.296812] 2655: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e74fb9c0
+[  346.296873] 2625: exiting task, child_tid 0xa4af6ba8, flags 4202500, mm e74fb9c0
+[  346.297200] 2667: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e74fb9c0
+[  346.302966] Pid 2670 prlimit64 is pulling from retparams
+[  346.303498] currp2670, replay_clone: new Pid 2747, record Pid 5381, parent pid 2670 flags 3d0f00 child_tidptr ab0ecba8
+[  346.310314] Pid 2670 prlimit64 is pulling from retparams
+[  346.310861] currp2670, replay_clone: new Pid 2748, record Pid 5382, parent pid 2670 flags 3d0f00 child_tidptr a4af6ba8
+[  346.442390] currp2615, replay_clone: new Pid 2749, record Pid 3503, parent pid 2615 flags 350f00 child_tidptr b06ffba8
+[  346.453509] currp2615, replay_clone: new Pid 2750, record Pid 3504, parent pid 2615 flags 350f00 child_tidptr af4f5ba8
+[  346.453586] Pid 2615: I have pin thread data but switching thread 2750 (recpid 3504) does not
+[  346.454090] 2669: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e821b2c0
+[  346.454204] 2627: exiting task, child_tid 0xa4af6ba8, flags 4202500, mm e821b2c0
+[  346.454356] 2666: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e821b2c0
+[  346.457635] set_pin_address: pin address for pid 2750 is 8048300c attaching 0 status 0
+[  346.457636] switched before this attach so update current thread
+[  346.457766] Pid 2750: I have pin thread data but switching thread 2749 (recpid 3503) does not
+[  346.457785] set_pin_address: pin address for pid 2749 is 8048100c attaching 0 status 0
+[  346.457786] switched before this attach so update current thread
+[  346.458421] Pid 2674 prlimit64 is pulling from retparams
+[  346.458954] currp2674, replay_clone: new Pid 2751, record Pid 5381, parent pid 2674 flags 3d0f00 child_tidptr ab0ecba8
+[  346.463249] Pid 2674 prlimit64 is pulling from retparams
+[  346.463766] currp2674, replay_clone: new Pid 2752, record Pid 5382, parent pid 2674 flags 3d0f00 child_tidptr a4af6ba8
+[  346.497388] Pid 2670 prlimit64 is pulling from retparams
+[  346.497426] currp2670, replay_clone: new Pid 2753, record Pid 5383, parent pid 2670 flags 3d0f00 child_tidptr a3fecba8
+[  346.497471] Pid 2674 prlimit64 is pulling from retparams
+[  346.497505] currp2674, replay_clone: new Pid 2754, record Pid 5383, parent pid 2674 flags 3d0f00 child_tidptr a3fecba8
+[  346.498057] Pid 2656 prlimit64 is pulling from retparams
+[  346.498105] currp2656, replay_clone: new Pid 2755, record Pid 5383, parent pid 2656 flags 3d0f00 child_tidptr a3fecba8
+[  346.509136] currp2615, replay_clone: new Pid 2756, record Pid 3505, parent pid 2615 flags 350f00 child_tidptr ae0ffba8
+[  346.509210] Pid 2615: I have pin thread data but switching thread 2756 (recpid 3505) does not
+[  346.513211] set_pin_address: pin address for pid 2756 is 7d23a00c attaching 0 status 0
+[  346.513212] switched before this attach so update current thread
+[  346.793365] 2737: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e81f6840
+[  346.793928] 2736: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e81f6840
+[  346.794010] 2735: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e81f6840
+[  346.795807] Pid 2619 prlimit64 is pulling from retparams
+[  346.795834] currp2619, replay_clone: new Pid 2757, record Pid 4440, parent pid 2619 flags 3d0f00 child_tidptr ab0ecba8
+[  346.839088] Pid 2619 prlimit64 is pulling from retparams
+[  346.839162] currp2619, replay_clone: new Pid 2758, record Pid 4441, parent pid 2619 flags 3d0f00 child_tidptr a4af6ba8
+[  346.871271] set_pin_address: pin address for pid 2623 is b776a00c attaching 1 status 0
+[  346.872589] set_pin_address: pin address for pid 2638 is b776700c attaching 1 status 2
+[  346.872700] Rolling back 4 bytes of log data
+[  346.872702] attaching pid 2638 has reached syscall entrance
+[  346.872703] Pid 2638 restarting start_clock 40e1cd8 attach_clock 209d04b
+[  346.872705] Pid 2638 no longer attaching on enter
+[  346.872821] set_pin_address: pin address for pid 2636 is 953d000c attaching 1 status 2
+[  346.872867] Rolling back 8 bytes of log data
+[  346.872868] attaching pid 2636 has reached syscall exit
+[  346.872963] set_pin_address: pin address for pid 2633 is 953a000c attaching 1 status 2
+[  346.873000] Rolling back 8 bytes of log data
+[  346.873004] attaching pid 2633 has reached syscall exit
+[  346.873121] set_pin_address: pin address for pid 2631 is 9538000c attaching 1 status 2
+[  346.873166] Rolling back 4 bytes of log data
+[  346.873168] attaching pid 2631 has reached syscall entrance
+[  346.873169] Pid 2631 restarting start_clock 40e1cd4 attach_clock 209d04b
+[  346.873170] Pid 2631 no longer attaching on enter
+[  346.873275] set_pin_address: pin address for pid 2641 is 9541f00c attaching 1 status 2
+[  346.873321] Rolling back 12 bytes of log data
+[  346.873324] attaching pid 2641 has reached syscall exit
+[  346.875378] set_pin_address: pin address for pid 2637 is 953f000c attaching 1 status 2
+[  346.875433] hmm... this guy is a restart huh? 2637 wants to wait until 34538938
+[  346.875434] user-level-block: pid 2637 attaching now 0
+[  346.875507] set_pin_address: pin address for pid 2632 is 9539e00c attaching 1 status 2
+[  346.875553] Rolling back 8 bytes of log data
+[  346.875555] attaching pid 2632 has reached syscall exit
+[  346.875573] Rolling back 8 bytes of log data
+[  346.875574] Pid 2623: I have pin thread data but switching thread 2639 (recpid 5146) does not
+[  346.875684] set_pin_address: pin address for pid 2640 is 9541d00c attaching 1 status 2
+[  346.875737] Rolling back 8 bytes of log data
+[  346.875738] attaching pid 2640 has reached syscall exit
+[  346.875841] set_pin_address: pin address for pid 2634 is 953af00c attaching 1 status 2
+[  346.875915] hmm... this guy is a restart huh? 2634 wants to wait until 34598749
+[  346.875918] user-level-block: pid 2634 attaching now 0
+[  346.876022] set_pin_address: pin address for pid 2635 is 953ce00c attaching 1 status 2
+[  346.876063] Rolling back 8 bytes of log data
+[  346.876065] attaching pid 2635 has reached syscall exit
+[  346.876151] set_pin_address: pin address for pid 2639 is 9541b00c attaching 1 status 0
+[  346.876152] switched before this attach so update current thread
+[  346.876183] hmm... this guy is a restart huh? 2639 wants to wait until 34197580
+[  346.876187] user-level-block: pid 2639 attaching now second case 0, status 0
+[  346.906861] 2734: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e82664c0
+[  346.906919] 2733: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e82664c0
+[  346.907010] 2732: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e82664c0
+[  346.908799] Pid 2621 prlimit64 is pulling from retparams
+[  346.908834] currp2621, replay_clone: new Pid 2759, record Pid 4440, parent pid 2621 flags 3d0f00 child_tidptr ab0ecba8
+[  346.909098] Pid 2621 prlimit64 is pulling from retparams
+[  346.909200] currp2621, replay_clone: new Pid 2760, record Pid 4441, parent pid 2621 flags 3d0f00 child_tidptr a4af6ba8
+[  346.998291] currp2615, replay_clone: new Pid 2761, record Pid 3506, parent pid 2615 flags 350f00 child_tidptr acaffba8
+[  347.000120] currp2615, replay_clone: new Pid 2762, record Pid 3507, parent pid 2615 flags 350f00 child_tidptr ab8f5ba8
+[  347.000210] Pid 2615: I have pin thread data but switching thread 2762 (recpid 3507) does not
+[  347.000268] set_pin_address: pin address for pid 2762 is 7c7e800c attaching 0 status 0
+[  347.000270] switched before this attach so update current thread
+[  347.000354] Pid 2762: I have pin thread data but switching thread 2761 (recpid 3506) does not
+[  347.000399] set_pin_address: pin address for pid 2761 is 8042400c attaching 0 status 0
+[  347.000400] switched before this attach so update current thread
+[  347.025446] Pid 2615 prlimit64 is pulling from retparams
+[  347.049696] Pid 2615 (recpid 3498) clock 85368 log_clock 85367 replays: getaddrinfo
+[  347.051630] Pid 2615 (recpid 3498) clock 85376 log_clock 85375 replays: getaddrinfo 2
+[  347.052382] Pid 2615 (recpid 3498) clock 85386 log_clock 85385 replays: getaddrinfo 3
+[  347.056558] Pid 2615 (recpid 3498) clock 85394 log_clock 85393 replays: gaih_inet
+[  347.120191] Pid 2619 prlimit64 is pulling from retparams
+[  347.120196] Pid 2621 prlimit64 is pulling from retparams
+[  347.120225] currp2619, replay_clone: new Pid 2763, record Pid 4442, parent pid 2619 flags 3d0f00 child_tidptr a3fecba8
+[  347.120226] currp2621, replay_clone: new Pid 2764, record Pid 4442, parent pid 2621 flags 3d0f00 child_tidptr a3fecba8
+[  347.629475] 2762: exiting task, child_tid 0xab8f5ba8, flags 4202564, mm e8266300
+[  348.268881] Pid 2763 about to sleep at index 16772477
+[  348.286264] Pid 2763 woken up - replay clock 16772477
+[  348.286270] Pid 2758(4441) status 2
+[  348.286272] Pid 2757(4440) status 2
+[  348.286273] Pid 2737(4208) status 3
+[  348.286275] Pid 2736(4207) status 3
+[  348.286276] Pid 2735(4206) status 3
+[  348.286279] Pid 2724(3974) status 3
+[  348.286279] Pid 2723(3973) status 3
+[  348.286280] Pid 2722(3972) status 3
+[  348.286283] Pid 2715(3740) status 3
+[  348.286285] Pid 2710(3739) status 3
+[  348.286286] Pid 2709(3738) status 3
+[  348.286288] Pid 2706(3507) status 3
+[  348.286289] Pid 2705(3506) status 2
+[  348.286292] Pid 2700(3505) status 2
+[  348.286293] Pid 2695(3504) status 2
+[  348.286296] Pid 2693(3503) status 2
+[  348.286297] Pid 2688(3502) status 2
+[  348.286300] Pid 2686(3501) status 2
+[  348.286301] Pid 2685(3500) status 2
+[  348.286304] Pid 2681(3499) status 2
+[  348.286305] Pid 2619(3498) status 2
+[  348.286417] Pid 2619: pin is attaching syscall 142 so interrupt exit and restart
+[  348.286419] Expected clock reset from 16783703 to 16749934
+[  348.286451] Pid 2681: pin is attaching syscall 177 so interrupt exit and restart
+[  348.286454] Expected clock reset from 68032342 to 78356
+[  348.286476] Pid 2685: pin is attaching syscall 162 so interrupt exit and restart
+[  348.286478] Expected clock reset from 24975326 to 15399288
+[  348.286496] Pid 2686: pin is attaching at syscall 53 entrance so interrupt exit and restart
+[  348.286498] Expected clock reset from 68033753 to 107739
+[  348.286517] Pid 2688: pin is attaching at syscall 53 entrance so interrupt exit and restart
+[  348.286519] Expected clock reset from 68033749 to 83327
+[  348.286539] Pid 2693: pin is attaching syscall 162 so interrupt exit and restart
+[  348.286541] Expected clock reset from 20185120 to 15417126
+[  348.286557] Pid 2695: pin is attaching at user block so interrupt exit and restart
+[  348.286576] Pid 2700: pin is attaching syscall 162 so interrupt exit and restart
+[  348.286577] Expected clock reset from 24975506 to 15398008
+[  348.286602] Pid 2705: pin is attaching at user block so interrupt exit and restart
+[  348.286620] Pid 2757: pin is attaching syscall 102 so interrupt exit and restart
+[  348.286621] Expected clock reset from 20183789 to 15419033
+[  348.286634] Pid 2758: pin is attaching syscall 102 so interrupt exit and restart
+[  348.286635] Expected clock reset from 16772840 to 16772443
+[  348.310976] in shim_ptrace with detach request, syscall_addr 1, on pid 2763
+[  348.319930] in shim_ptrace with detach request, syscall_addr 1, on pid 2619
+[  348.319966] in shim_ptrace with detach request, syscall_addr 1, on pid 2681
+[  348.319985] in shim_ptrace with detach request, syscall_addr 1, on pid 2685
+[  348.328004] in shim_ptrace with detach request, syscall_addr 1, on pid 2686
+[  348.328021] in shim_ptrace with detach request, syscall_addr 1, on pid 2688
+[  348.328038] in shim_ptrace with detach request, syscall_addr 1, on pid 2693
+[  348.328052] in shim_ptrace with detach request, syscall_addr 1, on pid 2695
+[  348.328068] in shim_ptrace with detach request, syscall_addr 1, on pid 2700
+[  348.328082] in shim_ptrace with detach request, syscall_addr 1, on pid 2705
+[  348.328090] in shim_ptrace with detach request, syscall_addr 1, on pid 2757
+[  348.345982] 2615: mmaped /tmp/replay_mmap_29 for /replay_cache/800001_6c0004_1461989738_115273780
+[  348.347261] in shim_ptrace with detach request, syscall_addr 1, on pid 2758
+[  348.812820] set_pin_address: pin address for pid 2763 is 953f600c attaching 1 status 0
+[  348.813983] set_pin_address: pin address for pid 2685 is 953f200c attaching 1 status 2
+[  348.814146] set_pin_address: pin address for pid 2695 is 953a700c attaching 1 status 2
+[  348.814207] hmm... this guy is a restart huh? 2695 wants to wait until 24975441
+[  348.814209] user-level-block: pid 2695 attaching now 0
+[  348.814220] Rolling back 8 bytes of log data
+[  348.814222] attaching pid 2685 has reached syscall exit
+[  348.814310] set_pin_address: pin address for pid 2688 is 9538700c attaching 1 status 2
+[  348.814357] Rolling back 4 bytes of log data
+[  348.814359] attaching pid 2688 has reached syscall entrance
+[  348.814360] Pid 2688 restarting start_clock 40e1cd4 attach_clock ffed7d
+[  348.814361] Pid 2688 no longer attaching on enter
+[  348.814452] set_pin_address: pin address for pid 2705 is 953c700c attaching 1 status 2
+[  348.814491] hmm... this guy is a restart huh? 2705 wants to wait until 16835202
+[  348.814497] user-level-block: pid 2705 attaching now 0
+[  348.814603] set_pin_address: pin address for pid 2757 is 953d600c attaching 1 status 2
+[  348.814718] Rolling back 8 bytes of log data
+[  348.814720] attaching pid 2757 has reached syscall exit
+[  348.814790] set_pin_address: pin address for pid 2681 is 9536700c attaching 1 status 2
+[  348.814866] Rolling back 12 bytes of log data
+[  348.814867] attaching pid 2681 has reached syscall exit
+[  348.814953] set_pin_address: pin address for pid 2619 is 9536500c attaching 1 status 2
+[  348.814999] Rolling back 8 bytes of log data
+[  348.815003] attaching pid 2619 has reached syscall exit
+[  348.815025] Rolling back 8 bytes of log data
+[  348.815554] set_pin_address: pin address for pid 2758 is 953f000c attaching 1 status 2
+[  348.815616] Rolling back 12 bytes of log data
+[  348.815618] attaching pid 2758 has reached syscall exit
+[  348.815695] set_pin_address: pin address for pid 2693 is 953a400c attaching 1 status 2
+[  348.815759] Rolling back 8 bytes of log data
+[  348.815760] attaching pid 2693 has reached syscall exit
+[  348.815881] set_pin_address: pin address for pid 2700 is 953c500c attaching 1 status 2
+[  348.815926] Rolling back 8 bytes of log data
+[  348.815928] attaching pid 2700 has reached syscall exit
+[  348.815989] set_pin_address: pin address for pid 2686 is 9538500c attaching 1 status 2
+[  348.816028] Rolling back 4 bytes of log data
+[  348.816030] attaching pid 2686 has reached syscall entrance
+[  348.816031] Pid 2686 restarting start_clock 40e1cd8 attach_clock ffed7d
+[  348.816031] Pid 2686 no longer attaching on enter
+[  348.967451] mmap using cache file 17 for fd 9
+[  349.706794] 2615: mmaped /tmp/replay_mmap_30 for /replay_cache/800001_6c0006_1461989738_447107785
+[  350.024289] 2755: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e8241c00
+[  350.024397] 2746: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e8241c00
+[  350.024562] 2745: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e8241c00
+[  350.025623] Pid 2656 prlimit64 is pulling from retparams
+[  350.025659] currp2656, replay_clone: new Pid 2770, record Pid 5615, parent pid 2656 flags 3d0f00 child_tidptr ab0ecba8
+[  350.066055] Pid 2656 prlimit64 is pulling from retparams
+[  350.066316] currp2656, replay_clone: new Pid 2771, record Pid 5616, parent pid 2656 flags 3d0f00 child_tidptr a4af6ba8
+[  350.346183] Pid 2656 prlimit64 is pulling from retparams
+[  350.346216] currp2656, replay_clone: new Pid 2772, record Pid 5617, parent pid 2656 flags 3d0f00 child_tidptr a3fecba8
+[  350.873064] 2753: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e74fb9c0
+[  350.873121] 2748: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e74fb9c0
+[  350.873191] 2747: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e74fb9c0
+[  350.875294] Pid 2670 prlimit64 is pulling from retparams
+[  350.875323] currp2670, replay_clone: new Pid 2773, record Pid 5615, parent pid 2670 flags 3d0f00 child_tidptr ab0ecba8
+[  350.875843] Pid 2670 prlimit64 is pulling from retparams
+[  350.875930] currp2670, replay_clone: new Pid 2774, record Pid 5616, parent pid 2670 flags 3d0f00 child_tidptr a4af6ba8
+[  350.877007] Pid 2670 prlimit64 is pulling from retparams
+[  350.877022] currp2670, replay_clone: new Pid 2775, record Pid 5617, parent pid 2670 flags 3d0f00 child_tidptr a3fecba8
+[  351.288812] 2754: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e821b2c0
+[  351.288894] 2752: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e821b2c0
+[  351.288990] 2751: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e821b2c0
+[  351.290180] Pid 2674 prlimit64 is pulling from retparams
+[  351.290207] currp2674, replay_clone: new Pid 2776, record Pid 5615, parent pid 2674 flags 3d0f00 child_tidptr ab0ecba8
+[  351.290584] Pid 2674 prlimit64 is pulling from retparams
+[  351.290670] currp2674, replay_clone: new Pid 2777, record Pid 5616, parent pid 2674 flags 3d0f00 child_tidptr a4af6ba8
+[  351.292806] Pid 2674 prlimit64 is pulling from retparams
+[  351.292824] currp2674, replay_clone: new Pid 2778, record Pid 5617, parent pid 2674 flags 3d0f00 child_tidptr a3fecba8
+[  351.840560] mmap using cache file 18 for fd 11
+[  352.380954] 2760: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e82664c0
+[  352.380970] 2764: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e82664c0
+[  352.381098] 2759: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e82664c0
+[  352.383850] Pid 2621 prlimit64 is pulling from retparams
+[  352.383885] currp2621, replay_clone: new Pid 2779, record Pid 4677, parent pid 2621 flags 3d0f00 child_tidptr ab0ecba8
+[  352.422452] Pid 2621 prlimit64 is pulling from retparams
+[  352.422576] currp2621, replay_clone: new Pid 2780, record Pid 4678, parent pid 2621 flags 3d0f00 child_tidptr a3fecba8
+[  352.750723] Pid 2621 prlimit64 is pulling from retparams
+[  352.750896] currp2621, replay_clone: new Pid 2781, record Pid 4679, parent pid 2621 flags 3d0f00 child_tidptr a4af6ba8
+[  353.131946] Pid 2774 about to sleep at index 42780503
+[  353.153034] Pid 2774 woken up - replay clock 42780503
+[  353.153040] Pid 2773(5615) status 2
+[  353.153042] Pid 2753(5383) status 3
+[  353.153043] Pid 2748(5382) status 3
+[  353.153044] Pid 2747(5381) status 3
+[  353.153045] Pid 2625(5147) status 3
+[  353.153046] Pid 2655(5146) status 3
+[  353.153047] Pid 2667(5145) status 3
+[  353.153048] Pid 2650(3506) status 2
+[  353.153049] Pid 2661(3505) status 2
+[  353.153050] Pid 2664(3504) status 2
+[  353.153052] Pid 2658(3503) status 2
+[  353.153055] Pid 2652(3502) status 2
+[  353.153056] Pid 2643(3501) status 2
+[  353.153057] Pid 2645(3500) status 2
+[  353.153058] Pid 2648(3499) status 2
+[  353.153059] Pid 2670(3498) status 2
+[  353.153062] Pid 2775(5617) status 2
+[  353.153206] Pid 2643: pin is attaching at syscall 53 entrance so interrupt exit and restart
+[  353.153208] Expected clock reset from 68033753 to 107739
+[  353.153234] Pid 2645: pin is attaching syscall 162 so interrupt exit and restart
+[  353.153236] Expected clock reset from 48966934 to 34601414
+[  353.153255] Pid 2648: pin is attaching syscall 177 so interrupt exit and restart
+[  353.153256] Expected clock reset from 68032342 to 78356
+[  353.153281] Pid 2650: pin is attaching at user block so interrupt exit and restart
+[  353.153301] Pid 2652: pin is attaching at syscall 53 entrance so interrupt exit and restart
+[  353.153302] Expected clock reset from 68033749 to 83327
+[  353.153316] Pid 2658: pin is attaching syscall 162 so interrupt exit and restart
+[  353.153317] Expected clock reset from 44169106 to 39399804
+[  353.153334] Pid 2661: pin is attaching syscall 162 so interrupt exit and restart
+[  353.153335] Expected clock reset from 48967114 to 34600304
+[  353.153359] Pid 2664: pin is attaching at user block so interrupt exit and restart
+[  353.153393] Pid 2670: pin is attaching syscall 142 so interrupt exit and restart
+[  353.153396] Expected clock reset from 42796632 to 42768138
+[  353.153424] Pid 2773: pin is attaching syscall 102 so interrupt exit and restart
+[  353.153426] Expected clock reset from 44168169 to 39402007
+[  353.153445] Pid 2775: pin is attaching syscall 102 so interrupt exit and restart
+[  353.153446] Expected clock reset from 42780557 to 42779919
+[  353.697808] Pid 2615 prlimit64 is pulling from retparams
+[  353.707178] currp2615, replay_clone: new Pid 2787, record Pid 3738, parent pid 2615 flags 350f00 child_tidptr ab0ecba8
+[  353.715390] Pid 2615: I have pin thread data but switching thread 2787 (recpid 3738) does not
+[  353.715467] set_pin_address: pin address for pid 2787 is 7c08700c attaching 0 status 0
+[  353.715469] switched before this attach so update current thread
+[  354.085210] 2639: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e821aa00
+[  354.085444] 2623: exiting task, child_tid 0xa4af6ba8, flags 4202500, mm e821aa00
+[  354.091080] Pid 2615 prlimit64 is pulling from retparams
+[  354.091277] currp2615, replay_clone: new Pid 2788, record Pid 3739, parent pid 2615 flags 350f00 child_tidptr a4af6ba8
+[  354.094051] Pid 2615 prlimit64 is pulling from retparams
+[  354.094252] currp2615, replay_clone: new Pid 2789, record Pid 3740, parent pid 2615 flags 350f00 child_tidptr a3fecba8
+[  354.095513] Pid 2615: I have pin thread data but switching thread 2789 (recpid 3740) does not
+[  354.101552] set_pin_address: pin address for pid 2789 is 7ba1700c attaching 0 status 0
+[  354.101557] switched before this attach so update current thread
+[  354.103910] 2640: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e821aa00
+[  354.104069] Pid 2789: I have pin thread data but switching thread 2788 (recpid 3739) does not
+[  354.104093] set_pin_address: pin address for pid 2788 is 7ba1500c attaching 0 status 0
+[  354.104094] switched before this attach so update current thread
+[  354.117641] 2778: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e821b2c0
+[  354.117723] 2777: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e821b2c0
+[  354.117869] 2776: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e821b2c0
+[  354.119159] Pid 2674 prlimit64 is pulling from retparams
+[  354.119197] currp2674, replay_clone: new Pid 2790, record Pid 5851, parent pid 2674 flags 3d0f00 child_tidptr ab0ecba8
+[  354.162498] Pid 2674 prlimit64 is pulling from retparams
+[  354.162650] currp2674, replay_clone: new Pid 2791, record Pid 5852, parent pid 2674 flags 3d0f00 child_tidptr a4af6ba8
+[  354.292818] 2772: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e8241c00
+[  354.292902] 2771: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e8241c00
+[  354.293051] 2770: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e8241c00
+[  354.294181] Pid 2656 prlimit64 is pulling from retparams
+[  354.294268] currp2656, replay_clone: new Pid 2792, record Pid 5851, parent pid 2656 flags 3d0f00 child_tidptr ab0ecba8
+[  354.294583] Pid 2656 prlimit64 is pulling from retparams
+[  354.294691] currp2656, replay_clone: new Pid 2793, record Pid 5852, parent pid 2656 flags 3d0f00 child_tidptr a4af6ba8
+[  354.588828] Pid 2674 prlimit64 is pulling from retparams
+[  354.588902] Pid 2656 prlimit64 is pulling from retparams
+[  354.588976] currp2674, replay_clone: new Pid 2794, record Pid 5853, parent pid 2674 flags 3d0f00 child_tidptr a3fecba8
+[  354.589306] currp2656, replay_clone: new Pid 2795, record Pid 5853, parent pid 2656 flags 3d0f00 child_tidptr a3fecba8
+[  354.833841] 2788: mmaped /tmp/replay_mmap_31 for /replay_cache/800001_6c0007_1461989752_92282020
+[  355.496658] mmap using cache file 19 for fd 15
+[  355.511397] 2788: mmaped /tmp/replay_mmap_32 for /replay_cache/800001_6c0008_1461989752_344156025
+[  355.700989] Pid 2636 prlimit64 is pulling from retparams
+[  355.780207] currp2636, replay_clone: new Pid 2796, record Pid 5381, parent pid 2636 flags 350f00 child_tidptr ab0ecba8
+[  355.788610] Pid 2636: I have pin thread data but switching thread 2796 (recpid 5381) does not
+[  355.788704] set_pin_address: pin address for pid 2796 is 7dcbf00c attaching 0 status 0
+[  355.788707] switched before this attach so update current thread
+[  356.327753] Pid 2636 prlimit64 is pulling from retparams
+[  356.355787] currp2636, replay_clone: new Pid 2797, record Pid 5382, parent pid 2636 flags 350f00 child_tidptr a4af6ba8
+[  356.357201] Pid 2636: I have pin thread data but switching thread 2797 (recpid 5382) does not
+[  356.357269] set_pin_address: pin address for pid 2797 is 7640b00c attaching 0 status 0
+[  356.357270] switched before this attach so update current thread
+[  356.363113] Pid 2636 prlimit64 is pulling from retparams
+[  356.396771] currp2636, replay_clone: new Pid 2798, record Pid 5383, parent pid 2636 flags 350f00 child_tidptr a3fecba8
+[  356.397336] Pid 2636: I have pin thread data but switching thread 2798 (recpid 5383) does not
+[  356.397388] set_pin_address: pin address for pid 2798 is 73b8d00c attaching 0 status 0
+[  356.397390] switched before this attach so update current thread
+[  356.607710] mmap using cache file 20 for fd 16
+[  356.708719] 2780: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e82664c0
+[  356.708795] 2781: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e82664c0
+[  356.708893] 2779: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e82664c0
+[  356.710757] Pid 2621 prlimit64 is pulling from retparams
+[  356.710793] currp2621, replay_clone: new Pid 2799, record Pid 4911, parent pid 2621 flags 3d0f00 child_tidptr ab0ecba8
+[  356.755085] Pid 2621 prlimit64 is pulling from retparams
+[  356.755189] currp2621, replay_clone: new Pid 2800, record Pid 4912, parent pid 2621 flags 3d0f00 child_tidptr a4af6ba8
+[  356.926728] Pid 2621 prlimit64 is pulling from retparams
+[  356.926765] currp2621, replay_clone: new Pid 2801, record Pid 4913, parent pid 2621 flags 3d0f00 child_tidptr a3fecba8
+[  357.561986] Pid 2801 about to sleep at index 25608289
+[  357.946994] Pid 2801 woken up - replay clock 25608289
+[  357.946997] Pid 2800(4912) status 2
+[  357.947002] Pid 2799(4911) status 2
+[  357.947003] Pid 2781(4679) status 3
+[  357.947004] Pid 2780(4678) status 3
+[  357.947005] Pid 2779(4677) status 3
+[  357.947006] Pid 2764(4442) status 3
+[  357.947006] Pid 2760(4441) status 3
+[  357.947009] Pid 2759(4440) status 3
+[  357.947010] Pid 2734(4208) status 3
+[  357.947011] Pid 2733(4207) status 3
+[  357.947012] Pid 2732(4206) status 3
+[  357.947014] Pid 2720(3974) status 3
+[  357.947015] Pid 2717(3973) status 3
+[  357.947016] Pid 2716(3972) status 3
+[  357.947019] Pid 2713(3740) status 3
+[  357.947020] Pid 2712(3739) status 3
+[  357.947021] Pid 2707(3738) status 3
+[  357.947022] Pid 2703(3507) status 3
+[  357.947023] Pid 2702(3506) status 2
+[  357.947024] Pid 2699(3505) status 2
+[  357.947027] Pid 2696(3504) status 2
+[  357.947028] Pid 2692(3503) status 2
+[  357.947029] Pid 2691(3502) status 2
+[  357.947030] Pid 2689(3501) status 2
+[  357.947031] Pid 2684(3500) status 2
+[  357.947033] Pid 2682(3499) status 2
+[  357.947034] Pid 2621(3498) status 2
+[  357.947151] Pid 2621: pin is attaching syscall 142 so interrupt exit and restart
+[  357.947154] Expected clock reset from 25616509 to 25594622
+[  357.947186] Pid 2682: pin is attaching syscall 177 so interrupt exit and restart
+[  357.947189] Expected clock reset from 68032342 to 78356
+[  357.947209] Pid 2684: pin is attaching syscall 162 so interrupt exit and restart
+[  357.947210] Expected clock reset from 34598634 to 24978170
+[  357.947237] Pid 2689: pin is attaching at syscall 53 entrance so interrupt exit and restart
+[  357.947239] Expected clock reset from 68033753 to 107739
+[  357.947261] Pid 2691: pin is attaching at syscall 53 entrance so interrupt exit and restart
+[  357.947262] Expected clock reset from 68033749 to 83327
+[  357.947283] Pid 2692: pin is attaching syscall 162 so interrupt exit and restart
+[  357.947284] Expected clock reset from 26870862 to 24977832
+[  357.947293] Pid 2696: pin is attaching at user block so interrupt exit and restart
+[  357.947306] Pid 2699: pin is attaching syscall 162 so interrupt exit and restart
+[  357.947307] Expected clock reset from 34598814 to 24977004
+[  357.947319] Pid 2702: pin is attaching at user block so interrupt exit and restart
+[  357.947327] Pid 2799: pin is attaching syscall 102 so interrupt exit and restart
+[  357.947328] Expected clock reset from 29762915 to 24981651
+[  357.947341] Pid 2800: pin is attaching syscall 102 so interrupt exit and restart
+[  357.947342] Expected clock reset from 25608364 to 25607562
+[  357.965708] in shim_ptrace with detach request, syscall_addr 1, on pid 2801
+[  357.977332] in shim_ptrace with detach request, syscall_addr 1, on pid 2621
+[  357.977355] in shim_ptrace with detach request, syscall_addr 1, on pid 2682
+[  357.977379] in shim_ptrace with detach request, syscall_addr 1, on pid 2684
+[  357.977388] in shim_ptrace with detach request, syscall_addr 1, on pid 2689
+[  357.997678] in shim_ptrace with detach request, syscall_addr 1, on pid 2691
+[  357.997691] in shim_ptrace with detach request, syscall_addr 1, on pid 2692
+[  357.997707] in shim_ptrace with detach request, syscall_addr 1, on pid 2696
+[  357.997719] in shim_ptrace with detach request, syscall_addr 1, on pid 2699
+[  357.997774] in shim_ptrace with detach request, syscall_addr 1, on pid 2702
+[  357.997800] in shim_ptrace with detach request, syscall_addr 1, on pid 2799
+[  357.997838] in shim_ptrace with detach request, syscall_addr 1, on pid 2800
+[  358.520054] 2795: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e8241c00
+[  358.520111] 2793: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e8241c00
+[  358.520373] 2792: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e8241c00
+[  358.521683] Pid 2656 prlimit64 is pulling from retparams
+[  358.521716] currp2656, replay_clone: new Pid 2807, record Pid 6087, parent pid 2656 flags 3d0f00 child_tidptr ab0ecba8
+[  358.546034] Pid 2656 prlimit64 is pulling from retparams
+[  358.546124] currp2656, replay_clone: new Pid 2808, record Pid 6088, parent pid 2656 flags 3d0f00 child_tidptr a4af6ba8
+[  358.682099] Pid 2656 prlimit64 is pulling from retparams
+[  358.777701] 2794: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e821b2c0
+[  358.777758] 2791: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e821b2c0
+[  358.777990] 2790: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e821b2c0
+[  358.780532] Pid 2674 prlimit64 is pulling from retparams
+[  358.780567] currp2674, replay_clone: new Pid 2809, record Pid 6087, parent pid 2674 flags 3d0f00 child_tidptr ab0ecba8
+[  358.792516] currp2656, replay_clone: new Pid 2810, record Pid 6089, parent pid 2656 flags 3d0f00 child_tidptr a3fecba8
+[  358.792632] Pid 2674 prlimit64 is pulling from retparams
+[  358.792733] currp2674, replay_clone: new Pid 2811, record Pid 6088, parent pid 2674 flags 3d0f00 child_tidptr a4af6ba8
+[  358.793260] Pid 2674 prlimit64 is pulling from retparams
+[  358.813645] currp2674, replay_clone: new Pid 2812, record Pid 6089, parent pid 2674 flags 3d0f00 child_tidptr a3fecba8
+[  359.279522] set_pin_address: pin address for pid 2801 is 953f600c attaching 1 status 0
+[  359.280991] set_pin_address: pin address for pid 2800 is 953f200c attaching 1 status 2
+[  359.281046] Rolling back 12 bytes of log data
+[  359.281048] attaching pid 2800 has reached syscall exit
+[  359.281168] set_pin_address: pin address for pid 2799 is 953f000c attaching 1 status 2
+[  359.281213] Rolling back 8 bytes of log data
+[  359.281214] attaching pid 2799 has reached syscall exit
+[  359.281318] set_pin_address: pin address for pid 2684 is 9536700c attaching 1 status 2
+[  359.281377] Rolling back 8 bytes of log data
+[  359.281378] attaching pid 2684 has reached syscall exit
+[  359.281517] set_pin_address: pin address for pid 2682 is 9536500c attaching 1 status 2
+[  359.281570] Rolling back 12 bytes of log data
+[  359.281573] attaching pid 2682 has reached syscall exit
+[  359.281699] set_pin_address: pin address for pid 2689 is 9537600c attaching 1 status 2
+[  359.281870] set_pin_address: pin address for pid 2696 is 953a700c attaching 1 status 2
+[  359.281918] hmm... this guy is a restart huh? 2696 wants to wait until 34598749
+[  359.281919] user-level-block: pid 2696 attaching now 0
+[  359.282032] set_pin_address: pin address for pid 2702 is 953ee00c attaching 1 status 2
+[  359.282080] hmm... this guy is a restart huh? 2702 wants to wait until 25731169
+[  359.282082] user-level-block: pid 2702 attaching now 0
+[  359.282175] set_pin_address: pin address for pid 2621 is 9536300c attaching 1 status 2
+[  359.282220] Rolling back 8 bytes of log data
+[  359.282221] attaching pid 2621 has reached syscall exit
+[  359.282234] Rolling back 4 bytes of log data
+[  359.282337] set_pin_address: pin address for pid 2691 is 9538600c attaching 1 status 2
+[  359.282379] Rolling back 4 bytes of log data
+[  359.282381] attaching pid 2691 has reached syscall entrance
+[  359.282382] Pid 2691 restarting start_clock 40e1cd4 attach_clock 186c061
+[  359.282382] Pid 2691 no longer attaching on enter
+[  359.282394] Rolling back 4 bytes of log data
+[  359.282396] attaching pid 2689 has reached syscall entrance
+[  359.282397] Pid 2689 restarting start_clock 40e1cd8 attach_clock 186c061
+[  359.282398] Pid 2689 no longer attaching on enter
+[  359.282524] set_pin_address: pin address for pid 2692 is 953a500c attaching 1 status 2
+[  359.282575] Rolling back 8 bytes of log data
+[  359.282577] attaching pid 2692 has reached syscall exit
+[  359.282679] set_pin_address: pin address for pid 2699 is 953ec00c attaching 1 status 2
+[  359.282720] Rolling back 8 bytes of log data
+[  359.282721] attaching pid 2699 has reached syscall exit
+[  360.159543] Pid 2812 about to sleep at index 51006169
+[  360.180910] Pid 2812 woken up - replay clock 51006169
+[  360.180914] Pid 2811(6088) status 2
+[  360.180918] Pid 2809(6087) status 2
+[  360.180920] Pid 2794(5853) status 3
+[  360.180921] Pid 2791(5852) status 3
+[  360.180922] Pid 2790(5851) status 3
+[  360.180923] Pid 2778(5617) status 3
+[  360.180924] Pid 2777(5616) status 3
+[  360.180925] Pid 2776(5615) status 3
+[  360.180926] Pid 2754(5383) status 3
+[  360.180929] Pid 2752(5382) status 3
+[  360.180930] Pid 2751(5381) status 3
+[  360.180932] Pid 2627(5147) status 3
+[  360.180933] Pid 2669(5146) status 3
+[  360.180934] Pid 2666(5145) status 3
+[  360.180935] Pid 2660(3506) status 2
+[  360.180936] Pid 2673(3504) status 2
+[  360.180939] Pid 2657(3505) status 2
+[  360.180941] Pid 2654(3503) status 2
+[  360.180942] Pid 2663(3502) status 2
+[  360.180943] Pid 2651(3501) status 2
+[  360.180944] Pid 2646(3500) status 2
+[  360.180945] Pid 2672(3499) status 2
+[  360.180948] Pid 2674(3498) status 2
+[  360.181786] Pid 2646: pin is attaching syscall 162 so interrupt exit and restart
+[  360.181790] Expected clock reset from 68033755 to 48969578
+[  360.181820] Pid 2651: pin is attaching at syscall 53 entrance so interrupt exit and restart
+[  360.181822] Expected clock reset from 68033753 to 107739
+[  360.181836] Pid 2654: pin is attaching syscall 162 so interrupt exit and restart
+[  360.181839] Expected clock reset from 53711798 to 48969448
+[  360.181876] Pid 2657: pin is attaching syscall 162 so interrupt exit and restart
+[  360.181878] Expected clock reset from 68033746 to 48968612
+[  360.181900] Pid 2660: pin is attaching at user block so interrupt exit and restart
+[  360.181929] Pid 2663: pin is attaching at syscall 53 entrance so interrupt exit and restart
+[  360.181931] Expected clock reset from 68033749 to 83327
+[  360.181960] Pid 2672: pin is attaching syscall 177 so interrupt exit and restart
+[  360.181961] Expected clock reset from 68032342 to 78356
+[  360.181980] Pid 2673: pin is attaching at syscall 53 entrance so interrupt exit and restart
+[  360.181983] Expected clock reset from 68033742 to 48967102
+[  360.181998] Pid 2674: pin is attaching syscall 142 so interrupt exit and restart
+[  360.181999] Expected clock reset from 51037075 to 51000517
+[  360.182007] Pid 2809: pin is attaching syscall 102 so interrupt exit and restart
+[  360.182008] Expected clock reset from 53709971 to 48970643
+[  360.182015] Pid 2811: pin is attaching at user block so interrupt exit and restart
+[  361.720675] 2808: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e8241c00
+[  361.720703] 2810: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e8241c00
+[  361.725526] 2807: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e8241c00
+[  361.726582] Pid 2656 prlimit64 is pulling from retparams
+[  361.726627] currp2656, replay_clone: new Pid 2818, record Pid 6323, parent pid 2656 flags 3d0f00 child_tidptr ab0ecba8
+[  361.748251] Pid 2656 prlimit64 is pulling from retparams
+[  361.748374] currp2656, replay_clone: new Pid 2819, record Pid 6324, parent pid 2656 flags 3d0f00 child_tidptr a3fecba8
+[  361.812974] Pid 2656 prlimit64 is pulling from retparams
+[  361.813012] currp2656, replay_clone: new Pid 2820, record Pid 6325, parent pid 2656 flags 3d0f00 child_tidptr a4af6ba8
+[  364.475693] 2819: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e8241c00
+[  364.475761] 2820: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e8241c00
+[  364.475901] 2818: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e8241c00
+[  364.479159] Pid 2656 prlimit64 is pulling from retparams
+[  364.479202] currp2656, replay_clone: new Pid 2821, record Pid 6557, parent pid 2656 flags 3d0f00 child_tidptr ab0ecba8
+[  364.483450] Pid 2656 prlimit64 is pulling from retparams
+[  364.483572] currp2656, replay_clone: new Pid 2822, record Pid 6558, parent pid 2656 flags 3d0f00 child_tidptr a4af6ba8
+[  364.489913] Pid 2656 prlimit64 is pulling from retparams
+[  364.511632] currp2656, replay_clone: new Pid 2823, record Pid 6559, parent pid 2656 flags 3d0f00 child_tidptr a3fecba8
+[  365.186283] Pid 2822 about to sleep at index 59748231
+[  365.217674] Pid 2822 woken up - replay clock 59748231
+[  365.217680] Pid 2821(6557) status 2
+[  365.217682] Pid 2820(6325) status 3
+[  365.217683] Pid 2819(6324) status 3
+[  365.217684] Pid 2818(6323) status 3
+[  365.217687] Pid 2810(6089) status 3
+[  365.217689] Pid 2808(6088) status 3
+[  365.217690] Pid 2807(6087) status 3
+[  365.217691] Pid 2795(5853) status 3
+[  365.217692] Pid 2793(5852) status 3
+[  365.217693] Pid 2792(5851) status 3
+[  365.217694] Pid 2772(5617) status 3
+[  365.217695] Pid 2771(5616) status 3
+[  365.217697] Pid 2770(5615) status 3
+[  365.217700] Pid 2755(5383) status 3
+[  365.217701] Pid 2746(5382) status 3
+[  365.217702] Pid 2745(5381) status 3
+[  365.217703] Pid 2629(5147) status 3
+[  365.217704] Pid 2642(5146) status 3
+[  365.217705] Pid 2649(5145) status 3
+[  365.217710] Pid 2653(3506) status 2
+[  365.217711] Pid 2644(3505) status 2
+[  365.217712] Pid 2665(3504) status 2
+[  365.217713] Pid 2659(3503) status 2
+[  365.217714] Pid 2668(3502) status 2
+[  365.217715] Pid 2662(3501) status 2
+[  365.217718] Pid 2647(3500) status 2
+[  365.217721] Pid 2671(3499) status 2
+[  365.217722] Pid 2656(3498) status 2
+[  365.217723] Pid 2823(6559) status 2
+[  365.217900] Pid 2644: pin is attaching syscall 162 so interrupt exit and restart
+[  365.217902] Expected clock reset from 68033746 to 48968612
+[  365.217953] Pid 2647: pin is attaching syscall 162 so interrupt exit and restart
+[  365.217954] Expected clock reset from 68033755 to 48969578
+[  365.217983] Pid 2653: pin is attaching at user block so interrupt exit and restart
+[  365.218017] Pid 2656: pin is attaching syscall 142 so interrupt exit and restart
+[  365.218023] Expected clock reset from 59763933 to 59747501
+[  365.218047] Pid 2659: pin is attaching syscall 162 so interrupt exit and restart
+[  365.218048] Expected clock reset from 62566826 to 58497830
+[  365.218668] Pid 2662: pin is attaching at syscall 53 entrance so interrupt exit and restart
+[  365.218673] Expected clock reset from 68033753 to 107739
+[  365.218760] Pid 2665: pin is attaching at syscall 53 entrance so interrupt exit and restart
+[  365.218763] Expected clock reset from 68033742 to 48967102
+[  365.219569] Pid 2668: pin is attaching at syscall 53 entrance so interrupt exit and restart
+[  365.219571] Expected clock reset from 68033749 to 83327
+[  365.219621] Pid 2671: pin is attaching syscall 177 so interrupt exit and restart
+[  365.219623] Expected clock reset from 68032342 to 78356
+[  365.219653] Pid 2821: pin is attaching syscall 102 so interrupt exit and restart
+[  365.219654] Expected clock reset from 63259731 to 58500833
+[  365.219686] Pid 2823: pin is attaching syscall 102 so interrupt exit and restart
+[  365.219687] Expected clock reset from 59749073 to 59748099
+[  367.811315] 2721: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e82439c0
+[  367.830398] 2719: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e82439c0
+[  367.854665] 2718: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e82439c0
+[  368.185945] Pid 2617 prlimit64 is pulling from retparams
+[  368.303426] currp2617, replay_clone: new Pid 2829, record Pid 4206, parent pid 2617 flags 350f00 child_tidptr ab0ecba8
+[  368.314701] Pid 2617: I have pin thread data but switching thread 2829 (recpid 4206) does not
+[  368.314765] set_pin_address: pin address for pid 2829 is 7658300c attaching 0 status 0
+[  368.314768] switched before this attach so update current thread
+[  369.014377] Pid 2617 prlimit64 is pulling from retparams
+[  369.058581] currp2617, replay_clone: new Pid 2830, record Pid 4207, parent pid 2617 flags 350f00 child_tidptr a4af6ba8
+[  369.059276] Pid 2617: I have pin thread data but switching thread 2830 (recpid 4207) does not
+[  369.059361] set_pin_address: pin address for pid 2830 is 81aa500c attaching 0 status 0
+[  369.059362] switched before this attach so update current thread
+[  369.074509] Pid 2617 prlimit64 is pulling from retparams
+[  369.123948] currp2617, replay_clone: new Pid 2831, record Pid 4208, parent pid 2617 flags 350f00 child_tidptr a3fecba8
+[  369.124565] Pid 2617: I have pin thread data but switching thread 2831 (recpid 4208) does not
+[  369.124630] set_pin_address: pin address for pid 2831 is 81a9e00c attaching 0 status 0
+[  369.124630] switched before this attach so update current thread
+[  371.964173] 2758: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e81f6840
+[  371.965749] 2763: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e81f6840
+[  371.987566] 2757: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e81f6840
+[  372.331953] Pid 2619 prlimit64 is pulling from retparams
+[  372.447671] currp2619, replay_clone: new Pid 2832, record Pid 4677, parent pid 2619 flags 350f00 child_tidptr ab0ecba8
+[  372.459069] Pid 2619: I have pin thread data but switching thread 2832 (recpid 4677) does not
+[  372.459138] set_pin_address: pin address for pid 2832 is 81a9000c attaching 0 status 0
+[  372.459139] switched before this attach so update current thread
+[  373.140732] Pid 2619 prlimit64 is pulling from retparams
+[  373.187423] currp2619, replay_clone: new Pid 2833, record Pid 4678, parent pid 2619 flags 350f00 child_tidptr a3fecba8
+[  373.188230] Pid 2619: I have pin thread data but switching thread 2833 (recpid 4678) does not
+[  373.188308] set_pin_address: pin address for pid 2833 is 81a6100c attaching 0 status 0
+[  373.188311] switched before this attach so update current thread
+[  373.198009] Pid 2619 prlimit64 is pulling from retparams
+[  373.249790] currp2619, replay_clone: new Pid 2834, record Pid 4679, parent pid 2619 flags 350f00 child_tidptr a4af6ba8
+[  373.251035] Pid 2619: I have pin thread data but switching thread 2834 (recpid 4679) does not
+[  373.251083] set_pin_address: pin address for pid 2834 is 7163f00c attaching 0 status 0
+[  373.251084] switched before this attach so update current thread
+[  380.261584] 2798: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e821aa00
+[  380.265106] 2797: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e821aa00
+[  380.266917] 2796: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e821aa00
+[  380.311372] Pid 2636 prlimit64 is pulling from retparams
+[  380.321304] currp2636, replay_clone: new Pid 2835, record Pid 5615, parent pid 2636 flags 350f00 child_tidptr ab0ecba8
+[  380.321475] Pid 2636: I have pin thread data but switching thread 2835 (recpid 5615) does not
+[  380.321538] set_pin_address: pin address for pid 2835 is 78c3400c attaching 0 status 0
+[  380.321539] switched before this attach so update current thread
+[  380.327985] Pid 2636 prlimit64 is pulling from retparams
+[  380.337975] currp2636, replay_clone: new Pid 2836, record Pid 5616, parent pid 2636 flags 350f00 child_tidptr a4af6ba8
+[  380.338580] Pid 2636: I have pin thread data but switching thread 2836 (recpid 5616) does not
+[  380.338629] set_pin_address: pin address for pid 2836 is 7640900c attaching 0 status 0
+[  380.338630] switched before this attach so update current thread
+[  380.342515] Pid 2636 prlimit64 is pulling from retparams
+[  380.381969] currp2636, replay_clone: new Pid 2837, record Pid 5617, parent pid 2636 flags 350f00 child_tidptr a3fecba8
+[  380.382599] Pid 2636: I have pin thread data but switching thread 2837 (recpid 5617) does not
+[  380.382706] set_pin_address: pin address for pid 2837 is 7cb1b00c attaching 0 status 0
+[  380.382707] switched before this attach so update current thread
+[  385.413295] 2800: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e82664c0
+[  385.413404] 2801: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e82664c0
+[  385.432504] 2799: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e82664c0
+[  385.620904] Pid 2621 prlimit64 is pulling from retparams
+[  385.727542] currp2621, replay_clone: new Pid 2838, record Pid 5145, parent pid 2621 flags 350f00 child_tidptr ab0ecba8
+[  385.739077] Pid 2621: I have pin thread data but switching thread 2838 (recpid 5145) does not
+[  385.739141] set_pin_address: pin address for pid 2838 is 81b2e00c attaching 0 status 0
+[  385.739144] switched before this attach so update current thread
+[  386.462968] Pid 2621 prlimit64 is pulling from retparams
+[  386.497805] currp2621, replay_clone: new Pid 2839, record Pid 5146, parent pid 2621 flags 350f00 child_tidptr a3fecba8
+[  386.498494] Pid 2621: I have pin thread data but switching thread 2839 (recpid 5146) does not
+[  386.498566] set_pin_address: pin address for pid 2839 is 81af900c attaching 0 status 0
+[  386.498567] switched before this attach so update current thread
+[  386.577296] Pid 2621 prlimit64 is pulling from retparams
+[  386.618374] currp2621, replay_clone: new Pid 2840, record Pid 5147, parent pid 2621 flags 350f00 child_tidptr a4af6ba8
+[  386.619049] Pid 2621: I have pin thread data but switching thread 2840 (recpid 5147) does not
+[  386.619099] set_pin_address: pin address for pid 2840 is 715eb00c attaching 0 status 0
+[  386.619100] switched before this attach so update current thread
+[  391.141697] 2789: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e8266300
+[  391.165661] 2788: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e8266300
+[  391.174565] 2787: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e8266300
+[  391.220922] Pid 2615 prlimit64 is pulling from retparams
+[  391.239216] currp2615, replay_clone: new Pid 2841, record Pid 3972, parent pid 2615 flags 350f00 child_tidptr ab0ecba8
+[  391.239391] Pid 2615: I have pin thread data but switching thread 2841 (recpid 3972) does not
+[  391.239457] set_pin_address: pin address for pid 2841 is 7c02300c attaching 0 status 0
+[  391.239458] switched before this attach so update current thread
+[  391.246986] Pid 2615 prlimit64 is pulling from retparams
+[  391.249575] currp2615, replay_clone: new Pid 2842, record Pid 3973, parent pid 2615 flags 350f00 child_tidptr a4af6ba8
+[  391.250477] Pid 2615: I have pin thread data but switching thread 2842 (recpid 3973) does not
+[  391.250516] set_pin_address: pin address for pid 2842 is 7663d00c attaching 0 status 0
+[  391.250517] switched before this attach so update current thread
+[  391.254883] Pid 2615 prlimit64 is pulling from retparams
+[  391.258404] currp2615, replay_clone: new Pid 2843, record Pid 3974, parent pid 2615 flags 350f00 child_tidptr a3fecba8
+[  391.259011] Pid 2615: I have pin thread data but switching thread 2843 (recpid 3974) does not
+[  391.259041] set_pin_address: pin address for pid 2843 is 7653600c attaching 0 status 0
+[  391.259042] switched before this attach so update current thread
+[  392.368380] 2831: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e82439c0
+[  392.371073] 2830: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e82439c0
+[  392.372923] 2829: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e82439c0
+[  394.172203] Pid 2617 prlimit64 is pulling from retparams
+[  394.182262] currp2617, replay_clone: new Pid 2844, record Pid 4440, parent pid 2617 flags 350f00 child_tidptr ab0ecba8
+[  394.182527] Pid 2617: I have pin thread data but switching thread 2844 (recpid 4440) does not
+[  394.182587] set_pin_address: pin address for pid 2844 is 7658100c attaching 0 status 0
+[  394.182588] switched before this attach so update current thread
+[  394.189744] Pid 2617 prlimit64 is pulling from retparams
+[  394.199860] currp2617, replay_clone: new Pid 2845, record Pid 4441, parent pid 2617 flags 350f00 child_tidptr a4af6ba8
+[  394.200615] Pid 2617: I have pin thread data but switching thread 2845 (recpid 4441) does not
+[  394.200657] set_pin_address: pin address for pid 2845 is 7164d00c attaching 0 status 0
+[  394.200662] switched before this attach so update current thread
+[  394.207930] Pid 2617 prlimit64 is pulling from retparams
+[  394.256392] currp2617, replay_clone: new Pid 2846, record Pid 4442, parent pid 2617 flags 350f00 child_tidptr a3fecba8
+[  394.257115] Pid 2617: I have pin thread data but switching thread 2846 (recpid 4442) does not
+[  394.257176] set_pin_address: pin address for pid 2846 is 6ee3500c attaching 0 status 0
+[  394.257177] switched before this attach so update current thread
+[  396.765189] 2833: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e81f6840
+[  396.768665] 2834: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e81f6840
+[  396.770396] 2832: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e81f6840
+[  397.487118] 2835: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e821aa00
+[  397.487120] 2633: exiting task, child_tid 0xae0ffba8, flags 4202564, mm e821aa00
+[  397.487123] 2632: exiting task, child_tid 0xb4280ba8, flags 4202564, mm e821aa00
+[  397.487125] 2631: exiting task, child_tid 0xb1af5ba8, flags 4202564, mm e821aa00
+[  397.487127] 2637: exiting task, child_tid 0xacaffba8, flags 4202564, mm e821aa00
+[  397.487185] 2634: exiting task, child_tid 0xaf4f5ba8, flags 4202564, mm e821aa00
+[  397.487196] 2635: exiting task, child_tid 0xb06ffba8, flags 4202564, mm e821aa00
+[  397.487199] 2638: exiting task, child_tid 0xb2cffba8, flags 4202564, mm e821aa00
+[  397.487252] 2641: exiting task, child_tid 0xb548aba8, flags 4202564, mm e821aa00
+[  397.487280] 2636: exiting task, child_tid 0xb7425968, flags 4202564, mm e821aa00
+[  397.487314] 2837: exiting task, child_tid 0xa3fecba8, flags 4202564, mm e821aa00
+[  397.487350] 2836: exiting task, child_tid 0xa4af6ba8, flags 4203588, mm e821aa00
+[  397.627090] waking up all sleepers on finished_queue for 2836
+[  397.627113] Goodbye, cruel lamp!  This replay is over
+[  398.448415] Pid 2619 prlimit64 is pulling from retparams
+[  398.458315] currp2619, replay_clone: new Pid 2847, record Pid 4911, parent pid 2619 flags 350f00 child_tidptr ab0ecba8
+[  398.458581] Pid 2619: I have pin thread data but switching thread 2847 (recpid 4911) does not
+[  398.458715] set_pin_address: pin address for pid 2847 is 7b8bb00c attaching 0 status 0
+[  398.458724] switched before this attach so update current thread
+[  398.466316] Pid 2619 prlimit64 is pulling from retparams
+[  398.476187] currp2619, replay_clone: new Pid 2848, record Pid 4912, parent pid 2619 flags 350f00 child_tidptr a4af6ba8
+[  398.480340] Pid 2619 prlimit64 is pulling from retparams
+[  398.530707] currp2619, replay_clone: new Pid 2849, record Pid 4913, parent pid 2619 flags 350f00 child_tidptr a3fecba8
+[  398.531514] Pid 2619: I have pin thread data but switching thread 2849 (recpid 4913) does not
+[  398.531659] set_pin_address: pin address for pid 2849 is 6ef2d00c attaching 0 status 0
+[  398.531664] switched before this attach so update current thread
+[  398.534793] Pid 2849: I have pin thread data but switching thread 2848 (recpid 4912) does not
+[  398.534899] set_pin_address: pin address for pid 2848 is 6ef2a00c attaching 0 status 0
+[  398.534902] switched before this attach so update current thread
+[  400.449869] 2756: exiting task, child_tid 0xae0ffba8, flags 4202564, mm e8266300
+[  400.449875] 2761: exiting task, child_tid 0xacaffba8, flags 4202564, mm e8266300
+[  400.449896] 2749: exiting task, child_tid 0xb06ffba8, flags 4202564, mm e8266300
+[  400.449898] 2750: exiting task, child_tid 0xaf4f5ba8, flags 4202564, mm e8266300
+[  400.449908] 2738: exiting task, child_tid 0xb2cffba8, flags 4202564, mm e8266300
+[  400.449910] 2730: exiting task, child_tid 0xb548aba8, flags 4202564, mm e8266300
+[  400.449920] 2843: exiting task, child_tid 0xa3fecba8, flags 4203588, mm e8266300
+[  400.449922] 2739: exiting task, child_tid 0xb1af5ba8, flags 4202564, mm e8266300
+[  400.449932] 2731: exiting task, child_tid 0xb4280ba8, flags 4202564, mm e8266300
+[  400.449935] 2615: exiting task, child_tid 0xb7425968, flags 4202500, mm e8266300
+[  400.449994] 2842: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e8266300
+[  400.450020] 2841: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e8266300
+[  400.482612] waking up all sleepers on finished_queue for 2841
+[  400.482623] Goodbye, cruel lamp!  This replay is over
+[  400.895897] 2701: exiting task, child_tid 0xacaffba8, flags 4202564, mm e82439c0
+[  400.895899] 2690: exiting task, child_tid 0xb1af5ba8, flags 4202564, mm e82439c0
+[  400.895902] 2680: exiting task, child_tid 0xb548aba8, flags 4202564, mm e82439c0
+[  400.895923] 2698: exiting task, child_tid 0xae0ffba8, flags 4202564, mm e82439c0
+[  400.895931] 2697: exiting task, child_tid 0xaf4f5ba8, flags 4202564, mm e82439c0
+[  400.895942] 2687: exiting task, child_tid 0xb2cffba8, flags 4202564, mm e82439c0
+[  400.895953] 2683: exiting task, child_tid 0xb4280ba8, flags 4202564, mm e82439c0
+[  400.895964] 2846: exiting task, child_tid 0xa3fecba8, flags 4203588, mm e82439c0
+[  400.895980] 2694: exiting task, child_tid 0xb06ffba8, flags 4202564, mm e82439c0
+[  400.895991] 2617: exiting task, child_tid 0xb7425968, flags 4202500, mm e82439c0
+[  400.896045] 2845: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e82439c0
+[  400.896068] 2844: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e82439c0
+[  400.933511] waking up all sleepers on finished_queue for 2844
+[  400.933527] Goodbye, cruel lamp!  This replay is over
+[  402.092132] 2848: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e81f6840
+[  402.092134] 2847: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e81f6840
+[  402.092136] 2700: exiting task, child_tid 0xae0ffba8, flags 4202564, mm e81f6840
+[  402.092137] 2705: exiting task, child_tid 0xacaffba8, flags 4202564, mm e81f6840
+[  402.092154] 2686: exiting task, child_tid 0xb2cffba8, flags 4202564, mm e81f6840
+[  402.092155] 2695: exiting task, child_tid 0xaf4f5ba8, flags 4202564, mm e81f6840
+[  402.092165] 2685: exiting task, child_tid 0xb4280ba8, flags 4202564, mm e81f6840
+[  402.092167] 2688: exiting task, child_tid 0xb1af5ba8, flags 4202564, mm e81f6840
+[  402.092178] 2681: exiting task, child_tid 0xb548aba8, flags 4202564, mm e81f6840
+[  402.092184] 2693: exiting task, child_tid 0xb06ffba8, flags 4202564, mm e81f6840
+[  402.092193] 2849: exiting task, child_tid 0xa3fecba8, flags 4203588, mm e81f6840
+[  402.092234] 2619: exiting task, child_tid 0xb7425968, flags 4202500, mm e81f6840
+[  402.129194] waking up all sleepers on finished_queue for 2619
+[  402.129205] Goodbye, cruel lamp!  This replay is over
+[  408.560399] 2621: exiting task, child_tid 0xb7425968, flags 4202500, mm e82664c0
+[  408.560401] 2696: exiting task, child_tid 0xaf4f5ba8, flags 4202564, mm e82664c0
+[  408.560402] 2699: exiting task, child_tid 0xae0ffba8, flags 4202564, mm e82664c0
+[  408.560415] 2839: exiting task, child_tid 0xa3fecba8, flags 4203588, mm e82664c0
+[  408.560419] 2689: exiting task, child_tid 0xb2cffba8, flags 4202564, mm e82664c0
+[  408.560425] 2684: exiting task, child_tid 0xb4280ba8, flags 4202564, mm e82664c0
+[  408.560457] 2691: exiting task, child_tid 0xb1af5ba8, flags 4202564, mm e82664c0
+[  408.560462] 2838: exiting task, child_tid 0xab0ecba8, flags 4202564, mm e82664c0
+[  408.560470] 2682: exiting task, child_tid 0xb548aba8, flags 4202564, mm e82664c0
+[  408.560487] 2840: exiting task, child_tid 0xa4af6ba8, flags 4202564, mm e82664c0
+[  408.560493] 2692: exiting task, child_tid 0xb06ffba8, flags 4202564, mm e82664c0
+[  408.560557] 2702: exiting task, child_tid 0xacaffba8, flags 4202564, mm e82664c0
+[  408.600247] waking up all sleepers on finished_queue for 2702
+[  408.600263] Goodbye, cruel lamp!  This replay is over

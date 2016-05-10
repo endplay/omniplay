@@ -1,0 +1,61 @@
+  CHK     include/linux/version.h
+make[1]: Nothing to be done for `all'.
+  CHK     include/generated/utsrelease.h
+make[1]: Nothing to be done for `relocs'.
+  CALL    scripts/checksyscalls.sh
+  CHK     include/generated/compile.h
+  CC      kernel/replay_ckpt.o
+  PASYMS  arch/x86/realmode/rm/pasyms.h
+  LDS     arch/x86/realmode/rm/realmode.lds
+  LD      arch/x86/realmode/rm/realmode.elf
+  RELOCS  arch/x86/realmode/rm/realmode.relocs
+  OBJCOPY arch/x86/realmode/rm/realmode.bin
+  AS      arch/x86/realmode/rmpiggy.o
+  LD      arch/x86/realmode/built-in.o
+  VDSOSYM arch/x86/vdso/vdso32-int80-syms.lds
+  VDSOSYM arch/x86/vdso/vdso32-sysenter-syms.lds
+  VDSOSYM arch/x86/vdso/vdso32-syms.lds
+  LD      arch/x86/vdso/built-in.o
+kernel/replay_ckpt.c:841:1: warning: ‘print_vmas’ defined but not used [-Wunused-function]
+  LD      arch/x86/built-in.o
+  LD      kernel/built-in.o
+  LINK    vmlinux
+  LD      vmlinux.o
+  MODPOST vmlinux.o
+WARNING: modpost: Found 2 section mismatch(es).
+To see full details build your kernel with:
+'make CONFIG_DEBUG_SECTION_MISMATCH=y'
+  GEN     .version
+  CHK     include/generated/compile.h
+  UPD     include/generated/compile.h
+  CC      init/version.o
+  LD      init/built-in.o
+  KSYM    .tmp_kallsyms1.o
+  KSYM    .tmp_kallsyms2.o
+  LD      vmlinux
+  SORTEX  vmlinux
+sort done marker at 991ba4
+  SYSMAP  System.map
+  Building modules, stage 2.
+  VOFFSET arch/x86/boot/voffset.h
+  CC      arch/x86/boot/version.o
+  RELOCS  arch/x86/boot/compressed/vmlinux.relocs
+  OBJCOPY arch/x86/boot/compressed/vmlinux.bin
+  GZIP    arch/x86/boot/compressed/vmlinux.bin.gz
+  MKPIGGY arch/x86/boot/compressed/piggy.S
+  AS      arch/x86/boot/compressed/piggy.o
+  LD      arch/x86/boot/compressed/vmlinux
+  ZOFFSET arch/x86/boot/zoffset.h
+  OBJCOPY arch/x86/boot/vmlinux.bin
+  AS      arch/x86/boot/header.o
+  LD      arch/x86/boot/setup.elf
+  OBJCOPY arch/x86/boot/setup.bin
+  BUILD   arch/x86/boot/bzImage
+Setup is 17360 bytes (padded to 17408 bytes).
+System is 5252 kB
+CRC ca3087f5
+Kernel: arch/x86/boot/bzImage is ready  (#320)
+  MODPOST 3692 modules
+WARNING: modpost: Found 12 section mismatch(es).
+To see full details build your kernel with:
+'make CONFIG_DEBUG_SECTION_MISMATCH=y'

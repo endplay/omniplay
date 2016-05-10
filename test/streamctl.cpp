@@ -37,6 +37,7 @@ struct dift {
     char  hostname[256];
     u_int num_epochs;
     int   s;
+    vector<char *> ckpts; /* The checkpoints for this aggregator */
 };
 
 /* An individual epoch */
@@ -141,6 +142,9 @@ int main (int argc, char* argv[])
     char* dest_dir, *cmp_dir;
     struct vector<struct replay_path> log_files;
     struct vector<struct cache_info> cache_files;
+
+    char ckpts[1024][1024]; //can only support 1024 checkpoints
+
     u_char agg_type = AGG_TYPE_STREAM;
     struct config conf;
     int parallelize = 1; 
@@ -228,7 +232,7 @@ int main (int argc, char* argv[])
 	fprintf (stderr, "Unable to parse header line of epoch descrtion file, rc=%d\n", rc);
 	return -1;
     }
-
+    int next_ckpt = 0;
     while (!feof(file)) {
 	char line[256];
 	if (fgets (line, 255, file)) {
@@ -240,9 +244,18 @@ int main (int argc, char* argv[])
 		return -1;
 	    }
 	    conf.epochs.push_back(e);
+
+	    sprintf(ckpts[next_ckpt],"%s/ckpt.%d",dirname,e.data.ckpt);
+	    next_ckpt++;
+
 	}
     }
     fclose(file);
+
+    for (int i = 0; i < next_ckpt; i++) { 
+      fprintf(stderr, "next ckpt: %s\n",ckpts[i]);
+    }
+
 
     // Read in the host configuration file
     file = fopen(config_filename, "r");
@@ -256,6 +269,7 @@ int main (int argc, char* argv[])
     struct dift* prev_dift = NULL;
     struct aggregator* prev_agg = NULL;
     u_int epoch_cnt = 0;
+    next_ckpt = 0;
     while (!feof(file) && epoch_cnt < conf.epochs.size()) {
 	char line[256];
 	if (fgets (line, 255, file)) {
@@ -280,9 +294,21 @@ int main (int argc, char* argv[])
 		d->s = -1;
 		conf.difts.push_back(d);
 		prev_dift = d;
+
+		for (int i = 0; i < num_epochs; i++) { 
+		    d->ckpts.push_back(ckpts[next_ckpt]);
+		    next_ckpt++;
+		}	       
+
 	    } else {
 		d = prev_dift;
 		d->num_epochs += num_epochs;
+
+		for (int i = 0; i < num_epochs; i++) { 
+		    d->ckpts.push_back(ckpts[next_ckpt]);
+		    next_ckpt++;
+		}	       
+
 	    }
 
 	    struct aggregator* a;
@@ -307,6 +333,15 @@ int main (int argc, char* argv[])
 	}
     }
     fclose(file);
+
+    for (u_int i = 0; i < conf.difts.size(); i++) {
+	fprintf(stderr, "machine %s ckpts: ",conf.difts[i]->hostname);
+	for (auto c : conf.difts[i]->ckpts) { 
+	    fprintf(stderr, "%s ",c);
+	}
+	fprintf(stderr, "\n");
+    }
+
 
     if (sync_files) {
 	// First build up a list of files that are needed for this replay
@@ -501,8 +536,32 @@ int main (int argc, char* argv[])
 	}
 	
 	if (sync_files) {
+
+	    //need to figure out what to do at this point: 
+	    struct vector<struct replay_path> elog_files;
+	    for (auto l : log_files) { 
+		
+		if (strstr(l.path, "ckpt.")) {
+		    bool found = false;
+		    for (auto c : conf.difts[i]->ckpts) { 
+			if (!strcmp(l.path,c)){
+			    found = true;
+			    break;
+			}
+		    }
+		    if (found) { 
+			elog_files.push_back(l);
+			fprintf(stderr, "sending %s\n",l.path);
+		    }		    
+		}
+		else { 
+		    elog_files.push_back(l);
+		}
+	    }
+	    fprintf(stderr, "sending %u instead of %u logfiles to %s",elog_files.size(), log_files.size(),conf.difts[i]->hostname);
+
 	    // First send count of log files
-	    uint32_t cnt = log_files.size();
+	    uint32_t cnt = elog_files.size();
 	    rc = safe_write (conf.difts[i]->s, &cnt, sizeof(cnt));
 	    if (rc != sizeof(cnt)) {
 		fprintf (stderr, "Cannot send log file count to streamserver, rc=%d\n", rc);
@@ -510,7 +569,7 @@ int main (int argc, char* argv[])
 	    }
 
 	    // Next send log files
-	    for (auto iter = log_files.begin(); iter != log_files.end(); iter++) {
+	    for (auto iter = elog_files.begin(); iter != elog_files.end(); iter++) {
 		struct replay_path p = *iter;
 		rc = safe_write (conf.difts[i]->s, &p, sizeof(struct replay_path));
 		if (rc != sizeof(struct replay_path)) {
@@ -539,32 +598,32 @@ int main (int argc, char* argv[])
 	    }
 
 	    // Get back response
-	    bool response[log_files.size()+cache_files.size()];
-	    rc = safe_read (conf.difts[i]->s, response, sizeof(bool)*(log_files.size()+cache_files.size()));
-	    if (rc != (long) (sizeof(bool)*(log_files.size()+cache_files.size()))) {
+	    bool response[elog_files.size()+cache_files.size()];
+	    rc = safe_read (conf.difts[i]->s, response, sizeof(bool)*(elog_files.size()+cache_files.size()));
+	    if (rc != (long) (sizeof(bool)*(elog_files.size()+cache_files.size()))) {
 		fprintf (stderr, "Cannot read sync results, rc=%d\n", rc);
 		return rc;
 	    }
 	    
 	    // Send requested files
 	    u_long l, j;
-	    for (l = 0; l < log_files.size(); l++) {
+	    for (l = 0; l < elog_files.size(); l++) {
 		if (response[l]) {
-		    fprintf (stderr,"%ld of %d log files requested\n", l, log_files.size());
+		    fprintf (stderr,"%ld of %d log files requested\n", l, elog_files.size());
 		    char* filename = NULL;
-		    for (int j = strlen(log_files[l].path); j >= 0; j--) {
-			if (log_files[l].path[j] == '/') {
-			    filename = &log_files[l].path[j+1];
+		    for (int j = strlen(elog_files[l].path); j >= 0; j--) {
+			if (elog_files[l].path[j] == '/') {
+			    filename = &elog_files[l].path[j+1];
 			    break;
 			} 
 		    }
 		    if (filename == NULL) {
-			fprintf (stderr, "Bad path name: %s\n", log_files[l].path);
+			fprintf (stderr, "Bad path name: %s\n", elog_files[l].path);
 			return -1;
 		    }
-		    rc = send_file (conf.difts[i]->s, log_files[l].path, filename);
+		    rc = send_file (conf.difts[i]->s, elog_files[l].path, filename);
 		    if (rc < 0) {
-			fprintf (stderr, "Unable to send log file %s\n", log_files[l].path);
+			fprintf (stderr, "Unable to send log file %s\n", elog_files[l].path);
 			return rc;
 		    }
 		}

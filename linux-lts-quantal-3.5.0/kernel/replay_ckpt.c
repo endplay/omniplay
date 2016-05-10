@@ -837,6 +837,45 @@ exit:
 	return rc;
 }
 
+static void
+print_vmas (struct task_struct* tsk)
+{
+	struct vm_area_struct* mpnt;
+	char buf[256];
+
+	printk ("vmas for task %d mm %p\n", tsk->pid, tsk->mm);
+	down_read (&tsk->mm->mmap_sem);
+	for (mpnt = tsk->mm->mmap; mpnt; mpnt = mpnt->vm_next) {
+		printk ("VMA start %lx end %lx", mpnt->vm_start, mpnt->vm_end);
+		if (mpnt->vm_flags & VM_MAYSHARE) {
+			printk (" s");
+		} else {
+			printk (" p");
+		}
+		if (mpnt->vm_file) {
+			printk (" file %s ", dentry_path (mpnt->vm_file->f_dentry, buf, sizeof(buf)));
+			if (mpnt->vm_flags & VM_READ) {
+				printk ("r");
+			} else {
+				printk ("-");
+			}
+			if (mpnt->vm_flags & VM_WRITE) {
+				printk ("w");
+			} else {
+				printk ("-");
+			}
+			if (mpnt->vm_flags & VM_EXEC) {
+				printk ("x");
+			} else {
+				printk ("-");
+			}
+		}
+		printk ("\n");
+	}
+	up_read (&tsk->mm->mmap_sem);
+}
+
+
 long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_thread, long* pretval, loff_t* plogpos, u_long* poutptr, u_long* pconsumed, u_long* pexpclock, u_long* pthreadclock, u_long *ignore_flag, u_long *user_log_addr, u_long *child_tid,u_long *replay_hook, loff_t* ppos)
 {
 	mm_segment_t old_fs = get_fs();
@@ -931,6 +970,11 @@ long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_
 			
 			if (pvmas->vmas_file[0]) { 
 				flags = O_RDONLY;
+				if (pvmas->vmas_flags & VM_MAYSHARE) {
+					flags = O_RDWR; //this is a weird one. 
+					printk("weird case for %s\n",pvmas->vmas_file);
+				}
+
 				if (!strncmp(pvmas->vmas_file, "/dev/zero", 9)) {
 					MPRINT ("special vma for /dev/zero!\n");
 					map_file = NULL;
@@ -976,14 +1020,20 @@ long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_
 				map_file = NULL;
 			}
 
-			MPRINT ("About to do mmap: map_file %p start %lx len %lx flags %x shar %x pgoff %lx\n", 
+			MPRINT ("About to do mmap: map_file %p start %lx len %lx flags %x writable? %d shar %x pgoff %lx\n", 
 				map_file, pvmas->vmas_start, pvmas->vmas_end-pvmas->vmas_start, 
 				(pvmas->vmas_flags&(VM_READ|VM_WRITE|VM_EXEC)), 
+				(pvmas->vmas_flags & VM_WRITE),
 				((pvmas->vmas_flags&VM_MAYSHARE) ? MAP_SHARED : MAP_PRIVATE)|MAP_FIXED, pvmas->vmas_pgoff);
 			
-			
+			flags = (pvmas->vmas_flags&(VM_READ|VM_WRITE|VM_EXEC));
+			//the kernel treats these differently and won't let us mprotect write permissions later. 
+			if (pvmas->vmas_flags &VM_MAYSHARE) { 
+				flags |= VM_WRITE;
+			}
+
 			addr = do_mmap_pgoff(map_file, pvmas->vmas_start, pvmas->vmas_end - pvmas->vmas_start, 
-					     (pvmas->vmas_flags&(VM_READ|VM_WRITE|VM_EXEC)), 
+					     flags,
 					     ((pvmas->vmas_flags&VM_MAYSHARE) ? MAP_SHARED : MAP_PRIVATE)|MAP_FIXED, pvmas->vmas_pgoff);
 			
 			
@@ -1000,7 +1050,16 @@ long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_
 			
 			
 			
-			if (!(pvmas->vmas_flags&VM_WRITE)) rc = sys_mprotect (pvmas->vmas_start, pvmas->vmas_end - pvmas->vmas_start, PROT_WRITE); // force it to writable temproarilly
+			if (!(pvmas->vmas_flags&VM_WRITE)){
+				rc = sys_mprotect (pvmas->vmas_start, pvmas->vmas_end - pvmas->vmas_start, PROT_WRITE); // force it to writable temproarilly
+//				printk("forcing this to be writable!?\n");
+//				printk("sys_mprotect on (%p, %p) length %lu returned %d\n",(char *)pvmas->vmas_start, (char *)pvmas->vmas_end, pvmas->vmas_end - pvmas->vmas_start, rc);
+			}
+
+
+//			print_vmas(current);
+//			printk("%d, reading from %p to %p, length %lu\n",current->pid,(char *)pvmas->vmas_start, (char *)pvmas->vmas_end, pvmas->vmas_end - pvmas->vmas_start);
+
 			set_fs(old_fs);
 			copied = vfs_read (file, (char *) pvmas->vmas_start, pvmas->vmas_end - pvmas->vmas_start, ppos);
 			set_fs(KERNEL_DS);
