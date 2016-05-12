@@ -1,0 +1,8 @@
+benchmark streamppl stream seq backwards_pass
+evince 4448.2  3437.25  5307.0 
+firefoxlonger 1379.75  1746.0  11521.6 
+gs 3907.0  4155.2  4878.6  3907.0  4155.2  4878.6 
+gzip 333.25  271.0  1691.6  10941.6 
+mongolonger 207.0  146.4  708.333333333 
+nginx 188.2  168.8  283.6  578.8 
+openoffice 1687.8  2833.0  3928.2 
