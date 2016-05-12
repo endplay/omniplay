@@ -72,11 +72,13 @@ int main (int argc, char* argv[])
     struct timeval tv_start, tv_attach, tv_done;
     char cpids[80];
     char eclock[80];
+    char fork_flags[80];
     char retaint_chars[4096];
 
     stringstream retaints;
     char* dirname;
     char* epoch_desc_file;
+    char* following = NULL;
 
     pid_t cpid, mpid;
     int fd, rc, status, filter_inet = 0;
@@ -100,7 +102,10 @@ int main (int argc, char* argv[])
 		index++;
 	    } else if (!strncmp(argv[index],"-filter_partfile",BUFFER_SIZE)) {
 		filter_partfile = argv[index+1];
-		index++;
+		index += 2;
+	    } else if (!strncmp(argv[index],"-following",BUFFER_SIZE)) {
+		following = argv[index+1];
+		index += 2;
 	    } else if (!strncmp(argv[index],"-filter_output_after",BUFFER_SIZE)) {
 		filter_output_after_str = argv[index+1];
 		filter_output_after = atoi(argv[index+1]);
@@ -111,7 +116,7 @@ int main (int argc, char* argv[])
 	    }
 	}
     }
-
+    fprintf(stderr,"following %s\n",following);
     get_retaint_points(epoch_desc_file, retaints,end_clock);
 
 
@@ -154,6 +159,11 @@ int main (int argc, char* argv[])
 	args[argcnt++] = "-l";
 	sprintf(eclock, "%lu",end_clock);
 	args[argcnt++] = eclock;
+	if (following) { 
+	    sprintf (fork_flags, "%s", following);
+	    args[argcnt++] = "-fork_flags";
+	    args[argcnt++] = fork_flags;		       		
+	}
 
 	cout <<"retaint at "<<retaint_chars << endl;;
 
