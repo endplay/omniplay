@@ -173,10 +173,10 @@ $(OBJDIR)linkage_new2$(PINTOOL_SUFFIX): $(OBJDIR)linkage_new2$(OBJ_SUFFIX)
 
 # COPY TOOL
 $(OBJDIR)linkage_copy$(OBJ_SUFFIX): linkage_new2.cpp xray_slab_alloc.c xray_slab_alloc.h $(TAINTS_INTERFACE)/taint_interface.h $(TAINTS_INTERFACE)/taint_full_interface.c $(TAINTS_INTERFACE)/taint_byte_creation.c 
-	$(CXX) -DONLY_COPY $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
+	$(CXX) -DCOPY_ONLY $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
 
 $(OBJDIR)linkage_copy$(PINTOOL_SUFFIX): $(OBJDIR)linkage_copy$(OBJ_SUFFIX)
-	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) $(MY_OBJS) $(TAINT_BACK_OBJS) $(TAINT_OBJS) -lglib-2.0
+	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) $(MY_OBJS) $(TAINT_BACK_OBJS) $(TAINT_OBJS) -lglib-2.0 -lrt
 
 # DATA TOOL
 $(OBJDIR)linkage_data$(OBJ_SUFFIX): linkage_new2.cpp xray_slab_alloc.c xray_slab_alloc.h $(TAINTS_INTERFACE)/taint_interface.h $(TAINTS_INTERFACE)/taint_full_interface.c $(TAINTS_INTERFACE)/taint_byte_creation.c splice.c maputil.c
@@ -190,24 +190,24 @@ $(OBJDIR)linkage_offset$(OBJ_SUFFIX): linkage_new2.cpp xray_slab_alloc.c xray_sl
 	$(CXX) -DLINKAGE_DATA_OFFSET $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
 
 $(OBJDIR)linkage_offset$(PINTOOL_SUFFIX): $(OBJDIR)linkage_offset$(OBJ_SUFFIX)
-	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) $(MY_OBJS) $(TAINT_BACK_OBJS) $(TAINT_OBJS) -lglib-2.0
+	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) $(MY_OBJS) $(TAINT_BACK_OBJS) $(TAINT_OBJS) -lglib-2.0 -lrt
 
 $(OBJDIR)linkage_forward_copy$(OBJ_SUFFIX): linkage_new2.cpp xray_slab_alloc.c xray_slab_alloc.h $(TAINTS_INTERFACE)/taint_interface.h $(TAINTS_INTERFACE)/taint_forward_interface.c $(TAINTS_INTERFACE)/taint_forward_creation.c
-	$(CXX) -DONLY_COPY $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
+	$(CXX) -DCOPY_ONLY $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
 
 $(OBJDIR)linkage_forward_copy$(PINTOOL_SUFFIX): $(OBJDIR)linkage_forward_copy$(OBJ_SUFFIX)
-	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) $(MY_OBJS) $(TAINT_FORWARD_OBJS) $(TAINT_OBJS) -lglib-2.0
+	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) $(MY_OBJS) $(TAINT_FORWARD_OBJS) $(TAINT_OBJS) -lglib-2.0 -lrt
 
 $(OBJDIR)linkage_forward_data$(OBJ_SUFFIX): linkage_new2.cpp xray_slab_alloc.c xray_slab_alloc.h $(TAINTS_INTERFACE)/taint_interface.h $(TAINTS_INTERFACE)/taint_forward_interface.c $(TAINTS_INTERFACE)/taint_forward_creation.c
 	$(CXX) -DLINKAGE_DATA $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
 
 $(OBJDIR)linkage_forward_data$(PINTOOL_SUFFIX): $(OBJDIR)linkage_forward_data$(OBJ_SUFFIX)
-	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) $(MY_OBJS) $(TAINT_FORWARD_OBJS) $(TAINT_OBJS) -lglib-2.0
+	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) $(MY_OBJS) $(TAINT_FORWARD_OBJS) $(TAINT_OBJS) -lglib-2.0 -lrt
 
 $(OBJDIR)linkage_forward_offset$(OBJ_SUFFIX): linkage_new2.cpp xray_slab_alloc.c xray_slab_alloc.h $(TAINTS_INTERFACE)/taint_interface.h $(TAINTS_INTERFACE)/taint_forward_interface.c $(TAINTS_INTERFACE)/taint_forward_creation.c
 	$(CXX) -DLINKAGE_DATA_OFFSET $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
 
 $(OBJDIR)linkage_forward_offset$(PINTOOL_SUFFIX): $(OBJDIR)linkage_forward_offset$(OBJ_SUFFIX)
-	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) $(MY_OBJS) $(TAINT_FORWARD_OBJS) $(TAINT_OBJS) -lglib-2.0
+	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) $(MY_OBJS) $(TAINT_FORWARD_OBJS) $(TAINT_OBJS) -lglib-2.0 -lrt
 
 
