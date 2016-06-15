@@ -393,7 +393,12 @@ up_fail:
 
 int arch_restore_sysenter_return(void *addr) 
 {
+	struct mm_struct *mm = current->mm;
+	down_write(&mm->mmap_sem);
 	current_thread_info()->sysenter_return = VDSO32_SYMBOL((u_long) addr, SYSENTER_RETURN);
+	up_write(&mm->mmap_sem);	
+
+	return 0;
 }
 
 // REPLAY END

@@ -127,13 +127,13 @@ int resume_after_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int sav
 
 }
 
-int resume_proc_after_ckpt (int fd_spec, char* logdir, char* filename, char* uniqueid, int is_thread)
+int resume_proc_after_ckpt (int fd_spec, char* logdir, char* filename, char* uniqueid, int ckpt_pos)
 {
     struct wakeup_ckpt_data data;
     data.logdir = logdir;
     data.filename = filename;
     data.uniqueid = uniqueid;
-    data.is_thread = is_thread;
+    data.ckpt_pos = ckpt_pos;
     data.fd = fd_spec;
     return ioctl (fd_spec, SPECI_CKPT_PROC_RESUME, &data);    
 }

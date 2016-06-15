@@ -3,7 +3,9 @@
 
 #define SPEC_PSDEV_MAJOR 149
 
-#define SPEC_DEV "/dev/spec0"
+#define SPEC_NAME "spec0"
+#define SPEC_DEV "/dev/" SPEC_NAME
+
 
 #define ROLLED_BACK 1
 
@@ -47,7 +49,7 @@ struct wakeup_ckpt_data {
 	loff_t        attach_index;
 	int           attach_pid;
 	int	      save_mmap;
-        int           is_thread;
+        int           ckpt_pos;
 	u_long          nfake_calls;
 	u_long __user * fake_calls;    
 };

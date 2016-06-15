@@ -46,6 +46,7 @@
 #include <asm/atomic.h>
 #include <asm/ldt.h>
 #include <asm/syscall.h>
+#include <asm/elf.h>
 #include <linux/statfs.h>
 #include <linux/workqueue.h>
 #include <linux/ipc_namespace.h>
@@ -115,7 +116,7 @@ int verify_debug = 0;
                  (current->replay_thrd && current->replay_thrd->rp_preplay_clock && \
 		  replay_min_debug_low <= *(current->replay_thrd->rp_preplay_clock) && \
 		  replay_min_debug_high >= *(current->replay_thrd->rp_preplay_clock))) printk
-//#define MPRINT(x,...) does this work? 
+//#define MPRINT(x,...)
 #define MCPRINT
 
 //#define REPLAY_PAUSE
@@ -800,9 +801,13 @@ struct argsalloc_node {
 struct sysv_mapping {
 	int record_id;
 	int replay_id;
+	int key;
+	size_t size; 
+	int shmflg;
 	struct list_head list;
 };
 
+//maybe should add the flags and make this always allocated? 
 struct sysv_shm {
 	u_long addr;
 	u_long len;
@@ -1774,7 +1779,7 @@ checkpoint_replay_cache_files (struct task_struct* tsk, struct file* cfile, loff
 				}
 
 				p = d_path (&file->f_path, buffer, PATH_MAX);
-				DPRINT ("fd %d has value %d path %s\n", i, tsk->replay_thrd->rp_cache_files->data[i], p);
+				DPRINT("fd %d has value %d path %s\n", i, tsk->replay_thrd->rp_cache_files->data[i], p);
 				
 				cnt = strlen(p);
 				copyed = vfs_write(cfile, (char *) &cnt, sizeof(cnt), ppos);
@@ -1847,7 +1852,6 @@ restore_replay_cache_files (struct file* cfile, loff_t* ppos)
 		buffer[len] = '\0';
 
 		fd = sys_open (buffer, O_RDONLY, 0);
-		DPRINT ("restore_replay_cache_files: opened cache file %s fd is %d val is %d\n", buffer, fd, val);
 		KFREE(buffer);
 
 		if (set_replay_cache_file (current->replay_thrd->rp_cache_files, val, fd) < 0) {
@@ -2037,7 +2041,7 @@ destroy_replay_group (struct replay_group *prepg)
 	 how does wakeup work...? 
       	 */
 	prepg->rg_rec_group->finished = 1;
-	printk ("waking up all sleepers on finished_queue for %d\n",current->pid);
+	MPRINT ("waking up all sleepers on finished_queue for %d\n",current->pid);
 	wake_up_all(&(prepg->rg_rec_group->finished_queue));
 
 	xray_monitor_destroy (prepg->rg_open_socks);
@@ -2931,7 +2935,7 @@ static void argsfreeall (struct record_thread* prect)
 }
 
 // function to keep track of the sysv identifiers, since we always want to return the record identifier
-static int add_sysv_mapping (struct replay_thread* prt, int record_id, int replay_id) { 
+static int add_sysv_mapping (struct replay_thread* prt, int record_id, int replay_id, int key, size_t size, int shmflg) { 
 	struct sysv_mapping* tmp;
 	tmp = KMALLOC(sizeof(struct sysv_mapping), GFP_KERNEL); 
 	if (tmp == NULL) {
@@ -2940,9 +2944,10 @@ static int add_sysv_mapping (struct replay_thread* prt, int record_id, int repla
 	}
 	tmp->record_id = record_id;
 	tmp->replay_id = replay_id;
+	tmp->key = key;
+	tmp->size = size;
+	tmp->shmflg = shmflg;
 
-	// Add to front of the list
-	MPRINT ("Pid %d (recpid %d) add_sysv_mapping: adding a SYS V ID mapping\n", current->pid, prt->rp_record_thread->rp_record_pid);
 	list_add(&tmp->list, &prt->rp_sysv_list);
 	return 0;
 }
@@ -2958,6 +2963,19 @@ static int find_sysv_mapping (struct replay_thread* prt, int record_id) {
 	return -1;
 }
 
+int find_sysv_mapping_by_key (int key) {
+	struct replay_thread *prt = current->replay_thrd;
+
+	struct sysv_mapping* tmp;
+	list_for_each_entry (tmp, &prt->rp_sysv_list, list) {
+		if (tmp->key == key) {
+			return tmp->replay_id;
+		}
+	}
+	return -1;
+}
+
+
 static void delete_sysv_mappings (struct replay_thread* prt) {
 	struct sysv_mapping* tmp;
 	struct sysv_mapping* tmp_safe;
@@ -2966,6 +2984,116 @@ static void delete_sysv_mappings (struct replay_thread* prt) {
 		KFREE(tmp);
 	}
 }
+
+static int copy_sysv_mappings(struct replay_thread *src, struct replay_thread *dest) { 
+	
+	//assuming that the backend shget calls are all persisted through clone. (i.e. dest has all of the 
+	//shmget values same as src, but is just missing the replay_thread's sysv_mapping)
+	struct sysv_mapping *tmp;
+	int ret = 0;
+	list_for_each_entry(tmp, &src->rp_sysv_list, list) { 
+		ret = add_sysv_mapping (dest, tmp->record_id,tmp->replay_id, tmp->key, tmp->size,tmp->shmflg);
+		if (ret) return ret;
+	}	
+	return ret; 
+}
+
+
+
+int
+checkpoint_sysv_mappings (struct task_struct* tsk, struct file* cfile, loff_t* ppos){
+
+	int copyed, cnt = 0;
+	struct sysv_mapping *tmp;
+	struct replay_thread *prt = tsk->replay_thrd; 
+	if (!prt) { 
+		printk("Cannot checkpoint a non-replay process\n");
+		return -EINVAL;
+	}
+
+	list_for_each_entry (tmp, &prt->rp_sysv_list, list) {
+		cnt++; 
+	}
+	
+	printk ("%d checkpoint_sysv_mappings: %d entries in sysv_mapping\n", tsk->pid,cnt);
+	
+	copyed = vfs_write(cfile, (char *) &cnt, sizeof(cnt), ppos);
+	if (copyed != sizeof(cnt)) {
+		printk ("checkpoint_replay_cache_files: tried to write count, got rc %d\n", copyed);
+		return -EINVAL;
+	}
+
+	list_for_each_entry (tmp, &prt->rp_sysv_list, list) {
+		copyed = vfs_write(cfile, (char *) &tmp->record_id, sizeof(tmp->record_id), ppos);
+		if (copyed != sizeof(tmp->record_id)) {
+			printk ("checkpoint_sysv_mappings: tried to write recid, got rc %d\n", copyed);
+			return -EINVAL;
+		}		
+		copyed = vfs_write(cfile, (char *) &tmp->key, sizeof(tmp->key), ppos);
+		if (copyed != sizeof(cnt)) {
+			printk ("checkpoint_sysv_mappings: tried to write key, got rc %d\n", copyed);
+			return -EINVAL;
+		}
+		copyed = vfs_write(cfile, (char *) &tmp->size, sizeof(tmp->size), ppos);
+		if (copyed != sizeof(tmp->size)) {
+			printk ("checkpoint_sysv_mappings: tried to write size, got rc %d\n", copyed);
+			return -EINVAL;
+		}
+		copyed = vfs_write(cfile, (char *) &tmp->shmflg, sizeof(tmp->shmflg), ppos);
+		if (copyed != sizeof(cnt)) {
+			printk ("checkpoint_sysv_mappings: tried to write shmflg, got rc %d\n", copyed);
+			return -EINVAL;
+		}
+	}
+	return 0;
+}
+
+
+int
+restore_sysv_mappings (struct file* cfile, loff_t* ppos)
+{
+	int copyed, cnt, recid, repid, key, shmflg, i;
+	size_t size;
+	struct replay_thread *prt = current->replay_thrd; 	       
+
+	copyed = vfs_read(cfile, (char *) &cnt, sizeof(cnt), ppos);
+	if (copyed != sizeof(cnt)) {
+		printk ("restore_replay_cache_files: tried to read count, got rc %d\n", copyed);
+		return copyed;
+	}
+	for (i = 0; i < cnt; i++) {
+
+		copyed = vfs_read(cfile, (char *) &recid, sizeof(recid), ppos);
+		if (copyed != sizeof(recid)) {
+			printk ("restore_sysv_mappings: tried to read recid, got rc %d\n", copyed);
+			return copyed;
+		}
+		copyed = vfs_read(cfile, (char *) &key, sizeof(key), ppos);
+		if (copyed != sizeof(key)) {
+			printk ("restore_sysv_mappings: tried to read key, got rc %d\n", copyed);
+			return copyed;
+		}
+		copyed = vfs_read(cfile, (char *) &size, sizeof(size), ppos);
+		if (copyed != sizeof(size)) {
+			printk ("restore_sysv_mappings: tried to read key, got rc %d\n", copyed);
+			return copyed;
+		}
+		copyed = vfs_read(cfile, (char *) &shmflg, sizeof(shmflg), ppos);
+		if (copyed != sizeof(shmflg)) {
+			printk ("restore_sysv_mappings: tried to read key, got rc %d\n", copyed);
+			return copyed;
+		}
+		repid = sys_shmget(key, size, shmflg); 
+		if (add_sysv_mapping (prt, recid, repid, key, size, shmflg)) { 
+			printk ("Pid %d replay_ipc SHMGET, could not add replay identifier mapping, replay: %ld, record %ld\n",
+				current->pid, recid, repid);
+			return -EINVAL;
+		} 
+	}
+	return 0;
+}
+
+
 
 
 /* A pintool uses this for specifying the start of the thread specific data structure.  The function returns the pid on success */
@@ -3678,6 +3806,7 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 	}
 
 	if (ckpt_at > 0) prepg->rg_checkpoint_at = ckpt_at;
+	printk("ckpt_at is %d, rg_checkpoint_at is %d\n",ckpt_at, prepg->rg_checkpoint_at);
 
 	prept = new_replay_thread (prepg, prect, current->pid, 0, NULL, NULL);
 	if (prept == NULL) {
@@ -3778,7 +3907,13 @@ should_take_checkpoint (void)
 
 	long retval = 0;
 	if (!current->replay_thrd->rp_group->finished_ckpt && 
+	    current->replay_thrd->rp_group->rg_checkpoint_at > 0 && 
 	    atomic_read (current->replay_thrd->rp_group->rg_rec_group->rg_pkrecord_clock) >= current->replay_thrd->rp_group->rg_checkpoint_at) { 
+
+		printk("%d, taking checkpoint, record_clock %lu, rg_cpt_at %lu\n", current->pid, 
+		       atomic_read (current->replay_thrd->rp_group->rg_rec_group->rg_pkrecord_clock),
+		       current->replay_thrd->rp_group->rg_checkpoint_at);
+
 		retval = 1;
 		current->replay_thrd->rp_group->finished_ckpt = 1;
 }              
@@ -3806,6 +3941,180 @@ int is_pin_attaching(void)
 }
 EXPORT_SYMBOL(is_pin_attaching);
 
+
+#define MAX_CHILDREN 128
+
+struct ckpt_tsk { 
+	pid_t record_pid;
+	struct list_head thread_tasks;       
+	int is_thread; 
+	int ckpt_pos; //the offset within the ckpt of this proc
+
+	//a circular list doesn't work for this structure because of
+	//next level descendents (grandchildren)
+	int next_child;
+	struct ckpt_tsk* child_tasks[MAX_CHILDREN];
+};
+
+struct ckpt_tsk* __init_ckpt_task(struct btree_head32* p_btree, pid_t key) { 
+	struct ckpt_tsk* tsk = KMALLOC(sizeof(struct ckpt_tsk), GFP_KERNEL);
+
+	INIT_LIST_HEAD(&tsk->thread_tasks);
+	tsk->record_pid = -1;	       
+	tsk->next_child = 0;
+
+	if(btree_insert32(p_btree, (u32)key, tsk,GFP_KERNEL)) { 
+		BUG(); //should probably fail cleanly.. oh well
+	}
+	return tsk;
+}
+
+static void ckpt_tsk_add_child(struct ckpt_tsk *parent, struct ckpt_tsk *child) 
+{ 
+	parent->child_tasks[parent->next_child] = child;
+	parent->next_child++;		
+}
+
+
+static void print_ckpt_tsk(struct ckpt_tsk *ct, int parent_pid, int is_thread) { 
+	printk("%d ",parent_pid);
+	printk("%d ",ct->record_pid);
+	printk("%d ",is_thread);
+	if (current->replay_thrd->rp_record_thread->rp_record_pid == ct->record_pid) 
+		printk("1 ");
+	else
+		printk("0 ");
+	printk("%d\n", ct->ckpt_pos);
+}
+
+static int checkpoint_ckpt_tsk_header(struct ckpt_tsk *ct, int parent_pid, int is_thread, struct file *cfile, loff_t *ppos) { 
+
+	int copyed;
+	int is_main_thread = 0; 
+
+	printk("%d ",parent_pid);
+	copyed = vfs_write(cfile, (char *) &parent_pid, sizeof(parent_pid), ppos);
+	if (copyed != sizeof(parent_pid)) {
+		printk ("checkpoint_replay_cache_files: tried to write parent_pid, got rc %d\n", copyed);
+		return -EINVAL;
+	}
+
+	printk("%d ",ct->record_pid);
+	copyed = vfs_write(cfile, (char *) &ct->record_pid, sizeof(ct->record_pid), ppos);
+	if (copyed != sizeof(ct->record_pid)) {
+		printk ("checkpoint_replay_cache_files: tried to write record_pid, got rc %d\n", copyed);
+		return -EINVAL;
+	}
+
+	printk("%d ",is_thread);
+	copyed = vfs_write(cfile, (char *) &is_thread, sizeof(is_thread), ppos);
+	if (copyed != sizeof(is_thread)) {
+		printk ("checkpoint_replay_cache_files: tried to write is_thread, got rc %d\n", copyed);
+		return -EINVAL;
+	}
+
+	if (current->replay_thrd->rp_record_thread->rp_record_pid == ct->record_pid) 
+		is_main_thread = 1;
+
+	printk("%d ",is_main_thread);
+	copyed = vfs_write(cfile, (char *) &is_main_thread, sizeof(is_main_thread), ppos);	
+	if (copyed != sizeof(is_main_thread)) {
+		printk ("checkpoint_replay_cache_files: tried to write is_thread, got rc %d\n", copyed);
+		return -EINVAL;
+	}
+
+	printk("%d\n", ct->ckpt_pos);
+	copyed = vfs_write(cfile, (char *) &ct->ckpt_pos, sizeof(ct->ckpt_pos), ppos);	
+	if (copyed != sizeof(ct->ckpt_pos)) {
+		printk ("checkpoint_replay_cache_files: tried to write ckpt_pos, got rc %d\n", copyed);
+		return -EINVAL;
+	}	
+	return 0; 
+}
+static void dump_ckpt_tsks(struct ckpt_tsk *ct, int parent_pid, int is_thread) { 
+	
+	struct ckpt_tsk *tmp;
+	int i = 0;
+
+	print_ckpt_tsk(ct, parent_pid, is_thread);
+	list_for_each_entry(tmp, &ct->thread_tasks,thread_tasks) { 
+		printk("dumping another thread\n");
+		print_ckpt_tsk(tmp, ct->record_pid, 1);
+	}
+	for (i = 0; i < ct->next_child; ++i) { 
+		printk("another child\n");
+		dump_ckpt_tsks(ct->child_tasks[i],ct->record_pid, 0); //recursive call for all children
+	}
+}
+
+
+int
+checkpoint_ckpt_tsks_header(struct ckpt_tsk *ct, int parent_pid, int is_thread, 
+					struct file *cfile, loff_t *ppos) { 
+	
+	struct ckpt_tsk *tmp;
+	int i = 0, rv;
+
+	rv = checkpoint_ckpt_tsk_header(ct, parent_pid, is_thread, cfile, ppos);
+	if (rv) return rv; 
+
+	list_for_each_entry(tmp, &ct->thread_tasks,thread_tasks) { 
+		rv = checkpoint_ckpt_tsk_header(tmp, ct->record_pid, 1, cfile, ppos);
+		if (rv) return rv;
+	}
+
+	for (i = 0; i < ct->next_child; ++i) { 
+                //recursive call for all children
+		rv = checkpoint_ckpt_tsks_header(ct->child_tasks[i],ct->record_pid, 0, cfile, ppos); 
+		if (rv) return rv;
+	}
+	return 0; 
+}
+
+int 
+restore_ckpt_tsks_header(u_long num_procs, struct file *cfile, loff_t *ppos) 
+{
+	
+	int i, copyed, unused; 
+	printk("%d, mindebug %d debug %d\n",current->pid, replay_debug,  replay_min_debug);
+	printk("%d, starting restore_ckpt_tsks_hdr",current->pid);
+	for (i = 0; i < num_procs; ++i) { 
+		copyed = vfs_read(cfile, (char *) &unused, sizeof(unused), ppos);
+		if (copyed != sizeof(unused)) {
+			printk ("restore_replay_cache_files: tried to write parent_pid, got rc %d\n", copyed);
+			return -EINVAL;
+		}
+		MPRINT("%d ",unused);
+		copyed = vfs_read(cfile, (char *) &unused, sizeof(unused), ppos);
+		if (copyed != sizeof(unused)) {
+			printk ("restore_replay_cache_files: tried to write record_pid, got rc %d\n", copyed);
+			return -EINVAL;
+		}
+		MPRINT("%d ",unused);
+		copyed = vfs_read(cfile, (char *) &unused, sizeof(unused), ppos);
+		if (copyed != sizeof(unused)) {
+			printk ("restore_replay_cache_files: tried to write is_thread, got rc %d\n", copyed);
+			return -EINVAL;
+		}
+		MPRINT("%d ",unused);
+		copyed = vfs_read(cfile, (char *) &unused, sizeof(unused), ppos);
+		if (copyed != sizeof(unused)) {
+			printk ("restore_replay_cache_files: tried to write is_main_thread got rc %d\n", copyed);
+			return -EINVAL;
+		}
+		MPRINT("%d ",unused);
+		copyed = vfs_read(cfile, (char *) &unused, sizeof(unused), ppos);
+		if (copyed != sizeof(unused)) {
+			printk ("restore_replay_cache_files: tried to write ckpt_pos, got rc %d\n", copyed);
+			return -EINVAL;
+		}		
+		MPRINT("%d\n",unused);
+	}       
+	printk("%d, finished restore_ckpt_tsks_hdr",current->pid);
+	printk("%d, mindebug %d debug %d\n",current->pid, replay_debug,  replay_min_debug);
+	return 0; 		
+}
+
 long
 replay_full_ckpt (long rc)
 {
@@ -3816,15 +4125,19 @@ replay_full_ckpt (long rc)
 	long retval;
 	int clock;
 	u_long proc_count = 0;
-	ds_list_iter_t* iter, *iter2;
-	struct replay_thread* tmp, *tmp2;
-	struct task_struct* tsk, *tsk2;
+	ds_list_iter_t* iter;
+	struct replay_thread* tmp, *parent;
+	struct task_struct* tsk, *first_proc = NULL;
 	loff_t pos;
 
-	int use_threads = 0; 
-
+	int ckpt_pos = 1;
+	//a btree which indexes from replay_pid-> ckpt_task
+	struct btree_head32 proc_btree;
+	struct ckpt_tsk *curr_ckpt_tsk, *parent_ckpt_tsk;
+			       
+	btree_init32(&proc_btree);	
 	if (!prept) {
-		printk ("Currently, only a replaying process can take a checkpoint\n");
+		printk ("Only a replaying process can take a checkpoint\n");
 		return -EINVAL;
 	}
 	prepg = prept->rp_group;
@@ -3836,54 +4149,108 @@ replay_full_ckpt (long rc)
 		sprintf (ckpt, "%s/ckpt.%d", precg->rg_logdir, clock);
 	}
 	MPRINT ("replay_full_ckpt saving rc %ld\n", rc);
-	// Determine how many processes to checkpoint - could make this more efficient of course
+	printk("starting checkpoint at %d\n",clock);
+
+	// Determine how many processes to checkpoint
 	iter = ds_list_iter_create(current->replay_thrd->rp_group->rg_replay_threads);
 	while ((tmp = ds_list_iter_next(iter)) != NULL) {
-		MPRINT ("replay_full_checkpoint_to_disk: pid %d\n", tmp->rp_replay_pid);
 		tsk = pid_task (find_vpid(tmp->rp_replay_pid), PIDTYPE_PID);
-		DPRINT ("task struct is %p\n", tsk);
-		if (tsk) {
-			iter2 = ds_list_iter_create(current->replay_thrd->rp_group->rg_replay_threads);
-			while ((tmp2 = ds_list_iter_next(iter2)) != NULL && tmp != tmp2) {
-				tsk2 = pid_task (find_vpid(tmp2->rp_replay_pid), PIDTYPE_PID);
-				if (tsk2 && tsk2->mm == tsk->mm) {
-//					printk("doing multithread checkpoint\n");
-					use_threads = 1;
+		if (tsk && tsk->mm) { 
+			curr_ckpt_tsk = btree_lookup32(&proc_btree, tsk->pid); 
+			if (curr_ckpt_tsk == NULL) { 
+				curr_ckpt_tsk = __init_ckpt_task(&proc_btree, tsk->pid);
+			}
+			curr_ckpt_tsk->record_pid = tmp->rp_record_thread->rp_record_pid; 
+
+
+			if (tsk->pid != tsk->tgid) {
+				MPRINT("pid %d, is a thread ",tsk->pid);
+				curr_ckpt_tsk->is_thread = 1;
+				parent_ckpt_tsk = btree_lookup32(&proc_btree, tsk->tgid); 
+				if (parent_ckpt_tsk == NULL) { 
+					printk("there wasn't a parent_ckpt_task created yet!\n");
+					parent_ckpt_tsk = __init_ckpt_task(&proc_btree, tsk->tgid); 
+				}
+				MPRINT("adding %p to thread_tasks of %p\n", curr_ckpt_tsk,parent_ckpt_tsk);
+				list_add(&curr_ckpt_tsk->thread_tasks, &parent_ckpt_tsk->thread_tasks);
+			}
+			else {
+				MPRINT("pid %d is a process ", tsk->pid);
+				curr_ckpt_tsk->is_thread = 0;
+				if (tsk->real_parent->replay_thrd) { 
+
+					parent = tsk->real_parent->replay_thrd;
+					parent_ckpt_tsk = btree_lookup32(&proc_btree, parent->rp_replay_pid); 
+					if (parent_ckpt_tsk == NULL) { 
+						parent_ckpt_tsk = __init_ckpt_task(&proc_btree, 
+										    parent->rp_replay_pid); 
+					}
+					MPRINT("adding %p to child_tasks of %p\n", curr_ckpt_tsk,parent_ckpt_tsk);
+					ckpt_tsk_add_child(parent_ckpt_tsk, curr_ckpt_tsk);
+				}
+				else {
+					MPRINT("found the first task %p\n",tsk);     
+					first_proc = tsk; //the first proc's parent isn't a replay_thrd
 				}
 			}
-			ds_list_iter_destroy(iter2);
-			DPRINT ("mm is %p\n", tsk->mm);
+		   
 			proc_count++;
+		}
+		else { 
+			MPRINT("%d task already exited\n", tmp->rp_replay_pid);
 		}
 	}	
 	ds_list_iter_destroy(iter);
+
+
+	if (!first_proc){
+		printk("what happened to first proc?!\n");
+	}
+	curr_ckpt_tsk = btree_lookup32(&proc_btree, first_proc->pid);
+	dump_ckpt_tsks(curr_ckpt_tsk, -1, 0);
+	iter = ds_list_iter_create(current->replay_thrd->rp_group->rg_replay_threads);
+	//need to figure out the order that the procs will be checkpointed in: 
+	while ((tmp = ds_list_iter_next(iter)) != NULL) {	
+		tsk = pid_task (find_vpid(tmp->rp_replay_pid), PIDTYPE_PID);
+		if (tsk && tsk->mm && tsk != current) {
+			curr_ckpt_tsk = btree_lookup32(&proc_btree, tsk->pid);       
+			curr_ckpt_tsk->ckpt_pos = ckpt_pos++; 
+		}
+	}
+	ds_list_iter_destroy(iter);
 	
-	retval = replay_full_checkpoint_hdr_to_disk (ckpt, precg->rg_id, clock, proc_count, use_threads, &pos);
+	curr_ckpt_tsk = btree_lookup32(&proc_btree, first_proc->pid);
+	retval = replay_full_checkpoint_hdr_to_disk (ckpt, precg->rg_id, clock, proc_count, curr_ckpt_tsk, &pos);
 	if (retval) return retval;
 
 	// First write out data for this process
-	//this one is always a process
+	MPRINT("%d ckpt: ignore_flag_addr 0x%lx, user_log_addr 0x%lx, clear_child_tid 0x%lx\n", 
+	       current->pid,(u_long)current->replay_thrd->rp_record_thread->rp_ignore_flag_addr, 
+	       (u_long) current->replay_thrd->rp_record_thread->rp_user_log_addr, (u_long)current->clear_child_tid);
 
-
-	//adding prt->rp_replay_hook 
-	printk("%d ckpt: is_thread? %d ignore_flag_addr 0x%lx, user_log_addr 0x%lx, clear_child_tid 0x%lx\n", current->pid,use_threads,(u_long)current->replay_thrd->rp_record_thread->rp_ignore_flag_addr, (u_long) current->replay_thrd->rp_record_thread->rp_user_log_addr, (u_long)current->clear_child_tid);
-	retval = replay_full_checkpoint_proc_to_disk (ckpt, current, current->replay_thrd->rp_record_thread->rp_record_pid, 0,rc, 
+	curr_ckpt_tsk = btree_lookup32(&proc_btree, current->pid);       
+	retval = replay_full_checkpoint_proc_to_disk (ckpt, current, current->replay_thrd->rp_record_thread->rp_record_pid, curr_ckpt_tsk->is_thread,rc, 
 						      current->replay_thrd->rp_record_thread->rp_read_log_pos, current->replay_thrd->rp_out_ptr, 
 						      argsconsumed(current->replay_thrd->rp_record_thread), current->replay_thrd->rp_expected_clock, 0,
 						      (u_long) 	current->replay_thrd->rp_record_thread->rp_ignore_flag_addr, 
 						      (u_long) current->replay_thrd->rp_record_thread->rp_user_log_addr,
 						      (u_long) current->replay_thrd->rp_replay_hook,&pos);
+
+
 	if (retval) return retval;
 	// Then write out the processes
 	iter = ds_list_iter_create(current->replay_thrd->rp_group->rg_replay_threads);
+
 	while ((tmp = ds_list_iter_next(iter)) != NULL) {	
 		tsk = pid_task (find_vpid(tmp->rp_replay_pid), PIDTYPE_PID);
-		if (tsk && tsk != current) {
+		if (tsk && tsk->mm && tsk != current) {
 			struct replay_thread* prt = tsk->replay_thrd;
+			curr_ckpt_tsk = btree_lookup32(&proc_btree, tsk->pid);       
 			u_long block_clock = 0;
+
 			if(prt->rp_ckpt_pthread_block_clock){
 				block_clock = prt->rp_ckpt_pthread_block_clock;
-				retval = replay_full_checkpoint_proc_to_disk (ckpt, tsk, prt->rp_record_thread->rp_record_pid, use_threads, 0,
+				retval = replay_full_checkpoint_proc_to_disk (ckpt, tsk, prt->rp_record_thread->rp_record_pid, curr_ckpt_tsk->is_thread, 0,
 									      prt->rp_record_thread->rp_read_log_pos, prt->rp_out_ptr, 
 									      argsconsumed(prt->rp_record_thread), prt->rp_expected_clock, block_clock,
 									      (u_long) prt->rp_record_thread->rp_ignore_flag_addr,
@@ -3892,7 +4259,7 @@ replay_full_ckpt (long rc)
 									      &pos); 	       
 			}
 			else { 
-				retval = replay_full_checkpoint_proc_to_disk (ckpt, tsk, prt->rp_record_thread->rp_record_pid, use_threads, 0,
+				retval = replay_full_checkpoint_proc_to_disk (ckpt, tsk, prt->rp_record_thread->rp_record_pid, curr_ckpt_tsk->is_thread, 0,
 									      prt->rp_record_thread->rp_read_log_pos, prt->rp_out_ptr, 
 									      prt->rp_ckpt_save_args_head,prt->rp_ckpt_save_expected_clock,block_clock,
 									      (u_long) prt->rp_record_thread->rp_ignore_flag_addr,
@@ -3902,13 +4269,13 @@ replay_full_ckpt (long rc)
 
 
 			}
-
-
-
-			printk("%d ckpt: is_thread? %d block_clock %lu, ignore_flag_addr 0x%lx, user_log_addr 0x%lx, clear_child_tid 0x%lx\n", tsk->pid,use_threads, prt->rp_ckpt_pthread_block_clock, (u_long)prt->rp_record_thread->rp_ignore_flag_addr, (u_long) prt->rp_record_thread->rp_user_log_addr, (u_long)tsk->clear_child_tid);
 		}
-		if (retval) return retval;
+		if (retval) {
+			btree_destroy32(&proc_btree); //cleanup!
+			return retval;
+		}
 	}
+	btree_destroy32(&proc_btree); //cleanup!
 
 	ds_list_iter_destroy(iter);
 	return retval;
@@ -3921,10 +4288,12 @@ struct ckpt_waiter {
 	struct replay_group* prepg;                      // Replay group being restored
 	loff_t               pos;                        // Position in ckpt file to start reading from
 	pid_t                clock_pid;                  // Pid used for setting up the clock pid
-	int                  procs_left;                 // The number of processes that have yet to be attached to this ckpt_waiter
-        struct replay_cache_files* rp_cache_files;       // The process's rp_cache_files. 
+
+	int                  index; 
 	struct semaphore     sem;                        // On which procs wait during restore
 	struct semaphore     sem2;                       // On which procs wait during restore
+	
+	//todo: why do we need this again? 
 	struct semaphore     wproc_sem;                  // On which the main proc waits for everyone to enter the kernel
 	
 };
@@ -3938,8 +4307,6 @@ __init_ckpt_waiters (void) // Requires ckpt_lock be locked
 {
 	if (ckpt_waiters == NULL) {
 		ckpt_waiters = ds_list_create (NULL, 0, 1);
-
-		printk("ckpt_waiters is %p\n",ckpt_waiters);
 		if (ckpt_waiters == NULL) {
 			printk ("Cannot allocate ckpt wait list\n");
 			return -ENOMEM;
@@ -3951,28 +4318,29 @@ __init_ckpt_waiters (void) // Requires ckpt_lock be locked
 
 long
 replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char *linker, char* uniqueid, int fd, 
-			 int follow_splits, int save_mmap, loff_t attach_index, int attach_pid, u_long nfake_calls, u_long *fake_call_points)
+			 int follow_splits, int save_mmap, loff_t attach_index, int attach_pid, 
+			 u_long nfake_calls, u_long *fake_call_points)
 {
 	struct ckpt_waiter* pckpt_waiter = NULL;
 	struct record_group* precg; 
 	struct record_thread* prect;
 	struct replay_group* prepg;
 	struct replay_thread* prept;
+	struct task_struct *tsk;
 	long record_pid, rc;
 	char ckpt[MAX_LOGDIR_STRLEN+20];
 	__u64 rg_id;
 	long retval;
 	u_long consumed, num_procs;
 	loff_t pos;
-	int clock, i;
+	int clock, i, is_thread = 1;
 
-	MPRINT ("In replay_full_ckpt_wakeup\n");
 	if (current->record_thrd || current->replay_thrd) {
 		printk ("replay_full_ckpt_wakeup: pid %d cannot start a new replay while already recording or replaying\n", current->pid);
 		return -EINVAL;
 	}
 
-	printk("%d in replay_full_ckpt_wakeup\n",current->pid);
+	printk("%d in replay_full_ckpt_wakeup, debug %d\n",current->pid, replay_min_debug || replay_debug);
 	// First create a record group and thread for this replay
 	precg = new_record_group (logdir);
 	if (precg == NULL) return -ENOMEM;
@@ -3998,7 +4366,6 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char *
 	}
 
 
-
 	//I grab the lock just so that get_attach status doesn't freak out. 
 	rg_lock (precg);
 	
@@ -4012,12 +4379,7 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char *
 
 
 	// Restore the checkpoint
-	if(replay_ckpt_dir != 0) {
-		sprintf (ckpt, "%s/%d/%s", logdir, replay_ckpt_dir,filename);
-	}else {
-		sprintf (ckpt, "%s/%s",logdir, filename);
-	}
-
+	sprintf (ckpt, "%s/%s",logdir, filename);
 
 	// Create a replay group and thread for this process
 	current->replay_thrd = prept;
@@ -4025,11 +4387,12 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char *
 
 	rc = replay_full_resume_hdr_from_disk(ckpt, &rg_id, &clock, &num_procs, &pos);
 	if (rc < 0) return rc;
-	
+	printk("%d, mindebug %d debug %d\n",current->pid, replay_debug,  replay_min_debug);
 	MPRINT ("Pid %d set_record_group_id to %llu\n", current->pid, rg_id);
 	current->replay_thrd->rp_record_thread->rp_group->rg_id = rg_id;
 	atomic_set(precg->rg_pkrecord_clock, clock);
 	rg_unlock (precg); //I'm worried that the other threads might need to grab the lock later	
+	printk("%d, mindebug %d debug %d\n",current->pid, replay_debug,  replay_min_debug);
 
 	MPRINT ("Number of checkpoint processes %lu\n", num_procs);
 	if (num_procs > 1) {
@@ -4045,17 +4408,12 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char *
 		strncpy (pckpt_waiter->uniqueid, uniqueid, MAX_LOGDIR_STRLEN+1024);
 		pckpt_waiter->prepg = prepg;
 		pckpt_waiter->clock_pid = current->pid;
-		pckpt_waiter->procs_left = num_procs - 1; //we start with a full house... except for ourself!
 		ds_list_insert (ckpt_waiters, pckpt_waiter);
 		num_ckpts++;
 		wake_up_interruptible (&ckpt_waitq);
 		sema_init(&pckpt_waiter->sem, 0);
 		sema_init(&pckpt_waiter->sem2, 0);
 		sema_init(&pckpt_waiter->wproc_sem, 0);
-
-
-
-		printk("%d made ckpt_waiter %p, unique id %s\n",current->pid, pckpt_waiter, pckpt_waiter->uniqueid);
 		mutex_unlock(&ckpt_mutex);
 	}
 	
@@ -4066,14 +4424,19 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char *
 		}
 	}
 
-	//this first one is never a thread! 
-	record_pid = replay_full_resume_proc_from_disk(ckpt, current->pid, 0,&retval, &prect->rp_read_log_pos, &prept->rp_out_ptr, &consumed, &prept->rp_expected_clock, &prept->rp_ckpt_pthread_block_clock, (u_long*)&prect->rp_ignore_flag_addr, (u_long*)&prect->rp_user_log_addr,(u_long *)&current->clear_child_tid, (u_long *)&prept->rp_replay_hook,&pos);
+	if (current->tgid == current->pid) { 
+		is_thread = 0;
+		MPRINT("%d is a process!\n",current->pid);
+	}
+	else {
+		MPRINT("%d is a thread!\n",current->pid);
+	}	
+
+	record_pid = replay_full_resume_proc_from_disk(ckpt, current->pid, is_thread,&retval, &prect->rp_read_log_pos, &prept->rp_out_ptr, &consumed, &prept->rp_expected_clock, &prept->rp_ckpt_pthread_block_clock, (u_long*)&prect->rp_ignore_flag_addr, (u_long*)&prect->rp_user_log_addr,(u_long *)&current->clear_child_tid, (u_long *)&prept->rp_replay_hook,&pos);
+
 	MPRINT ("Pid %d gets record_pid %ld exp clock %ld\n", current->pid, record_pid, prept->rp_expected_clock);
 
 
-
-	pckpt_waiter->rp_cache_files = prept->rp_cache_files;       // The process's rp_cache_files. 
-	printk("%d(%ld) assigning pckpt_waiter's cache_files to %p\n",current->pid, record_pid, pckpt_waiter->rp_cache_files);
 	if (record_pid < 0) {
 		if (num_procs > 1) pckpt_waiter->prepg = NULL;
 		return record_pid;
@@ -4095,19 +4458,34 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char *
 	}
 
 	if (num_procs > 1) {
-
 		DPRINT ("Pid %d: waking %lu checkpoint processes\n", current->pid, num_procs-1);
 		pckpt_waiter->pos = pos;
-		for (i = 0; i < num_procs-1; i++) {
-			up (&pckpt_waiter->sem);
-		}
-		DPRINT ("Pid %d: waiting for %lu wakeups\n", current->pid, num_procs-1);
+		pckpt_waiter->index = 1;
+
+		//wakeup only on thread, because only one can read ckpt file at a time anyway!
+		up (&pckpt_waiter->sem);
+
+		MPRINT ("Pid %d: waiting for %lu wakeups on sem %p\n", 
+			current->pid, num_procs-1, &pckpt_waiter->sem2);
 		for (i = 0; i < num_procs-1; i++) {
 			down (&pckpt_waiter->sem2);
 		}
-		DPRINT ("Pid %d: got wakeups\n", current->pid);
+		MPRINT("Pid %d: got wakeups\n", current->pid);
 	}
-		
+
+	//we need to get the cache files from whoever set them up
+	if (is_thread) { 
+		put_replay_cache_files(current->replay_thrd->rp_cache_files);
+		tsk = pid_task(find_vpid(current->tgid), PIDTYPE_PID);
+		if (!tsk->replay_thrd) { 
+			printk("%d what? the tgid has to have a replay_thrd!\n", current->pid);
+		}
+		get_replay_cache_files(tsk->replay_thrd->rp_cache_files);
+		prept->rp_cache_files = tsk->replay_thrd->rp_cache_files;
+		arch_restore_sysenter_return(current->mm->context.vdso);
+
+	}
+
 	/*
 	 * If pin, set the process to sleep, so that we can manually attach pin
 	 * We would then have to wake up the process after pin has been attached.
@@ -4177,25 +4555,26 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char *
 EXPORT_SYMBOL(replay_full_ckpt_wakeup);
 
 long
-replay_full_ckpt_proc_wakeup (char* logdir, char* filename, char *uniqueid, int fd, int is_thread)
+replay_full_ckpt_proc_wakeup (char* logdir, char* filename, char *uniqueid, int fd, int ckpt_pos)
 {
 	struct ckpt_waiter* pckpt_waiter;
 	struct record_thread* prect;
 	struct replay_thread* prept, *tmp;
+	struct task_struct *tsk;
+
 	long retval, rc, record_pid;
 	ds_list_iter_t* iter;
 	char ckpt[MAX_LOGDIR_STRLEN+20];
-	int found;
+	int found, is_thread = 1;
 	u_long cur_ckpts, consumed;
 	u_char ch, ch2;
 
-	strcpy (ckpt, logdir);
-	strcat (ckpt, "/");
-	strcat (ckpt, filename);
+	// Restore the checkpoint
+	sprintf (ckpt, "%s/%s",logdir, filename);
+	if (current->tgid == current->pid) { 
+		is_thread = 0;
+	}
 
-
-	printk("%d new ckpt_proc, ckpt %s, uniqueid %s\n",current->pid, ckpt, uniqueid);
-//	printk("%d sysenter_return %p\n", current->pid, current_thread_info()->sysenter_return);
 	// First the checkpoint struct needs to have been created
 	mutex_lock(&ckpt_mutex); 
 	__init_ckpt_waiters();
@@ -4205,9 +4584,7 @@ replay_full_ckpt_proc_wakeup (char* logdir, char* filename, char *uniqueid, int 
 		found = 0;
 		while ((pckpt_waiter = ds_list_iter_next(iter)) != NULL) {	
 			if (!strcmp(pckpt_waiter->ckpt, ckpt) &&
-			    !strcmp(pckpt_waiter->uniqueid, uniqueid)  &&
-			    pckpt_waiter->procs_left > 0) {
-				pckpt_waiter->procs_left--; //claim our spot!
+			    !strcmp(pckpt_waiter->uniqueid, uniqueid)) {
 				found = 1;
 				break;
 			}
@@ -4221,14 +4598,29 @@ replay_full_ckpt_proc_wakeup (char* logdir, char* filename, char *uniqueid, int 
 			mutex_lock(&ckpt_mutex); 
 		}
 	} while (!found);
-	printk("%d: we found waiter %p, also, we're a thread? %d\n",current->pid,pckpt_waiter, is_thread);
-	mutex_unlock(&ckpt_mutex);
+	MPRINT("%d: we found waiter %p, also, we're a thread? %d\n",current->pid,pckpt_waiter, is_thread);
+	//not sure why this was necessary? 
 	up(&pckpt_waiter->wproc_sem); //tell the main thread that we're ready
 
-	
-	// Wait for our turn to read the checkpoint file
+	mutex_unlock(&ckpt_mutex);
 	down (&pckpt_waiter->sem);
+	mutex_lock(&ckpt_mutex);
 
+	// Wait for our turn to read the checkpoint file
+	while(pckpt_waiter->index != ckpt_pos){
+		//this is crapy. Should have better system for 'wake-up-one' proc waitq maybe?
+		//we're relying on the scheduler to not consistently just wake this same thread up... 
+		//hope thats true. 
+		up (&pckpt_waiter->sem); //is this right? need to figure this out...? 
+
+		mutex_unlock(&ckpt_mutex);
+		down (&pckpt_waiter->sem);
+		mutex_lock(&ckpt_mutex);
+	}
+	
+	
+	mutex_unlock(&ckpt_mutex);
+	
 	if (pckpt_waiter->prepg == NULL) return -EINVAL;
 
 	// Create record and replay thread structs for this process
@@ -4249,12 +4641,11 @@ replay_full_ckpt_proc_wakeup (char* logdir, char* filename, char *uniqueid, int 
 	atomic_dec(&prect->rp_refcnt);
 
 	// Fix up the circular thread list
-	rg_lock (pckpt_waiter->prepg->rg_rec_group); //I'm worried that the other threads might need to grab the lock later
-
+	rg_lock (pckpt_waiter->prepg->rg_rec_group); 
 	tmp = ds_list_first(pckpt_waiter->prepg->rg_replay_threads);
 	prept->rp_next_thread = tmp->rp_next_thread;
 	tmp->rp_next_thread = prept;
-	rg_unlock (pckpt_waiter->prepg->rg_rec_group); //I'm worried that the other threads might need to grab the lock later
+	rg_unlock (pckpt_waiter->prepg->rg_rec_group); 
 
 	mutex_lock(&ckpt_mutex); 
 	record_pid = replay_full_resume_proc_from_disk (pckpt_waiter->ckpt, pckpt_waiter->clock_pid, is_thread,&retval, &prect->rp_read_log_pos, 
@@ -4266,12 +4657,16 @@ replay_full_ckpt_proc_wakeup (char* logdir, char* filename, char *uniqueid, int 
 							(u_long *)&prept->rp_replay_hook,
 							&pckpt_waiter->pos);
 	DPRINT ("Pid %d gets record_pid %ld consumed %ld exp clock %lu retval %ld\n", current->pid, record_pid, consumed, prept->rp_expected_clock, retval);
+
+
+	//increment the ckpt_mutex->index and tell the next thread that it can run
+	pckpt_waiter->index++;
+	up(&pckpt_waiter->sem);
+	
 	mutex_unlock(&ckpt_mutex);
 	if (record_pid < 0) return record_pid;
 
 	// Read in the log records 
-
-	printk("%d is waiting at a pthread block clock? %lu\n",current->pid, prept->rp_ckpt_pthread_block_clock);
 
 	prect->rp_record_pid = record_pid;
 	rc = skip_and_read_log_data (prect);
@@ -4291,28 +4686,31 @@ replay_full_ckpt_proc_wakeup (char* logdir, char* filename, char *uniqueid, int 
 	prept->rp_ckpt_restart_sem = &pckpt_waiter->sem2; 
 	if (!prept->rp_ckpt_pthread_block_clock){
 		prept->rp_out_ptr--;
-		printk("%d rolling back the out_ptr, we weren't waiting in pthread_block",current->pid);
+		MPRINT("%d rolling back the out_ptr, we weren't waiting in pthread_block",current->pid);
 	}
 
 	if (consumed > 0) argsconsume(prect, consumed);
 
 	MPRINT("pid %d consumed is %lu, argsconsumed %lu\n", current->pid, consumed, argsconsumed(prect));
 
-	//don't close this if we're a thread, you share it with everyone! 
-	if (!is_thread && fd >= 0) {
-		rc = sys_close (fd);
-		if (rc < 0) printk ("replay_full_ckpt_wakeup: unable to close fd %d, rc=%ld\n", fd, rc);
+	//changes b/c of advanced ckpting
+	if (is_thread) { 
+		//we need to share cache_files with our leader! 
+		put_replay_cache_files(current->replay_thrd->rp_cache_files);
+		tsk = pid_task(find_vpid(current->tgid), PIDTYPE_PID);
+		if (!tsk->replay_thrd) { 
+			printk("%d what? the tgid has to have a replay_thrd!\n", current->pid);
+		}
+		get_replay_cache_files(tsk->replay_thrd->rp_cache_files);
+		prept->rp_cache_files = tsk->replay_thrd->rp_cache_files;
+
+
+		MPRINT("%d(%ld) taking %d's cache_files %p\n",current->pid, record_pid, current->tgid, prept->rp_cache_files);
 	}
 
-	else if (is_thread) { 
-		//we need to share cache_files: 
-		prept->rp_cache_files = pckpt_waiter->rp_cache_files; 
-		printk("%d(%ld) taking pckpt_waiter's cache_files %p\n",current->pid, record_pid, prept->rp_cache_files);
-	}
+	MPRINT ("Pid %d replay_full_ckpt_proc_wakeup restarting syscall %d w/ expected clock %lu\n", 
+		current->pid, prect->rp_log[prept->rp_out_ptr].sysnum, prect->rp_expected_clock);
 
-
-	MPRINT ("Pid %d replay_full_ckpt_proc_wakeup restarting syscall %d w/ expected clock %lu\n", current->pid, prect->rp_log[prept->rp_out_ptr].sysnum, prect->rp_expected_clock);
-	MPRINT ("and we have ignore_addr 0x%lx, user_addr 0x%lx, clear_child_tid 0x%lx\n", (u_long)prect->rp_ignore_flag_addr,  (u_long) prect->rp_user_log_addr, (u_long)current->clear_child_tid);
 	if(prept->rp_ckpt_pthread_block_clock){
 		return 32; //this is sys_pthread_block's sysnumber
 	}
@@ -6484,7 +6882,7 @@ sys_pthread_block (u_long clock)
 	prg = prt->rp_group;
 	
 	if (prt->rp_status == REPLAY_STATUS_RESTART_CKPT && prt->rp_ckpt_pthread_block_clock) { 
-		printk("hmm... this guy is a restart huh? %d wants to wait until %lu\n",current->pid, prt->rp_ckpt_pthread_block_clock);
+		MPRINT("hmm... this guy is a restart huh? %d wants to wait until %lu\n",current->pid, prt->rp_ckpt_pthread_block_clock);
 		clock = prt->rp_ckpt_pthread_block_clock; 
 	}
 	else { 
@@ -9318,7 +9716,8 @@ replay_brk (unsigned long brk)
 	u_long old_brk;
 	u_long retval;
 	u_long rc;
-       
+	struct mm_struct *mm = current->mm;
+	             
 	prt = current->replay_thrd;
 	if (is_pin_attached()) {
 		rc = prt->rp_saved_rc;
@@ -9327,10 +9726,9 @@ replay_brk (unsigned long brk)
 		rc = get_next_syscall (45, NULL);
 		if (rc == -EINTR && current->replay_thrd->rp_pin_attaching) return rc;
 	}
-
 	//this will be true when pin is attached
 	if (is_preallocated()) {
-		struct mm_struct *mm = current->mm;
+		mm = current->mm;
 		down_write(&mm->mmap_sem);
 		// since we actually do the brk we can just grab the old one
 		old_brk = PAGE_ALIGN(mm->brk);
@@ -11081,8 +11479,8 @@ replay_ipc (uint call, int first, u_long second, u_long third, void __user *ptr,
 				reserve_memory(atretparams->raddr, atretparams->size);
 			}
 
-			// do_shmat checks to see if there are any existing mmaps in the region to be shmat'ed. So we'll have to munmap our preallocations for this region
-			// before proceding.
+			// do_shmat checks to see if there are any existing mmaps in the region to be shmat'ed. 
+			// So we'll have to munmap our preallocations for this region before proceding.
 			if (is_preallocated()) {
 				struct sysv_shm* tmp;
 				tmp = KMALLOC(sizeof(struct sysv_shm), GFP_KERNEL);
@@ -11090,6 +11488,9 @@ replay_ipc (uint call, int first, u_long second, u_long third, void __user *ptr,
 					printk ("Pid %d: could not alllocate for sysv_shm\n", current->pid);
 					return -ENOMEM;
 				}
+
+
+				//need to include shmid, shmaddr, shmflg which are first, tmp->addr and second respectively
 				tmp->addr = atretparams->raddr;
 				tmp->len = atretparams->size;
 				list_add(&tmp->list, &current->replay_thrd->rp_sysv_shms);
@@ -11099,9 +11500,12 @@ replay_ipc (uint call, int first, u_long second, u_long third, void __user *ptr,
 				if (retval) printk ("[WARN]Pid %d shmat failed to munmap the preallocation at addr %lx size %lu\n", current->pid, rc, atretparams->size);
 			}
 
-			// redo the mapping with at the same address returned during recording
+			// redo the mapping with the same address returned during recording
 			repid = find_sysv_mapping (current->replay_thrd, first);
 			retval = sys_ipc (call, repid, rc, third, (void __user *) atretparams->raddr, fifth);
+			printk("shmat called with id %d (recid %d), shmaddr 0x%x, shmflg %d\n", 
+			       repid, first, (void __user *)atretparams->raddr, second);
+
 			if (retval != rc) {
 				printk ("replay_ipc(shmat) returns different value %ld than %ld\n", retval, rc);
 				return syscall_mismatch();
@@ -11145,20 +11549,26 @@ replay_ipc (uint call, int first, u_long second, u_long third, void __user *ptr,
 			MPRINT("Pid %d Remove shm at addr %lx, len %lx\n", current->pid, (u_long) ptr, size);
 			preallocate_after_munmap((u_long) ptr, size);
 		}
-
+		printk("pid %d replays SHMDT success\n",current->pid);		
 		return rc;
+
 	case SHMGET: 
-		retval = sys_ipc (call, first, second, third, ptr, fifth);
+		printk("Calling sys_ipc with first %d second %d third %d\n",first, second, third);
+		retval = sys_ipc (call, first, second, third, ptr, fifth);		
 		if ((rc < 0 && retval >= 0) || (rc >= 0 && retval < 0)) {
-			printk ("Pid %d replay_ipc SHMGET, on record we got %ld, but replay we got %ld\n", current->pid, rc, retval);
+			printk ("Pid %d replay_ipc SHMGET, on record we got %ld, but replay we got %ld\n", 
+				current->pid, rc, retval);
 			return syscall_mismatch();
 		}
 		
 		// put a mapping from the re-run replay identifier (pseudo), to the record one
-		if (add_sysv_mapping (current->replay_thrd, rc, retval)) {
-			printk ("Pid %d replay_ipc SHMGET, could not add replay identifier mapping, replay: %ld, record %ld\n", current->pid, retval, rc);
+		// need to save off key (first) size (second) and shmflag (third) for checkpoint. 
+		if (add_sysv_mapping (current->replay_thrd, rc, retval, first, second, third)) {
+			printk ("Pid %d replay_ipc SHMGET, could not add replay identifier mapping, replay: %ld, record %ld\n",
+				current->pid, retval, rc);
 			return syscall_mismatch();
 		}
+		printk("pid %d replays SHMGET success\n", current->pid);
 		return rc;
 	case SHMCTL: 
 		cmd = second;
@@ -11420,6 +11830,15 @@ replay_clone(unsigned long clone_flags, unsigned long stack_start, struct pt_reg
 			copy_replay_cache_files (current->replay_thrd->rp_mmap_files, tsk->replay_thrd->rp_mmap_files);
 		}
 		BUG_ON (!tsk->replay_thrd);
+
+		//the sysv_mappings from the parent have to be given to the child as they share address spaces. 
+		//this occurs no matter what! 
+
+		copy_sysv_mappings(current->replay_thrd, tsk->replay_thrd);
+
+		
+
+
 
 		// inherit the parent's app_syscall_addr
 		tsk->replay_thrd->app_syscall_addr = current->replay_thrd->app_syscall_addr;
@@ -13240,7 +13659,7 @@ replay_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, un
 	struct replay_thread* prt = current->replay_thrd;
 	struct syscall_result* psr;
 
-	DPRINT ("%d: mmap(%lx, %lx, %lu, %lu, %lu, %lu)\n", current->pid, addr, len, prot, flags, fd, pgoff);
+	MPRINT ("%d: mmap(%lx, %lx, %lu, %lu, %lu, %lu)\n", current->pid, addr, len, prot, flags, fd, pgoff);
 	if (is_pin_attached()) {
 		DPRINT ("replay_mmap_pgoff - is_pin_attached() - pin is attached\n");
 		rc = prt->rp_saved_rc;
@@ -13267,7 +13686,6 @@ replay_mmap_pgoff (unsigned long addr, unsigned long len, unsigned long prot, un
 			return prt->rp_saved_rc; // Since pin won't redo system call, use real return code now
 		}
 	}
-
 	if (recbuf) {
 		rg_lock(prt->rp_record_thread->rp_group);
 		if (is_replay_cache_file (prt->rp_mmap_files, fd, &cache_fd)) {
