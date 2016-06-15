@@ -85,7 +85,6 @@ void *start_thread(void *td) {
     int rc;
     struct ckpt_data *cd = (struct ckpt_data *) td;
     
-    fprintf(stderr,"starting thread\n");
     rc = resume_proc_after_ckpt (cd->fd, cd->logdir, cd->filename, cd->uniqueid, cd->ckpt_pos);
     if (rc < 0) {
 	perror ("resume proc after ckpt");
@@ -98,8 +97,6 @@ void *start_main_thread(void *td) {
     int rc;
     struct ckpt_data *cd = (struct ckpt_data *) td;
     
-    fprintf(stderr,"starting thread, cd->fd %d\n", cd->fd);
-
     rc = resume_after_ckpt (cd->fd, cd->attach_pin, cd->attach_gdb, cd->follow_splits, 
 			    cd->save_mmap, cd->logdir, cd->libdir, cd->filename, cd->uniqueid,
 			    cd->attach_index, cd->attach_pid, cd->nfake_calls, cd->fake_calls);
@@ -123,17 +120,13 @@ int parse_process_map(int pcount, int fd) {
 	    perror("couldn't read curr_pdata");
 	    return copyed; 
 	}
-	fprintf(stderr,"%d %d %d %d %d\n",curr_pdata.ppid, curr_pdata.rpid, 
-		curr_pdata.is_thread, curr_pdata.main_thread, curr_pdata.ckpt_pos);
 	
 	current = get_ckpt_proc(curr_pdata.rpid); 
 	current->main_thread = curr_pdata.main_thread;
 	current->ckpt_pos = curr_pdata.ckpt_pos;
 
 	if (curr_pdata.ppid == -1) { 
-	    fprintf(stderr, "found the first pid!\n");
-	    first_proc = curr_pdata.rpid;
-	    
+	    first_proc = curr_pdata.rpid;	    
 	}
 	else { 
 	    parent = get_ckpt_proc(curr_pdata.ppid);
@@ -155,7 +148,6 @@ int restart_all_procs(Ckpt_Proc *current, struct ckpt_data *cd, pthread_t *threa
 
     for (auto t : current->threads) { 
 	if (t->main_thread) { 
-	    fprintf(stderr, "thread_fork of %d main thread!\n",t->pid); 
 	    rc = pthread_create(&thread[i++], NULL, start_main_thread,(void *)cd);
 	    
 	    if (rc) { 
@@ -168,8 +160,6 @@ int restart_all_procs(Ckpt_Proc *current, struct ckpt_data *cd, pthread_t *threa
 	    thread_cd = (struct ckpt_data *) malloc(sizeof(struct ckpt_data)); 
 	    memcpy(thread_cd, cd, sizeof(struct ckpt_data));
 	    thread_cd->ckpt_pos = t->ckpt_pos;
-
-	    fprintf(stderr, "thread_fork of %d, not main thread, pos is %d\n",t->pid, t->ckpt_pos);
 	    rc = pthread_create(&thread[i++], NULL, start_thread,(void *)thread_cd);
 	    if (rc) { 
 		printf("hmm... what rc is %d\n",rc);
@@ -179,13 +169,11 @@ int restart_all_procs(Ckpt_Proc *current, struct ckpt_data *cd, pthread_t *threa
 	}
     }
     for (auto c : current->children) {
-	fprintf(stderr, "forking a child\n");
 	if (!fork()) { 
 	    return restart_all_procs(c, cd, thread, i);
 	}
     }
     if (current->main_thread){ 
-	fprintf(stderr, "%d is main thread\n",current->pid);
 	rc = resume_after_ckpt (cd->fd, cd->attach_pin, cd->attach_gdb, cd->follow_splits, 
 				cd->save_mmap, cd->logdir, cd->libdir, cd->filename, cd->uniqueid,
 				cd->attach_index, cd->attach_pid, cd->nfake_calls, cd->fake_calls);
@@ -196,14 +184,11 @@ int restart_all_procs(Ckpt_Proc *current, struct ckpt_data *cd, pthread_t *threa
 
     }
     else { 
-	fprintf(stderr, "%d is not main thread, pos is %d\n", current->pid, current->ckpt_pos);
 	rc = resume_proc_after_ckpt (cd->fd, cd->logdir, cd->filename, cd->uniqueid, current->ckpt_pos);
 	if (rc) { 
 	    printf("hmm... what rc is %d\n",rc);
 	    exit(-1);		
-	}
-
-	
+	}	
     }
     return 0;
 }
