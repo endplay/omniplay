@@ -1,13 +1,25 @@
 #!/bin/bash
 
+if [[ $(whoami) != "root" ]]; then
+    echo "Must be run as root!"
+    exit 1
+fi
+
+#stuff to setup OMNIPLAY_DIR
+user=$(who am i | awk '{print $1}')
+setupfile=$(sudo -H -u $user echo $HOME/.omniplay_setup) 
+
+source $setupfile
+
+./whoami.sh
+sudo -H -u $user ./whoami.sh
+
+
 function do_make() {
 	local rc;
-	make -j$build_parallel 2>&1 | tee errlog
+	sudo -H -u $user KCONFIG_CONFIG=.config make -j$build_parallel 2>&1 | tee errlog
 	return ${PIPESTATUS[0]}
 }
-
-sudo /usr/bin/lspci | grep VMware &> /dev/null
-is_vm=$?
 
 ret=0
 
@@ -18,13 +30,17 @@ do_make
 rc=$?
 
 if [ $rc -eq 0 ]; then
-	sudo make install
+    make install
 
 	if [[ ! -z $OMNIPLAY_DIR ]]; then
-		sudo make headers_install INSTALL_HDR_PATH=$OMNIPLAY_DIR/test/replay_headers
+	        make headers_install INSTALL_HDR_PATH=$OMNIPLAY_DIR/test/replay_headers
 		echo "Building files depending on kernel headers"
 		pushd $OMNIPLAY_DIR/test &> /dev/null
-		make
+		sudo -H -u $user make
+		pushd dev &> /dev/null
+		sudo -H -u $user make 
+		make install
+		popd &> /dev/null
 		popd &> /dev/null
 	else
 		echo "WARNING: OMNIPLAY_DIR environment variable not set (run scripts/setup.sh)"

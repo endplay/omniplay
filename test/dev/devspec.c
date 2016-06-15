@@ -10,6 +10,9 @@
 #include <linux/sched.h>
 #include <linux/slab.h>
 
+#include <linux/device.h>
+#include <linux/cdev.h> 
+
 #include <linux/replay.h>
 
 #include <linux/ds_list.h>
@@ -228,7 +231,7 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 			return -EINVAL;
 		}
 
-		rc = replay_full_ckpt_proc_wakeup(logdir, filename, uniqueid,wcdata.fd,wcdata.is_thread);
+		rc = replay_full_ckpt_proc_wakeup(logdir, filename, uniqueid,wcdata.fd,wcdata.ckpt_pos);
 
 		if (tmp) putname (tmp);
 		return rc;
@@ -406,24 +409,94 @@ static struct file_operations spec_psdev_fops = {
 
 #ifdef MODULE
 
+static struct class *dev_class = NULL;
+static struct device *spec_device = NULL;
+dev_t spec_dev;
+struct cdev spec_cdev;
+
+
+static char *spec_devnode(struct device *dev, umode_t *mode) 
+{ 
+
+    if(!mode) 
+	return NULL;
+    if (dev->devt == spec_dev) 
+	*mode = 0666;
+    return NULL;
+}
+
 int init_module(void)
 {
-	printk(KERN_INFO "User-level speculation module version 1.0\n");
+    int err;
 
-	if(register_chrdev(SPEC_PSDEV_MAJOR, "spec_psdev", 
-			   &spec_psdev_fops)) {
-		printk(KERN_ERR "spec_psdev: unable to get major %d\n", 
-		SPEC_PSDEV_MAJOR);
-		return -EIO;
-	}
-	
-	return 0;
+    printk(KERN_INFO "User-level speculation module version 1.0\n");
+
+    err = alloc_chrdev_region(&spec_dev, 0, 1, SPEC_NAME);
+    if (err < 0) {
+	printk("Couldn't alloc devnumber for devspec\n");
+	goto fail;
+    }
+
+    spec_dev = MKDEV(MAJOR(spec_dev), 0);
+
+    dev_class = class_create(THIS_MODULE, SPEC_NAME);
+    if (IS_ERR(dev_class)) {
+	err = PTR_ERR(dev_class);
+	dev_class = NULL;
+	goto fail;
+    }
+
+    dev_class->devnode = spec_devnode;
+
+    cdev_init(&spec_cdev, &spec_psdev_fops);
+    spec_cdev.owner = THIS_MODULE;
+
+    err = cdev_add(&spec_cdev, spec_dev, 1);
+    if (err) {
+	printk("Error while trying to add cdev\n");
+	goto fail;
+    }
+
+    spec_device = device_create(dev_class, NULL, spec_dev, NULL, SPEC_NAME);
+    if (IS_ERR(spec_device)) {
+	err = PTR_ERR(spec_device);
+	spec_device = NULL;
+	goto fail;
+    }
+    /*
+      if(register_chrdev(spec_dev, "spec_psdev", &spec_psdev_fops)) {
+      printk(KERN_ERR "spec_psdev: unable to get major %d\n", spec_dev);
+      err = -EIO;
+      goto fail;
+      }
+    */
+
+    return 0;
+
+fail:
+    if (spec_device) {
+	device_destroy(dev_class, spec_dev);
+    }
+    if (dev_class) {
+	class_destroy(dev_class);
+    }
+    return err;
 }
 
 void cleanup_module(void)
 {
-	unregister_chrdev(SPEC_PSDEV_MAJOR,"spec_psdev");
-	printk(KERN_INFO "User-Level speculation module 1.0 exiting.\n");
+
+    if (spec_device) {
+	device_destroy(dev_class, spec_dev);
+    }
+
+    if (dev_class) {
+	class_destroy(dev_class);
+    }
+
+    unregister_chrdev(spec_dev ,"spec_psdev");
+    printk (KERN_INFO "User-Level speculation module 1.0 exiting.\n");
 }
+
 
 #endif

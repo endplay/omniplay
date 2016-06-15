@@ -17,6 +17,9 @@
 #include <linux/signal.h>
 #include <linux/mm_types.h>
 
+//defined in replay.c
+struct ckpt_tsk; 
+
 /* Starts replay with a (possibly) multithreaded fork */
 int fork_replay (char __user * logdir, const char __user *const __user *args,
 		const char __user *const __user *env, char* linker, int save_mmap, int fd,
@@ -111,13 +114,20 @@ long replay_resume_from_disk (char* filename, char** execname, char*** argsp, ch
 long replay_full_resume_hdr_from_disk (char* filename, __u64* prg_id, int* pclock, u_long* pproc_count, loff_t* ppos);
 long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_thread, long* pretval, loff_t* plogpos, u_long* poutptr, u_long* pconsumed, u_long* pexpclock, u_long* pthreadclock, u_long *ignore_flag, u_long *user_log_addr, u_long *child_tid,u_long *replay_hook, loff_t* ppos);
 
-long replay_full_checkpoint_hdr_to_disk (char* filename, __u64 rg_id, int clock, u_long proc_count, int use_threads, loff_t* ppos);
+long replay_full_checkpoint_hdr_to_disk (char* filename, __u64 rg_id, int clock, u_long proc_count, struct ckpt_tsk *ct, loff_t* ppos);
 long replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pid_t record_pid, int is_thread, long retval, loff_t logpos, u_long outptr, u_long consumed, u_long expclock, u_long pthread_block_clock, u_long ignore_flag, u_long user_log_addr,u_long replay_hook, loff_t* ppos);
 
 
 /* Helper functions for checkpoint/resotre */
 int checkpoint_replay_cache_files (struct task_struct* tsk, struct file* cfile, loff_t* ppos);
 int restore_replay_cache_files (struct file* cfile, loff_t* ppos);
+
+int find_sysv_mapping_by_key (int key);
+int checkpoint_ckpt_tsks_header(struct ckpt_tsk *ct, int parent_pid, int is_thread, struct file *cfile, loff_t *ppos);
+int restore_ckpt_tsks_header(u_long num_procs, struct file *cfile, loff_t *ppos);
+int checkpoint_sysv_mappings (struct task_struct* tsk, struct file* cfile, loff_t* ppos);
+int restore_sysv_mappings (struct file* cfile, loff_t* ppos);
+
 long get_ckpt_state (pid_t pid);
 
 /* Optional stats interface */
