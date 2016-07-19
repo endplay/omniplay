@@ -555,7 +555,7 @@ get_replay_mmap (struct btree_head32 *replay_mmap_btree, char *filename)
 
 // This function writes the global checkpoint state to disk
 long 
-replay_full_checkpoint_hdr_to_disk (char* filename, __u64 rg_id, int clock, u_long proc_count, struct ckpt_tsk *ct, loff_t* ppos)
+replay_full_checkpoint_hdr_to_disk (char* filename, __u64 rg_id, int clock, u_long proc_count, struct ckpt_tsk *ct, struct task_struct *tsk,loff_t* ppos)
 {
 	mm_segment_t old_fs = get_fs();
 	struct file* file = NULL;
@@ -587,6 +587,9 @@ replay_full_checkpoint_hdr_to_disk (char* filename, __u64 rg_id, int clock, u_lo
 
 	rc = checkpoint_ckpt_tsks_header(ct, -1, 0, file, ppos); 	
 
+	//this is part of the replay_group, so do it here instead of for each proc: 
+	rc = checkpoint_task_xray_monitor (tsk, file, ppos);
+	
 exit:
 	if (file) fput(file);
 	if (fd >= 0)  {
@@ -614,8 +617,6 @@ replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pi
 	struct ckpt_proc_data cpdata;
 	long nr_pages = 0;
 	struct page** ppages = NULL;  
-
-	printk ("Pid %d enters replay_full_checkpoint_proc_to_disk: filename %s\n", tsk->pid, filename);
 
 	set_fs(KERNEL_DS);
 	fd = sys_open (filename, O_WRONLY|O_APPEND, 0);
@@ -654,12 +655,13 @@ replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pi
 		goto exit;
 	}
 
-	//this is a part of the replay_thrd, so we do it regardless of thread / process
+	//this is part of the replay_thrd, so we do it regardless of thread / process
 	checkpoint_sysv_mappings (tsk, file, ppos);
+
 
 	if (!is_thread) { 
 		// Write out the replay cache state
-		checkpoint_replay_cache_files (tsk, file, ppos);
+		checkpoint_replay_cache_files (tsk, file, ppos);		
 		down_read (&tsk->mm->mmap_sem);
 
 		// Next - number of VM area
@@ -881,6 +883,7 @@ long replay_full_resume_hdr_from_disk (char* filename, __u64* prg_id, int* pcloc
 	*pproc_count = cdata.proc_count;
 
 	rc = restore_ckpt_tsks_header(*pproc_count, file, ppos); 	
+	rc = restore_task_xray_monitor (current, file, ppos);
 
 	MPRINT ("replay_full_resume_hdr_from_disk done\n");
 

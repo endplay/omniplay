@@ -12,6 +12,12 @@
 #include "replay_perf_event_wrapper.h"
 
 
+// No clean way to handle this that I know of...
+extern int replay_debug, replay_min_debug;
+#define DPRINT if(replay_debug) printk
+#define MPRINT if(replay_debug || replay_min_debug) printk
+
+
 struct replay_perf_it {
 	
         char buf[BUFFER_SIZE]; //an internal buffer for storing data from the ring buffer
@@ -119,7 +125,7 @@ read_counter(struct replay_perf_wrapper *wrapper)
 	mm_segment_t old_fs = get_fs();
 	
 	set_fs(KERNEL_DS);
-	rc = sys_read(wrapper->perf_fd, &count, sizeof(long long));
+	rc = sys_read(wrapper->perf_fd, (char *)&count, sizeof(long long));
 	set_fs(old_fs);
 	return (__u32)count;
 }
@@ -234,19 +240,15 @@ init_replay_perf_wrapper(struct replay_perf_wrapper *wrapper, char *logdir, unsi
 	//this will be a user address
 	ring_buffer = sys_mmap_pgoff(0, (mmap_size), PROT_READ | PROT_WRITE, MAP_SHARED, wrapper->perf_fd, 0);
 	if (IS_ERR((void *)ring_buffer)) { 
-		printk("error making mapping: %p\n", ring_buffer);
+		printk("error making mapping: 0x%lx\n", ring_buffer);
 		sys_close(wrapper->perf_fd);
 		return -1;
 	}
 
-	printk("mmaped from 0x%lx to 0x%lx, size 0x%lx, fd %d\n",ring_buffer, ring_buffer + mmap_size, mmap_size, wrapper->perf_fd);
+	MPRINT("mmaped from 0x%lx to 0x%lx, size 0x%x, fd %d\n",ring_buffer, ring_buffer + mmap_size, mmap_size, wrapper->perf_fd);
 //	print_vmas(current);
 	wrapper->first_time = 1;
 	wrapper->mapping = (struct perf_event_mmap_page*)ring_buffer;
-	printk("init perf_wrapperrapper with type %u config %u period %u\n",
-	       sample_type,
-	       sample_config,
-	       sample_period);
 
 	set_fs(old_fs);
 	return 0;
@@ -257,7 +259,7 @@ destroy_replay_perf_wrapper(struct replay_perf_wrapper *wrapper)
 {
 	/* cleanup memory in here */
 	write_instructions(wrapper);
-	printk("finished with wrapper, overflow %d, num_syscalls %d\n",wrapper->overflow_count, wrapper->num_syscalls);
+	MPRINT("finished with wrapper, overflow %d, num_syscalls %ld\n",wrapper->overflow_count, wrapper->num_syscalls);
 	/*need to kfree some memories!*/
 }
 
