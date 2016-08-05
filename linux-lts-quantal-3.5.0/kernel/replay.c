@@ -3925,7 +3925,6 @@ EXPORT_SYMBOL(replay_ckpt_wakeup);
 static inline long 
 should_take_checkpoint (void)
 {
-
 	long retval = 0;
 	if (!current->replay_thrd->rp_group->finished_ckpt && 
 	    current->replay_thrd->rp_group->rg_checkpoint_at > 0 && 
@@ -4246,6 +4245,7 @@ replay_full_ckpt (long rc)
 	       (u_long) current->replay_thrd->rp_record_thread->rp_user_log_addr, (u_long)current->clear_child_tid);
 
 	curr_ckpt_tsk = btree_lookup32(&proc_btree, current->pid);       
+	printk("Pid %d (%ld) had exp clock %lu\n", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid, current->replay_thrd->rp_expected_clock);
 	retval = replay_full_checkpoint_proc_to_disk (ckpt, current, current->replay_thrd->rp_record_thread->rp_record_pid, curr_ckpt_tsk->is_thread,rc, 
 						      current->replay_thrd->rp_record_thread->rp_read_log_pos, current->replay_thrd->rp_out_ptr, 
 						      argsconsumed(current->replay_thrd->rp_record_thread), current->replay_thrd->rp_expected_clock, 0,
@@ -4266,20 +4266,26 @@ replay_full_ckpt (long rc)
 
 			//not sure we want or need these two cases! 
 			if(prt->rp_ckpt_pthread_block_clock){				
+				printk("Pid %d (%ld) had exp clock %lu\n", prt->rp_replay_pid, prt->rp_record_thread->rp_record_pid, prt->rp_expected_clock);
 				retval = replay_full_checkpoint_proc_to_disk (ckpt, tsk, prt->rp_record_thread->rp_record_pid, curr_ckpt_tsk->is_thread, 0,
 									      prt->rp_record_thread->rp_read_log_pos, prt->rp_out_ptr, 
 									      argsconsumed(prt->rp_record_thread), prt->rp_expected_clock,
 									      prt->rp_ckpt_pthread_block_clock,
 									      (u_long) prt->rp_record_thread->rp_ignore_flag_addr,
-									      (u_long) prt->rp_record_thread->rp_user_log_addr,									      
+									      (u_long) prt->rp_record_thread->rp_user_log_addr,
 									      (u_long) prt->rp_replay_hook, &pos); 	       
 			}
 			else { 
+				printk("Pid %d (%ld) had exp clock %lu, save clock %lu\n", 
+				       prt->rp_replay_pid, 
+				       prt->rp_record_thread->rp_record_pid, 
+				       prt->rp_expected_clock,
+				       prt->rp_ckpt_save_expected_clock);
 				retval = replay_full_checkpoint_proc_to_disk (ckpt, tsk, prt->rp_record_thread->rp_record_pid, curr_ckpt_tsk->is_thread, 0,
 									      prt->rp_record_thread->rp_read_log_pos, prt->rp_out_ptr, 
 									      prt->rp_ckpt_save_args_head,prt->rp_ckpt_save_expected_clock,0,
 									      (u_long) prt->rp_record_thread->rp_ignore_flag_addr,
-									      (u_long) prt->rp_record_thread->rp_user_log_addr,									      
+									      (u_long) prt->rp_record_thread->rp_user_log_addr,				      
 									      (u_long) prt->rp_replay_hook, &pos); 	       
 
 
@@ -4404,7 +4410,7 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char *
 	if (rc < 0) return rc;
 	atomic_set(precg->rg_pkrecord_clock, clock);
 
-
+//HERE! please add in a check of that pkrecord_clock// 
 	current->replay_thrd->rp_record_thread->rp_group->rg_id = rg_id;
 	MPRINT ("Pid %d set_record_group_id to %llu\n", current->pid, rg_id);
 	rg_unlock (precg); //I'm worried that the other threads might need to grab the lock later	
@@ -4448,7 +4454,7 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char *
 
 	record_pid = replay_full_resume_proc_from_disk(ckpt, current->pid, is_thread,&retval, &prect->rp_read_log_pos, &prept->rp_out_ptr, &consumed, &prept->rp_expected_clock, &prept->rp_ckpt_pthread_block_clock, (u_long*)&prect->rp_ignore_flag_addr, (u_long*)&prect->rp_user_log_addr,(u_long *)&current->clear_child_tid, (u_long *)&prept->rp_replay_hook, &pos);
 
-	MPRINT ("Pid %d gets record_pid %ld exp clock %ld\n", current->pid, record_pid, prept->rp_expected_clock);
+	printk ("Pid %d gets record_pid %ld exp clock %ld\n", current->pid, record_pid, prept->rp_expected_clock);
 
 
 	if (record_pid < 0) {
@@ -4543,7 +4549,6 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char *
 	}
 
 
-
 	//finally, remove the ckpt_waiter entry we created: 
 	if (num_procs > 1) { 	
 		mutex_lock(&ckpt_mutex); 	
@@ -4561,7 +4566,7 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char *
 		if (rc < 0) printk ("replay_full_ckpt_wakeup: unable to close fd %d, rc=%ld\n", fd, rc);
 	}
 
-	MPRINT ("replay_full_ckpt_wakeup returning retval %ld\n", retval);
+	printk ("replay_full_ckpt_wakeup returning retval %ld\n", retval);
 	atomic_set(&prept->ckpt_restore_done,1);
 
 	return retval;
@@ -4632,7 +4637,6 @@ replay_full_ckpt_proc_wakeup (char* logdir, char* filename, char *uniqueid, int 
 		mutex_lock(&ckpt_mutex);
 	}
 	
-	
 	mutex_unlock(&ckpt_mutex);
 	
 	if (pckpt_waiter->prepg == NULL) return -EINVAL;
@@ -4670,7 +4674,7 @@ replay_full_ckpt_proc_wakeup (char* logdir, char* filename, char *uniqueid, int 
 							(u_long *)&current->clear_child_tid,
 							(u_long *)&prept->rp_replay_hook,
 							&pckpt_waiter->pos);
-	DPRINT ("Pid %d gets record_pid %ld consumed %ld exp clock %lu retval %ld\n", current->pid, record_pid, consumed, prept->rp_expected_clock, retval);
+	MPRINT ("Pid %d gets record_pid %ld consumed %ld exp clock %lu retval %ld\n", current->pid, record_pid, consumed, prept->rp_expected_clock, retval);
 
 
 	//increment the ckpt_mutex->index and tell the next thread that it can run
@@ -4722,8 +4726,10 @@ replay_full_ckpt_proc_wakeup (char* logdir, char* filename, char *uniqueid, int 
 		MPRINT("%d(%ld) taking %d's cache_files %p\n",current->pid, record_pid, current->tgid, prept->rp_cache_files);
 	}
 
-	MPRINT ("Pid %d replay_full_ckpt_proc_wakeup restarting syscall %d w/ expected clock %lu\n", 
-		current->pid, prect->rp_log[prept->rp_out_ptr].sysnum, prect->rp_expected_clock);
+	printk ("Pid %d (%d) replay_full_ckpt_proc_wakeup restarting syscall %d (pos %d)  w/ expected clock %lu, pthread_block_clock %lu\n", 
+		current->pid, record_pid,prect->rp_log[prept->rp_out_ptr].sysnum, prept->rp_out_ptr, prept->rp_expected_clock, prept->rp_ckpt_pthread_block_clock);
+
+
 
 	if(prept->rp_ckpt_pthread_block_clock){
 		return 32; //this is sys_pthread_block's sysnumber
@@ -5731,6 +5737,9 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 	MPRINT ("Replay Pid %d, index %ld sys %d\n", current->pid, prt->rp_out_ptr, psr->sysnum);
 //	dump_stack(); // how did we get here? for debugging purposes
 
+	MPRINT ("Pid %d (%d) get_next_syfscall_enter (beginning) syscall %d (pos %d)  w/ expected clock %lu, pthread_block_clock %lu\n", 
+		current->pid, prect->rp_record_pid,prect->rp_log[prt->rp_out_ptr].sysnum, prt->rp_out_ptr, prt->rp_expected_clock, prt->rp_ckpt_pthread_block_clock);
+
 	if (prt->rp_pin_attaching == PIN_ATTACHING_FF || prt->rp_pin_attaching == PIN_ATTACHING_RESTART) {
 		// Since we are redoing this system call, we need to go roll back to the beginnning
 	        u_long clock_adj = argsconsumed(prt->rp_record_thread)-prt->rp_ckpt_save_args_head;
@@ -5770,7 +5779,7 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 		MPRINT("Replay pid %d, argsconsumed %lu, retval %lu\n", current->pid, argsconsumed(prect) - sizeof(long), retval);
 	}
 
-	prt->rp_expected_clock = start_clock + 1;
+	prt->rp_expected_clock = start_clock + 1; //this should always be here? 
 
 	// Pin can interrupt, so we need to save the start clock in case we need to resume
 	prt->rp_start_clock_save = start_clock;
@@ -5815,11 +5824,20 @@ get_next_syscall_enter (struct replay_thread* prt, struct replay_group* prg, int
 	// Done with syscall record 
 	prt->rp_out_ptr += 1;
 
-	// Do this twice - once for syscall entry and onc
-       
+	// Do this twice - once for syscall entry and once for exit
 
-	//worried about this code, what happens if we've made progress and start_clock < rp_preplay_clock now? 
-	while (*(prt->rp_preplay_clock) < start_clock) { 
+	/*
+	 * second case is for ckpt_restart. Here's the case:
+	 * 1. We checkpointed at rp_preplay_clock and 
+	 * 2. current thread is supposed to start this syscall run after the checkpoint
+	 * 
+	 * Then, we can get to this point, we're supposed to pause and let the main guy restart but we don't 
+	 * b/c we have start_clock == rp_preplay_clock. add in the second case:
+	 */
+
+	while (*(prt->rp_preplay_clock) < start_clock || 
+	       (*(prt->rp_preplay_clock) == start_clock &&  prt->rp_status == REPLAY_STATUS_RESTART_CKPT)) { 
+
 		MPRINT ("Replay pid %d is waiting for clock value %ld on syscall entry but current clock value is %ld\n", current->pid, start_clock, *(prt->rp_preplay_clock));
 		if (prt->rp_pin_attaching == PIN_ATTACHING_FF && prt->rp_status == REPLAY_STATUS_WAIT_CLOCK) {
 			printk ("attaching pid %d has reached syscall entrance\n", current->pid);
@@ -6020,10 +6038,19 @@ get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, stru
 	if (psr->flags & SR_HAS_STOP_CLOCK_SKIP) stop_clock += prt->rp_stop_clock_skip;
 	prt->rp_expected_clock = stop_clock + 1;
 
-//	MPRINT("syscall_exit: preplay_clock %lu, expected_clock %lu, stop_clock_skip %lu, stop_clock %lu\n",*(prt->rp_preplay_clock), prt->rp_expected_clock, prt->rp_stop_clock_skip, stop_clock);
+	MPRINT("get_next_syscall_exit start preplay_clock %lu, expected_clock %lu, stop_clock_skip %lu, stop_clock %lu\n",*(prt->rp_preplay_clock), prt->rp_expected_clock, prt->rp_stop_clock_skip, stop_clock);
 
 	rg_lock (prg->rg_rec_group);
-	while (*(prt->rp_preplay_clock) < stop_clock) { 
+	
+	/*
+	 * second case is for ckpt_restart. Here's the case:
+	 * 1. We checkpointed at rp_preplay_clock and 
+	 * 2. current is the thread that is supposed to run after the checkpoint
+	 * 
+	 * Then, we can get to this point, we're supposed to restart but we don't b/c we have start_clock == rp_preplay_clock. 
+	 *
+	 */
+	while (*(prt->rp_preplay_clock) < stop_clock ||  prt->rp_status == REPLAY_STATUS_RESTART_CKPT) { 
 		is_restart = 0;
 		MPRINT ("Replay pid %d is waiting for clock value %ld on syscall exit but current clock value is %ld\n", current->pid, stop_clock, *(prt->rp_preplay_clock));
 		if (prt->rp_pin_attaching == PIN_ATTACHING_FF && prt->rp_status == REPLAY_STATUS_WAIT_CLOCK) {
@@ -6169,6 +6196,8 @@ get_next_syscall_exit (struct replay_thread* prt, struct replay_group* prg, stru
 	(*prt->rp_preplay_clock)++;
 	MPRINT ("Pid %d incremented replay clock on syscall %d exit to %ld\n", current->pid, psr->sysnum, *(prt->rp_preplay_clock));
 	prect->rp_count += 1;
+
+	MPRINT("get_next_syscall_exit end preplay_clock %lu, expected_clock %lu, stop_clock_skip %lu, stop_clock %lu\n",*(prt->rp_preplay_clock), prt->rp_expected_clock, prt->rp_stop_clock_skip, stop_clock);
 
 	rg_unlock (prg->rg_rec_group);
 	return 0;
@@ -6909,10 +6938,10 @@ sys_pthread_block (u_long clock)
         //moved this to above the check below. Some weird pin attach issue that I was having before where I think this was getting update while we're in this syscall?
 	// not sure how or why, but we were failing on a can't find thread to run w/ the clock value of preplay_clock == clock
 	rg_lock (prg->rg_rec_group); 
-//	MPRINT("Replay Pid %d called sys_pthread_block w/ user clock val %ld when replay clock val is %ld\n",current->pid, clock, *(prt->rp_preplay_clock));
+	MPRINT("Replay Pid %d called sys_pthread_block w/ user clock val %ld when replay clock val is %ld\n",current->pid, clock, *(prt->rp_preplay_clock));
 
 
-	while (*(prt->rp_preplay_clock) < clock){ 
+	while (*(prt->rp_preplay_clock) < clock || prt->rp_status == REPLAY_STATUS_RESTART_CKPT){ 
 		is_restart = 0;
 		if (prt->rp_status == REPLAY_STATUS_RESTART_CKPT) {
 			// We can continue
@@ -15208,7 +15237,6 @@ replay_prlimit64 (pid_t pid, unsigned int resource, const struct rlimit64 __user
 	if (retparams) {
 		if (copy_to_user (old_rlim, retparams, sizeof(struct rlimit64))) printk ("Pid %d replay_prlimit cannot copy to user\n", current->pid);
 		argsconsume(current->replay_thrd->rp_record_thread, sizeof(struct rlimit64));
-		printk ("Pid %d prlimit64 is pulling from retparams\n", current->pid);
 	}
 
 	DPRINT ("replay_prlimit64 pid %d resource %u returns %ld\n", pid, resource, rc_orig);
@@ -15597,7 +15625,8 @@ int read_log_data_internal (struct record_thread* prect, struct syscall_result* 
 
 	old_fs = get_fs();
 	set_fs(KERNEL_DS);
-	
+
+//	printk("%d read log_data\n",current->pid);
 	MPRINT ("Reading logid %d starting at pos %lld\n", logid, (long long) *pos);
 	sprintf (filename, "%s/klog.id.%d", prect->rp_group->rg_logdir, logid);
 	MPRINT ("Opening %s\n", filename);

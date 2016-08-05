@@ -1081,7 +1081,7 @@ void init_taint_structures (char* group_dir)
     memset(mem_root, 0, ROOT_TABLE_SIZE * sizeof(taint_t *));
     init_taint_index(group_dir);
 
-    //ARQUINN: added code
+    //ARQUINN: added code to initialize the shared mem control 
     init_merge_control_shm(group_dir);
 
     if (!taint_fds_table) {
@@ -1092,6 +1092,9 @@ void init_taint_structures (char* group_dir)
 
 int translate_reg(int reg)
 {
+    //these coorespond to the eax, ebx, ecx and edx registers so that we 
+    //can have the low / high / word varients overlap in our register map. 
+    
     if (reg == 25 || reg == 26 || reg == 27) {
         return 8;
     } else if (reg == 22 || reg == 23 || reg == 24) {
@@ -2167,6 +2170,7 @@ static inline void taint_reg2reg (int dst_reg, int src_reg, uint32_t size)
     taint_t* shadow_reg_table = current_thread->shadow_reg_table;
     memcpy(&shadow_reg_table[dst_reg * REG_SIZE],
             &shadow_reg_table[src_reg * REG_SIZE], size * sizeof(taint_t));
+
 #ifdef TRACE_TAINT
     {
 	u_int i;

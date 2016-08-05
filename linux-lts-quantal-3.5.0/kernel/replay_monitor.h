@@ -137,8 +137,6 @@ int checkpoint_xray_monitor(struct xray_monitor *monitor, struct file *cfile, lo
 		cnt++; 
 	}
 	
-	printk("checkpopint xray_monitor: found %d fds\n",cnt);
-
 	copyed = vfs_write(cfile, (char *) &cnt, sizeof(cnt), ppos);
 	if (copyed != sizeof(cnt)) {
 		printk ("checkpoint_xray_monitor: tried to write count, got rc %d\n", copyed);
@@ -146,11 +144,7 @@ int checkpoint_xray_monitor(struct xray_monitor *monitor, struct file *cfile, lo
 	}
 
 
-	list_for_each_entry (fds, &monitor->fds, list) {
-
-		printk("next fd: %d type %d data %d ", fds->fd, fds->type, fds->data);
-		
-
+	list_for_each_entry (fds, &monitor->fds, list) {		
 		copyed = vfs_write(cfile, (char *) &fds->fd, sizeof(fds->fd), ppos);
 		if (copyed != sizeof(fds->fd)) {
 			printk ("checkpoint_xray_monitor tried to write fd, got rc %d\n", copyed);
@@ -169,8 +163,6 @@ int checkpoint_xray_monitor(struct xray_monitor *monitor, struct file *cfile, lo
 
 		if (fds->channel) {
 			cnt = strlen(fds->channel);
-			printk("channel len %d, channel name %s", cnt, fds->channel); 
-
 			copyed = vfs_write(cfile, (char *)&cnt, sizeof(cnt), ppos);
 			if (copyed != sizeof(strlen(fds->channel))) { 
 				printk ("checkpoint_xray_monitor tried to write data, got rc %d\n", copyed);
@@ -190,7 +182,6 @@ int checkpoint_xray_monitor(struct xray_monitor *monitor, struct file *cfile, lo
 				return -EINVAL;
 			}
 		}
-		printk("\n");
 	}
 
 	return 0;	
@@ -207,7 +198,6 @@ int restore_xray_monitor(struct xray_monitor *monitor, struct file *cfile, loff_
 		printk ("restore_replay_cache_files: tried to read count, got rc %d\n", copyed);
 		return copyed;
 	}
-	printk("restoring xray_monitor cnt %d\n", cnt);
 	for (i = 0; i < cnt; i++) {
 
 		copyed = vfs_read(cfile, (char *) &fd, sizeof(fd), ppos);
@@ -231,7 +221,6 @@ int restore_xray_monitor(struct xray_monitor *monitor, struct file *cfile, loff_
 			return copyed;
 		}
 
-		printk("next fd: %d type %d data %d ", fd, type, data);
 		if (size > 0) { 
 			copyed = vfs_read(cfile, channel, size, ppos);
 			if (copyed != size) {
@@ -240,13 +229,8 @@ int restore_xray_monitor(struct xray_monitor *monitor, struct file *cfile, loff_
 			}
 			channel[size] = '\0';
 			
-			printk("channel len %d, channel name %s",size, channel);
 		}		
 		
-		printk("\n");
-
-
-
 		xray_monitor_add_fd(monitor,fd,type, data, channel);
 	}	       
 	return 0;
