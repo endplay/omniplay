@@ -24,6 +24,11 @@
 #include <linux/replay.h>
 
 #define DPRINT(x,...)
+
+//linux actually just has a symlink from /dev/shm -> /run/shm
+#define WRITABLE_MMAPS "/run/shm/replay_mmap_%d"
+//#define WRITABLE_MMAPS "/tmp/replay_mmap_%d"
+
 //#define DPRINT printk
 
 char cache_dir[] = "/replay_cache";
@@ -252,8 +257,8 @@ int open_mmap_cache_file (dev_t dev, u_long ino, struct timespec mtime, int is_w
 		// For writeable mmaps, we need to create a copy just for this replay
 
 		int c_val = atomic_inc_return(&counter);
-		sprintf (tname, "/tmp/replay_mmap_%d", c_val);
-		printk("%d: mmaped /tmp/replay_mmap_%d for %s/%x_%lx_%lu_%lu\n",current->pid,c_val, cache_dir, dev, ino, mtime.tv_sec, mtime.tv_nsec);
+		sprintf (tname, WRITABLE_MMAPS, c_val);
+		printk("%d: mmaped %s for %s/%x_%lx_%lu_%lu\n",current->pid, tname, cache_dir, dev, ino, mtime.tv_sec, mtime.tv_nsec);
 		tfd = sys_open (tname, O_CREAT|O_TRUNC|O_RDWR, 0600);
 		if (tfd < 0) {
 			printk ("open_cache_file: cannot create temp file %s, rc=%d\n", tname, tfd);

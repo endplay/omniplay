@@ -31,6 +31,15 @@ extern int replay_debug, replay_min_debug;
 #define KMALLOC kmalloc
 #define KFREE kfree
 
+
+//the annoying thing is that despite opening as /dev/shm... it actually uses /run/shm! 
+//#define WRITABLE_MMAPS "/dev/shm/replay_mmap_%d"
+#define WRITABLE_MMAPS "/run/shm/replay_mmap_%d"
+#define WRITABLE_MMAPS_LEN 21
+//#define WRITABLE_MMAPS_LEN 17
+//#define WRITABLE_MMAPS "/tmp/replay_mmap_%d"
+
+
 /* Prototypes not in header files */
 void set_tls_desc(struct task_struct *p, int idx, const struct user_desc *info, int n); /* In tls.c */
 void fill_user_desc(struct user_desc *info, int idx, const struct desc_struct *desc); /* In tls.c */
@@ -539,7 +548,7 @@ get_replay_mmap (struct btree_head32 *replay_mmap_btree, char *filename)
 { 
 	int key, newkey, inserted = 0; 
 
-	sscanf(filename, "/tmp/replay_mmap_%d",&key); // get the key
+	sscanf(filename, WRITABLE_MMAPS ,&key); // get the key
 	
 	newkey = (int)btree_lookup32(replay_mmap_btree, key);
 	if (newkey == 0) { 
@@ -548,7 +557,7 @@ get_replay_mmap (struct btree_head32 *replay_mmap_btree, char *filename)
 		btree_insert32(replay_mmap_btree, (u32)key,(void*)newkey,GFP_KERNEL);
 		inserted = 1;
 	}
-	sprintf(filename, "/tmp/replay_mmap_%d",newkey);
+	sprintf(filename, WRITABLE_MMAPS,newkey);
 	return inserted;
 }
 
@@ -713,7 +722,7 @@ replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pi
 
 			if (!(pvmas->vmas_flags & VM_READ) || 
 			    ((pvmas->vmas_flags&VM_MAYSHARE) && 
-			     strncmp(pvmas->vmas_file, "/tmp/replay_mmap_",17))) {
+			     strncmp(pvmas->vmas_file, WRITABLE_MMAPS,WRITABLE_MMAPS_LEN))) { //why is this in here...? 
 				continue;
 			}
 			
@@ -1008,7 +1017,7 @@ long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_
 						MPRINT ("special uclock vma\n");
 						sprintf (pvmas->vmas_file, "/run/shm/uclock%d", clock_pid);
 					}
-					if (!strncmp(pvmas->vmas_file, "/tmp/replay_mmap_",17)) { 
+					if (!strncmp(pvmas->vmas_file,WRITABLE_MMAPS,WRITABLE_MMAPS_LEN)) { 
 						new_file = get_replay_mmap(&replay_mmap_btree, pvmas->vmas_file);
 						if (new_file) { 
 							flags = O_CREAT|O_RDWR;					
@@ -1102,7 +1111,7 @@ long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_
 			if (!strncmp(pvmas->vmas_file, "/dev/zero", 9)) continue; /* Skip writing this one */
 			if (!(pvmas->vmas_flags&VM_READ) || 
 			    ((pvmas->vmas_flags&VM_MAYSHARE) && 
-			     strncmp(pvmas->vmas_file, "/tmp/replay_mmap_",17))) {
+			     strncmp(pvmas->vmas_file,WRITABLE_MMAPS,WRITABLE_MMAPS_LEN))) {
 				continue;  // Not in checkpoint - so skip writing this one
 			}				
 			if (!(pvmas->vmas_flags&VM_WRITE)){
