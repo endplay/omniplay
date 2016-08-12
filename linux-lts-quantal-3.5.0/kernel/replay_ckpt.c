@@ -19,6 +19,8 @@
 #include <asm/desc.h>
 #include <asm/ptrace.h>
 #include <asm/elf.h>
+#include <asm/processor.h>
+#include <asm/i387.h>
 #include <linux/proc_fs.h>
 #include <linux/replay.h>
 #include <linux/replay_maps.h>
@@ -31,9 +33,6 @@ extern int replay_debug, replay_min_debug;
 #define KMALLOC kmalloc
 #define KFREE kfree
 
-
-//the annoying thing is that despite opening as /dev/shm... it actually uses /run/shm! 
-//#define WRITABLE_MMAPS "/dev/shm/replay_mmap_%d"
 #define WRITABLE_MMAPS "/run/shm/replay_mmap_%d"
 #define WRITABLE_MMAPS_LEN 21
 //#define WRITABLE_MMAPS_LEN 17
@@ -125,6 +124,21 @@ print_vmas (struct task_struct* tsk)
 	up_read (&tsk->mm->mmap_sem);
 }
 
+void print_fpu_state(struct fpu *f, pid_t record_pid) 
+{
+	//first byte and last byte of the thread_xstate in the struct fpu
+	unsigned char *c = (unsigned char *)f->state;
+	unsigned char *last = c + sizeof(union thread_xstate);
+
+	printk("%d fpu state:\n", record_pid);
+	printk("\tlast_cpu %u\n",f->last_cpu);
+	printk("\thas_fpu %u\n",f->has_fpu);
+	while (c < last) { 
+		printk("%02x ",*c);
+		c++;
+	} 
+	printk("\n");
+}
 
 
 // File format:
@@ -626,6 +640,7 @@ replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pi
 	struct ckpt_proc_data cpdata;
 	long nr_pages = 0;
 	struct page** ppages = NULL;  
+	struct fpu *fpu = &(tsk->thread.fpu); 
 
 	set_fs(KERNEL_DS);
 	fd = sys_open (filename, O_WRONLY|O_APPEND, 0);
@@ -664,10 +679,39 @@ replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pi
 		goto exit;
 	}
 
+
+
+	// Write out the floating point registers: 
+	if (current == tsk) { 
+		//force the fpu to flush to the task_struct's data structures
+		unlazy_fpu(tsk);
+	}
+	fpu = &(tsk->thread.fpu);
+
+	copied = vfs_write(file, (char *) &(fpu->last_cpu), sizeof(unsigned int), ppos);
+	if (copied != sizeof(unsigned int)) {
+		printk ("replay_full_checkpoint_proc_to_disk: tried to write last_cpu, got rc %d\n", copied);
+		rc = copied;
+		goto exit;
+	}
+	copied = vfs_write(file, (char *) &(fpu->has_fpu), sizeof(unsigned int), ppos);
+	if (copied != sizeof(unsigned int)) {
+		printk ("replay_full_checkpoint_proc_to_disk: tried to write has_fpu, got rc %d\n", copied);
+		rc = copied;
+		goto exit;
+	}
+	copied = vfs_write(file, (char *) fpu->state, sizeof(union thread_xstate), ppos);
+	if (copied != sizeof(union thread_xstate)) {
+		printk ("replay_full_checkpoint_proc_to_disk: tried to write thread_xstate, got rc %d\n", copied);
+		rc = copied;
+		goto exit;
+	}
+	
+
+	
+
 	//this is part of the replay_thrd, so we do it regardless of thread / process
 	checkpoint_sysv_mappings (tsk, file, ppos);
-
-
 	if (!is_thread) { 
 		// Write out the replay cache state
 		checkpoint_replay_cache_files (tsk, file, ppos);		
@@ -921,7 +965,7 @@ long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_
 	struct user_desc desc;
 	int flags;
 	struct btree_head32 replay_mmap_btree;
-	
+	struct fpu *fpu = NULL;
 
 	MPRINT ("pid %d enters replay_full_resume_proc_from_disk: filename %s\n", current->pid, filename);
 
@@ -961,6 +1005,29 @@ long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_
 		rc = copied;
 		goto exit;
 	}
+
+
+	// Restore the floating point registers: 
+	fpu = &(tsk->thread.fpu);
+	copied = vfs_read(file, (char *) &(fpu->last_cpu), sizeof(unsigned int), ppos);
+	if (copied != sizeof(unsigned int)) {
+		printk ("replay_full_resume_proc_from_disk: tried to read last cpu, got rc %d\n", copied);
+		rc = copied;
+		goto exit;
+	}
+	copied = vfs_read(file, (char *) &(fpu->has_fpu), sizeof(unsigned int), ppos);
+	if (copied != sizeof(unsigned int)) {
+		printk ("replay_full_resume_proc_from_disk: tried to read has_fpu, got rc %d\n", copied);
+		rc = copied;
+		goto exit;
+	}
+	copied = vfs_read(file, (char *) fpu->state, sizeof(union thread_xstate), ppos);
+	if (copied != sizeof(union thread_xstate)) {
+		printk ("replay_full_resume_proc_from_disk: tried to read thread_xstate, got rc %d\n", copied);
+		rc = copied;
+		goto exit;
+	}
+	
 
 	//this is a part of the replay_thrd, so we do it regardless of thread / process
 	restore_sysv_mappings (file, ppos);
