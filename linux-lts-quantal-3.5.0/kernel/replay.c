@@ -4246,11 +4246,18 @@ replay_full_ckpt (long rc)
 
 	curr_ckpt_tsk = btree_lookup32(&proc_btree, current->pid);       
 	printk("Pid %d (%ld) had exp clock %lu\n", current->pid, current->replay_thrd->rp_record_thread->rp_record_pid, current->replay_thrd->rp_expected_clock);
-	retval = replay_full_checkpoint_proc_to_disk (ckpt, current, current->replay_thrd->rp_record_thread->rp_record_pid, curr_ckpt_tsk->is_thread,rc, 
-						      current->replay_thrd->rp_record_thread->rp_read_log_pos, current->replay_thrd->rp_out_ptr, 
-						      argsconsumed(current->replay_thrd->rp_record_thread), current->replay_thrd->rp_expected_clock, 0,
-						      (u_long) 	current->replay_thrd->rp_record_thread->rp_ignore_flag_addr, 
+
+
+	retval = replay_full_checkpoint_proc_to_disk (ckpt, current, 
+						      current->replay_thrd->rp_record_thread->rp_record_pid, 
+						      curr_ckpt_tsk->is_thread,rc, 
+						      current->replay_thrd->rp_record_thread->rp_read_log_pos,
+						      current->replay_thrd->rp_out_ptr, 
+						      argsconsumed(current->replay_thrd->rp_record_thread), 
+						      current->replay_thrd->rp_expected_clock, 0,
+						      (u_long) current->replay_thrd->rp_record_thread->rp_ignore_flag_addr, 
 						      (u_long) current->replay_thrd->rp_record_thread->rp_user_log_addr,
+						      (u_long) current->replay_thrd->rp_record_thread->rp_read_ulog_pos,
 						      (u_long) current->replay_thrd->rp_replay_hook, &pos);
 
 
@@ -4273,6 +4280,7 @@ replay_full_ckpt (long rc)
 									      prt->rp_ckpt_pthread_block_clock,
 									      (u_long) prt->rp_record_thread->rp_ignore_flag_addr,
 									      (u_long) prt->rp_record_thread->rp_user_log_addr,
+									      (u_long) prt->rp_record_thread->rp_read_ulog_pos,
 									      (u_long) prt->rp_replay_hook, &pos); 	       
 			}
 			else { 
@@ -4281,11 +4289,14 @@ replay_full_ckpt (long rc)
 				       prt->rp_record_thread->rp_record_pid, 
 				       prt->rp_expected_clock,
 				       prt->rp_ckpt_save_expected_clock);
-				retval = replay_full_checkpoint_proc_to_disk (ckpt, tsk, prt->rp_record_thread->rp_record_pid, curr_ckpt_tsk->is_thread, 0,
-									      prt->rp_record_thread->rp_read_log_pos, prt->rp_out_ptr, 
-									      prt->rp_ckpt_save_args_head,prt->rp_ckpt_save_expected_clock,0,
+				retval = replay_full_checkpoint_proc_to_disk (ckpt, tsk, prt->rp_record_thread->rp_record_pid, 
+									      curr_ckpt_tsk->is_thread, 0,
+									      prt->rp_record_thread->rp_read_log_pos, 
+									      prt->rp_out_ptr, prt->rp_ckpt_save_args_head,
+									      prt->rp_ckpt_save_expected_clock, 0,
 									      (u_long) prt->rp_record_thread->rp_ignore_flag_addr,
-									      (u_long) prt->rp_record_thread->rp_user_log_addr,				      
+									      (u_long) prt->rp_record_thread->rp_user_log_addr,
+									      (u_long) prt->rp_record_thread->rp_read_ulog_pos,
 									      (u_long) prt->rp_replay_hook, &pos); 	       
 
 
@@ -4452,7 +4463,17 @@ replay_full_ckpt_wakeup (int attach_device, char* logdir, char* filename, char *
 		MPRINT("%d is a thread!\n",current->pid);
 	}	
 
-	record_pid = replay_full_resume_proc_from_disk(ckpt, current->pid, is_thread,&retval, &prect->rp_read_log_pos, &prept->rp_out_ptr, &consumed, &prept->rp_expected_clock, &prept->rp_ckpt_pthread_block_clock, (u_long*)&prect->rp_ignore_flag_addr, (u_long*)&prect->rp_user_log_addr,(u_long *)&current->clear_child_tid, (u_long *)&prept->rp_replay_hook, &pos);
+	record_pid = replay_full_resume_proc_from_disk(ckpt, current->pid, is_thread,
+						       &retval, &prect->rp_read_log_pos, 
+						       &prept->rp_out_ptr, &consumed, 
+						       &prept->rp_expected_clock, 
+						       &prept->rp_ckpt_pthread_block_clock, 
+						       (u_long*)&prect->rp_ignore_flag_addr, 
+						       (u_long*)&prect->rp_user_log_addr,
+						       (u_long*)&prect->rp_read_ulog_pos,
+						       (u_long*)&current->clear_child_tid, 
+						       (u_long*)&prept->rp_replay_hook, 
+						       &pos);
 
 	printk ("Pid %d gets record_pid %ld exp clock %ld\n", current->pid, record_pid, prept->rp_expected_clock);
 
@@ -4670,7 +4691,8 @@ replay_full_ckpt_proc_wakeup (char* logdir, char* filename, char *uniqueid, int 
 							&prept->rp_out_ptr, &consumed, &prept->rp_expected_clock, 
 							&prept->rp_ckpt_pthread_block_clock, 
 							(u_long *)&prept->rp_record_thread->rp_ignore_flag_addr,  
-							(u_long*) &prept->rp_record_thread->rp_user_log_addr,
+							(u_long*)&prept->rp_record_thread->rp_user_log_addr,
+							(u_long*)&prept->rp_record_thread->rp_read_ulog_pos,
 							(u_long *)&current->clear_child_tid,
 							(u_long *)&prept->rp_replay_hook,
 							&pckpt_waiter->pos);

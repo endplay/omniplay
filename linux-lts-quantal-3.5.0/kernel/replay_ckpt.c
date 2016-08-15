@@ -81,6 +81,7 @@ struct ckpt_proc_data {
 	u_long pthreadclock;
 	u_long p_ignore_flag; //this is really just a memory address w/in the vma
 	u_long p_user_log_addr;
+	u_long user_log_pos;
 	u_long p_clear_child_tid;
 	u_long p_replay_hook;
 //	u_long rss_stat_counts[NR_MM_COUNTERS]; //the counters from the checkpointed task
@@ -625,7 +626,11 @@ exit:
 
 // This function writes the process state to a disk file
 long 
-replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pid_t record_pid, int is_thread, long retval, loff_t logpos, u_long outptr, u_long consumed, u_long expclock, u_long pthread_block_clock, u_long ignore_flag, u_long user_log_addr,u_long replay_hook, loff_t* ppos)
+replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pid_t record_pid, 
+				     int is_thread, long retval, loff_t logpos, u_long outptr, 
+				     u_long consumed, u_long expclock, u_long pthread_block_clock, 
+				     u_long ignore_flag, u_long user_log_addr, u_long user_log_pos,
+				     u_long replay_hook, loff_t* ppos)
 {
 	mm_segment_t old_fs = get_fs();
 	int fd = -1, rc, copied, i;
@@ -661,6 +666,7 @@ replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pi
 	cpdata.pthreadclock = pthread_block_clock;
 	cpdata.p_ignore_flag  = ignore_flag;
 	cpdata.p_user_log_addr = user_log_addr;
+	cpdata.user_log_pos = user_log_pos; 
 	cpdata.p_clear_child_tid = (u_long)tsk->clear_child_tid; //ah, not having this messes up our replay on exit
 	cpdata.p_replay_hook = replay_hook;
 
@@ -951,7 +957,12 @@ exit:
 
 
 
-long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_thread, long* pretval, loff_t* plogpos, u_long* poutptr, u_long* pconsumed, u_long* pexpclock, u_long* pthreadclock, u_long *ignore_flag, u_long *user_log_addr, u_long *child_tid,u_long *replay_hook, loff_t* ppos)
+long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_thread, 
+					long* pretval, loff_t* plogpos, u_long* poutptr, 
+					u_long* pconsumed, u_long* pexpclock, 
+					u_long* pthreadclock, u_long *ignore_flag, 
+					u_long *user_log_addr, ulong *user_log_pos,
+					u_long *child_tid,u_long *replay_hook, loff_t* ppos)
 {
 	mm_segment_t old_fs = get_fs();
 	int rc = 0, fd, exe_fd, copied, i, map_count, key, shmflg=0, id, premapped = 0, new_file = 0;
@@ -995,6 +1006,7 @@ long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_
 	*pthreadclock = cpdata.pthreadclock;
 	*ignore_flag = cpdata.p_ignore_flag;
 	*user_log_addr = cpdata.p_user_log_addr;
+	*user_log_pos  = cpdata.user_log_pos;
 	*child_tid = cpdata.p_clear_child_tid; 
 	*replay_hook = cpdata.p_replay_hook;
 
@@ -1008,7 +1020,7 @@ long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_
 
 
 	// Restore the floating point registers: 
-	fpu = &(tsk->thread.fpu);
+	fpu = &(current->thread.fpu);
 	copied = vfs_read(file, (char *) &(fpu->last_cpu), sizeof(unsigned int), ppos);
 	if (copied != sizeof(unsigned int)) {
 		printk ("replay_full_resume_proc_from_disk: tried to read last cpu, got rc %d\n", copied);
