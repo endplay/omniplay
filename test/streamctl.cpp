@@ -37,6 +37,7 @@ struct dift {
     char  hostname[256];
     u_int num_epochs;
     int   s;
+    vector<char *> ckpts; /* The checkpoints for this aggregator */
 };
 
 /* An individual epoch */
@@ -60,6 +61,19 @@ struct epoch_ctl {
     int    s;
     pid_t wait_pid;
 };
+
+bool test_and_set(vector<struct cache_info> &cfiles, struct cache_info &cinfo){
+    bool found = false;
+    for(struct cache_info c : cfiles) { 	
+	if (c.dev == cinfo.dev && c.ino == cinfo.ino && 
+	    c.mtime.tv_sec == cinfo.mtime.tv_sec &&
+	    c.mtime.tv_nsec == cinfo.mtime.tv_nsec) 
+	    found = true;
+    }
+    if (!found) cfiles.push_back(cinfo);
+    return found;
+}
+
 
 int connect_to_server (const char* hostname, int port)
 {
@@ -111,7 +125,8 @@ int fetch_results (char* top_dir, struct epoch_ctl ectl)
 
 void format ()
 {
-    fprintf (stderr, "format: streamctl <epoch description file> <host config file> [-w] [-s] [-v dest_dir cmp_dir] [-stats] [-seq]\n");
+    fprintf (stderr, "format: streamctl <epoch description file> <host config file> [-w] [-s] [-c] [-lowmem]\n");
+    fprintf (stderr, "                  [-filter_inet] [-v dest_dir cmp_dir] [-stats] [-seq/-seqpp]\n");
     exit (0);
 }
 
@@ -119,16 +134,26 @@ int main (int argc, char* argv[])
 {
     int rc;
     char dirname[80];
-    int wait_for_response = 0, validate = 0, get_stats = 0, sync_files = 0;
+    int wait_for_response = 0, validate = 0, get_stats = 0, sync_files = 0, nw_compress = 0, low_memory = 0, filter_inet = 0, stream_ls = 0;
+    bool record_trace = false;
+    int pid = -1; //used for the out2mergecmp
+    char* filter_part = NULL;
+    char* filter_output_after = NULL;
     char* dest_dir, *cmp_dir;
     struct vector<struct replay_path> log_files;
     struct vector<struct cache_info> cache_files;
+
+    char ckpts[1024][1024]; //can only support 1024 checkpoints
+
     u_char agg_type = AGG_TYPE_STREAM;
     struct config conf;
+    int parallelize = 1; 
 
     if (argc < 3) {
 	format();
     }
+
+    const char* host_suffix; 
 
     const char* epoch_filename = argv[1];
     const char* config_filename = argv[2];
@@ -138,8 +163,30 @@ int main (int argc, char* argv[])
 	    wait_for_response = 1;
 	} else if (!strcmp (argv[i], "-s")) {
 	    sync_files = 1;
+	} else if (!strcmp (argv[i], "-c")) {
+	    nw_compress = 1;
+	} else if (!strcmp (argv[i], "-p")) {
+	    pid = atoi(argv[i+1]);
+	    i++;
+	} else if (!strcmp (argv[i], "-lowmem")) {
+	    low_memory = 1;
+	} else if (!strcmp (argv[i], "-streamls")) {
+	    stream_ls = 1;
+	} else if (!strcmp (argv[i], "-filter_inet")) {
+	    filter_inet = 1;
+	} else if (!strcmp (argv[i], "-filter_part")) {
+	    filter_part = argv[i+1];
+	    i++;
+	} else if (!strcmp (argv[i], "-filter_output_after")) {
+	    filter_output_after = argv[i+1];
+	    i++;
 	} else if (!strcmp (argv[i], "-stats")) {
 	    get_stats = 1;
+	} else if (!strcmp (argv[i], "-hs")) {
+	  host_suffix = argv[i+1];
+	  i++;
+	} else if (!strcmp (argv[i], "-record_trace")) {
+	    record_trace = true;
 	} else if (!strcmp (argv[i], "-v")) {
 	    i++;
 	    if (i < argc) {
@@ -156,6 +203,10 @@ int main (int argc, char* argv[])
 	    }
 	} else if (!strcmp (argv[i], "-seq")) {
 	    agg_type = AGG_TYPE_SEQ;
+	} else if (!strcmp (argv[i], "-seqppl")) {
+	    agg_type = AGG_TYPE_SEQ_PPL;
+	} else if (!strcmp (argv[i], "-seqppg")) {
+	    agg_type = AGG_TYPE_SEQ_PPG;
 	} else {
 	    format();
 }
@@ -181,23 +232,30 @@ int main (int argc, char* argv[])
 	fprintf (stderr, "Unable to parse header line of epoch descrtion file, rc=%d\n", rc);
 	return -1;
     }
-
+    int next_ckpt = 0;
     while (!feof(file)) {
 	char line[256];
 	if (fgets (line, 255, file)) {
 	    struct epoch e;
-	    rc = sscanf (line, "%d %u %u %u %u %u\n", &e.data.start_pid, 
-			 &e.data.start_syscall, &e.data.stop_syscall, &e.data.filter_syscall, 
-			 &e.data.ckpt,  &e.data.fork_flags);
-
-	    if (rc != 6) {
+	    u_int unused;
+	    rc = sscanf (line, "%d %c %u %c %u %u %u %u\n", &e.data.start_pid, &e.data.start_level, &e.data.start_clock, &e.data.stop_level, &e.data.stop_clock, &unused, &e.data.ckpt, &e.data.fork_flags);
+	    if (rc != 8) {
 		fprintf (stderr, "Unable to parse line of epoch descrtion file: %s\n", line);
 		return -1;
 	    }
 	    conf.epochs.push_back(e);
+
+	    sprintf(ckpts[next_ckpt],"%s/ckpt.%d",dirname,e.data.ckpt);
+	    next_ckpt++;
+
 	}
     }
     fclose(file);
+
+    for (int i = 0; i < next_ckpt; i++) { 
+      fprintf(stderr, "next ckpt: %s\n",ckpts[i]);
+    }
+
 
     // Read in the host configuration file
     file = fopen(config_filename, "r");
@@ -211,6 +269,7 @@ int main (int argc, char* argv[])
     struct dift* prev_dift = NULL;
     struct aggregator* prev_agg = NULL;
     u_int epoch_cnt = 0;
+    next_ckpt = 0;
     while (!feof(file) && epoch_cnt < conf.epochs.size()) {
 	char line[256];
 	if (fgets (line, 255, file)) {
@@ -224,8 +283,7 @@ int main (int argc, char* argv[])
 	    }
 	    if (epoch_cnt + num_epochs > conf.epochs.size()) {
 		// Will not use all the epochs in this row
-		
-		num_epochs = conf.epochs.size() - epoch_cnt;
+		num_epochs -= (epoch_cnt + num_epochs) - conf.epochs.size();
 		printf ("Truncated num_epochs to %d\n", num_epochs);
 	    }
 	    struct dift* d;
@@ -236,9 +294,21 @@ int main (int argc, char* argv[])
 		d->s = -1;
 		conf.difts.push_back(d);
 		prev_dift = d;
+
+		for (int i = 0; i < num_epochs; i++) { 
+		    d->ckpts.push_back(ckpts[next_ckpt]);
+		    next_ckpt++;
+		}	       
+
 	    } else {
 		d = prev_dift;
 		d->num_epochs += num_epochs;
+
+		for (int i = 0; i < num_epochs; i++) { 
+		    d->ckpts.push_back(ckpts[next_ckpt]);
+		    next_ckpt++;
+		}	       
+
 	    }
 
 	    struct aggregator* a;
@@ -264,6 +334,15 @@ int main (int argc, char* argv[])
     }
     fclose(file);
 
+    for (u_int i = 0; i < conf.difts.size(); i++) {
+	fprintf(stderr, "machine %s ckpts: ",conf.difts[i]->hostname);
+	for (auto c : conf.difts[i]->ckpts) { 
+	    fprintf(stderr, "%s ",c);
+	}
+	fprintf(stderr, "\n");
+    }
+
+
     if (sync_files) {
 	// First build up a list of files that are needed for this replay
 	struct dirent* de;
@@ -272,8 +351,10 @@ int main (int argc, char* argv[])
 	    fprintf (stderr, "Cannot open replay dir %s\n", dirname);
 	    return -1;
 	}
+	//unordered set of already seen cache files (optimizatino for nginx, which stinks because there are like, 100k files)
+
 	while ((de = readdir(dir)) != NULL) {
-	    if (!strcmp(de->d_name, "ckpt") || !strcmp(de->d_name, "mlog") || !strncmp(de->d_name, "ulog", 4)) {
+	    if (!strncmp(de->d_name, "ckpt",4) || !strcmp(de->d_name, "mlog") || !strncmp(de->d_name, "ulog", 4)) {
 		struct replay_path pathname;
 		sprintf (pathname.path, "%s/%s", dirname, de->d_name);
 		log_files.push_back(pathname);
@@ -298,15 +379,23 @@ int main (int argc, char* argv[])
 			    cinfo.dev = pretvals->dev;
 			    cinfo.ino = pretvals->ino;
 			    cinfo.mtime = pretvals->mtime;
-			    cache_files.push_back(cinfo);
+			    test_and_set(cache_files, cinfo);
+#if 0
+			    printf ("open cache file dev %x ino %x mtime %lx.%lx log %s\n", 
+				    cinfo.dev, cinfo.ino, cinfo.mtime.tv_sec, cinfo.mtime.tv_nsec, de->d_name);
+#endif
 			}
 		    } else if (res->psr.sysnum == 11) {
 			struct execve_retvals* pretvals = (struct execve_retvals *) res->retparams;
-			if (pretvals) {
+			if (pretvals && !pretvals->is_new_group) {
 			    cinfo.dev = pretvals->data.same_group.dev;
 			    cinfo.ino = pretvals->data.same_group.ino;
 			    cinfo.mtime = pretvals->data.same_group.mtime;
-			    cache_files.push_back(cinfo);
+			    test_and_set(cache_files, cinfo);
+#if 0
+			    printf ("exec cache file dev %x ino %x mtime %lx.%lx log %s\n", 
+				    cinfo.dev, cinfo.ino, cinfo.mtime.tv_sec, cinfo.mtime.tv_nsec, de->d_name);
+#endif
 			}
 		    } else if (res->psr.sysnum == 86 || res->psr.sysnum == 192) {
 			struct mmap_pgoff_retvals* pretvals = (struct mmap_pgoff_retvals *) res->retparams;
@@ -314,7 +403,11 @@ int main (int argc, char* argv[])
 			    cinfo.dev = pretvals->dev;
 			    cinfo.ino = pretvals->ino;
 			    cinfo.mtime = pretvals->mtime;
-			    cache_files.push_back(cinfo);
+			    test_and_set(cache_files, cinfo);
+#if 0
+			    printf ("mmap cache file dev %x ino %x mtime %lx.%lx log %s\n", 
+				    cinfo.dev, cinfo.ino, cinfo.mtime.tv_sec, cinfo.mtime.tv_nsec, de->d_name);
+#endif
 			}
 		    }
 		}
@@ -323,6 +416,8 @@ int main (int argc, char* argv[])
 	}
 	closedir(dir);
     }        
+    fprintf(stderr, "found that we need %d files\n", cache_files.size());
+    
 
     // Set up the aggregators first
     for (u_int i = 0; i < conf.aggregators.size(); i++) {
@@ -331,6 +426,21 @@ int main (int argc, char* argv[])
 	if (wait_for_response) ehdr.flags |= SEND_ACK;
 	if (validate) ehdr.flags |= SEND_RESULTS;
 	if (get_stats) ehdr.flags |= SEND_STATS;
+	if (nw_compress) ehdr.flags |= NW_COMPRESS;
+	if (low_memory) ehdr.flags |= LOW_MEMORY;
+	if (stream_ls) ehdr.flags |= STREAM_LS;
+	
+	ehdr.filter_flags = 0;
+	if (filter_inet) ehdr.filter_flags |= FILTER_INET;
+	if (filter_part) {
+	    ehdr.filter_flags |= FILTER_PART;
+	    strcpy (ehdr.filter_part, filter_part);
+	}
+	if (filter_output_after) {
+	    ehdr.filter_flags |= FILTER_OUT;
+	    strcpy (ehdr.filter_output_after, filter_output_after);
+	}
+
 	strcpy (ehdr.dirname, dirname);
 	ehdr.epochs = conf.aggregators[i]->num_epochs;
 	if (i == 0) {
@@ -346,8 +456,17 @@ int main (int argc, char* argv[])
 	    strcpy (ehdr.next_host, conf.aggregators[i+1]->hostname);
 	}
 	ehdr.cmd_type = agg_type;
+	ehdr.parallelize = conf.aggregators[i]->num_epochs;
+	if (ehdr.parallelize > parallelize) parallelize = ehdr.parallelize;
 
-	conf.aggregators[i]->s = connect_to_server (conf.aggregators[i]->hostname, conf.aggregators[i]->port);
+	char real_host[1024];
+	if (host_suffix && strstr(conf.aggregators[i]->hostname, ".net") == NULL) 
+	  sprintf(real_host,"%s%s",conf.aggregators[i]->hostname,host_suffix);
+	else
+	  sprintf(real_host,"%s",conf.aggregators[i]->hostname);
+
+
+	    conf.aggregators[i]->s = connect_to_server (real_host, conf.aggregators[i]->port);
 	if (conf.aggregators[i]->s < 0) return conf.aggregators[i]->s;
 
 	rc = safe_write (conf.aggregators[i]->s, &ehdr, sizeof(ehdr));
@@ -363,13 +482,21 @@ int main (int argc, char* argv[])
     u_int agg_cnt = 0;
     u_int cur_agg_epochs = 0;
     for (u_int i = 0; i < conf.difts.size(); i++) {
-	conf.difts[i]->s = connect_to_server (conf.difts[i]->hostname, STREAMSERVER_PORT);
+	char real_host[1024];
+	if (host_suffix && strstr(conf.difts[i]->hostname, ".net") == NULL) 
+	  sprintf(real_host,"%s%s",conf.difts[i]->hostname,host_suffix);
+	else
+	  sprintf(real_host,"%s",conf.difts[i]->hostname);
+
+	conf.difts[i]->s = connect_to_server (real_host, STREAMSERVER_PORT);
 	if (conf.difts[i]->s < 0) return conf.difts[i]->s;
 
 	struct epoch_hdr ehdr;
 	ehdr.cmd_type = DO_DIFT;
 	ehdr.flags = 0;
 	if (sync_files) ehdr.flags |= SYNC_LOGFILES;
+	if (get_stats) ehdr.flags |= SEND_STATS;
+	ehdr.record_trace = record_trace;
 	strcpy (ehdr.dirname, dirname);
 	ehdr.epochs = conf.difts[i]->num_epochs;
 	if (i == 0) {
@@ -409,8 +536,32 @@ int main (int argc, char* argv[])
 	}
 	
 	if (sync_files) {
+
+	    //need to figure out what to do at this point: 
+	    struct vector<struct replay_path> elog_files;
+	    for (auto l : log_files) { 
+		
+		if (strstr(l.path, "ckpt.")) {
+		    bool found = false;
+		    for (auto c : conf.difts[i]->ckpts) { 
+			if (!strcmp(l.path,c)){
+			    found = true;
+			    break;
+			}
+		    }
+		    if (found) { 
+			elog_files.push_back(l);
+			fprintf(stderr, "sending %s\n",l.path);
+		    }		    
+		}
+		else { 
+		    elog_files.push_back(l);
+		}
+	    }
+	    fprintf(stderr, "sending %u instead of %u logfiles to %s",elog_files.size(), log_files.size(),conf.difts[i]->hostname);
+
 	    // First send count of log files
-	    uint32_t cnt = log_files.size();
+	    uint32_t cnt = elog_files.size();
 	    rc = safe_write (conf.difts[i]->s, &cnt, sizeof(cnt));
 	    if (rc != sizeof(cnt)) {
 		fprintf (stderr, "Cannot send log file count to streamserver, rc=%d\n", rc);
@@ -418,7 +569,7 @@ int main (int argc, char* argv[])
 	    }
 
 	    // Next send log files
-	    for (auto iter = log_files.begin(); iter != log_files.end(); iter++) {
+	    for (auto iter = elog_files.begin(); iter != elog_files.end(); iter++) {
 		struct replay_path p = *iter;
 		rc = safe_write (conf.difts[i]->s, &p, sizeof(struct replay_path));
 		if (rc != sizeof(struct replay_path)) {
@@ -434,7 +585,7 @@ int main (int argc, char* argv[])
 		fprintf (stderr, "Cannot send cache file count to streamserver, rc=%d\n", rc);
 		return rc;
 	    }
-	    fprintf(stderr, "we have %u cache files to send\n", cnt);
+	    fprintf(stderr, "we have %u cache files to send to %s\n", cnt, conf.difts[i]->hostname);
 	    
 	    // And finally the cache files
 	    for (auto iter = cache_files.begin(); iter != cache_files.end(); iter++) {
@@ -447,32 +598,32 @@ int main (int argc, char* argv[])
 	    }
 
 	    // Get back response
-	    bool response[log_files.size()+cache_files.size()];
-	    rc = safe_read (conf.difts[i]->s, response, sizeof(bool)*(log_files.size()+cache_files.size()));
-	    if (rc != (long) (sizeof(bool)*(log_files.size()+cache_files.size()))) {
+	    bool response[elog_files.size()+cache_files.size()];
+	    rc = safe_read (conf.difts[i]->s, response, sizeof(bool)*(elog_files.size()+cache_files.size()));
+	    if (rc != (long) (sizeof(bool)*(elog_files.size()+cache_files.size()))) {
 		fprintf (stderr, "Cannot read sync results, rc=%d\n", rc);
 		return rc;
 	    }
 	    
 	    // Send requested files
 	    u_long l, j;
-	    for (l = 0; l < log_files.size(); l++) {
+	    for (l = 0; l < elog_files.size(); l++) {
 		if (response[l]) {
-		    printf ("%ld of %d log files requested\n", l, log_files.size());
+		    fprintf (stderr,"%ld of %d log files requested\n", l, elog_files.size());
 		    char* filename = NULL;
-		    for (int j = strlen(log_files[l].path); j >= 0; j--) {
-			if (log_files[i].path[j] == '/') {
-			    filename = &log_files[l].path[j+1];
+		    for (int j = strlen(elog_files[l].path); j >= 0; j--) {
+			if (elog_files[l].path[j] == '/') {
+			    filename = &elog_files[l].path[j+1];
 			    break;
 			} 
 		    }
 		    if (filename == NULL) {
-			fprintf (stderr, "Bad path name: %s\n", log_files[l].path);
+			fprintf (stderr, "Bad path name: %s\n", elog_files[l].path);
 			return -1;
 		    }
-		    rc = send_file (conf.difts[i]->s, log_files[l].path, filename);
+		    rc = send_file (conf.difts[i]->s, elog_files[l].path, filename);
 		    if (rc < 0) {
-			fprintf (stderr, "Unable to send log file %s\n", log_files[l].path);
+			fprintf (stderr, "Unable to send log file %s\n", elog_files[l].path);
 			return rc;
 		    }
 		}
@@ -509,7 +660,6 @@ int main (int argc, char* argv[])
 	    if (rc != sizeof(ack)) {
 		fprintf (stderr, "Cannot recv ack,rc=%d,errno=%d\n", rc, errno);
 	    }
-	    printf ("done reval is %d\n", ack.retval);
 	}
     }
 
@@ -524,15 +674,20 @@ int main (int argc, char* argv[])
 		fprintf (stderr, "Cannot make dir %s\n", rdir);
 		return rc;
 	    }
-	    // Fetch 4 files: results, addresses, input and output tokens
-	    for (int j = 0; j < 4; j++) {
+
+	    // Fetch n+3 files: results, addresses, input and output tokens
+	    for (int j = 0; j < parallelize+3; j++) {
 		if (fetch_file(conf.epochs[i].pagg->s, rdir) < 0) return -1;
 	    }
 	}
 
 	// Now actually do the comaprison
 	char cmd[512];
-	sprintf (cmd, "../dift/proc64/out2mergecmp %s -d %s", cmp_dir, dest_dir);
+	if (pid < 0)
+	    sprintf (cmd, "../dift/proc64/out2mergecmp %d %s -d %s", parallelize, cmp_dir, dest_dir);
+	else
+	    sprintf (cmd, "../dift/proc64/out2mergecmp %d %s -p %d -d %s", parallelize, cmp_dir, pid, dest_dir);
+
 	for (u_long i = 0; i < conf.epochs.size(); i++) {
 	    char add[64];
 	    sprintf (add, " %lu", i);
@@ -542,13 +697,34 @@ int main (int argc, char* argv[])
     }
 
     if (get_stats) {
-	// Fetch the files into the tmp directory
+	// Fetch the stats files into the tmp directory
 	for (u_long i = 0; i < conf.epochs.size(); i++) {
 	    char statfile[256];
 	    sprintf (statfile, "/tmp/stream-stats-%lu", i);
 	    if (fetch_file(conf.epochs[i].pagg->s, "/tmp") < 0) return -1;
 	    rc = rename ("/tmp/stream-stats", statfile);
-	    if (rc < 0) printf ("Unable to rename stat file, rc=%d, errno=%d\n", rc, errno);
+	    if (rc < 0) printf ("Unable to rename aggregator stats file, rc=%d, errno=%d\n", rc, errno);
+
+	    sprintf (statfile, "/tmp/taint-stats-%lu", i);
+	    if (fetch_file(conf.epochs[i].pdift->s, "/tmp") < 0) return -1;
+	    rc = rename ("/tmp/taint-stats", statfile);
+	    if (rc < 0) printf ("Unable to rename dift stats file, rc=%d, errno=%d\n", rc, errno);
+	}
+    }
+
+    if (record_trace) {
+	// Fetch trace files into the tmp directory
+	for (u_long i = 0; i < conf.epochs.size(); i++) {
+	    char statfile[256];
+	    sprintf (statfile, "/tmp/trace-exec-%lu", i);
+	    if (fetch_file(conf.epochs[i].pdift->s, "/tmp") < 0) return -1;
+	    rc = rename ("/tmp/trace_exec", statfile);
+	    if (rc < 0) printf ("Unable to rename trace execution file, rc=%d, errno=%d\n", rc, errno);
+
+	    sprintf (statfile, "/tmp/trace-inst-%lu", i);
+	    if (fetch_file(conf.epochs[i].pdift->s, "/tmp") < 0) return -1;
+	    rc = rename ("/tmp/trace_inst", statfile);
+	    if (rc < 0) printf ("Unable to rename trace instruction count file, rc=%d, errno=%d\n", rc, errno);
 	}
     }
 

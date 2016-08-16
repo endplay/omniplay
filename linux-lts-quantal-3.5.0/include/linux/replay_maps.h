@@ -20,4 +20,6 @@ int open_cache_file (dev_t dev, u_long ino, struct timespec mtime, int flags);
 // The recgroup lock must be held when calling this function
 int open_mmap_cache_file (dev_t dev, u_long ino, struct timespec mtime, int is_write);
 
+//get the next counter for the tmp writable mapped files
+int get_next_mmap_file(void); 
 #endif

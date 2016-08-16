@@ -806,8 +806,25 @@ void mm_release(struct task_struct *tsk, struct mm_struct *mm)
 		    atomic_read(&mm->mm_users) > 1) {
 
 			struct syscall_result* psr; /* REPLAY */
-			if (current->record_thrd) new_syscall_enter_external (TID_WAKE_CALL);                                /* REPLAY */
-			else if (current->replay_thrd) get_next_syscall_enter_external (TID_WAKE_CALL, NULL, &psr);          /* REPLAY */
+			if (current->record_thrd) new_syscall_enter_external (TID_WAKE_CALL);    /* REPLAY */
+			else if (current->replay_thrd) { 
+				/* REPLAY */
+				get_next_syscall_enter_external (TID_WAKE_CALL, NULL, &psr);
+				/*
+				 * We find ourselves in a weird case where the above syscall
+				 * fails b/c of a signal, but we're already exiting. To solve
+				 * the issue I recall recplay_exit_start here, which basically
+				 * manages all of the waiting in the case that something weird
+				 * is happening with pin
+				 */
+
+
+				if (should_call_recplay_exit_start()) { 
+					printk("calling recplay_exit_start, we're in the rp_pinrestart_syscall == REPLAY_PIN_TRAP_STATUS_ENTER\n");
+					recplay_exit_start();					
+				}
+			}
+
 
 			/*
 			 * We don't check the error code - if userspace has
@@ -1118,7 +1135,11 @@ static void copy_flags(unsigned long clone_flags, struct task_struct *p)
 
 SYSCALL_DEFINE1(set_tid_address, int __user *, tidptr)
 {
-	current->clear_child_tid = tidptr;
+
+	/* REPLAY */
+	if (!is_pin_attaching()) { 
+		current->clear_child_tid = tidptr;
+	}
 
 	return task_pid_vnr(current);
 }

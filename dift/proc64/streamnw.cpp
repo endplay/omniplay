@@ -1,3 +1,4 @@
+#include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <stdio.h>
@@ -72,8 +73,6 @@ long send_file (int s, const char* pathname, const char* filename)
 	return rc;
     }
 	
-    fprintf(stderr, "send_file filename %s, size %ld\n",filename, st.st_size);
-
     // Send file data
     u_long bytes_written = 0;
     while (bytes_written < (u_long) st.st_size) {
@@ -159,4 +158,64 @@ long fetch_file (int s, const char* dest_dir)
     close (fd);
     return rc;
 }
+
+long send_shmem (int s, char* pathname, const char* filename)
+{
+    char buf[1024*1024];
+    char sendfilename[NAMELEN];
+    struct stat st;
+    long rc;
+
+    // Get the filename
+    for (u_int i = 1; i < strlen(pathname); i++) {
+	if (pathname[i] == '/') pathname[i] = '.';
+    }
+    int fd = shm_open (pathname, O_RDONLY, 0644);
+    if (fd < 0) {
+	fprintf (stderr, "send_file: cannot open %s, rc=%d, errno=%d\n", pathname, fd, errno);
+	return fd;
+    }
+
+    // Send the filename
+    strcpy (sendfilename, filename);
+    rc = write (s, sendfilename, sizeof(sendfilename));
+    if (rc != sizeof(sendfilename)) {
+	fprintf (stderr, "send_file: cannot write filename, rc=%ld, errno=%d\n", rc, errno);
+	return rc;
+    }
+
+    // Send the file stats
+    rc = fstat (fd, &st);
+    if (rc < 0) {
+	fprintf (stderr, "send_file: cannot stat %s, rc=%ld, errno=%d\n", filename, rc, errno);
+	return rc;
+    }
+    rc = write (s, &st, sizeof(st));
+    if (rc != sizeof(st)) {
+	fprintf (stderr, "send_file: cannot write file %s stats, rc=%ld, errno=%d\n", filename, rc, errno);
+	return rc;
+    }
+	
+    // Send file data
+    u_long bytes_written = 0;
+    while (bytes_written < (u_long) st.st_size) {
+	u_long to_write = st.st_size - bytes_written;
+	if (to_write > sizeof(buf)) to_write = sizeof(buf);
+	rc = read (fd, buf, to_write);
+	if (rc <= 0) {
+	    fprintf (stderr, "send_file: read of %s returns %ld, errno=%d\n", filename, rc, errno);
+	    break;
+	}
+	long wrc = safe_write(s, buf, rc);
+	if (wrc != rc) {
+	    fprintf (stderr, "send_file: write of %s returns %ld (not %ld), errno=%d\n", filename, wrc, rc, errno);
+	    break;
+	}
+	bytes_written += rc;
+    }
+    close (fd);
+
+    return rc;
+}
+
 

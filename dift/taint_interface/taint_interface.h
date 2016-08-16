@@ -34,7 +34,6 @@ taintvalue_t get_taint_value (taint_t t, option_t option);
 
 taintvalue_t get_max_taint_value(void);
 int is_taint_zero(taint_t src);
-taint_t merge_taints(taint_t dst, taint_t src);
 
 /* Translate a register from the Pin representation
  *  E.g. translates AH to EAX
@@ -53,7 +52,8 @@ void print_options(FILE* fp, taint_t t);
 void taint_fini(void);
 
 void finish_and_print_taint_stats(FILE* fp);
-
+u_long get_num_merges();
+u_long get_num_merges_saved();
 taint_t* get_reg_taints(int reg);
 
 /* Clear size bytes of the register. (starts from the LSB) */
@@ -334,6 +334,8 @@ TAINTSIGN taint_add2_wmemwreg_2hwreg (u_long mem_loc, int src_reg,
 TAINTSIGN taint_add3_dwmem2wreg_2wreg (u_long mem_loc,
                                     int src_reg1, int src_reg2,
                                     int dst_reg1, int dst_reg2);
+TAINTSIGN taint_add2_hwregbreg_2breg (int src_reg1, int src_reg2,
+				      int dst_reg1, int dst_reg2);
 TAINTSIGN taint_add2_2hwreg_2breg (int src_reg1, int src_reg2,
                                 int dst_reg1, int dst_reg2);
 TAINTSIGN taint_add3_2hwreg_2hwreg (int src_reg1, int src_reg2, int src_reg3,

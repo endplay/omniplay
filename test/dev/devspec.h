@@ -3,7 +3,9 @@
 
 #define SPEC_PSDEV_MAJOR 149
 
-#define SPEC_DEV "/dev/spec0"
+#define SPEC_NAME "spec0"
+#define SPEC_DEV "/dev/" SPEC_NAME
+
 
 #define ROLLED_BACK 1
 
@@ -19,18 +21,20 @@ struct record_data {
 };
 
 struct wakeup_data {
-	int           pin;
-	int           gdb;
-	char __user * logdir;
-	char __user * linker;
-	int           fd;
-	int           follow_splits;
-	loff_t        attach_index;
-	int           attach_pid;
-	int	      save_mmap;
-	int           ckpt_at;
-	int           record_timing;
-	char __user * cache_dir;
+	int             pin;
+	int             gdb;
+	char __user *   logdir;
+	char __user *   linker;
+        char __user *   uniqueid;
+	int             fd;
+	int             follow_splits;
+	loff_t          attach_index;
+	int             attach_pid;
+	int	        save_mmap;
+	int             ckpt_at;
+	int             record_timing;
+	u_long          nfake_calls;
+	u_long __user * fake_calls;
 };
 
 struct wakeup_ckpt_data {
@@ -39,12 +43,15 @@ struct wakeup_ckpt_data {
 	char __user * logdir;
 	char __user * filename;
 	char __user * linker;
+        char __user * uniqueid;
 	int           fd;
 	int           follow_splits;
 	loff_t        attach_index;
 	int           attach_pid;
 	int	      save_mmap;
-	char __user * cache_dir;
+        int           ckpt_pos;
+	u_long          nfake_calls;
+	u_long __user * fake_calls;    
 };
 
 struct get_used_addr_data {
@@ -72,6 +79,11 @@ struct filemap_entry_data {
 	int num_entries;
 };
 
+struct open_fds_data {
+	void __user* entries;
+	int num_entries;
+};
+
 struct get_record_pid_data {
 	pid_t nonrecordPid;
 };
@@ -87,6 +99,11 @@ struct set_pin_address_data {
 	u_long pthread_data;
 	u_long __user* pcurthread;
 	int attach_ndx;
+};
+
+struct redo_mmap_data {
+	u_long rc;
+	u_long len;
 };
 
 #define SPECI_REPLAY_FORK _IOR('u', 0, struct record_data)
@@ -112,5 +129,10 @@ struct set_pin_address_data {
 #define SPECI_TRY_TO_EXIT _IOR('u', 20, pid_t)
 #define SPECI_GET_REPLAY_PID _IOR('u', 21, struct get_replay_pid_data)
 #define SPECI_MAP_CLOCK _IO('u',22)
+#define SPECI_GET_OPEN_FDS _IOR('u', 23, struct open_fds_data)
+#define SPECI_CHECK_FOR_REDO _IO('u', 24)
+#define SPECI_REDO_MMAP _IOW('u', 25, struct redo_mmap_data)
+#define SPECI_IS_PIN_ATTACHING _IO('u', 26)
+#define SPECI_REDO_MUNMAP _IO('u', 27)
 
 #endif

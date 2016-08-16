@@ -20,7 +20,7 @@
 
 #include <sysdep.h>
 #include <init-arch.h>
-
+	
 /* Define multiple versions only for the definition in lib and for
    DSO.  In static binaries we need memcpy before the initialization
    happened.  */
@@ -51,7 +51,11 @@ ENTRY(memcpy)
 	leal	__memcpy_ssse3@GOTOFF(%ebx), %eax
 	testl	$bit_Fast_Rep_String, FEATURE_OFFSET+index_Fast_Rep_String+__cpu_features@GOTOFF(%ebx)
 	jz	2f
+#ifdef DO_FAKE_CALLS
+	leal	__memcpy_ssse3_rep_shim@GOTOFF(%ebx), %eax
+#else
 	leal	__memcpy_ssse3_rep@GOTOFF(%ebx), %eax
+#endif	
 2:	popl	%ebx
 	cfi_adjust_cfa_offset (-4)
 	cfi_restore (ebx)

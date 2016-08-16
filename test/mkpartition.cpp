@@ -7,29 +7,60 @@
 #include <errno.h>
 #include <assert.h>
 #include <dirent.h>
-
-#include "parseklib.h"
+#include <cstdint>
+#include <math.h>
 #include <map>
 #include <vector>
+#include <queue>
+#include <set>
+#include <limits>
+#include <unordered_set>
+
+#include "parseklib.h"
+#include "../linux-lts-quantal-3.5.0/include/linux/pthread_log.h"
 using namespace std;
 
+unordered_set<short> bad_syscalls({192, 91, 120, 174, 125, 45});
+
+
+//used simply for the read from the file system
 struct replay_timing {
     pid_t     pid;
     u_long    index;
     short     syscall;
     u_int     ut;
+    uint64_t  cache_misses;
 };
 
-struct extra_data {
-    double   dtiming;
-    u_long   aindex;
-    u_long   start_clock;
+//used everywhere else
+struct timing_data {
+    pid_t     pid;
+    u_long    index;
+    short     syscall;
+    u_int     ut;      //should I not include this as it is only used to calculate dtiming? 
+
+    bool      can_attach; 
+    short     blocking_syscall; //the syscall number that is forcing this to be unattachable
+
+
+    pid_t     forked_pid; //the pid of the forked process (if applicable).
+    bool      should_track; //should I track this rp_timing? 
+    u_long    call_clock;   //the clock value of the most recent sync operation before this syscall is called. 
+    u_long    start_clock;  //when the syscall starts
+    u_long    stop_clock;   //when the syscall is done running
+    u_long    aindex;
+
+    //used to estimate dift time
+    double    dtiming;
+    uint64_t  cache_misses;
+    u_long    taint_in; //the amount of taint that we've gotten in at this point
+    u_long    taint_out; //the amount of taint that we've output at this point
 };
 
 struct ckpt_data {
-	u_long proc_count;
-	unsigned long long  rg_id;
-	int    clock;
+    u_long proc_count;
+    unsigned long long  rg_id;
+    int    clock;
 };
 
 struct ckpt_proc_data {
@@ -44,28 +75,32 @@ struct ckpt_proc_data {
 #define MAX_CKPT_CNT 1024
 struct ckpt {
     char   name[20];
-    u_long clock;
+    u_long index;
+    u_long rp_clock; //moved this around a bit b/c I've found the index to be a pain to use. 
 };
 struct ckpt ckpts[MAX_CKPT_CNT];
 int ckpt_cnt = 0;
 
-static int group_by = 0, filter_syscall = 0, details = 0, use_ckpt = 0;
+static int group_by = 0, filter_syscall = 0, details = 0, use_ckpt = 0, do_split = 0;
 
+static int count;
 
 void format ()
 {
-    fprintf (stderr, "Format: mkpartition <timing dir> <# of partitions> [-g group_by] [-f filter syscall] [-v]\n");
+    fprintf (stderr, "Format: mkpartition <timing dir> <# of partitions> [-g group_by] [-f filter syscall] [-s split at user-level] [-v verbose] [--fork fork_flags] [--stop stop_tracking_clock] <list of pids to track >\n");
     exit (22);
 }
+
+
 
 int cmp (const void* a, const void* b)
 {
     const struct ckpt* c1 = (const struct ckpt *) a;
     const struct ckpt* c2 = (const struct ckpt *) b;
-    return c1->clock - c2->clock;
+    return c1->index - c2->index;
 }
 
-long read_ckpts (char* dirname)
+static long read_ckpts (char* dirname)
 {
     char filename[80];
     DIR* dir;
@@ -94,7 +129,8 @@ long read_ckpts (char* dirname)
 		return rc;
 	    }
 	    strcpy (ckpts[ckpt_cnt].name, de->d_name+5);
-	    ckpts[ckpt_cnt].clock = cpd.outptr;
+	    ckpts[ckpt_cnt].index = cpd.outptr;
+	    sscanf(ckpts[ckpt_cnt].name, "%lu", &(ckpts[ckpt_cnt].rp_clock));
 	    ckpt_cnt++;
 
 	    close (fd);
@@ -106,17 +142,80 @@ long read_ckpts (char* dirname)
     return 0;
 }
 
+static long ms_diff (struct timeval tv1, struct timeval tv2)
+{
+    return ((tv1.tv_sec - tv2.tv_sec) * 1000 + (tv1.tv_usec - tv2.tv_usec) / 1000);
+}
 
 
-void print_timing (struct replay_timing* timings, struct extra_data* edata, int start, int end)
+static int cnt_interval (vector<struct timing_data> &td, int start, int end)
+{
+    int last_aindex = 0;
+    for (int i = end; i > start; --i) { 
+	if (td[i].aindex > 0) {
+	    last_aindex = td[i].aindex;
+	    break;
+	}
+    }
+    return last_aindex - td[start].aindex;
+}
+
+
+static inline void print_utimings (vector<struct timing_data> &td, int start, int end, u_int split, int intvl, char* fork_flags)
 { 
-    //printf ("%d %5d %6lu %5d %6d ", process_index, timings[start].pid, timings[start].index, timings[end].pid, end-start);
-    printf ("%5d %6lu %5d %6lu ", timings[start].pid, timings[start].index, timings[end].pid, edata[end].start_clock);
+    u_long ndx = td[start].start_clock;
+    u_long next_ndx = ndx + intvl;
+    printf ("%5d k %6lu u %6lu       0       0 ", td[start].pid, ndx, next_ndx);
+    if (strnlen(fork_flags, 128) > 0)
+	printf (" %s\n", fork_flags);
+    else {
+	printf (" 0\n");
+    }
+    for (u_int i = 0; i < split-2; i++) {
+	ndx = next_ndx;
+	next_ndx = ndx+intvl;
+	printf ("%5d u %6lu u %6lu       0       0 ", td[start].pid, ndx, next_ndx);
+	if (strnlen(fork_flags, 128) > 0)
+	    printf (" %s\n", fork_flags);
+	else {
+	    printf (" 0\n");
+	}
+    }
+    printf ("%5d u %6lu k %6lu       0       0 ", td[start].pid, next_ndx, td[end].start_clock);
+    if (strnlen(fork_flags, 128) > 0)
+	printf (" %s\n", fork_flags);
+    else {
+	printf (" 0\n");
+    }
 
+}
+
+
+//model created by correlation analysis
+static double estimate_dift(vector<struct timing_data> &td, int i, int j)
+{ 
+    double utime = td[j].dtiming - td[i].dtiming;
+//    u_long taint_out = td[j].taint_out - td[i].taint_out; 
+//    u_long cache_misses = td[j].cache_misses - td[i].cache_misses; 
+//   double rtn_val = (220 * utime) + ( 0.000241 * taint_out) + (.594 * cache_misses) ;
+
+
+    double rtn_val = utime;
+
+    return rtn_val;
+}
+
+inline static void print_timing (vector<struct timing_data> &td, int start, int end, char* fork_flags)
+{ 
+
+//    fprintf(stderr,"%lu %lu a1 %lu a2 %lu\n", td[start].start_clock, td[end].start_clock, td[start].aindex, td[end].aindex);
+
+    count++;
+    printf ("%5d k %6lu k %6lu ", td[start].pid, td[start].start_clock, td[end].start_clock);
 
     if (filter_syscall > 0) {
-	if ((long) filter_syscall > timings[start].index && (long) filter_syscall <= timings[end].index) {
-	    printf (" %6lu", filter_syscall-timings[start].index+1);
+	if ((u_long) filter_syscall > td[start].index && (u_long) filter_syscall <= td[end].index) {
+	    printf (" %6lu", filter_syscall-td[start].index+1);
 	} else {
 	    printf (" 999999");
 	}
@@ -126,59 +225,58 @@ void print_timing (struct replay_timing* timings, struct extra_data* edata, int 
     if (use_ckpt > 0) {
 	int i;
 	for (i = 0; i < ckpt_cnt; i++) {
-	    if (timings[start].index <= ckpts[i].clock) {
+	    if (td[start].start_clock <= ckpts[i].rp_clock) { //why is this check against index? 
 		if (i > 0) {
-		    printf (" %6s\n", ckpts[i-1].name);
+		    printf (" %6s", ckpts[i-1].name);
 		} else {
-		    printf ("      0\n");
+		    printf ("      0");
 		}
-		return;
+		break;
 	    }
 	}
-	printf (" %6s\n", ckpts[i-1].name);
+	printf (" %6s", ckpts[i-1].name);
     } else {
-	printf ("       0\n");
+	printf ("       0");
+    }
+    if (strnlen(fork_flags, 128) > 0)
+	printf (" %s\n", fork_flags);
+    else {
+	printf (" 0\n");
     }
 }
 
-static int can_attach (short syscall) 
-{
-    return (syscall != 192 && syscall != 91);
-}
-
-static int cnt_interval (struct extra_data* edata, int start, int end)
-{
-    return edata[end].aindex - edata[start].aindex;
-}
-
-int gen_timings (struct replay_timing* timings, 
-		 struct extra_data* edata, 
+int gen_timings (vector<timing_data> &td,
 		 int start, 
 		 int end, 
-		 int partitions){
+		 int partitions, 
+		 char* fork_flags){
 
     double biggest_gap = 0.0, goal;
     int gap_start, gap_end, last, i, new_part;
 
     assert (start < end); 
-    assert (partitions <= cnt_interval(edata, start, end));
+    assert (partitions <= cnt_interval(td,start, end));
 
     if (partitions == 1) {
-	    print_timing (timings, edata, start, end);
+//	fprintf(stderr, "only_one:");
+	print_timing (td, start, end, fork_flags);
 	return 0;
     }
 
-    double total_time = edata[end].dtiming - edata[start].dtiming;
-
+    double total_time = estimate_dift(td, start, end);
     // find the largest gap
     if (details) {
 	printf ("Consider [%d,%d]: %d partitions %.3f time\n", start, end, partitions, total_time);
     }
 
     last = start;
+    gap_start = start;
+    gap_end = start + 1;
+	
     for (i = start+1; i < end; i++) {
-	if (can_attach(timings[i].syscall)) {
-	    double gap = edata[i].dtiming - edata[last].dtiming;
+
+	if (td[i].can_attach && td[i].should_track){
+	    double gap = estimate_dift(td, last, i);
 	    if (gap > biggest_gap) {
 		gap_start = last;
 		gap_end = i;
@@ -187,37 +285,74 @@ int gen_timings (struct replay_timing* timings,
 	    last = i;
 	}
     }
+
     if (details) {
-	printf ("Biggest gap from %d to %d is %.3f\n", gap_start, gap_end, edata[gap_end].dtiming - edata[gap_start].dtiming);
+	printf ("Biggest gap from %d to %d is %.3f\n", gap_start, gap_end, biggest_gap);
     }
     if (partitions > 2 && biggest_gap >= total_time/partitions) {
 	// Pivot on this gap
-	total_time -= (edata[gap_end].dtiming - edata[gap_start].dtiming);
-	partitions--;
+
+	u_int split = 1;
+	int intvl = 1;
+	if (do_split && biggest_gap >= 2*total_time/partitions) {
+	    split = biggest_gap*partitions/total_time-1;
+	    if (partitions-split < 2) {
+		split = partitions-2;
+	    }
+	    if (details) {
+		printf ("would like to split this gap into %d partitions\n", split);
+		printf ("begins at clock %lu ends at clock %lu\n", td[gap_start].start_clock, td[gap_end].start_clock);
+	    }
+	    if (td[gap_end].start_clock-td[gap_start].start_clock < split) split = td[gap_end].start_clock - td[gap_start].start_clock;
+	    intvl = (td[gap_end].start_clock-td[gap_start].start_clock)/split;
+	    if (details) {
+		printf ("Interval is %d\n", intvl);
+	    }
+	} 
+	total_time -= biggest_gap;
+	partitions -= split;
 	if (gap_start == start) {
-
-	    print_timing (timings, edata, gap_start, gap_end);
-	    return gen_timings (timings, edata, gap_end, end, partitions);
+	    if (split > 1) {
+		print_utimings (td, gap_start, gap_end, split, intvl, fork_flags);
+	    } else {
+//		fprintf(stderr, "(%d,%d): total %lf, gap %lf, goal %lf\n", gap_start, gap_end,total_time, gap, total_time / partitions); //oughta tell me the cause of this issue? 
+		print_timing (td, gap_start, gap_end, fork_flags);
+	    }
+	    return gen_timings (td, gap_end, end, partitions, fork_flags);
 	}
 
-	new_part = 0.5 + (partitions * (edata[gap_start].dtiming - edata[start].dtiming)) / total_time;
+	double front_gap = estimate_dift(td, start, gap_start);
+
+	new_part = 0.5 + (partitions * front_gap) / total_time;
 	if (details) {
 	    printf ("gap - new part %d\n", new_part);
 	}
-	if (partitions - new_part > cnt_interval(edata, gap_end, end)) new_part = partitions-cnt_interval(edata, gap_end, end);
+	if (partitions - new_part > cnt_interval(td, gap_end, end)) new_part = partitions-cnt_interval(td, gap_end, end);
 	if (details) {
 	    printf ("gap - new part %d\n", new_part);
 	}
-	if (new_part > cnt_interval(edata, start, gap_start)) new_part = cnt_interval(edata, start, gap_start);
+	if (new_part > cnt_interval(td, start, gap_start)) new_part = cnt_interval(td, start, gap_start);
 	if (new_part < 1) new_part = 1;
 	if (new_part > partitions-1) new_part = partitions-1;
 	if (details) {
 	    printf ("gap - new part %d\n", new_part);
 	}
+	
+	gen_timings (td, start, gap_start, new_part, fork_flags);
+	if (split > 1) {
+	    print_utimings (td, gap_start, gap_end, split, intvl, fork_flags);
+	} else {
+//	    fprintf(stderr, "(%d,%d): total %lf, gap %lf, goal %lf\n", gap_start, gap_end,total_time, gap, total_time / partitions);
+//	    for (i = gap_start; i < gap_end + 1; i++) {
+//		timing_data &t = td[i];
 
-	gen_timings (timings, edata, start, gap_start, new_part);
-	print_timing (timings, edata,  gap_start, gap_end);
-	return gen_timings (timings, edata, gap_end, end, partitions - new_part);
+//		fprintf (stderr,"%d, %d: syscall %d %d %lu %lu, %lu, %d, %d\n", count,i, t.syscall,t.pid, t.call_clock, t.start_clock, t.stop_clock, t.should_track, t.can_attach);
+
+//	    }
+
+	    print_timing (td, gap_start, gap_end, fork_flags);
+	}
+	return gen_timings (td, gap_end, end, partitions - new_part, fork_flags);
     } else {
 	// Allocate first interval
 	goal = total_time/partitions;
@@ -225,10 +360,12 @@ int gen_timings (struct replay_timing* timings,
 	    printf ("step: goal is %.3f\n", goal);
 	}
 	for (i = start+1; i < end; i++) {
-	    if (can_attach(timings[i].syscall)) {
-		if (edata[i].dtiming-edata[start].dtiming > goal || cnt_interval(edata, i, end) == partitions-1) {
-		    print_timing (timings, edata,  start, i);
-		    return gen_timings(timings, edata, i, end, partitions-1);
+	    if (td[i].can_attach) {
+		double gap = estimate_dift(td, start, i);
+		if (gap > goal || cnt_interval(td, i, end) == partitions-1) {	
+//		    fprintf(stderr, "gap %lf goal %lf\n", gap, goal);
+		    print_timing (td,  start, i, fork_flags);
+		    return gen_timings(td, i, end, partitions-1, fork_flags);
 		}
 	    }
 	}
@@ -236,552 +373,376 @@ int gen_timings (struct replay_timing* timings,
     return -1;
 }
 
-int find_processes(map<u_int,u_int> &pid_to_index, 
-		   map<u_int,u_int> &fork_process,
-		   map<u_int,u_int> &fork_offset,
-		   const char* dir, 
-		   const struct replay_timing* timings,
-		   const u_int num)
-{
-    char klog_filename[256];
-    int timings_map_index = 0; 
-    map<u_int,bool> pid_found;
 
-    for (u_int i = 0; i < num; i++) {
-	pid_found[timings[i].pid] = false; 
-    }
-    
-    //I think the first thing run is always the first pid... right? 
-    pid_to_index[timings[0].pid] = 0;
-    fork_process[timings[0].pid] = -1; //sentinal value for no fork
-    fork_offset[timings[0].pid] = -1; //sentinal value for no fork
-    timings_map_index++;
+//populate timings_data with info from the res log:
+void pop_with_kres(vector<struct timing_data> &td, 
+		   u_long &call_clock,
+		   const u_int index,
+		   const klog_result *res) { 
 
-    /*
-     * here we go through all of the klogs to figure out which pids are processes and which are 
-     * threads: 
-     * 1 for each of the pids found, we open its klog
-     * 2 for each record in the klog, we see if its a clone,
-     * 3 if the record is a clone then we update the datastructures
-    */
-    for(auto pid_iter = pid_found.begin(); pid_iter != pid_found.end(); pid_iter++) {
-	
-	sprintf (klog_filename, "%s/klog.id.%d", dir, pid_iter->first);	
-	struct klogfile *log = parseklog_open(klog_filename);
-	struct klog_result *res = NULL;
+    td[index].start_clock = res->start_clock;
+    td[index].stop_clock = res->stop_clock;
+    td[index].should_track = true;
 
-	//we're searching for calls to the clone() syscall
-	while((res = parseklog_get_next_psr(log)) != NULL) {
-	    if(res->psr.sysnum == 120 ) { 
-		if(res->psr.flags == 0x14) 
-		{ 
-		    //this is a fork! 
-		    pid_found[res->retval] = true; 
-		    pid_to_index[res->retval] = timings_map_index; 
-		    
-		    fork_process[res->retval] = pid_iter->first;
-		    fork_offset[res->retval] = res->index;
+    td[index].call_clock = call_clock;
+    call_clock = res->stop_clock;
 
-		    timings_map_index++; 
-		}
-		else 
-		{ 		 
-		    //we're assuming it is a thread_fork in this case: 
-		    pid_to_index[res->retval] = pid_to_index[pid_iter->first];
-		    pid_found[res->retval] = true;
-		}
+    if (res->retval > 0) { 
+	//input syscalls
+	if(res->psr.sysnum == 3 || res->psr.sysnum == 180) { 
+	    td[index].taint_in = res->retval;
+	}
+	//output syscalls 
+	if (res->psr.sysnum == 4 || res->psr.sysnum == 146) { 
+	    td[index].taint_out = res->retval;
+	}
+	//socketcall a special case b/c its very complicated
+	if (res->psr.sysnum == 102) { 
+	    if (res->retparams) { 
+		int call = *((int *)(res->retparams));
+		if (call == SYS_RECV || call == SYS_RECVFROM || call == SYS_RECVMSG){
+		    td[index].taint_in = res->retval;
+		}		    
+		else if (call == SYS_SENDMSG || call == SYS_SEND) { 		
+		    td[index].taint_out = res->retval;			
+		}	
 	    }
-	}
+	}    
     }
-    return 0;
 }
 
-int get_num_per_process(vector<u_int> &num_el,
-			map<u_int,u_int> &pid_index,
-			vector<u_int> &num_parts,			
-			map<u_int, map<u_int,u_int>> pid_intervals,
-			const struct replay_timing *timings,
-			const int parts,
-			const int num) { 
-
-    //first initialize the num_el to 0
-    u_int max = 0;
-    double sum_of_times = 0;
-    vector<u_int> total_time_proc;
-    map<u_int,u_int> last_time;        
-
-    for(auto pid_iter = pid_index.begin(); pid_iter != pid_index.end(); pid_iter++) { 
-	if(pid_iter->second > max) 
-	    max = pid_iter->second;
-    }
-
-    for(u_int i = 0; i <= max; i++){ 
-	num_el.push_back(0);
-	total_time_proc.push_back(0);
-    }
-
-    for(int i = 0; i < num; i++) {
-	u_int timings_pid = timings[i].pid;
-	u_int timings_index = timings[i].index;
-	u_int time_passed = timings[i].ut;
-
-	auto iter = last_time.find(timings_pid);
-	if(iter != last_time.end()) { 
-	    time_passed -= iter->second;
-	}
-	for(auto it = pid_intervals.begin(); it != pid_intervals.end(); it++) { 
-	    u_int curr_pid = it->first;
-	    u_int curr_pid_index = pid_index[curr_pid];
-	    map<u_int,u_int> interval = it->second;
-	
-	    /*
-	     * there are two times that things need to be considered as part of the replay:
-	     * 1. if the index of the current pid in the index_inclusion is the same as the index of
-	     *    the current pid of the timings entry (means same proc, possibly diff threads)
-	     * 2. if the current pid is in the interval map, and the current index is less than the
-	     *    index from the interval map for that current pid. Note: this won't work for multi-
-	     *    threaded processes that fork processes... 
-	     */
-	    if(curr_pid_index == pid_index[timings_pid] || 
-	       (interval.count(timings_pid) && timings_index <= interval[timings_pid])) {
-		total_time_proc[curr_pid_index] += time_passed;
-		num_el[curr_pid_index]++;
-	    }
-	}
-	last_time[timings_pid] = timings[i].ut;		
-    }
-
-    /* we assume that each partition takes 1 additional ut that was originally calculated 
-     * this is the assumption that seems to be built into our calculation of edata (check generate_*)
-     * and also makes it so that we have no negative sized partitions
-     */
-
-    for(auto iter = total_time_proc.begin(); iter != total_time_proc.end(); iter++) 
-    { 
-	(*iter)++;
-	sum_of_times += *iter;
-    }
-    
-    /*
-     * The algorithm works as follows: we start by assigning each process 1 partition. Then, for each 
-     * of the remaing partions (extra_parts), we assign partitions based upon a processes' weight,
-     * which is just the process_time / total_time. We take the floor (int division), so any remaining
-     * partions are assigned to the first however many processes. This isn't perfect, but it works
-     */
-
-    int extra_parts = parts - total_time_proc.size();
-    int parts_left = extra_parts;
-
-    for(auto iter = total_time_proc.begin(); iter != total_time_proc.end(); iter++) 
-    {
-	int curr_parts = (*iter / sum_of_times) * extra_parts;
-
-	num_parts.push_back(1 + curr_parts);
-	parts_left -= curr_parts;
-    }
-
-    /*
-     * There is probably a much better way to do this here. We could do a priority queue 
-     * which would give the bigger epochs even more weight. This might matter esp. at low 
-     * numbers of partitions. 
-     */
-    for(auto iter = num_parts.begin(); iter != num_parts.end(); iter++) 
-    {
-	if(parts_left == 0) break;
-	(*iter) += 1;
-	parts_left --;
-    }
-
-
-    return 0;
-}
-
-int allocate_multiprocess_ds(vector<struct replay_timing *> &timings_vect,
-			     vector<struct extra_data *> &edata_vect,
-			     vector<char *> &fork_flags,
-			     const vector<u_int> &num_el){
-
-    
-    for(auto index_iter = num_el.begin(); index_iter != num_el.end(); index_iter++) { 
-
-	//add in a spot for the fork_flags!
-	char* fork_flag = (char *) malloc(sizeof(char) * 128);
-	fork_flag = strdup("");
-	fork_flags.push_back(fork_flag);
-	
-
-	timings_vect.push_back((struct replay_timing *) malloc(sizeof(replay_timing) * (*index_iter)));
-	if (timings_vect.back() == NULL) {
-	    fprintf (stderr, "Unable to allocate timings buffer of size %u\n", sizeof(replay_timing) * (*index_iter));
-	    return -1;
-	}
-
-	edata_vect.push_back((struct extra_data *) malloc(sizeof(extra_data) * (*index_iter)));
-	if (edata_vect.back() == NULL) {
-	    fprintf (stderr, "Unable to allocate edata of size %u\n",sizeof(extra_data) * (*index_iter));
-	    return -1;
-	}
-    }
-    return 0;
-}
-
-int split_timings(vector<struct replay_timing *> &timings_vect,
-		  map<u_int,u_int> &pid_to_index_map,		  
-		  map<u_int, map<u_int,u_int>> pid_intervals,
-		  const struct replay_timing *timings, 
-		  const int num)
+class my_comp
 {
-    //initialize a map that stores the current # of elements in each timings map
-    int i;
-    
-    vector<u_int> timings_index_to_curr_offset; 
-    for(auto timings_vect_iter = timings_vect.begin(); timings_vect_iter != timings_vect.end(); timings_vect_iter++) { 
-	timings_index_to_curr_offset.push_back(0);
-    }
-
-    //For each of the elements in timings, let it go find its home! 
-    for (i = 0; i < num; i ++) {
-	for(auto it = pid_intervals.begin(); it != pid_intervals.end(); it++) { 
-
-	    u_int curr_pid = it->first;
-	    u_int curr_pid_index = pid_to_index_map[curr_pid];
-	    map<u_int,u_int> interval = it->second;
-	    
-	    u_int timings_pid = timings[i].pid;
-	    u_int curr_offset = timings_index_to_curr_offset[curr_pid_index];
-	    struct replay_timing* curr_timings = timings_vect[curr_pid_index];	    
-	    u_int timings_index = timings[i].index;
-
-
-//	    printf("%i split timings, curr_pid %d, curr_pid_index %d, timings_pid %d curr_offset %d, timings_index %d\n",
-//		   i, curr_pid, curr_pid_index, timings_pid, curr_offset, timings_index);
-		   
-	
-	    /*
-	     * there are two times that things need to be considered as part of the replay:
-	     * 1. if the index of the current pid in the index_inclusion is the same as the index of
-	     *    the current pid of the timings entry (means same proc, possibly diff threads)
-	     * 2. if the current pid is in the interval map, and the current index is less than the
-	     *    index from the interval map for that current pid. Note: this won't work for multi-
-	     *    threaded processes that fork processes... 
-	     */
-	    if(curr_pid_index == pid_to_index_map[timings_pid] || 
-	       (interval.count(timings_pid) && timings_index <= interval[timings_pid])) {
-	
-		curr_timings[curr_offset] = timings[i]; 
-		timings_index_to_curr_offset[curr_pid_index]++; //increment the index for this timings_map		
-	    }
-	}
-    }
-    return 0;
-}
-
-
-int build_intervals(map<u_int, u_int> &fork_process,
-		    map<u_int, u_int> &fork_offset, 
-		    map<u_int, u_int> &pid_to_index,
-		    map<u_int, map<u_int, u_int>> &index_inclusions)
-{
-    //fill index_inclusions with default values:  
-    for(auto proc_iter = fork_process.begin(); proc_iter != fork_process.end(); proc_iter++) 
-    {
-	map<u_int,u_int> intervals;
-	
-	int curr_pid = fork_process[proc_iter->first];
-	u_int curr_offset = fork_offset[proc_iter->first];
-	while(curr_pid != -1) 
+public:
+    bool operator() (const pair<u_long,u_long>& lhs, const pair<u_long,u_long>&rhs) const
 	{
-	    intervals[curr_pid] = curr_offset;
-
-	    curr_offset = fork_offset[curr_pid];
-	    curr_pid = fork_process[curr_pid];	    
+	    return lhs.second < rhs.second;
 	}
-	index_inclusions[proc_iter->first] =  intervals;
-    }
+};
 
-    if(details) { 
-	printf("fork_process\n");
-	for(auto it = fork_process.begin(); it != fork_process.end(); it++) 
-	    printf("(%d,%d)\n",it->first,it->second);
 
-	for(auto it = index_inclusions.begin(); it != index_inclusions.end(); it++) 
-	{
-	    printf("intervals for %d\n",it->first);
-	    for(auto it2 = it->second.begin(); it2 != it->second.end(); it2++) 
-	    {
-		printf("(%d,%d),",it2->first,it2->second);
-	    }
-	    printf("\n");
-	}
-    }
-   
-    return 0;
-} 
-int populate_start_clock(vector<struct replay_timing *> &timings_vect,
-			 vector<struct extra_data *> &edata_vect,
-			 vector<u_int> &num_el,
-			 const struct replay_timing* timings, 
-			 const u_int num, 
-			 const char* dir){
-
-    // Fill in start clock time from klogs - start with parent process
-
-    char path[256];
-    sprintf (path, "%sklog.id.%d", dir, timings[0].pid);
-
-    struct klogfile* log = parseklog_open(path);
-    if (!log) {
-	fprintf(stderr, "%s doesn't appear to be a valid klog file!\n", path);
-	return -1;
-    }
-
-    struct klog_result* res = parseklog_get_next_psr(log); // exec
+// There seems to be a better way of doing this by keeping multiple klog
+// files open at the same time. Then we only iterate through the timings list once. 
+int parse_klogs(vector<struct timing_data> &td,
+		const u_long stop_clock,
+		const char* dir, 
+		const char* fork_flags, 
+		const set<pid_t> procs)
+{
+    struct klog_result* res;
     u_int lindex = 0;
-    vector<pid_t> children;
-    vector<u_int> timings_index; 
-    for(auto i : timings_vect) { 
-	(void)i;
-	timings_index.push_back(0);
-    }
+    u_int stop_looking_index = numeric_limits<u_long>::max();
+    u_long most_recent_clock = 0;
+    pid_t pid = 0;
+    u_int ff_index = 0;
+    
+    char path[1024];
 
-    while ((res = parseklog_get_next_psr(log)) != NULL) {
-	while (timings[lindex].pid != timings[0].pid) {
-	    if (timings[lindex].index == 0) children.push_back(timings[lindex].pid);
-	    lindex++;
-	    if (lindex >= num) break;
-	}
+    priority_queue<pair<pid_t, u_long>> pids_to_track;
+    pair<pid_t, u_long> new_pair = make_pair(td[0].pid, 0);
+    pids_to_track.push(new_pair);
 
-	if (lindex >= num) break;
-	for(u_int i = 0; i < timings_index.size(); i++) { 
+    while(!pids_to_track.empty()) { 
+	pair<pid_t, u_long> pid_pair = pids_to_track.top();
+	pids_to_track.pop();
+	most_recent_clock = 0; //indicates that we've found the first record for a process
+	pid = pid_pair.first;
+	if (most_recent_clock >= stop_looking_index) stop_looking_index = numeric_limits<u_long>::max();
 
-	    if(timings_index[i] == num_el[i]) continue;
-	    struct replay_timing* curr_timings = timings_vect[i];
-	    struct extra_data* curr_edata = edata_vect[i];
-	    
-	    curr_edata[timings_index[i]].start_clock = res->start_clock;
-	    //advance the timings_index forward until we get to the next record with this pid
-	    do{ 
-		timings_index[i]++;
-	    }while(curr_timings[timings_index[i]].pid != timings[0].pid && 
-		   timings_index[i] != num_el[i]);
-	}
-	lindex++;
-	if (lindex >= num) break;
-    }
-    parseklog_close(log);
-
-    // Now do children
-    for (auto iter = children.begin(); iter != children.end(); iter++) {
-	sprintf (path, "%sklog.id.%d", dir, *iter);	
+	sprintf (path, "%s/klog.id.%d", dir, pid);	
 	struct klogfile* log = parseklog_open(path);
 	if (!log) {
 	    fprintf(stderr, "%s doesn't appear to be a valid klog file!\n", path);
 	    return -1;
 	}
-
 	lindex = 0;
-	//fixup the values in timings_index
-	for(u_int i = 0; i < timings_index.size(); i++) { 
-	    struct replay_timing* curr_timings = timings_vect[i];
-	    timings_index[i] = 0;
-	    do{ 
-		timings_index[i]++;
-	    }while(curr_timings[timings_index[i]].pid != *iter && 
-		   timings_index[i] != num_el[i]);
+
+	//our first pid has its record_timings off by one b/c we don't have timings data on exec
+	if (pid == td[0].pid) { 
+	    res = parseklog_get_next_psr(log); 
 	}
 
-	while ((res = parseklog_get_next_psr(log)) != NULL) {
-	    while (timings[lindex].pid != *iter) {
+	while ((res = parseklog_get_next_psr(log)) != NULL && lindex < td.size()) {
+	    while (td[lindex].pid != pid && lindex < td.size()) {
 		lindex++;
-		if (lindex >= num) break;
 	    }
-	    if (lindex >= num) break;
-	    for(u_int i = 0; i < timings_index.size(); i++) { 
+	    if (lindex >= td.size() || td[lindex].start_clock > stop_looking_index) break;
+	    	    
 
-		if(timings_index[i] == num_el[i]) continue;
-		struct replay_timing* curr_timings = timings_vect[i];
-		struct extra_data* curr_edata = edata_vect[i];
-	    
-		curr_edata[timings_index[i]].start_clock = res->start_clock;
-		//advance the timings_index forward until we get to the next record with this pid
-		do{ 
-		    timings_index[i]++;
-		}while(curr_timings[timings_index[i]].pid != *iter && 
-		       timings_index[i] != num_el[i]);
+	    pop_with_kres(td, most_recent_clock, lindex, res);
+	    if (stop_clock && td[lindex].start_clock > stop_clock) {		
+		td[lindex].should_track = false; 	       
 	    }
-	    if (lindex >= num) break;
-	}
+
+	    //we found a fork
+	    if (res->psr.sysnum == 120 && procs.count(res->retval) > 0) { 
+		if (details)
+		    fprintf(stderr,"%d, %lu (%u) forking %lu\n", td[lindex].pid, res->start_clock, lindex, res->retval);
+
+		if (fork_flags[ff_index] == '1') { 
+		    //stop tracking this pid, already covered all of its traced syscalls
+		    td[lindex].forked_pid = res->retval; //this is important for can_attach logic
+		    stop_looking_index = res->start_clock; 
+		    pair<pid_t, u_long> new_pair = make_pair(res->retval, res->start_clock);
+		    pids_to_track.push(new_pair);
+		    break; 
+		}
+		ff_index++;
+	    }
+	    //found a thread_fork
+	    else if (res->psr.sysnum == 120) { 
+		if (details) 
+		    fprintf(stderr,"%d, %lu (%u) forking %lu\n", td[lindex].pid, res->start_clock, lindex, res->retval);
+		td[lindex].forked_pid = res->retval; //this is important for can_attach logic
+		pair<pid_t, u_long> new_pair = make_pair(res->retval, res->start_clock);
+		pids_to_track.push(new_pair);		    
+	    }
+	    lindex++;
+	}    
 	parseklog_close(log);
     }
     return 0;
 }
 
-int build_fork_flags(vector<char*> &fork_flags,
-		     map<u_int,u_int> &pid_to_index,
-		     map<u_int,map<u_int,u_int>> &index_interval_inclusions,
-		     const struct replay_timing *timings,
-		     const int num){ 
-    
-    for(int i = 0; i < num; i++) { 
-	struct replay_timing curr_timing = timings[i];
-	if (curr_timing.syscall == 120) { 
-	    //we might have a fork, so iterate through all indexes and see if any
-	    //procs stop including this proc at exactly this point in time
-	    for(auto proc_gp : index_interval_inclusions) {
-		if(proc_gp.first == (u_int)curr_timing.pid) { 
-		    int index = pid_to_index[proc_gp.first];
-		    strcat(fork_flags[index],"0");		    
-		}
-		for(auto interval : proc_gp.second){
-		    if(interval.first == (u_int)curr_timing.pid &&
-		       interval.second == curr_timing.index) { 
-			int index = pid_to_index[proc_gp.first];
-			strcat(fork_flags[index],"1");
-		    }
-		    else if (interval.first == (u_int) curr_timing.pid &&
-			     interval.second > curr_timing.index) { 
-			int index = pid_to_index[proc_gp.first];
-			strcat(fork_flags[index],"0");
-		    }
-		}		
-	    }	    
-	}
-    }	
+class ulog_data { 
+public: 
+    ulog_data(int f, u_long tc): fd(f), total_clock(tc) {};
+    ulog_data(): fd(0), total_clock(0) {};
+    int fd;
+    u_long total_clock; //current clock_index w/in the ulog
+}; 
 
-    for(auto it :index_interval_inclusions)
-    {
-	printf("intervals for %d\n",it.first);
-	for(auto it2 : it.second)
-	{
-	    printf("(%d,%d),",it2.first,it2.second);
-	}
-	printf("\n");
+int open_ulog(const pid_t pid,
+	      const char *dir) 
+{ 
+    char path[1024]; 
+    int unused; 
+    int fd;
+    int rc;
+
+    sprintf (path, "%s/ulog.id.%d", dir, pid);	    
+    fd = open(path, O_RDONLY);
+    if (fd < 0) { 
+	fprintf(stderr, "couldn't open ulog: %s\n",path);
+	return -1;
     }
-    for(auto fork: fork_flags){ 
-	printf("fork flag %s\n", fork);
+    //we don't care about num_bytes, but just need to skip it in this fd:
+    rc = read(fd, &unused, sizeof(int)); 
+    (void) rc;
+    return fd;
+}
+
+int pop_with_ulog(vector<struct timing_data> &td, u_int td_index, ulog_data &udata) 
+{ 
+    u_long entry;    
+    u_long i;
+    int skip, unused, rc;
+    
+    int fd = udata.fd;
+
+    u_long last_pthread_block = 0; 
+
+    //as long as udata.total_clock < start_clock, then they're user ops that ran
+    //between the prev syscall and the current one. 
+
+    while (udata.total_clock < td[td_index].start_clock) 
+    { 
+	rc = read (fd, &entry, sizeof(u_long));
+	for (i = 0; i < (entry&CLOCK_MASK); i++) {
+	    udata.total_clock++; 
+	}
 	
-    }
-
-    return 0;
-
-}
-//right now we have three parallel vectors... these could conceivably be structs. (probably should)
-int create_multiprocess_ds(vector<u_int> &num_el,
-			   vector<struct replay_timing *> &timings_vect,
-			   vector<struct extra_data *> &edata_vect,			      
-			   vector<u_int> &num_parts,
-			   vector<char*> &fork_flags,
-			   const struct replay_timing *timings,
-			   const char* dir,
-			   const int parts,
-			   const int num){
-    
-    int rc = 0;
-    map<u_int,u_int> pid_to_index;
-    map<u_int, u_int> fork_process; //maps from index to fork process id
-    map<u_int, u_int> fork_offset; //maps from index to fork offset
-    map<u_int, map<u_int,u_int>> index_interval_inclusions;
-
-
-    rc = find_processes(pid_to_index, fork_process, fork_offset, dir, timings, num);
-    if(rc) { 
-	printf("could not find_processes, rc %d\n", rc);
-	return rc;
-    }
-    
-    rc = build_intervals(fork_process, fork_offset, pid_to_index, index_interval_inclusions); 
-    if(rc) { 
-	printf("could not build_intervals, rc %d\n", rc);
-	return rc;
-    }
-
-    rc = get_num_per_process(num_el, pid_to_index, num_parts, index_interval_inclusions, timings, parts, num);
-    if(rc) { 
-	printf("could not get_num_per_process, rc %d\n", rc);
-	return rc;
-    }
-
-    rc = allocate_multiprocess_ds(timings_vect, edata_vect, fork_flags, num_el);
-    if(rc) { 
-	printf("could not allocate_multiprocess_ds, rc %d\n", rc);
-	return rc;
-    }
-
-
-    rc = build_fork_flags(fork_flags, pid_to_index, index_interval_inclusions, timings, num);
-    if(rc) { 
-	printf("could not build fork_flags, rc %d\n",rc);
-	return rc;
-    }
-
-    rc = split_timings(timings_vect, pid_to_index, index_interval_inclusions, timings, num);
-    if(rc) { 
-	printf("could not split_timings, rc %d\n", rc);
-	return rc;
-    }
-
-    rc = populate_start_clock(timings_vect, edata_vect, num_el,timings, num, dir);
-    if(rc) { 
-	printf("could not split_timings, rc %d\n", rc);
-	return rc;
-    }
-
-
-
-    return 0; // on success
-}
-
-void generate_timings_for_process( struct replay_timing *timings,
-				  struct extra_data* edata,
-				  const u_int num_partitions,
-				  const u_int num,
-				  const char* dir)
-{
-    // First, need to sum times for all threads to get totals for this group
-    int total_time = 0;
-    u_int i, j, k; 
-    map<u_int,u_int> last_time;    
-
-    for (i = 0; i < num; i++) {
-	u_int pid = timings[i].pid;
-	auto iter = last_time.find(pid);
-	if (iter == last_time.end()) {
-	    total_time += timings[i].ut;
+	//if this happens, it means that we call into the kernel
+	if (entry&SKIPPED_CLOCK_FLAG) {
+	    rc = read (fd, &skip, sizeof(int));
+	    udata.total_clock += skip + 1;
+	    if (udata.total_clock < td[td_index].start_clock) {
+		last_pthread_block = udata.total_clock - 1; //the last clock val we are blocking
+	    }
 	} else {
-	    total_time += timings[i].ut - iter->second;
+	    udata.total_clock++;
 	}
-	last_time[pid] = timings[i].ut;
-	timings[i].ut = total_time;
+	if (entry&NONZERO_RETVAL_FLAG) {
+	    rc = read (fd, &unused, sizeof(int));
+	}
+	if (entry&ERRNO_CHANGE_FLAG) {
+	    rc = read (fd, &unused, sizeof(int));
+	}
+	if (entry&FAKE_CALLS_FLAG) {
+	    rc = read (fd, &unused, sizeof(int));
+	}
+    }    
+    if (last_pthread_block > td[td_index].call_clock) 
+    { 
+	td[td_index].call_clock = last_pthread_block;
+    }
+    
+    (void) rc;
+    return 0;
+}
+
+int parse_ulogs(vector<struct timing_data> &td, const char* dir)
+{
+    map<pid_t, ulog_data> pid_fd_map; 
+    u_int i; 
+    for (i = 0; i < td.size(); i ++) { 
+	if (pid_fd_map.count(td[i].pid) == 0) { 
+	    int fd = open_ulog(td[i].pid, dir);
+	    ulog_data u(fd, 0);
+	    pid_fd_map[td[i].pid] = u;
+	}
+	if (pid_fd_map[td[i].pid].fd > 0) 
+	    pop_with_ulog(td, i, pid_fd_map[td[i].pid]);       
+    }
+    return 0;
+}
+
+void inline update_ut( vector<struct timing_data> &td, 
+		       u_int &total_time,
+		       map<pid_t, u_int> &last_time,
+		       const u_int td_index) 
+{ 
+    pid_t pid = td[td_index].pid;
+    auto iter = last_time.find(pid);
+    if (iter == last_time.end()) {
+	total_time += td[td_index].ut;
+    } else {
+	total_time += td[td_index].ut - iter->second;
+    }
+    last_time[pid] = td[td_index].ut;
+    td[td_index].ut = total_time;
+}
+
+void inline update_cache_misses( vector<struct timing_data> &td, 
+				 uint64_t &total_cache_misses,
+				 const u_int td_index) 
+{
+    //update the number of cache misses
+    total_cache_misses += td[td_index].cache_misses;
+    td[td_index].cache_misses = total_cache_misses;
+    
+    if(total_cache_misses > UINTMAX_MAX) { 
+	fprintf(stderr, "whoops, way to many cache_misses\n");
+    }    
+}
+
+void inline update_taint_stats( vector<struct timing_data> &td, 
+				u_int &total_taint_in, 
+				u_int &total_taint_out, 
+				const u_int td_index) 
+{
+    /*
+     * since we associate taint_in and taint_out ops with reads and writes, the taint they
+     * create is actually added after the syscall's start_clock.
+     */
+    
+    int curr_total_in = total_taint_in;
+    int curr_total_out = total_taint_out; 
+    total_taint_in += td[td_index].taint_in;
+    total_taint_out += td[td_index].taint_out;       
+    td[td_index].taint_in = curr_total_in;
+    td[td_index].taint_out = curr_total_out;    
+}
+//this is an n^2 algorithm, but it probably isn't really n^2, depends on the number of 
+// bad_syscalls, and how common they are. 
+
+void inline update_can_attach( vector<struct timing_data> &td, 
+			       const u_int td_index) 
+{
+    if (bad_syscalls.count(td[td_index].syscall))
+    {
+	//this means we have a bad syscall on the very first syscall, which evidently can happen (evince has this with a brk)
+	//since the logic around the original fork covers from fork-> this sysall, we just need to block out things from the
+	//start_clock onwards
+	if (!td[td_index].call_clock) { 
+	    td[td_index].call_clock = td[td_index].start_clock;	   
+	}
+	int i = 0;
+	for (auto &t : td) 
+	{
+	    //if the record's attach clock occurs during this syscall
+	    if (t.start_clock > td[td_index].call_clock &&
+		t.start_clock < td[td_index].stop_clock) 
+	    { 
+//		if (t.start_clock >= 34361435 && t.start_clock <= 34596889) 
+//		    fprintf(stderr, "flipping %d's can_attach b/c of pid %d at (%d, %lu,%lu)\n",i,td[td_index].syscall, td[td_index].pid,td[td_index].call_clock, td[td_index].stop_clock);
+		t.can_attach = false;
+		t.blocking_syscall = td[td_index].syscall;
+	    }
+	    i++;
+	}
     }
 
-    // Next interpolate values where increment is small
-    for (i = 0; i < num; i++) {
-	for (j = i+1; j < num; j++) {
-	    if (timings[i].ut != timings[j].ut) break;
+    //special case for the forked child. we check to make sure that forked_pid > 0, 
+    //b/c if we aren't tracking this fork then it won't be above 0
+
+    if (td[td_index].syscall == 120 && td[td_index].forked_pid > 0) 
+    {
+	u_long call_clock = td[td_index].start_clock; 
+	u_int  forked_index = td_index+1;
+
+	//update forked_index until we find the first entry of the child
+	while (td[forked_index].pid != td[td_index].forked_pid) forked_index++;
+	int i = 0;
+	for (auto &t : td) 
+	{
+
+	    //if the record's attach clock occurs during the child's ret from fork
+	    if (t.start_clock > call_clock &&
+		t.start_clock < td[forked_index].start_clock)
+	    { 
+//		fprintf(stderr, "flipping %d's can_attach b/c of fork at (%lu,%lu)\n",i,call_clock,td[forked_index].start_clock);
+		t.can_attach = false;
+		t.blocking_syscall = 120; //b/c of a clone! 
+
+	    }
+	    i++;
+	}       
+    }   
+}
+
+int parse_timing_data( vector<struct timing_data> &td) 
+{
+    u_int total_time = 0;
+    u_int total_taint_in = 0; 
+    u_int total_taint_out = 0;
+    uint64_t total_cache_misses = 0;
+    map<pid_t,u_int> last_time;    
+    u_int i, j, k; 
+
+    for (i = 0; i < td.size(); i++) {
+	if (! td[i].should_track) { 
+	    td[i].can_attach = false; //mark it as not attachable, and continue
+	    continue; 
+	}
+
+	update_ut(td, total_time, last_time, i);
+	update_cache_misses(td, total_cache_misses, i);
+	update_taint_stats(td, total_taint_in, total_taint_out, i);
+	update_can_attach(td, i);
+    }
+
+    u_long aindex = 1;
+    for (auto &t : td) {
+	if (t.can_attach) { 
+	    t.aindex = aindex++;
+	} else {
+	    t.aindex = 0;
+	}
+    }
+
+
+    // interpolate timing vals when incrememnt is small 
+    for (i = 0; i < td.size(); i++) {
+	for (j = i+1; j < td.size(); j++) {
+	    if (td[i].ut != td[j].ut) break;
 	}
 	for (k = i; k < j; k++) {
-	    edata[k].dtiming = (double) timings[k].ut + (double) (k-i) / (double) (j-i);
+	    td[k].dtiming = (double) td[k].ut + (double) (k-i) / (double) (j-i);
 	}
 	i = j-1;
     }
-
-    // Calculate index in terms of system calls we can attach to 
-    u_long aindex = 1;
-    for (i = 0; i < num; i++) {
-	if (can_attach(timings[i].syscall)) {
-	    edata[i].aindex = aindex++;
-	} else {
-	    edata[i].aindex = 0;
-	}
-    }
-
-    if (details) {
-	for (i = 0; i < num; i++) {
-	    printf ("%d: pid %d syscall %lu type %d ut %u %.3f\n", i, timings[i].pid, timings[i].index, timings[i].syscall, timings[i].ut, edata[i].dtiming);
-	}
-	printf ("----------------------------------------\n");
-    }
-    gen_timings (timings, edata, 0, num-1, num_partitions);
+    return 0;
 }
 
 int main (int argc, char* argv[])
@@ -791,17 +752,20 @@ int main (int argc, char* argv[])
     struct extra_data* edata;
     struct stat st;
     int fd, rc, num, i, parts;
+    u_long stop_clock = 0;
+
+    char following[256];   
+    set<pid_t> procs;
+    struct timeval start_tv, read_and_copy_tv, pklog_tv, pulog_tv, ptiming_tv, gen_timings_tv;
+    
+    gettimeofday(&start_tv, NULL);
 
     if (argc < 3) {
 	format ();
     }
-
+    following[0] = 0; 
     sprintf (filename, "%s/timings", argv[1]);
     parts = atoi(argv[2]);
-//    if (parts < 2) {
-//	fprintf (stderr, "Number of partitions must be greater than 1\n");
-//	return -1;
-//    }
     for (i = 3; i < argc; i++) {
 	if (!strcmp(argv[i], "-g")) {
 	    i++;
@@ -811,7 +775,26 @@ int main (int argc, char* argv[])
 		format();
 	    }
 	}
-	if (!strcmp(argv[i], "-f")) {
+	else if(!strcmp(argv[i], "--fork")) { 
+	    i++;
+	    if (i < argc) {
+		strcpy(following,argv[i]);
+	    } else {
+		format();
+	    }
+	
+	}
+	else if(!strcmp(argv[i], "--stop")) { 
+	    i++;
+	    if (i < argc) {
+		stop_clock = atoi(argv[i]);
+		fprintf(stderr, "stop clock is %lu\n",stop_clock);
+	    } else {
+		format();
+	    }
+	
+	}
+	else if (!strcmp(argv[i], "-f")) {
 	    i++;
 	    if (i < argc) {
 		filter_syscall = atoi(argv[i]);
@@ -819,16 +802,24 @@ int main (int argc, char* argv[])
 		format();
 	    }
 	}
-	if (!strcmp(argv[i], "-v")) {
+	else if (!strcmp(argv[i], "-v")) {
 	    details = 1;
 	}
-	if (!strcmp(argv[i], "-c")) {
+	else if (!strcmp(argv[i], "-c")) {
 	    use_ckpt = 1;
 	}
+
+	else if (!strcmp(argv[i], "-s")) {
+	    do_split = 1;
+	}
+	else { 
+	    //the assumption is that if we get to this point that its listing of the procs now
+	    procs.insert(atoi(argv[i]));
+	}
     }
-		
-    if (use_ckpt) read_ckpts(argv[1]);
     
+    if (use_ckpt) read_ckpts(argv[1]);
+
     fd = open (filename, O_RDONLY);
     if (fd < 0) {
 	fprintf (stderr, "Cannot open timing file %s, rc=%d, errno=%d\n", filename, fd, errno);
@@ -858,55 +849,70 @@ int main (int argc, char* argv[])
 	fprintf (stderr, "Unable to read timings, rc=%d, expected %ld\n", rc, st.st_size);
 	return -1;
     }
-
+    num = st.st_size / sizeof(struct replay_timing);
+    vector<struct timing_data> td(num); 
 
     /*
-     * all of the datastructures for the multiprocess case. Each of these vectors are 
-     * made in parallel, where there are entries for each of separate processes in the 
-     * replay group. timings_vect and edata_vect are both vectors of arrays of structs.
-     * num_el gives the number of elements in the arrays for that particular process.
+     * start by populating the td vector with all of the exiting
+     * timings_info. 
      */
 
-    vector<u_int> num_el;
-    vector<u_int> num_parts;
-    vector<struct replay_timing *> timings_vect;
-    vector<struct extra_data *> edata_vect;
-    vector<char*> fork_flags;
-
-
-    num = st.st_size/sizeof(struct replay_timing); 
-    create_multiprocess_ds(num_el, timings_vect, edata_vect, num_parts, fork_flags,timings, argv[1], parts, num);
-  
-    if(details) { 
-	for(u_int i = 0; i < num_el.size(); i++ ) 
-	{	
-	    struct replay_timing* curr_timings = timings_vect[i];
-	    struct extra_data* curr_edata = edata_vect[i];
+    for ( i = 0; i < num; i++) { 
 	
-	    printf("num_parts %d\n", num_parts[i]);
-	    printf("num_el %d\n", num_el[i]);
-	    printf("timing info (edata has not yet been determined)\n");
+	struct timing_data next_td;
+	next_td.pid = timings[i].pid;
+	next_td.index = timings[i].index;
+	next_td.syscall = timings[i].syscall;
+	next_td.ut = timings[i].ut;
+	next_td.taint_in = 0;
+	next_td.taint_out = 0;
+	
 
-	    if(details) {
-		for (u_int j = 0; j < num_el[i]; j++) {
-		    printf ("%d: pid %d syscall %lu type %d ut %u %.3f\n",j,
-			    curr_timings[j].pid, curr_timings[j].index, curr_timings[j].syscall, 
-			    curr_timings[j].ut, curr_edata[j].dtiming);
-		}
-	    }
-	    printf ("----------------------------------------\n");
+	next_td.cache_misses = timings[i].cache_misses;
+	next_td.forked_pid = -1; //just assume that syscalls don't have forked_pids. this will get fixed later if we're wrong
+	next_td.should_track = false; //assume that we don't track it, it will be fixed if we should
+	next_td.can_attach = true; //set it to be true first
+	td[i] = next_td; 
+
+    }
+    gettimeofday(&read_and_copy_tv, NULL);
+    
+    rc = parse_klogs(td, stop_clock,argv[1], following, procs);
+    gettimeofday(&pklog_tv, NULL);
+
+    rc = parse_ulogs(td, argv[1]);     
+    gettimeofday(&pulog_tv, NULL);
+
+    rc = parse_timing_data(td);
+    gettimeofday(&ptiming_tv, NULL);
+
+
+    if(details) {
+	for (auto t : td) { 
+	    printf ("%d %lu %lu, %lu, (%lf %lu %lu %llu), %d\n", t.pid, t.call_clock, t.start_clock, t.stop_clock, t.dtiming, t.taint_in, t.taint_out, t.cache_misses, t.should_track);
+	    if (!t.can_attach) printf("\t can't attach\n");
 	}
     }
 
-    printf ("%s\n", argv[1]);
-    if (group_by > 0) printf ("group by %d\n", group_by);
 
-    for(u_int i = 0; i < num_el.size(); i++ ) {
-	generate_timings_for_process(timings_vect[i], edata_vect[i], num_parts[i], num_el[i], argv[1]);
+    //get final index:
+    int lindex = td.size() - 1;
+    while(td[lindex].aindex == 0) {
+	lindex --;
     }
-    
-    
-    //cleanup_memory();  not implemented... muahaha, just deal with it kernel. 
+
+    printf ("%s\n", argv[1]);
+    gen_timings(td, 0, lindex, parts, following);
+    gettimeofday(&gen_timings_tv, NULL);
+
+    //to get the compiler to shut up
+    if (details){ 
+	fprintf(stderr, "read_and_copy_time %ld\n",ms_diff(read_and_copy_tv, start_tv));
+	fprintf(stderr, "pklog_time %ld\n",ms_diff(pklog_tv, read_and_copy_tv));
+	fprintf(stderr, "pulog_time %ld\n",ms_diff(pulog_tv, pklog_tv));
+	fprintf(stderr, "ptiming_time %ld\n",ms_diff(ptiming_tv, pulog_tv));
+	fprintf(stderr, "gen_timings_time %ld\n",ms_diff(gen_timings_tv, ptiming_tv));
+    }
     return 0;
 }
 

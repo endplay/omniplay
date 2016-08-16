@@ -34,10 +34,11 @@ int agg_port = -1;
 
 struct epoch_ctl {
     int    status;
-    char   inputqname[256];
+    char   inputqhname[256];
+    char   inputqbname[256];
     pid_t  cpid;
     pid_t  spid;
-    pid_t  tracked_pid;
+    pid_t  attach_pid;
     pid_t  waiting_on_rp_group; //ARQUINN -> added
 
     // For timings
@@ -45,13 +46,6 @@ struct epoch_ctl {
     struct timeval tv_start_dift;
     struct timeval tv_done;
 };
-#ifndef BUILD_64
-static long ms_diff (struct timeval tv1, struct timeval tv2)
-{
-    return ((tv1.tv_sec - tv2.tv_sec) * 1000 + (tv1.tv_usec - tv2.tv_usec) / 1000);
-}
-#endif
-
 int sync_logfiles (int s)
 {
     u_long fcnt, ccnt;
@@ -237,7 +231,6 @@ void do_dift (int s, struct epoch_hdr& ehdr)
     struct timeval tv_start, tv_done;
     gettimeofday (&tv_start, NULL);
 
-    fprintf(stderr, "do_dift started \n");
     int fd = open ("/dev/spec0", O_RDWR);
     if (fd < 0) {
 	perror("open /dev/spec0");
@@ -265,19 +258,57 @@ void do_dift (int s, struct epoch_hdr& ehdr)
     // Start all the epochs at once
     for (u_long i = 0; i < epochs; i++) {
 	ectl[i].cpid = fork ();
-	ectl[i].tracked_pid = -1; //needs to start off as some value? 
 	if (ectl[i].cpid == 0) {
+	    const char* args[256];
+	    char attach[80];
+	    char fake[80];
+	    char ckpt[80];
+	    int argcnt = 0;
+	    
+	    args[argcnt++] = "resume";
+	    args[argcnt++] = "-p";
+	    args[argcnt++] = ehdr.dirname;
+	    args[argcnt++] = "--pthread";
+	    args[argcnt++] = "../../eglibc-2.15/prefix/lib";
 	    if (i > 0 || !ehdr.start_flag) {
-		char attach[80];
-		sprintf (attach, "--attach_offset=%d,%u", edata[i].start_pid, edata[i].start_syscall);
-		rc = execl("../../test/resume", "resume", "-p", ehdr.dirname, "--pthread", "../../eglibc-2.15/prefix/lib", attach, NULL);
-	    } else {
-		rc = execl("../../test/resume", "resume", "-p", ehdr.dirname, "--pthread", "../../eglibc-2.15/prefix/lib", NULL);
+		sprintf (attach, "--attach_offset=%d,%u", edata[i].start_pid, edata[i].start_clock);
+		args[argcnt++] = attach;
 	    }
+
+
+	    if (edata[i].ckpt != 0) { 
+		sprintf (ckpt, "--from_ckpt=%u", edata[i].ckpt);
+		args[argcnt++] = ckpt;
+		fprintf(stderr, "ckpt: %s\n",ckpt);
+	    }
+	    if (edata[i].start_level == 'u' && edata[i].stop_level == 'u') {
+		sprintf (fake, "--fake_calls=%u,%u", edata[i].start_clock, edata[i].stop_clock);
+		args[argcnt++] = fake;
+	    } else if (edata[i].start_level == 'u') {
+		sprintf (fake, "--fake_calls=%u", edata[i].start_clock);
+		args[argcnt++] = fake;
+	    } else if (edata[i].stop_level == 'u') {
+		sprintf (fake, "--fake_calls=%u", edata[i].stop_clock);
+		args[argcnt++] = fake;
+	    }
+	    args[argcnt++] = NULL;
+		
+	    rc = execv ("../../test/resume", (char **) args);
 	    fprintf (stderr, "execl of resume failed, rc=%d, errno=%d\n", rc, errno);
 	    return;
 	} else {
 	    ectl[i].status = STATUS_STARTING;
+	    //create our listening process
+	    ectl[i].waiting_on_rp_group = fork(); 
+	    if(ectl[i].waiting_on_rp_group == 0) { 
+		close(s);
+		s = -99999;
+		rc = -1;
+		while(rc < 0){
+		    rc = wait_for_replay_group(fd,ectl[i].cpid);
+		}
+		return;
+	    }	    
 	    gettimeofday (&ectl[i].tv_start, NULL);
 	}
     }
@@ -290,39 +321,16 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 	    rc = -1;
 	    if (ectl[i].status == STATUS_STARTING) {
 		
-		/*
-		 * so we need to wait to attach because pin needs to be waiting for us, 
-		 * but we cannot be certain that this cpid is actually the pid we want to wait
-		 * on... 
-		 */
-
-		//this code is awful. Gotta figure out how to do better
-		if(ectl[i].tracked_pid < 0) {
-		    ectl[i].tracked_pid = get_replay_pid(fd, ectl[i].cpid, edata[i].start_pid);		   
-
-		    //need to guarentee that this stuff only happens once. 
-		    if(ectl[i].tracked_pid > 0) {
-			printf("%lu: found %d for cpid %d, start_pid %d\n",i,ectl[i].tracked_pid,ectl[i].cpid, edata[i].start_pid);
-			
-			ectl[i].waiting_on_rp_group = fork(); 
-			if(ectl[i].waiting_on_rp_group == 0) { 
-			    //we want to close out of our sockets here... kinda weird but still. 
-			    close(s);
-			    s = -99999;
-			    wait_for_replay_group(fd,ectl[i].tracked_pid);
-			    return;
-			}	
-		    }	 
-		}
-		if(ectl[i].tracked_pid > 0) {
-		    rc = get_attach_status (fd, ectl[i].tracked_pid);
-		}
-
-
+		rc = get_attach_status (fd, ectl[i].cpid);
 		if (rc > 0) {
+		    //sometimes we attach pin to a different process. 
+		    //When we do this, we need to save the rc in case we are getting stats		   		    
+		    ectl[i].attach_pid = rc; 
+
+
 		    pid_t mpid = fork();
 		    if (mpid == 0) {
-			char cpids[80], syscalls[80], output_filter[80], port[80], fork_flags[80];
+			char cpids[80], syscalls[80], port[80], fork_flags[80];
 			const char* args[256];
 			int argcnt = 0;
 			
@@ -333,15 +341,18 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 			args[argcnt++] = "-t";
 			args[argcnt++] = "../obj-ia32/linkage_data.so";
 
-			//we always want the stop_pid to be present
-			sprintf (syscalls, "%d", edata[i].stop_syscall);
+			/*
+			 * I pulled this out b/c in multiproc case we might be 
+			 * tracing a process that doesn't go all the way to the end
+			 */
+			sprintf (syscalls, "%d", edata[i].stop_clock);
 			args[argcnt++] = "-l";
 			args[argcnt++] = syscalls;
 
 			sprintf (fork_flags, "%d", edata[i].fork_flags);
 			args[argcnt++] = "-fork_flags";
-			args[argcnt++] = fork_flags;
-
+			args[argcnt++] = fork_flags;		       			     
+			  
 			if (i < epochs-1 || !ehdr.finish_flag) {
 			    args[argcnt++] = "-ao"; // Last epoch does not need to trace to final addresses
 			}
@@ -349,18 +360,28 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 			    args[argcnt++] = "-so";
 			} 
 
-			if (edata[i].filter_syscall) {
-			    sprintf (output_filter, "%u", edata[i].filter_syscall);
-			    args[argcnt++] = "-ofs";
-			    args[argcnt++] = output_filter;
-			}
 			printf ("%lu: hostname %s port %d\n", i, edata[i].hostname, edata[i].port);
 			args[argcnt++] = "-host";
 			args[argcnt++] = edata[i].hostname;
 			args[argcnt++] = "-port";
 			sprintf (port, "%d", edata[i].port);
 			args[argcnt++] = port;
-			args[argcnt++] = NULL;
+			if (ehdr.filter_flags) args[argcnt++] = "-i";
+			if (ehdr.filter_flags&FILTER_INET) {
+			    args[argcnt++] = "-f";
+			    args[argcnt++] = "inetsocket";
+			} 
+			if (ehdr.filter_flags&FILTER_PART) {
+			    args[argcnt++] = "-e";
+			    args[argcnt++] = ehdr.filter_part;
+			}
+			if (ehdr.filter_flags&FILTER_OUT) {
+			    args[argcnt++] = "-ofb";
+			    args[argcnt++] = ehdr.filter_output_after;
+			}
+			if (ehdr.record_trace) {
+			    args[argcnt++] = "-rectrace";
+			}
 			args[argcnt++] = NULL;
 			rc = execv ("../../../../pin/pin", (char **) args);
 			fprintf (stderr, "execv of pin tool failed, rc=%d, errno=%d\n", rc, errno);
@@ -381,54 +402,93 @@ void do_dift (int s, struct epoch_hdr& ehdr)
 
 	
     // Wait for all children to complete
-    //this was beefed up... we should care about when each individual epoch was finished.
     u_long epochs_done = 0;
-    do {
+    for (u_long i = 0; i < epochs; i++) { 
 	int status;
-	pid_t wpid = waitpid (-1, &status, 0);
+	pid_t wpid = waitpid (ectl[i].waiting_on_rp_group, &status, 0);
 	if (wpid < 0) {
 	    fprintf (stderr, "waitpid returns %d, errno %d\n", rc, errno);
 	    return;
 	} else {
-	    for (u_long i = 0; i < epochs; i++) {
-
-		if (wpid == ectl[i].waiting_on_rp_group) { 
 #ifdef DETAILS
-		    printf ("DIFT of epoch %lu is done\n", i);
+	    printf ("DIFT of epoch %lu is done\n", i);
 #endif
-		    gettimeofday (&ectl[i].tv_done, NULL);
-		    ectl[i].status = STATUS_DONE;
-		    epochs_done++;
-		}
-	    }
+	    gettimeofday (&ectl[i].tv_done, NULL);			
+	    ectl[i].status = STATUS_DONE;
+	    epochs_done++;	
 	}
-    } while (epochs_done < epochs);
+    }
 
     gettimeofday (&tv_done, NULL);
+    printf ("Dift start time: %ld.%06ld\n", tv_start.tv_sec, tv_start.tv_usec);
+    printf ("Dift end time: %ld.%06ld\n", tv_done.tv_sec, tv_done.tv_usec);
+
+    for (u_long i = 0; i < epochs; i++) { 
+	printf ("epoch %lu resume start  time: %ld.%06ld\n",i, ectl[i].tv_start.tv_sec, ectl[i].tv_start.tv_usec);
+	printf ("epoch %lu pin start  time: %ld.%06ld\n", i, ectl[i].tv_start_dift.tv_sec, ectl[i].tv_start_dift.tv_usec);
+	printf ("epoch %lu done  time: %ld.%06ld\n", i, ectl[i].tv_done.tv_sec, ectl[i].tv_done.tv_usec);
+	gettimeofday (&ectl[i].tv_start_dift, NULL);			
+
+    }
+
+
+    if (tv_done.tv_usec >= tv_start.tv_usec) {
+	printf ("Dift time: %ld.%06ld second\n", tv_done.tv_sec-tv_start.tv_sec, tv_done.tv_usec-tv_start.tv_usec);
+    } else {
+	printf ("Dift time: %ld.%06ld second\n", tv_done.tv_sec-tv_start.tv_sec-1, tv_done.tv_usec+1000000-tv_start.tv_usec);
+    }
+    
+    fflush(stdout);
+
 
     if (ehdr.flags&SEND_ACK) {
 	long retval = 0;
 	rc = send (s, &retval, sizeof(retval), 0);
 	if (rc != sizeof(retval)) {
-	    fprintf (stderr, "Cannot send ack,rc=%d\n", rc);
+	    fprintf (stderr, "Cannot send ack,rc=%d, errno %d\n", rc, errno);
 	}
-    }
-    char statsname[256];
-    //write all of the stats out to files
-    for (u_long i = 0; i < epochs; i++) {
-	sprintf (statsname, "/tmp/dift-stats%lu", i);
-	FILE* statsfile = fopen (statsname, "w");
-	if (statsfile == NULL) {
-	    fprintf (stderr, "Cannot create %s, errno=%d\n", statsname, errno);
-	    return;
-	}
-	fprintf (statsfile,"start time %ld\ndift time %ld\n", 
-		 ms_diff(ectl[i].tv_start_dift, ectl[i].tv_start),
-		 ms_diff(ectl[i].tv_done, ectl[i].tv_start_dift)); 
-	fclose(statsfile);
     }
 
-    printf ("dift finished\n");
+    // send stats if requested
+    if (ehdr.flags&SEND_STATS) {
+	for (u_long i = 0; i < epochs; i++) {
+	    char pathname[PATHLEN]; 
+	    sprintf (pathname, "/tmp/%d/taint_stats", ectl[i].cpid);
+	    if (send_file (s, pathname, "taint-stats") < 0) { 
+		fprintf (stderr,"couldn't find /tmp/%d, howabout /tmp/%d?\n",ectl[i].cpid, ectl[i].attach_pid);
+		sprintf (pathname, "/tmp/%d/taint_stats", ectl[i].attach_pid);
+		send_file (s, pathname, "taint-stats");
+	    }
+	}
+    }
+
+    // Send trace recordings if requested
+    if (ehdr.record_trace) {
+	for (u_long i = 0; i < epochs; i++) {
+	    char pathname[PATHLEN];
+	    sprintf (pathname, "/trace_exec_.tmp.%d", ectl[i].cpid);
+	    fprintf(stderr, "sending %s for %lu trace\n",pathname, i);
+	    if (send_shmem (s, pathname, "trace_exec") < 0) { 
+		fprintf (stderr,"couldn't find /trace_exec_.tmp.%d, howabout /trace_exec_.tmp.%d?\n",
+			 ectl[i].cpid, ectl[i].attach_pid);
+		sprintf (pathname, "/trace_exec_.tmp.%d", ectl[i].attach_pid);
+		send_shmem (s, pathname, "trace_exec");
+	    }
+
+
+	    sprintf (pathname, "/trace_inst_.tmp.%d", ectl[i].cpid);
+	    fprintf(stderr, "sending %s for %lu trace\n",pathname, i);	   
+	    if (send_shmem (s, pathname, "trace_inst") < 0) { 
+		fprintf (stderr,"couldn't find /trace_inst_.tmp.%d, howabout /trace_inst_.tmp.%d?\n",
+			 ectl[i].cpid, ectl[i].attach_pid);
+		sprintf (pathname, "/trace_inst_.tmp.%d", ectl[i].attach_pid);
+		send_shmem (s, pathname, "trace_inst");
+	    }
+
+	}
+    }
+
+
     close (s);
     close (fd);
 #endif
@@ -440,7 +500,6 @@ void do_stream (int s, struct epoch_hdr& ehdr)
     struct timeval tv_start, tv_done;
     gettimeofday (&tv_start, NULL);
 
-    fprintf(stderr,"do_stream started \n");
     u_long epochs = ehdr.epochs;
     struct epoch_ctl ectl[epochs];
 
@@ -449,41 +508,158 @@ void do_stream (int s, struct epoch_hdr& ehdr)
     if (ehdr.finish_flag) qcnt--;
     for (u_long i = 0; i < qcnt; i++) {
 	if (i == 0 && ehdr.start_flag) continue; // No queue needed
-	sprintf(ectl[i].inputqname, "/input_queue%d.%lu",agg_port, i);
-	int iqfd = shm_open (ectl[i].inputqname, O_CREAT|O_RDWR|O_TRUNC, 0644);	
+	sprintf(ectl[i].inputqhname, "/input_queue_hdr%lu", i);
+	int iqfd = shm_open (ectl[i].inputqhname, O_CREAT|O_RDWR|O_TRUNC, 0644);	
 	if (iqfd < 0) {
-	    fprintf (stderr, "Cannot create input queue %s,errno=%d\n", ectl[i].inputqname, errno);
+	    fprintf (stderr, "Cannot create input queue header %s,errno=%d\n", ectl[i].inputqhname, errno);
 	    return;
 	} 
-	rc = ftruncate(iqfd, TAINTQSIZE);
+	rc = ftruncate(iqfd, TAINTQHDRSIZE);
 	if (rc < 0) {
-	    fprintf (stderr, "Cannot truncate input queue %s,errno=%d\n", ectl[i].inputqname, errno);
+	    fprintf (stderr, "Cannot truncate input queue header %s,errno=%d\n", ectl[i].inputqhname, errno);
 	    return;
 	}
-	struct taintq* q = (struct taintq *) mmap (NULL, TAINTQSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, iqfd, 0);
-	if (q == MAP_FAILED) {
+	struct taintq_hdr* qh = (struct taintq_hdr *) mmap (NULL, TAINTQHDRSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, iqfd, 0);
+	if (qh == MAP_FAILED) {
 	    fprintf (stderr, "Cannot map input queue, errno=%d\n", errno);
 	    return;
 	}
-	rc = sem_init(&(q->epoch_sem), 1, 0);
+	rc = sem_init(&(qh->epoch_sem), 1, 0);
 	if (rc < 0) {
 	    fprintf (stderr, "sem_init returns %d, errno=%d\n", rc, errno);
 	    return;
 	}
-	munmap(q,TAINTQSIZE);
+
+	pthread_mutexattr_t sharedm;
+	pthread_mutexattr_init(&sharedm);
+	pthread_mutexattr_setpshared(&sharedm, PTHREAD_PROCESS_SHARED);
+	rc = pthread_mutex_init (&(qh->lock), &sharedm);
+	if (rc < 0) {
+	    fprintf (stderr, "pthread_mutex_init returns %d, errno=%d\n", rc, errno);
+	    return;
+	}
+	pthread_condattr_t sharedc;
+	pthread_condattr_init(&sharedc);
+	pthread_condattr_setpshared(&sharedc, PTHREAD_PROCESS_SHARED);
+	pthread_condattr_setclock(&sharedc,CLOCK_MONOTONIC);  //added for the timeouts
+	rc = pthread_cond_init (&(qh->full), &sharedc);
+	if (rc < 0) {
+	    fprintf (stderr, "pthread_mutex_init returns %d, errno=%d\n", rc, errno);
+	    return;
+	}
+	rc = pthread_cond_init (&(qh->empty), &sharedc);
+	if (rc < 0) {
+	    fprintf (stderr, "pthread_mutex_init returns %d, errno=%d\n", rc, errno);
+	    return;
+	}
+
+	munmap(qh,TAINTQHDRSIZE);
 	close (iqfd);
+
+	sprintf(ectl[i].inputqbname, "/input_queue%lu", i);
+	iqfd = shm_open (ectl[i].inputqbname, O_CREAT|O_RDWR|O_TRUNC, 0644);	
+	if (iqfd < 0) {
+	    fprintf (stderr, "Cannot create input queue %s,errno=%d\n", ectl[i].inputqbname, errno);
+	    return;
+	} 
+	rc = ftruncate(iqfd, TAINTQSIZE);
+	if (rc < 0) {
+	    fprintf (stderr, "Cannot truncate input queue %s,errno=%d\n", ectl[i].inputqbname, errno);
+	    return;
+	}
+	close (iqfd);
+
     }
 
     // Start a stream processor for all epochs at once
-    printf ("Starting %ld epochs\n", epochs);
-    printf ("dir %s\n", ehdr.dirname);
+    if (!ehdr.start_flag) {
+	if (fork() == 0) {
+	    const char* args[256];
+	    char parstring[80];
+	    int argcnt = 0;
+			    
+	    args[argcnt++] = "stream";
+	    args[argcnt++] = "NULL";
+	    args[argcnt++] = "NULL";
+	    args[argcnt++] = "-oq";
+	    args[argcnt++] = ectl[0].inputqhname;
+	    args[argcnt++] = ectl[0].inputqbname;
+	    args[argcnt++] = "-oh";
+	    args[argcnt++] = ehdr.prev_host;
+	    if (ehdr.cmd_type == AGG_TYPE_SEQ) {
+		args[argcnt++] = "-seq";
+	    }
+	    if (ehdr.cmd_type == AGG_TYPE_SEQ_PPL) {
+		args[argcnt++] = "-seq";
+		args[argcnt++] = "-ppl";
+	    }
+	    if (ehdr.cmd_type == AGG_TYPE_SEQ_PPG) {
+		args[argcnt++] = "-seq";
+		args[argcnt++] = "-ppg";
+	    }
+	    if (ehdr.flags&NW_COMPRESS) {
+		args[argcnt++] = "-compress";
+	    }
+	    if (ehdr.flags&STREAM_LS) {
+		args[argcnt++] = "-streamls";
+	    }
+	    args[argcnt++] = "-par";
+	    sprintf (parstring, "%d", ehdr.parallelize);
+	    args[argcnt++] = parstring;
+	    args[argcnt++] = NULL;
+	    
+	    rc = execv ("./stream", (char **) args);
+	    fprintf (stderr, "execv of stream failed, rc=%d, errno=%d\n", rc, errno);
+	    return;
+	}
+    }
+    if (!ehdr.finish_flag) {
+	if (fork() == 0) {
+	    const char* args[256];
+	    char parstring[80];
+	    int argcnt = 0;
+			    
+	    args[argcnt++] = "stream";
+	    args[argcnt++] = "NULL";
+	    args[argcnt++] = "NULL";
+	    args[argcnt++] = "-iq";
+	    args[argcnt++] = ectl[epochs].inputqhname;
+	    args[argcnt++] = ectl[epochs].inputqbname;
+	    args[argcnt++] = "-ih";
+	    if (ehdr.cmd_type == AGG_TYPE_SEQ) {
+		args[argcnt++] = "-seq";
+	    }
+	    if (ehdr.cmd_type == AGG_TYPE_SEQ_PPL) {
+		args[argcnt++] = "-seq";
+		args[argcnt++] = "-ppl";
+	    }
+	    if (ehdr.cmd_type == AGG_TYPE_SEQ_PPG) {
+		args[argcnt++] = "-seq";
+		args[argcnt++] = "-ppg";
+	    }
+	    if (ehdr.flags&NW_COMPRESS) {
+		args[argcnt++] = "-compress";
+	    }
+	    if (ehdr.flags&STREAM_LS) {
+		args[argcnt++] = "-streamls";
+	    }
+	    args[argcnt++] = "-par";
+	    sprintf (parstring, "%d", ehdr.parallelize);
+	    args[argcnt++] = parstring;
+	    args[argcnt++] = NULL;
+	    
+	    rc = execv ("./stream", (char **) args);
+	    fprintf (stderr, "execv of stream failed, rc=%d, errno=%d\n", rc, errno);
+	    return;
+	}
+    }
     for (u_long i = 0; i < epochs; i++) {
 	
 	ectl[i].spid = fork ();
 	if (ectl[i].spid == 0) {
 	    // Now start up a stream processor for this epoch
 	    const char* args[256];
-	    char dirname[80], port[80];
+	    char dirname[80], port[80], parstring[80];
 	    int argcnt = 0;
 			    
 	    args[argcnt++] = "stream";
@@ -493,23 +669,34 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	    args[argcnt++] = port;
 	    if (i < epochs-1 || !ehdr.finish_flag) {
 		args[argcnt++] = "-iq";
-		args[argcnt++] = ectl[i+1].inputqname;
-	    }
-	    if (i == epochs-1 && !ehdr.finish_flag) {
-		args[argcnt++] = "-ih";
+		args[argcnt++] = ectl[i+1].inputqhname;
+		args[argcnt++] = ectl[i+1].inputqbname;
 	    }
 	    if (i > 0 || !ehdr.start_flag) {
 		args[argcnt++] = "-oq";
-		args[argcnt++] = ectl[i].inputqname;
-	    }
-	    if (i == 0 && !ehdr.start_flag) {
-		args[argcnt++] = "-oh";
-		args[argcnt++] = ehdr.prev_host;
-		printf ("Setting up output queue to %s\n", ehdr.prev_host);
+		args[argcnt++] = ectl[i].inputqhname;
+		args[argcnt++] = ectl[i].inputqbname;
 	    }
 	    if (ehdr.cmd_type == AGG_TYPE_SEQ) {
 		args[argcnt++] = "-seq";
 	    }
+	    if (ehdr.cmd_type == AGG_TYPE_SEQ_PPL) {
+		args[argcnt++] = "-seq";
+		args[argcnt++] = "-ppl";
+	    }
+	    if (ehdr.cmd_type == AGG_TYPE_SEQ_PPG) {
+		args[argcnt++] = "-seq";
+		args[argcnt++] = "-ppg";
+	    }
+	    if (ehdr.flags&LOW_MEMORY) {
+		args[argcnt++] = "-lowmem";
+	    }
+	    if (ehdr.flags&STREAM_LS) {
+		args[argcnt++] = "-streamls";
+	    }
+	    args[argcnt++] = "-par";
+	    sprintf (parstring, "%d", ehdr.parallelize);
+	    args[argcnt++] = parstring;
 	    args[argcnt++] = NULL;
 	    
 	    rc = execv ("./stream", (char **) args);
@@ -520,7 +707,7 @@ void do_stream (int s, struct epoch_hdr& ehdr)
 	}
     }
 
-    for (int i = (int) epochs-1; i >= 0; i--) {
+    for (int i = (int)(epochs-1); i >= 0; i--) {
 	int status;
 	pid_t wpid = waitpid (ectl[i].spid, &status, 0);
 	if (wpid < 0) {
@@ -543,9 +730,14 @@ void do_stream (int s, struct epoch_hdr& ehdr)
     // Clean up shared memory regions for queues
     for (u_long i = 0; i < qcnt; i++) {
 	if (i == 0 && ehdr.start_flag) continue; // No queue needed
-	rc = shm_unlink (ectl[i].inputqname);
+	rc = shm_unlink (ectl[i].inputqhname);
 	if (rc < 0) {
-	    fprintf (stderr, "Cannot unlink input queue %s,errno=%d\n", ectl[i].inputqname, errno);
+	    fprintf (stderr, "Cannot unlink input queue %s,errno=%d\n", ectl[i].inputqhname, errno);
+	    return;
+	}
+	rc = shm_unlink (ectl[i].inputqbname);
+	if (rc < 0) {
+	    fprintf (stderr, "Cannot unlink input queue %s,errno=%d\n", ectl[i].inputqbname, errno);
 	    return;
 	}
     }
@@ -563,26 +755,18 @@ void do_stream (int s, struct epoch_hdr& ehdr)
     if (ehdr.flags&SEND_RESULTS) {
 	for (u_long i = 0; i < epochs; i++) {
 	    char pathname[PATHLEN];
-
-//  Changes so that we can have a separate agg_port... not sure that we need these. 
-
-	    sprintf (pathname, "/tmp/%d.%d/merge-addrs", agg_port, ectl[i].cpid);
-	    send_file (s, pathname, "merge-addrs");
-	    sprintf (pathname, "/tmp/%d.%d/merge-outputs-resolved", agg_port, ectl[i].cpid);
-	    send_file (s, pathname, "merge-outputs-resolved");
-	    sprintf (pathname, "/tmp/%d.%d/tokens", agg_port, ectl[i].cpid);
-	    send_file (s, pathname, "tokens");
-	    sprintf (pathname, "/tmp/%d.%d/dataflow.result", agg_port,ectl[i].cpid);
-/*
 	    sprintf (pathname, "/tmp/%ld/merge-addrs", i);
-	    send_file (s, pathname, "merge-addrs");
-	    sprintf (pathname, "/tmp/%ld/merge-outputs-resolved", i);
-	    send_file (s, pathname, "merge-outputs-resolved");
+	    send_shmem (s, pathname, "merge-addrs");
+	    for (int j = 0; j < ehdr.parallelize; j++) {
+		char filename[256];
+		sprintf (pathname, "/tmp/%ld/merge-outputs-resolved-%d", i, j);
+		sprintf (filename, "merge-outputs-resolved-%d", j);
+		send_shmem (s, pathname, filename);
+	    }
 	    sprintf (pathname, "/tmp/%ld/tokens", i);
-	    send_file (s, pathname, "tokens");
+	    send_shmem (s, pathname, "tokens");
 	    sprintf (pathname, "/tmp/%ld/dataflow.results", i);
-	    send_file (s, pathname, "dataflow.results");	    
-*/
+	    send_shmem (s, pathname, "dataflow.results");
 	}
     }
     
@@ -609,12 +793,9 @@ void* do_request (void* arg)
 	fprintf (stderr, "Cannot recieve header,rc=%d\n", rc);
 	return NULL;
     }
-
     if (ehdr.cmd_type == DO_DIFT) {
-	printf ("Recevied command %d, is dift\n", ehdr.cmd_type);
 	do_dift (s, ehdr);
     } else {
-	printf ("Recevied command %d, is stream\n", ehdr.cmd_type);
 	do_stream (s, ehdr);
     }
     return NULL;
@@ -663,9 +844,7 @@ int main (int argc, char* argv[])
 
     while (1) {
       
-	printf ("About to accept\n");
 	long s = accept (c, NULL, NULL);
-	printf ("Accept returns %ld\n", s);
 	if (s < 0) {
 	    fprintf (stderr, "Cannot accept connection, errno=%d\n", errno);
 	    return s;

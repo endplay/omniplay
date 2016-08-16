@@ -17,8 +17,8 @@ TOOL_CXXFLAGS += -I$(SDEV)
 GLIB_INCLUDES=-I/usr/include/glib-2.0 -I/usr/lib/i386-linux-gnu/glib-2.0/include
 GLIB_LIB= -lglib-2.0
 TOOL_CXXFLAGS += $(GLIB_INCLUDES) -I$(SDEV)
-TAINT_BACK_OBJS=$(TAINTS_OBJ)taint_full_interface$(OBJ_SUFFIX) $(TAINTS_OBJ)taint_byte_creation$(OBJ_SUFFIX) $(TAINTS_OBJ)taint_debug$(OBJ_SUFFIX) $(TAINTS_OBJ)maputil$(OBJ_SUFFIX)
-TAINT_FORWARD_OBJS=$(TAINTS_OBJ)taint_forward_interface$(OBJ_SUFFIX) $(TAINTS_OBJ)taint_forward_creation$(OBJ_SUFFIX) $(TAINTS_OBJ)taint_forward_debug$(OBJ_SUFFIX)
+TAINT_BACK_OBJS=$(TAINTS_OBJ)taint_full_interface$(OBJ_SUFFIX) $(TAINTS_OBJ)taint_byte_creation$(OBJ_SUFFIX) $(TAINTS_OBJ)maputil$(OBJ_SUFFIX)
+TAINT_FORWARD_OBJS=$(TAINTS_OBJ)taint_forward_interface$(OBJ_SUFFIX) $(TAINTS_OBJ)taint_forward_creation$(OBJ_SUFFIX) 
 TAINT_OBJS=$(OBJDIR)xray_token$(OBJ_SUFFIX) $(OBJDIR)xray_slab_alloc$(OBJ_SUFFIX)
 APP_CC=gcc
 
@@ -62,7 +62,7 @@ TOOL_ROOTS :=
 SA_TOOL_ROOTS :=
 
 # This defines all the applications that will be run during the tests.
-APP_ROOTS := postprocess_linkage parse_outputs splice_merge merge_merge merge3 taint_debugger taint_forward_debugger mksplice mkmultisplice mkmerge mkmap mergecmp splicecmp outcmp mergedump mapdump showall has_dups 
+APP_ROOTS := postprocess_linkage parse_outputs splice_merge merge_merge merge3 mksplice mkmultisplice mkmerge mkmap mergecmp splicecmp outcmp mergedump mapdump showall has_dups 
 
 # This defines any additional object files that need to be compiled.
 OBJECT_ROOTS := xray_token \
@@ -70,9 +70,7 @@ OBJECT_ROOTS := xray_token \
 		taint_full_interface \
 		taint_forward_interface \
 		xray_slab_alloc \
-		taint_debug \
 		taint_forward_creation \
-		taint_forward_debug \
 		maputil
 
 # This defines any additional dlls (shared objects), other than the pintools, that need to be compiled.
@@ -105,16 +103,16 @@ $(OBJDIR)maputil$(OBJ_SUFFIX): maputil.h maputil.c
 	$(CXX) $(TOOL_CXXFLAGS) -Wall -Werror -O2 -c -o $(OBJDIR)maputil$(OBJ_SUFFIX) $(GLIB_INCLUDES) maputil.c
 
 $(OBJDIR)postprocess_linkage: xray_slab_alloc.h postprocess_linkage.cpp $(OBJDIR)xray_token$(OBJ_SUFFIX) maputil.c maputil.h
-	$(CXX) -std=c++0x $(TOOL_CXXFLAGS) -Wall -Werror -O2 -o $(OBJDIR)postprocess_linkage $(GLIB_INCLUDES) $(OBJDIR)xray_token$(OBJ_SUFFIX) postprocess_linkage.cpp maputil.c -lglib-2.0
+	$(CXX) -std=c++0x $(TOOL_CXXFLAGS) -Wall -Werror -O2 -o $(OBJDIR)postprocess_linkage $(GLIB_INCLUDES) $(OBJDIR)xray_token$(OBJ_SUFFIX) postprocess_linkage.cpp maputil.c -lglib-2.0 -lrt
 
 $(OBJDIR)parse_outputs: xray_slab_alloc.h parse_outputs.c $(OBJDIR)xray_token$(OBJ_SUFFIX) maputil.c maputil.h
-	$(APP_CC) $(TOOL_CXXFLAGS) -Wall -Werror -O2 -o $(OBJDIR)parse_outputs $(GLIB_INCLUDES) $(OBJDIR)xray_token$(OBJ_SUFFIX) parse_outputs.c maputil.c -lglib-2.0
+	$(APP_CC) $(TOOL_CXXFLAGS) -Wall -Werror -O2 -o $(OBJDIR)parse_outputs $(GLIB_INCLUDES) $(OBJDIR)xray_token$(OBJ_SUFFIX) parse_outputs.c maputil.c -lglib-2.0 -lrt
 
 $(OBJDIR)mksplice: mksplice.cpp maputil.c maputil.h
-	$(CXX) -std=c++0x -Wall -Werror -O8 -o $(OBJDIR)mksplice $(GLIB_INCLUDES) mksplice.cpp maputil.c -lrt
+	$(CXX) -std=c++0x -Wall -Werror -O8 -o $(OBJDIR)mksplice $(GLIB_INCLUDES) mksplice.cpp maputil.c -lrt -lglib-2.0
 
 $(OBJDIR)mkmultisplice: mkmultisplice.c maputil.c maputil.h
-	$(APP_CC) -Wall -Werror -O8 -o $(OBJDIR)mkmultisplice $(GLIB_INCLUDES) mkmultisplice.c maputil.c -lglib-2.0
+	$(APP_CC) -Wall -Werror -O8 -o $(OBJDIR)mkmultisplice $(GLIB_INCLUDES) mkmultisplice.c maputil.c -lglib-2.0 -lrt
 
 $(OBJDIR)mkmerge: mkmerge.cpp maputil.c maputil.h
 	$(CXX) -std=c++0x -Wall -Werror -O8 -o $(OBJDIR)mkmerge $(GLIB_INCLUDES) mkmerge.cpp maputil.c -lrt
@@ -152,12 +150,6 @@ $(OBJDIR)merge_merge: merge_merge.c maputil.c maputil.h
 $(OBJDIR)merge3: merge3.cpp maputil.c maputil.h
 	$(CXX) -std=c++0x -Wall -Werror -O8 -o $(OBJDIR)merge3 merge3.cpp maputil.c -pthread
 
-$(OBJDIR)taint_debugger: $(TAINTS_INTERFACE)/taint_debugger.c
-	$(CXX) $(TOOL_CXXFLAGS) -Wall -Werror -g -o $(OBJDIR)taint_debugger $(GLIB_INCLUDES) $(OBJDIR)xray_token$(OBJ_SUFFIX) $(TAINTS_INTERFACE)/taint_debugger.c -lglib-2.0
-
-$(OBJDIR)taint_forward_debugger: $(TAINTS_INTERFACE)/taint_forward_debugger.c
-	$(CXX) $(TOOL_CXXFLAGS) -Wall -Werror -g -o $(OBJDIR)taint_forward_debugger $(GLIB_INCLUDES) $(OBJDIR)xray_token$(OBJ_SUFFIX) $(TAINTS_INTERFACE)/taint_forward_debugger.c -lglib-2.0
-
 $(OBJDIR)xray_slab_alloc$(OBJ_SUFFIX): xray_slab_alloc.h xray_slab_alloc.c
 	$(APP_CC) -Wall -Werror -O2 -c -o $(OBJDIR)xray_slab_alloc$(OBJ_SUFFIX) xray_slab_alloc.c
 
@@ -172,12 +164,6 @@ $(OBJDIR)taint_forward_creation$(OBJ_SUFFIX): $(TAINTS_INTERFACE)/taint_forward_
 
 $(OBJDIR)taint_forward_interface$(OBJ_SUFFIX): $(TAINTS_INTERFACE)/taint_forward_interface.c $(TAINTS_INTERFACE)/taint_interface.h
 	$(CXX) $(TOOL_CXXFLAGS) -Wall -Werror -O2 -c -o $(TAINTS_OBJ)taint_forward_interface$(OBJ_SUFFIX) $(GLIB_INCLUDES) $(TAINTS_INTERFACE)/taint_forward_interface.c
-
-$(OBJDIR)taint_debug$(OBJ_SUFFIX): $(TAINTS_INTERFACE)/taint_interface.h $(TAINTS_INTERFACE)/taint_debug.h $(TAINTS_INTERFACE)/taint_debug.c
-	$(CXX) $(TOOL_CXXFLAGS) -Wall -Werror -O2 -c -o $(TAINTS_OBJ)taint_debug$(OBJ_SUFFIX) $(TAINTS_INTERFACE)/taint_debug.c
-
-$(OBJDIR)taint_forward_debug$(OBJ_SUFFIX): $(TAINTS_INTERFACE)/taint_interface.h $(TAINTS_INTERFACE)/taint_debug.h $(TAINTS_INTERFACE)/taint_forward_debug.c
-	$(CXX) $(TOOL_CXXFLAGS) -Wall -Werror -O2 -c -o $(TAINTS_OBJ)taint_forward_debug$(OBJ_SUFFIX) $(TAINTS_INTERFACE)/taint_forward_debug.c
 
 $(OBJDIR)linkage_new2$(OBJ_SUFFIX): linkage_new2.cpp xray_slab_alloc.c xray_slab_alloc.h $(TAINTS_INTERFACE)/taint_interface.h $(TAINTS_INTERFACE)/taint_full_interface.c $(TAINTS_INTERFACE)/taint_byte_creation.c taint_nw.h
 	$(CXX) $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
@@ -197,7 +183,7 @@ $(OBJDIR)linkage_data$(OBJ_SUFFIX): linkage_new2.cpp xray_slab_alloc.c xray_slab
 	$(CXX) -DLINKAGE_DATA $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $<
 
 $(OBJDIR)linkage_data$(PINTOOL_SUFFIX): $(OBJDIR)linkage_data$(OBJ_SUFFIX) 
-	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) $(MY_OBJS) $(TAINT_BACK_OBJS) $(TAINT_OBJS) -lglib-2.0
+	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) $(MY_OBJS) $(TAINT_BACK_OBJS) $(TAINT_OBJS) -lglib-2.0 -lrt
 
 # DATA+INDEX TOOL
 $(OBJDIR)linkage_offset$(OBJ_SUFFIX): linkage_new2.cpp xray_slab_alloc.c xray_slab_alloc.h $(TAINTS_INTERFACE)/taint_interface.h $(TAINTS_INTERFACE)/taint_full_interface.c $(TAINTS_INTERFACE)/taint_byte_creation.c splice.c maputil.c

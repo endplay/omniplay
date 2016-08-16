@@ -265,7 +265,7 @@ struct wait4_retvals {
 };
 
 struct waitid_retvals {
-	struct siginfo info;
+        siginfo_t info;
 	struct rusage  ru;
 };
 

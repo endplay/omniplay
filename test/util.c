@@ -77,7 +77,7 @@ int replay_fork (int fd_spec, const char** args, const char** env,
 
 int resume_with_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int save_mmap, 
 		      char* logdir, char* linker, loff_t attach_index, int attach_pid, int ckpt_at,
-		      int record_timing, char* cache_dir)
+		      int record_timing, u_long nfake_calls, u_long* fake_calls)
 {
     struct wakeup_data data;
     data.pin = pin;
@@ -91,19 +91,22 @@ int resume_with_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int save
     data.attach_pid = attach_pid;
     data.ckpt_at = ckpt_at;
     data.record_timing = record_timing;
-    data.cache_dir = cache_dir;
+    data.nfake_calls = nfake_calls;
+    data.fake_calls = fake_calls;
     return ioctl (fd_spec, SPECI_RESUME, &data);    
 }
 
 int resume (int fd_spec, int pin, int gdb, int follow_splits, int save_mmap, 
-	    char* logdir, char* linker, loff_t attach_index, int attach_pid, int record_timing, char *cache_dir)
+	    char* logdir, char* linker, loff_t attach_index, int attach_pid, int record_timing,
+	    u_long nfake_calls, u_long* fake_calls)
 {
-    return resume_with_ckpt (fd_spec, pin, gdb, follow_splits, save_mmap,
-			     logdir, linker, attach_index, attach_pid, 0, record_timing, cache_dir);
+    return resume_with_ckpt (fd_spec, pin, gdb, follow_splits, save_mmap, logdir, linker, 
+			     attach_index, attach_pid, 0, record_timing, nfake_calls, fake_calls);
 }
 
 int resume_after_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int save_mmap, 
-		       char* logdir, char* linker, char* filename, loff_t attach_index, int attach_pid, char *cache_dir)
+		       char* logdir, char* linker, char* filename,char* uniqueid, loff_t attach_index, int attach_pid
+		       , u_long nfake_calls, u_long* fake_calls)
 {
     fprintf(stderr, "calling resume_after_ckpt\n");
     struct wakeup_ckpt_data data;
@@ -112,21 +115,25 @@ int resume_after_ckpt (int fd_spec, int pin, int gdb, int follow_splits, int sav
     data.logdir = logdir;
     data.filename = filename;
     data.linker = linker;
+    data.uniqueid = uniqueid;
     data.fd = fd_spec;
     data.follow_splits = follow_splits;
     data.save_mmap = save_mmap;
     data.attach_index = attach_index;
     data.attach_pid = attach_pid;
-    data.cache_dir = cache_dir;
+    data.nfake_calls = nfake_calls;
+    data.fake_calls = fake_calls;
     return ioctl (fd_spec, SPECI_CKPT_RESUME, &data);    
 
 }
 
-int resume_proc_after_ckpt (int fd_spec, char* logdir, char* filename)
+int resume_proc_after_ckpt (int fd_spec, char* logdir, char* filename, char* uniqueid, int ckpt_pos)
 {
     struct wakeup_ckpt_data data;
     data.logdir = logdir;
     data.filename = filename;
+    data.uniqueid = uniqueid;
+    data.ckpt_pos = ckpt_pos;
     data.fd = fd_spec;
     return ioctl (fd_spec, SPECI_CKPT_PROC_RESUME, &data);    
 }
@@ -152,6 +159,25 @@ int check_clock_before_syscall (int fd_spec, int syscall)
 int check_clock_after_syscall (int fd_spec)
 {
     return ioctl (fd_spec, SPECI_CHECK_AFTER);
+}
+
+long check_for_redo (int fd_spec)
+{
+    return ioctl (fd_spec, SPECI_CHECK_FOR_REDO);
+}
+
+long redo_mmap (int fd_spec, u_long* prc, u_long* plen) 
+{
+    struct redo_mmap_data redo;
+    long retval =  ioctl (fd_spec, SPECI_REDO_MMAP, &redo);
+    *prc = redo.rc;
+    *plen = redo.len;
+    return retval;
+}
+long redo_munmap (int fd_spec) 
+{
+    long retval =  ioctl (fd_spec, SPECI_REDO_MUNMAP);
+    return retval;
 }
 
 int get_log_id (int fd_spec)
@@ -212,6 +238,14 @@ int get_filemap (int fd_spec, int fd, loff_t offset, int size, void* entries, in
     return ioctl (fd_spec, SPECI_GET_FILEMAP, &fentry);
 }
 
+int get_open_fds (int fd_spec, struct open_fd* entries, int num_entries) 
+{
+    struct open_fds_data oentry;
+    oentry.entries = entries;
+    oentry.num_entries = num_entries;
+    return ioctl (fd_spec, SPECI_GET_OPEN_FDS, &oentry);
+}
+
 long reset_replay_ndx(int fd_spec)
 {
     return ioctl (fd_spec, SPECI_RESET_REPLAY_NDX);
@@ -248,6 +282,12 @@ pid_t get_replay_pid(int fd_spec, pid_t parent_pid, pid_t record_pid)
 
     return ioctl (fd_spec, SPECI_GET_REPLAY_PID, &data);
 }
+
+int is_pin_attaching(int fd_spec)
+{
+    return ioctl (fd_spec, SPECI_IS_PIN_ATTACHING);
+}
+
 
 u_long* map_shared_clock (int fd_spec)
 {

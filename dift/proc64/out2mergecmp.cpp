@@ -15,13 +15,14 @@ using namespace std;
 
 #include "../taint_interface/taint.h"
 #include "../taint_interface/taint_creation.h"
+#include "../../test/streamserver.h"
 
-#define TARGET(x) (x==0x7e55f3 || x==0x7e5751)
-//#define ITARGET 0x201e42
-
+//#define TARGET(x) ((x)==0x119)
+//#define ITARGET(x) ((x)==0||(x)==0x7e5751)
 #define ALLOW_DUPS
 
 #define BUFSIZE 100000
+//#define OUTPUT_CMP
 
 #ifdef OUTPUT_CMP
 struct output_info {
@@ -57,28 +58,28 @@ int main (int argc, char* argv[])
     long rc;
     int out_start;
     const char* out_dir;
-
-    int dir_start = 2;
+    int dir_start = 3;
+    int show_all = 0;
 #ifdef OUTPUT_CMP
     struct output_info oi;
 #endif
 
-    if (argc < 3) {
-	fprintf (stderr, "format: out2mergecmp.c <mergeout dir> [-p pid] [-d dir] <list of output dirs>\n");
+    if (argc < 4) {
+	fprintf (stderr, "format: out2mergecmp.c [thread #] <mergeout dir> [-p pid] [-d dir] <list of output dirs>\n");
 	return -1;
     }
     
-    if (!strcmp(argv[2], "-p")) {
-	dir_start = 4;
-	sprintf (mfile, "%s/mergeout.%s", argv[1], argv[3]);
-	sprintf (dfile, "%s/dataflow.result.%s", argv[1], argv[3]);
-
+    if (!strcmp(argv[3], "-p")) {
+	dir_start = 5;
+	sprintf (mfile, "%s/mergeout.%s", argv[2], argv[4]);
+	sprintf (dfile, "%s/dataflow.result.%s", argv[2], argv[4]);
     } 
     else { 
-	sprintf (mfile, "%s/mergeout", argv[1]);
-	sprintf (dfile, "%s/dataflow.result", argv[1]);
-
+	sprintf (mfile, "%s/mergeout", argv[2]);
+	sprintf (dfile, "%s/dataflow.result", argv[2]);
     }
+    int parallelize = atoi(argv[1]);
+
 
     rc = map_file (mfile, &mfd, &mdatasize, &mmapsize, &mbuf);
     if (rc < 0) return rc;
@@ -99,7 +100,7 @@ int main (int argc, char* argv[])
 #endif
     mptr = (uint32_t *) mbuf;
     dptr = dbuf;
-#ifdef TARGET
+#if defined(TARGET) || defined(OUTPUT_CMP)
     struct taint_creation_info* tci = (struct taint_creation_info *) dbuf;
 #endif
     dptr += sizeof(struct taint_creation_info) + sizeof(uint32_t);
@@ -115,13 +116,14 @@ int main (int argc, char* argv[])
     tokval += buf_size;
 #endif
 
-    dptr += sizeof(uint32_t);
+    dptr += sizeof(uint32_t) + buf_size*(sizeof(taint_t) + sizeof(uint32_t));
+
     buf_cnt = 0;
     while ((u_long) mptr < (u_long) mbuf + mdatasize) {
 	while (*mptr) {
 #ifdef TARGET
 	    if (TARGET(otoken)) {
-		printf ("Output %x -> input %x syscall %u offset %u out of %u\n", otoken, *mptr, tci->syscall_cnt, buf_cnt, buf_size);
+		printf ("Output %x -> input %x pid %d syscall %u offset %u out of %u\n", otoken, *mptr, tci->record_pid, tci->syscall_cnt, buf_cnt, buf_size);
 	    }
 #endif
 #ifdef ITARGET
@@ -135,15 +137,16 @@ int main (int argc, char* argv[])
 	otoken++;
 	mptr++;
 	buf_cnt++;
-	dptr += sizeof(taint_t) + sizeof(uint32_t);
-	while (buf_cnt == buf_size) {
-#ifdef TARGET
+
+#if defined(TARGET) || defined(OUTPUT_CMP)
+	while (buf_cnt == buf_size && (u_long) mptr < (u_long) mbuf + mdatasize) {
 	    tci = (struct taint_creation_info *) dptr;
-#endif
 	    dptr += sizeof(struct taint_creation_info) + sizeof(uint32_t);
 	    buf_size = *((uint32_t *) dptr);
 #ifdef OUTPUT_CMP
-	    printf ("outputs %x-%x: record pid %d syscall %d size %d\n", tokval, tokval+buf_size, tci->record_pid, tci->syscall_cnt, buf_size);
+	    if (buf_size > 0) {
+		printf ("outputs %x-%x: record pid %d syscall %d size %d\n", tokval, tokval+buf_size, tci->record_pid, tci->syscall_cnt, buf_size);
+	    }
 	    oi.tokval = tokval;
 	    oi.record_pid = tci->record_pid;
 	    oi.syscall = tci->syscall_cnt;
@@ -151,9 +154,11 @@ int main (int argc, char* argv[])
 	    outputs.push_back(oi);
 	    tokval += buf_size;
 #endif
-	    dptr += sizeof(uint32_t);
 	    buf_cnt = 0;
+	    dptr += sizeof(uint32_t) + buf_size*(sizeof(taint_t) + sizeof(uint32_t));
 	}
+#endif
+
     }
 
     unmap_file (mbuf, mfd, mmapsize);
@@ -191,19 +196,19 @@ int main (int argc, char* argv[])
 	    tokval += *psize;
 	}
 #endif
-	sprintf (ofile, "%s/%s/merge-outputs-resolved", out_dir, argv[i]);
-	rc = map_file (ofile, &ofd, &odatasize, &omapsize, &obuf);
-	if (rc < 0) return rc;	
+	for (int j = 0; j < parallelize; j++) {
+	    sprintf (ofile, "%s/%s/merge-outputs-resolved-%d", out_dir, argv[i], j);
+	    rc = map_file (ofile, &ofd, &odatasize, &omapsize, &obuf);
+	    if (rc < 0) return rc;	
 
-	optr = (uint32_t *) obuf;
-	while ((u_long) optr < (u_long) obuf + odatasize) {
-	    uint32_t otoken = *optr;
-	    optr++;
-	    while (*optr) {
+	    optr = (uint32_t *) obuf;
+	    while ((u_long) optr < (u_long) obuf + odatasize) {
+		uint32_t otoken = *optr++;
 #ifdef TARGET
 		if (TARGET(otoken+output_tokens)) {
-		    printf ("Output %x this epoch %x past %x -> input %x this epoch %x past %x, epoch %s offset %lx\n",
-			    otoken+output_tokens, otoken, output_tokens, *optr+input_tokens, *optr, input_tokens, argv[i], (u_long) optr - (u_long) obuf);
+		    printf ("Output %x this epoch %x past %x -> input %x this epoch %x past %x, epoch %s,thread %d offset %lx\n",
+			    otoken+output_tokens, otoken, output_tokens, *optr+input_tokens, *optr, input_tokens, argv[i], j,
+			    (u_long) optr - (u_long) obuf);
 		}
 #endif
 #ifdef ITARGET
@@ -215,10 +220,8 @@ int main (int argc, char* argv[])
 		omapping.insert(make_pair(otoken+output_tokens,*optr+input_tokens));
 		optr++;
 	    }
-	    optr++;
+	    unmap_file (obuf, ofd, omapsize);
 	}
-	
-	unmap_file (obuf, ofd, omapsize);
 
 	sprintf (afile, "%s/%s/merge-addrs", out_dir, argv[i]);
 	afd = open(afile, O_RDONLY);
@@ -241,7 +244,7 @@ int main (int argc, char* argv[])
 	output_tokens += output_token;
 	input_tokens += input_token;
 #ifdef TARGET
-	printf ("epoch %d, output tokens %x input tokens %x\n", i-1, output_tokens, input_tokens);
+	printf ("epoch %d, output tokens %x input tokens %x\n", i-out_start, output_tokens, input_tokens);
 #endif
 	close (afd);
     }
@@ -255,10 +258,16 @@ int main (int argc, char* argv[])
 	    printf ("Entry in mapping %d differs\n", cnt);
 	    printf ("mergeout <%x,%x>, outputs <%x,%x>\n", 
 		    miter->first, miter->second, oiter->first, oiter->second);
-	    exit (0);
+	    if (!show_all) exit (0);
+	    if (*miter < *oiter) {
+		miter++;
+	    } else {
+		oiter++;
+	    }
+	} else {
+	    miter++;
+	    oiter++;
 	}
-	miter++;
-	oiter++;
     }
     if (miter != mapping.end()) {
 	printf ("mergeout has entries remaining but output files do not\n");

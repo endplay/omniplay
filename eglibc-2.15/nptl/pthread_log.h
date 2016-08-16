@@ -9,6 +9,10 @@
 // This creates a separate log for debugging
 //#define USE_EXTRA_DEBUG_LOG
 
+// This causes the pthread library to make extra calls to kernel
+// For finer-grained epochs
+//#define DO_FAKE_CALLS
+
 #define DEFAULT_STACKSIZE        32768 
 
 #ifdef USE_DEBUG_LOG
@@ -144,6 +148,7 @@ struct pthread_extra_log_head {
 /* App specific ops */
 #define APP_VALUE_ENTER                       85
 #define APP_VALUE_EXIT                        86
+#define LIBC_TICK                             87
 
 /* Sync. operations */
 #define SYNC_ADD_AND_FETCH_ENTER              91

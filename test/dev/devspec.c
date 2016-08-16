@@ -10,6 +10,9 @@
 #include <linux/sched.h>
 #include <linux/slab.h>
 
+#include <linux/device.h>
+#include <linux/cdev.h> 
+
 #include <linux/replay.h>
 
 #include <linux/ds_list.h>
@@ -49,17 +52,19 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 	struct get_used_addr_data udata;
 	struct filemap_num_data fndata;
 	struct filemap_entry_data fedata;
+	struct open_fds_data ofdata;
 	struct get_record_pid_data recordpid_data;
 	struct set_pin_address_data pin_data;
 	struct get_replay_pid_data replay_pid_data;
 	int syscall;
 	char logdir[MAX_LOGDIR_STRLEN+1];
 	char filename[MAX_LOGDIR_STRLEN+1];
-	char cache_dir[MAX_LOGDIR_STRLEN+1];
+	char uniqueid[MAX_LOGDIR_STRLEN+1];
 	char* tmp = NULL;
 	long rc;
 	int device;
 	pid_t pid;
+	u_long* fake_calls = NULL;
 
 	pckpt_proc = new_ckpt_proc = NULL;
 	DPRINT ("pid %d cmd number 0x%08x\n", current->pid, cmd);
@@ -107,12 +112,6 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 			printk ("ioctl SPECI_RESUME fails, strcpy returns %d\n", retval);
 			return -EINVAL;
 		}
-
-		retval = strncpy_from_user(cache_dir, wdata.cache_dir, MAX_LOGDIR_STRLEN);
-		if (retval < 0 || retval >= MAX_LOGDIR_STRLEN) {
-			printk ("ioctl SPECI_RESUME fails, strcpy returns %d\n", retval);
-			return -EINVAL;
-		}
 		
 		if (wdata.linker) {
 			tmp = getname(wdata.linker);
@@ -132,9 +131,19 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 			device = 0; //NONE
 		}
 
+		if (wdata.nfake_calls) {
+		    fake_calls = kmalloc (wdata.nfake_calls*sizeof(u_long), GFP_KERNEL);
+		    if (fake_calls == NULL) return -ENOMEM;
+		    if (copy_from_user (fake_calls, wdata.fake_calls, wdata.nfake_calls*sizeof(u_long))) {
+			kfree (fake_calls);
+			return -EFAULT;
+		    }
+		}
+
 		rc = replay_ckpt_wakeup(device, logdir, tmp, wdata.fd,
 					wdata.follow_splits, wdata.save_mmap, wdata.attach_index,
-					wdata.attach_pid, wdata.ckpt_at, wdata.record_timing, cache_dir);
+					wdata.attach_pid, wdata.ckpt_at, wdata.record_timing,
+					wdata.nfake_calls, fake_calls);
 
 		if (tmp) putname (tmp);
 		return rc;
@@ -152,16 +161,19 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 			return -EINVAL;
 		}
 
-		retval = strncpy_from_user(cache_dir, wcdata.cache_dir, MAX_LOGDIR_STRLEN);
-		if (retval < 0 || retval >= MAX_LOGDIR_STRLEN) {
-			printk ("ioctl SPECI_RESUME fails, strcpy returns %d\n", retval);
-			return -EINVAL;
-		}
+
 		retval = strncpy_from_user(filename, wcdata.filename, MAX_LOGDIR_STRLEN);
 		if (retval < 0 || retval >= MAX_LOGDIR_STRLEN) {
 			printk ("ioctl SPECI_FOR_REPLAY fails, strcpy returns %d\n", retval);
 			return -EINVAL;
 		}
+
+		retval = strncpy_from_user(uniqueid, wcdata.uniqueid, MAX_LOGDIR_STRLEN);
+		if (retval < 0 || retval >= MAX_LOGDIR_STRLEN) {
+			printk ("ioctl SPECI_FOR_REPLAY fails, strcpy returns %d\n", retval);
+			return -EINVAL;
+		}
+
 		if (wcdata.linker) {
 			tmp = getname(wcdata.linker);
 			if (tmp == NULL) {
@@ -179,10 +191,19 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 		} else {
 			device = 0; //NONE
 		}
+		if (wcdata.nfake_calls) {
+		    fake_calls = kmalloc (wcdata.nfake_calls*sizeof(u_long), GFP_KERNEL);
+		    if (fake_calls == NULL) return -ENOMEM;
+		    if (copy_from_user (fake_calls, wcdata.fake_calls, wcdata.nfake_calls*sizeof(u_long))) {
+			kfree (fake_calls);
+			return -EFAULT;
+		    }
+		}
 
-		rc = replay_full_ckpt_wakeup(device, logdir, filename, tmp, wcdata.fd,
+
+		rc = replay_full_ckpt_wakeup(device, logdir, filename, tmp, uniqueid, wcdata.fd,
 					     wcdata.follow_splits, wcdata.save_mmap, wcdata.attach_index,
-					     wcdata.attach_pid, cache_dir);
+					     wcdata.attach_pid,wcdata.nfake_calls, fake_calls);
 
 		if (tmp) putname (tmp);
 		return rc;
@@ -204,8 +225,13 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 			printk ("ioctl SPECI_FOR_REPLAY fails, strcpy returns %d\n", retval);
 			return -EINVAL;
 		}
+		retval = strncpy_from_user(uniqueid, wcdata.uniqueid, MAX_LOGDIR_STRLEN);
+		if (retval < 0 || retval >= MAX_LOGDIR_STRLEN) {
+			printk ("ioctl SPECI_FOR_REPLAY fails, strcpy returns %d\n", retval);
+			return -EINVAL;
+		}
 
-		rc = replay_full_ckpt_proc_wakeup(logdir, filename, wcdata.fd);
+		rc = replay_full_ckpt_proc_wakeup(logdir, filename, uniqueid,wcdata.fd,wcdata.ckpt_pos);
 
 		if (tmp) putname (tmp);
 		return rc;
@@ -271,6 +297,15 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 			return -EFAULT;
 		}
 		return get_filemap(fedata.fd, fedata.offset, fedata.size, fedata.entries, fedata.num_entries);
+	case SPECI_GET_OPEN_FDS:
+		if (len != sizeof(ofdata)) {
+			printk ("ioctl SPECI_GET_OPEN_FDS fails, len %d\n", len);
+			return -EINVAL;
+		}
+		if (copy_from_user (&ofdata, (void *) data, sizeof(ofdata))) {
+			return -EFAULT;
+		}
+		return get_open_socks (ofdata.entries, ofdata.num_entries);
 	case SPECI_RESET_REPLAY_NDX:
 		return reset_replay_ndx();
 	case SPECI_GET_CURRENT_RECORD_PID:
@@ -332,9 +367,31 @@ spec_psdev_ioctl (struct file* file, u_int cmd, u_long data)
 
 		return get_replay_pid (replay_pid_data.parent_pid, replay_pid_data.record_pid);
 
+	case SPECI_IS_PIN_ATTACHING: 
+	    return is_pin_attaching ();
+	    
+
 	case SPECI_MAP_CLOCK: {
 		return pthread_shm_path ();
 	}
+	case SPECI_CHECK_FOR_REDO: {
+		return check_for_redo ();
+	}
+	case SPECI_REDO_MMAP: {
+		struct redo_mmap_data __user * rd = (struct redo_mmap_data __user *) data;
+		if (len != sizeof(struct redo_mmap_data)) {
+			printk ("ioctl SPECI_CHECK_FOR_REDO fails, len %d\n", len);
+			return -EINVAL;
+		}
+		retval = redo_mmap (&rd->rc, &rd->len);
+		return retval;
+	}
+
+	case SPECI_REDO_MUNMAP: {
+	    retval = redo_munmap ();
+		return retval;
+	}
+
 	default:
 		return -EINVAL;
 	}
@@ -352,24 +409,94 @@ static struct file_operations spec_psdev_fops = {
 
 #ifdef MODULE
 
+static struct class *dev_class = NULL;
+static struct device *spec_device = NULL;
+dev_t spec_dev;
+struct cdev spec_cdev;
+
+
+static char *spec_devnode(struct device *dev, umode_t *mode) 
+{ 
+
+    if(!mode) 
+	return NULL;
+    if (dev->devt == spec_dev) 
+	*mode = 0666;
+    return NULL;
+}
+
 int init_module(void)
 {
-	printk(KERN_INFO "User-level speculation module version 1.0\n");
+    int err;
 
-	if(register_chrdev(SPEC_PSDEV_MAJOR, "spec_psdev", 
-			   &spec_psdev_fops)) {
-		printk(KERN_ERR "spec_psdev: unable to get major %d\n", 
-		SPEC_PSDEV_MAJOR);
-		return -EIO;
-	}
-	
-	return 0;
+    printk(KERN_INFO "User-level speculation module version 1.0\n");
+
+    err = alloc_chrdev_region(&spec_dev, 0, 1, SPEC_NAME);
+    if (err < 0) {
+	printk("Couldn't alloc devnumber for devspec\n");
+	goto fail;
+    }
+
+    spec_dev = MKDEV(MAJOR(spec_dev), 0);
+
+    dev_class = class_create(THIS_MODULE, SPEC_NAME);
+    if (IS_ERR(dev_class)) {
+	err = PTR_ERR(dev_class);
+	dev_class = NULL;
+	goto fail;
+    }
+
+    dev_class->devnode = spec_devnode;
+
+    cdev_init(&spec_cdev, &spec_psdev_fops);
+    spec_cdev.owner = THIS_MODULE;
+
+    err = cdev_add(&spec_cdev, spec_dev, 1);
+    if (err) {
+	printk("Error while trying to add cdev\n");
+	goto fail;
+    }
+
+    spec_device = device_create(dev_class, NULL, spec_dev, NULL, SPEC_NAME);
+    if (IS_ERR(spec_device)) {
+	err = PTR_ERR(spec_device);
+	spec_device = NULL;
+	goto fail;
+    }
+    /*
+      if(register_chrdev(spec_dev, "spec_psdev", &spec_psdev_fops)) {
+      printk(KERN_ERR "spec_psdev: unable to get major %d\n", spec_dev);
+      err = -EIO;
+      goto fail;
+      }
+    */
+
+    return 0;
+
+fail:
+    if (spec_device) {
+	device_destroy(dev_class, spec_dev);
+    }
+    if (dev_class) {
+	class_destroy(dev_class);
+    }
+    return err;
 }
 
 void cleanup_module(void)
 {
-	unregister_chrdev(SPEC_PSDEV_MAJOR,"spec_psdev");
-	printk(KERN_INFO "User-Level speculation module 1.0 exiting.\n");
+
+    if (spec_device) {
+	device_destroy(dev_class, spec_dev);
+    }
+
+    if (dev_class) {
+	class_destroy(dev_class);
+    }
+
+    unregister_chrdev(spec_dev ,"spec_psdev");
+    printk (KERN_INFO "User-Level speculation module 1.0 exiting.\n");
 }
+
 
 #endif

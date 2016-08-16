@@ -56,7 +56,7 @@ long send_file (int s, const char* pathname, const char* filename)
     strcpy (sendfilename, filename);
     rc = write (s, sendfilename, sizeof(sendfilename));
     if (rc != sizeof(sendfilename)) {
-	fprintf (stderr, "send_file: cannot write filename, rc=%ld, errno=%d\n", rc, errno);
+	fprintf (stderr, "send_file: cannot write filename %s, rc=%ld, errno=%d\n", filename,rc, errno);
 	return rc;
     }
 
@@ -115,8 +115,6 @@ long fetch_file (int s, const char* dest_dir)
 	fprintf (stderr, "fetch_file: cannot read file %s stats, rc=%ld, errno=%d\n", filename, rc, errno);
 	return rc;
     }
-
-    printf("size of st: %u\n",sizeof(st));
 	
     // Open the new file
     char pathname[PATHLEN];

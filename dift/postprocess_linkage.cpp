@@ -1,3 +1,4 @@
+#define _LARGEFILE64_SOURCE
 #include <stdio.h>
 #include <errno.h>
 #include <stdint.h>
@@ -993,7 +994,8 @@ void print_forward_options(struct taint_creation_info* tci,
 void interpret_forward_results(char* results_filename, GHashTable* filename_table)
 {
     int fd;
-    int rc;
+    //    int rc;
+    size_t rc;
     int bytes_read = 0;
     struct stat buf;
     fd = open(results_filename, O_RDONLY);
@@ -1516,7 +1518,7 @@ int map_shmem (char* filename, int* pfd, u_long* pdatasize, u_long* pmapsize, ch
     int fd, rc;
     char* buf;
 
-    fd = open (filename, O_RDONLY, 0);
+    fd = open (filename, O_RDONLY | O_LARGEFILE, 0);
     if (fd < 0) {
 	fprintf (stderr, "Unable to open %s, rc=%d, errno=%d\n", filename, fd, errno);
 	return fd;
@@ -1645,7 +1647,7 @@ int read_merge (char* group_dir, char* pid)
 	snprintf(taint_structures_filename, 256, "%s/node_nums", group_dir); //I don't know how this works w/ multiproc?
     }
 
-    outfd = open (out_filename, O_CREAT|O_WRONLY|O_TRUNC, 0644);
+    outfd = open (out_filename, O_CREAT|O_WRONLY|O_TRUNC|O_LARGEFILE, 0644);
     if (outfd < 0) {
         fprintf(stderr, "couldn't open: %s\n", out_filename);
         return outfd;
