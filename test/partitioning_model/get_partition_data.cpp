@@ -268,6 +268,7 @@ int main(int argc, char* argv[]) {
     char partsfile[256];  
     char following[256];
     int pin_epochs = -1; 
+    u_long stop_clock = 0;
     char* pin_dir = NULL;
     unordered_set<pid_t> procs;
 
@@ -425,7 +426,7 @@ int main(int argc, char* argv[]) {
 
 
     fprintf(stderr, "starting parsing klogs\n");
-    rc = parse_klogs(td, argv[1], following, procs);
+    rc = parse_klogs(td, stop_clock, argv[1], following, procs);
     fprintf(stderr, "starting parsing ulogs\n");
     rc = parse_ulogs(td, argv[1]);     
     fprintf(stderr, "starting parsing timing_data\n");
