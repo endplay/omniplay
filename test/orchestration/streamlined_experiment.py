@@ -189,6 +189,7 @@ def main():
         sync_cmd_args.extend(SYNC_ARGS)
         sync_cmd_args.extend(["-hs","."+cmd_args.host_suffix])
         sync_cmd_args.append("-seqppl") #can't do one_pass
+        sync_cmd_args.append("-streamls")
 
         print>>sys.stderr, sync_cmd_args
         if len(hosts) > 1:

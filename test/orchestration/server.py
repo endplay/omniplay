@@ -30,13 +30,26 @@ class Server:
         try:
             shell.run(["sudo","/bin/mkdir","-p", LOCAL_PREFIX_DIR + "/lib/"], cwd="/");
         except spur.results.RunProcessError:
-            print>>sys.stderr, "already made the home ld-2.15 directory"
+            print>>sys.gstderr, "already made the home ld-2.15 directory"
 
         try:
             shell.run(["sudo","/bin/ln","-s",CLOUDLAB_PREFIX_DIR + "/lib/ld-2.15.so",LOCAL_PREFIX_DIR + "/lib/ld-2.15.so"], cwd="/");
 
         except spur.results.RunProcessError:
             print>>sys.stderr, "already linked in ld-2.15.so... move on"
+        
+        cmd = shlex.split("/bin/bash -c \"for i in $(ls /replay_cache); do sudo rm -rf /replay_cache/$i; done\"")
+
+        results = shell.run(cmd,cwd = "/")
+        try:
+            results = shell.run(["sudo","/bin/mkdir","/replay_logdb"],cwd = "/")
+        except spur.results.RunProcessError:
+            print>>sys.stderr, "alread made replay_logdb"
+
+        
+        results = shell.run(["sudo","/bin/chmod","777","/replay_logdb"],cwd = "/")
+        results = shell.run(["sudo","/bin/chmod","777","/replay_cache"],cwd = "/")
+        
 
     def replace_prefix(self, user, password, prefix_name):
         shell = experiment_utilities.open_ssh_session(self.host, user, password)
