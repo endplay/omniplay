@@ -72,7 +72,7 @@ def get_stats(input_dir, data_file):
     imrat = [(imisses[i] * ratio[i]) for i in range(len(ratio))]
 
 
-    return [utime, uinsts], dift
+    return [utime, uinsts,pin_nmerges], dift
 #    return [uinsts], instructions
 
 def linear_regression(cx, cy): 
