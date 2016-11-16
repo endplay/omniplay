@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import copy
 
-data_colors = ["#d73027","#fc8d59","#fee090","#e0f3f8","#91bfdb","#4575b4","#e6f598","#abdda4","#66c2a5","#3288bd","#5e4fa2", "#ffed6f", "#ccebc5","#fdae61"]
+data_colors = ["#d73027","#fc8d59","#fee090","#e0f3f8","#91bfdb","#4575b4","#e6f598","#abdda4","#66c2a5","#3288bd","#5e4fa2", "#ffed6f", "#ccebc5","#fdae61","#d73027","#fc8d59"]
 
 #epoch_list: a list of each of each epoch and its results
 def make_stacked_chart(epoch_list, labels, arange, filename, fig_number):

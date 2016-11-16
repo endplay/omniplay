@@ -127,6 +127,7 @@ int checkpoint_ckpt_tsks_header(struct ckpt_tsk *ct, int parent_pid, int is_thre
 int restore_ckpt_tsks_header(u_long num_procs, struct file *cfile, loff_t *ppos);
 int checkpoint_sysv_mappings (struct task_struct* tsk, struct file* cfile, loff_t* ppos);
 int restore_sysv_mappings (struct file* cfile, loff_t* ppos);
+int add_sysv_shm(u_long addr, u_long len);
 
 long get_ckpt_state (pid_t pid); //huh? 
 

@@ -3114,6 +3114,20 @@ restore_sysv_mappings (struct file* cfile, loff_t* ppos)
 	return 0;
 }
 
+int add_sysv_shm(u_long addr, u_long len) 
+{ 
+	struct sysv_shm* tmp;
+	tmp = KMALLOC(sizeof(struct sysv_shm), GFP_KERNEL);
+	if (tmp == NULL) {
+		printk ("Pid %d: could not alllocate for sysv_shm\n", current->pid);
+		return -ENOMEM;
+	}
+	
+	tmp->addr = addr;
+	tmp->len  = len;
+	list_add(&tmp->list, &current->replay_thrd->rp_sysv_shms);
+	return 0;
+}
 
 
 
@@ -3772,6 +3786,8 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 	char* execname;
 	__u64 rg_id;
 	mm_segment_t old_fs = get_fs();
+	struct mm_struct *mm = current->mm;
+	u_long old_brk;
 
 	printk("Replay Start\n");
 
@@ -3868,7 +3884,11 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 	}
 
 	prepg->rg_attach_device = attach_device;
-	
+	down_write(&mm->mmap_sem);
+	// since we actually do the brk we can just grab the old one
+	old_brk = PAGE_ALIGN(mm->brk);
+	printk("start of replay_ckpt_wakeup brk %lu\n", old_brk);
+	up_write(&mm->mmap_sem);
 	/*
 	 * If pin, set the process to sleep, so that we can manually attach pin
 	 * We would then have to wake up the process after pin has been attached.
@@ -3910,6 +3930,12 @@ replay_ckpt_wakeup (int attach_device, char* logdir, char* linker, int fd,
 			printk("replay_ckpt_wakeup: unable to close fd %d, rc=%ld\n", fd, rc);
 		}
 	}
+
+	down_write(&mm->mmap_sem);
+	// since we actually do the brk we can just grab the old one
+	old_brk = PAGE_ALIGN(mm->brk);
+	printk("end of replay_ckpt_wakeup brk %lu\n", old_brk);
+	up_write(&mm->mmap_sem);
 
 	set_fs(KERNEL_DS);
 	rc = replay_execve(execname, (const char* const *) args, (const char* const *) env, get_pt_regs (NULL));

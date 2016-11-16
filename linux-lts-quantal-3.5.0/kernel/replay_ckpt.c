@@ -21,6 +21,7 @@
 #include <asm/elf.h>
 #include <asm/processor.h>
 #include <asm/i387.h>
+#include <asm/fpu-internal.h>
 #include <linux/proc_fs.h>
 #include <linux/replay.h>
 #include <linux/replay_maps.h>
@@ -647,6 +648,8 @@ replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pi
 	struct page** ppages = NULL;  
 	struct fpu *fpu = &(tsk->thread.fpu); 
 
+	char fpu_is_allocated;
+
 	set_fs(KERNEL_DS);
 	fd = sys_open (filename, O_WRONLY|O_APPEND, 0);
 	if (fd < 0) {
@@ -694,25 +697,37 @@ replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pi
 	}
 	fpu = &(tsk->thread.fpu);
 
-	copied = vfs_write(file, (char *) &(fpu->last_cpu), sizeof(unsigned int), ppos);
-	if (copied != sizeof(unsigned int)) {
+	fpu_is_allocated = fpu_allocated(fpu);
+	copied = vfs_write(file, &(fpu_is_allocated), sizeof(char), ppos);
+	if (copied != sizeof(char)) {
 		printk ("replay_full_checkpoint_proc_to_disk: tried to write last_cpu, got rc %d\n", copied);
 		rc = copied;
 		goto exit;
+	}	
+
+	if (fpu_is_allocated){
+		copied = vfs_write(file, (char *) &(fpu->last_cpu), sizeof(unsigned int), ppos);
+		if (copied != sizeof(unsigned int)) {
+			printk ("replay_full_checkpoint_proc_to_disk: tried to write last_cpu, got rc %d\n", copied);
+			rc = copied;
+			goto exit;
+		}
+		copied = vfs_write(file, (char *) &(fpu->has_fpu), sizeof(unsigned int), ppos);
+		if (copied != sizeof(unsigned int)) {
+			printk ("replay_full_checkpoint_proc_to_disk: tried to write has_fpu, got rc %d\n", copied);
+			rc = copied;
+			goto exit;
+		}
+
+		//thread_xstate's actual size is stored by this variable
+
+		copied = vfs_write(file, (char *) fpu->state, xstate_size, ppos);
+		if (copied != sizeof(union thread_xstate)) {
+			printk ("replay_full_checkpoint_proc_to_disk: tried to write thread_xstate, got rc %d\n", copied);
+			rc = copied;
+			goto exit;
+		}
 	}
-	copied = vfs_write(file, (char *) &(fpu->has_fpu), sizeof(unsigned int), ppos);
-	if (copied != sizeof(unsigned int)) {
-		printk ("replay_full_checkpoint_proc_to_disk: tried to write has_fpu, got rc %d\n", copied);
-		rc = copied;
-		goto exit;
-	}
-	copied = vfs_write(file, (char *) fpu->state, sizeof(union thread_xstate), ppos);
-	if (copied != sizeof(union thread_xstate)) {
-		printk ("replay_full_checkpoint_proc_to_disk: tried to write thread_xstate, got rc %d\n", copied);
-		rc = copied;
-		goto exit;
-	}
-	
 
 	
 
@@ -978,6 +993,7 @@ long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_
 	struct btree_head32 replay_mmap_btree;
 	struct fpu *fpu = NULL;
 
+	char fpu_is_allocated;
 	MPRINT ("pid %d enters replay_full_resume_proc_from_disk: filename %s\n", current->pid, filename);
 
 	set_fs(KERNEL_DS);
@@ -1021,25 +1037,41 @@ long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_
 
 	// Restore the floating point registers: 
 	fpu = &(current->thread.fpu);
-	copied = vfs_read(file, (char *) &(fpu->last_cpu), sizeof(unsigned int), ppos);
-	if (copied != sizeof(unsigned int)) {
-		printk ("replay_full_resume_proc_from_disk: tried to read last cpu, got rc %d\n", copied);
+
+	copied = vfs_read(file, &(fpu_is_allocated), sizeof(char), ppos);
+	if (copied != sizeof(char)) {
+		printk ("replay_full_checkpoint_proc_to_disk: tried to read fpu_is_allocated, got rc %d\n", copied);
 		rc = copied;
 		goto exit;
+	}	
+
+	if (fpu_is_allocated) { 
+
+		//allocate the new fpu if we need it and it isn't setup
+		if (!fpu_allocated(fpu)) {
+			printk("allocating fpu\n");
+			fpu_alloc(fpu);
+		}
+
+		copied = vfs_read(file, (char *) &(fpu->last_cpu), sizeof(unsigned int), ppos);
+		if (copied != sizeof(unsigned int)) {
+			printk ("replay_full_resume_proc_from_disk: tried to read last cpu, got rc %d\n", copied);
+			rc = copied;
+			goto exit;
+		}
+		copied = vfs_read(file, (char *) &(fpu->has_fpu), sizeof(unsigned int), ppos);
+		if (copied != sizeof(unsigned int)) {
+			printk ("replay_full_resume_proc_from_disk: tried to read has_fpu, got rc %d\n", copied);
+			rc = copied;
+			goto exit;
+		}
+		copied = vfs_read(file, (char *) fpu->state, xstate_size, ppos);
+		if (copied != sizeof(union thread_xstate)) {
+			printk ("replay_full_resume_proc_from_disk: tried to read thread_xstate, got rc %d\n", copied);
+			rc = copied;
+			goto exit;
+		}
 	}
-	copied = vfs_read(file, (char *) &(fpu->has_fpu), sizeof(unsigned int), ppos);
-	if (copied != sizeof(unsigned int)) {
-		printk ("replay_full_resume_proc_from_disk: tried to read has_fpu, got rc %d\n", copied);
-		rc = copied;
-		goto exit;
-	}
-	copied = vfs_read(file, (char *) fpu->state, sizeof(union thread_xstate), ppos);
-	if (copied != sizeof(union thread_xstate)) {
-		printk ("replay_full_resume_proc_from_disk: tried to read thread_xstate, got rc %d\n", copied);
-		rc = copied;
-		goto exit;
-	}
-	
 
 	//this is a part of the replay_thrd, so we do it regardless of thread / process
 	restore_sysv_mappings (file, ppos);
@@ -1144,6 +1176,15 @@ long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_
 						}
 
 						addr = sys_shmat(id, (char __user *)pvmas->vmas_start, shmflg); 
+						
+						rc = add_sysv_shm((u_long)pvmas->vmas_start, 
+							     (u_long)(pvmas->vmas_end - pvmas->vmas_start));
+						if (rc < 0) { 
+							printk("whoops... add_sysv_shm returns negative?\n");
+							goto freemem;
+						}
+
+
 						premapped = 1;
 						map_file = NULL; //just to be sure something weird doesn't happen
 					}

@@ -26,6 +26,14 @@ static void clear_pt(vector<struct timing_data> &td, int start, int end)
     }
 }
 
+
+struct myHash {                                                                                                        
+    size_t operator() (const uint32_t &a) const {                                                                      
+	size_t rtn = a ^ (a >> 11);                                                                                    
+	return rtn;                                                                                                
+    }                                                                                                      
+};  
+
 //model created by correlation analysis
 static double estimate_dift(vector<struct timing_data> &td, int i, int j)
 { 
@@ -34,17 +42,86 @@ static double estimate_dift(vector<struct timing_data> &td, int i, int j)
     u_long num_merges = td[j].num_merges - td[i].num_merges;
     double rv; 
     int rc = 0;
-    my_set uinsts(1024);
+    unordered_set<uint32_t,myHash> uinsts(36228);
     int    uinsts_cnt = 0;
 
-    fprintf(stderr, "ed: (%d,%d) aka (%lu,%lu)\n",i,j,td[i].start_clock,td[j].start_clock);
+    u_long total_count = 0; 
+
     if (do_repartition) {
 	for (int tdi = i; tdi < j; ++tdi) { 
-	    if(lowmem) { 
+	    if(lowmem) {
 		if(td[tdi].pin_traces.empty()) {
 		    while (!rc && pti.cclock <= td[tdi].start_clock) { 
 			while (*(pti.ctraces)) {
 //			    td[tdi].pin_traces.push_back(*(pti.ctraces)); //add them to our local set
+			    total_count += 1;
+			    if (uinsts.insert(*(pti.ctraces)).second) { //add them to global set
+				uinsts_cnt += ninsts[*(pti.ctraces)];
+			    }
+			    pti.ctraces++;
+			}	    
+			rc = pin_trace_iter_next(pti);
+			if (rc) fprintf(stderr, "we're done with pti!\n");
+		    }
+		}
+		else { 
+		    fprintf(stderr, "using cached pin_traces\n");
+		    for (auto inst : td[tdi].pin_traces) { 
+			if (uinsts.insert(inst).second) { 
+			    uinsts_cnt += ninsts[inst]; //maybe this is slow? 
+			} 
+		    }		    
+		}
+	    }
+	    else {
+		for (auto inst : td[tdi].pin_traces) { 
+		    if (uinsts.insert(inst).second) { 
+			uinsts_cnt += ninsts[inst]; //maybe this is slow? 
+		    } 
+		}
+	    }
+	}
+	rv = (2.5 * td[i].ftiming) + (ut_arg * utime) + (ui_arg * uinsts_cnt) + (.000058 * num_merges);	;	
+    }
+    else {   
+	for (int tdi = i; tdi < j; ++tdi) { 
+	    for (auto inst : td[tdi].sampled_insts) { 
+		uinsts.insert(inst);
+	    }
+	}
+
+	rv = (2.5 * td[i].ftiming) + (ut_arg * utime) + (ui_arg * uinsts.size());	
+    }
+    
+    fprintf(stderr,"total_count %lu ucount %u lf %lf mlf %lf bc %u mbc %u\n",total_count, uinsts.size(), uinsts.load_factor(), uinsts.max_load_factor(), uinsts.bucket_count(), uinsts.max_bucket_count());
+
+    return rv;
+}
+
+
+
+static double estimate_dift_urun(vector<struct timing_data> &td, 
+				 int i,
+				 int j, 
+				 int urun){
+
+    double utime = td[j].dtiming - td[i].dtiming;
+    u_long num_merges = td[j].num_merges - td[i].num_merges;
+    double rv; 
+    int rc = 0;
+    my_set uinsts(1024);
+    int    uinsts_cnt = 0;
+
+    u_long total_count; 
+
+    if (do_repartition) {
+	for (int tdi = i; tdi < j; ++tdi) { 
+	    if(lowmem) {
+		if(td[tdi].pin_traces.empty()) {
+		    while (!rc && pti.cclock <= td[tdi].start_clock) { 
+			while (*(pti.ctraces)) {
+//			    td[tdi].pin_traces.push_back(*(pti.ctraces)); //add them to our local set
+			    total_count += 1;
 			    if (uinsts.insert(*(pti.ctraces)).second) { //add them to global set
 				uinsts_cnt += ninsts[*(pti.ctraces)];
 			    }
@@ -72,7 +149,7 @@ static double estimate_dift(vector<struct timing_data> &td, int i, int j)
 	    }
 	}
 //	fprintf(stderr, "ftiming %lf, utime %lf, uinsts_cnt %d, num_merges %lu\n",td[i].ftiming, utime, uinsts_cnt, num_merges); 
-	rv = (2.5 * td[i].ftiming) + (ut_arg * utime) + (ui_arg * uinsts_cnt) + (.000058 * num_merges);	;	
+	rv = (2.5 * td[i].ftiming) + (ut_arg * utime) + (ui_arg * uinsts_cnt * urun) + (.000058 * num_merges);
     }
     else {   
 	for (int tdi = i; tdi < j; ++tdi) { 
@@ -80,13 +157,43 @@ static double estimate_dift(vector<struct timing_data> &td, int i, int j)
 		uinsts.insert(inst);
 	    }
 	}
-
-	rv = (2.5 * td[i].ftiming) + (ut_arg * utime) + (ui_arg * uinsts.size());	
+	rv = (2.5 * td[i].ftiming) + (ut_arg * utime) + (ui_arg * uinsts.size() * urun);	
     }
-
-
     return rv;
 }
+
+
+static double get_instrumentation_est(vector<struct timing_data> &td, 
+				      int i, 
+				      int j) {
+
+    double rv; 
+    my_set uinsts(1024);
+    int    uinsts_cnt = 0;
+
+    if (do_repartition) {
+	for (int tdi = i; tdi < j; ++tdi) { 
+	    for (auto inst : td[tdi].pin_traces) { 
+		if (uinsts.insert(inst).second) { 
+		    uinsts_cnt += ninsts[inst]; //maybe this is slow? 
+		} 
+	    }
+	}
+    	rv = (ui_arg * uinsts_cnt);
+    }
+    else {   
+	for (int tdi = i; tdi < j; ++tdi) { 
+	    for (auto inst : td[tdi].sampled_insts) { 
+		uinsts.insert(inst);
+	    }
+	}
+	rv = ui_arg * uinsts.size();
+    }
+    return rv;
+}
+
+
+
 
 static double estimate_dift(vector<struct timing_data> &td, 
 			    int i, 
@@ -105,6 +212,7 @@ static double estimate_dift(vector<struct timing_data> &td,
 
     return rv;
 }
+
 
 static void add_syscall(vector<struct timing_data> &td, 
 			int i, 
@@ -215,7 +323,6 @@ static void print_parts(vector<struct timing_data> &td, vector<struct partition>
 	}
 	double utime = td[p.stop_i].dtiming - td[p.start_i].dtiming;
 	u_long num_merges = td[p.stop_i].num_merges - td[p.start_i].num_merges; //ah-ha!
-	fprintf(stderr," %lf (%lf) %lf %d %u %lf, %lu\n",estimate_dift(td, p.start_i, p.stop_i), estimate_dift(td, p.start_i,p.stop_i - 1),utime, uinsts_cnt, uinsts.size(),3 * td[p.start_i].ftiming,num_merges);
     }
 
 
@@ -226,16 +333,32 @@ static double get_total(vector<struct timing_data> &td,
 			u_int start,
 			u_int stop) 
 {
+    
+    int urun = 0;
+
     double total = 0;
     if(lowmem)	clear_pt(td, 0, parts[stop -1].stop_i); //always clear away all of our cached_pin_traces
     for (u_int i = start; i < stop; ++i) {
 	struct partition &p = parts[i];
+
 	
+
 	//only count user-level runs once
 	if (!strcmp(p.stop_level, "k")) { 
-	    double dift = estimate_dift(td, p.start_i, p.stop_i);	
-	    fprintf(stderr, "%u (%lu,%lu): %lf\n",i,td[p.start_i].start_clock, td[p.stop_i].start_clock,dift);
+	    double dift;
+	    if(urun) { 
+		urun++; //add in this one
+		fprintf(stderr, "found %d uruns!\n", urun);
+		dift = estimate_dift_urun(td, p.start_i, p.stop_i, urun);
+		urun = 0;
+	    }
+	    else { 
+		dift = estimate_dift(td, p.start_i, p.stop_i);	
+	    }
 	    total += dift;
+	}
+	else { 
+	    urun++;
 	}
     }
 
@@ -324,41 +447,42 @@ static void add_uparts(vector<struct timing_data> &td,
     
 
 }
-static void add_big_part(vector<struct timing_data> &td, 
+static double add_big_part(vector<struct timing_data> &td, 
 			 u_long start,
 			 u_long stop,
 			 double goal,
+			 int max_parts,
 			 vector<struct partition> &s) 
 {
-    double est = estimate_dift(td, start, stop);
-    fprintf(stderr, "%lf :(%lu (%lu) ,%lu (%lu)) blocked cuz",est,start, td[start].start_clock,stop,td[stop].start_clock);
-    //print out reason for block
-    for (u_int k = start+1; k < stop; ++k) {
-	if (!td[k].can_attach) 
-	    fprintf(stderr, " %d",td[k].blocking_syscall);
-	else if (!td[k].should_track){ 
-	    fprintf(stderr, " we aren't tracking!");
-	}
-	else {
-	    fprintf(stderr, " (%d,huh?)",k);
-	}
-    }
-    fprintf(stderr, "\n");
-
+    int  splits = 1;
+    double est, epoch_time;
 
     // maybe we can split this sucker
     if(do_split) { 
-	if (stop > start + 1) { 
-	    fprintf(stderr, "this is more than one syscall... careful if this is multithreaded!\n");
+
+	//iterate through splits until we can split such that we're less than the goal!
+	if (get_instrumentation_est(td, start, stop) > goal) { 
+	    fprintf(stderr, "whoops, itime %lf is greater than our goal %lf!\n", 
+		    get_instrumentation_est(td,start,stop),
+		    goal);
+
+	    est = estimate_dift(td, start,stop);
+	    splits = est / goal + 1; 
 	}
-	u_int split = (est / goal)+1; //take the ceil of the number of parititions this *should* have assigned to it
-	
-	if (split > 1) add_uparts(td,start,stop,split,s);
-	else add_kpart(td, start, stop,s);		       
+	else { 
+	    do { 
+		splits++;
+		est = estimate_dift_urun(td, start, stop, splits);
+		epoch_time = (est / splits);
+		
+	    }while (splits < max_parts - s.size() -1 && epoch_time > goal);
+	}
+	add_uparts(td,start,stop,splits,s);
     }
     else { 
 	add_kpart(td, start, stop,s);		       
     }
+    return est;
 }
 
 static void fi_rest(vector<struct timing_data> &td,
@@ -413,7 +537,9 @@ static double do_iteration(vector<struct timing_data> &td,
 	--lasti;
     }
 
-    fprintf(stderr,"\ndo, goal %lf, lasti %u\n", goal,lasti);
+
+    fprintf(stderr, "do_iteration, total_time %lf, goal %lf\n",total_time, goal);
+
     do { 
 	if (td[i].can_attach && td[i].should_track &&
 	    td[estart].start_clock < td[i].start_clock ) { //you wouldn't think I have to specify that last one... but for some reason, yes. yes I do
@@ -424,15 +550,14 @@ static double do_iteration(vector<struct timing_data> &td,
 	     * do the logic for big syscalls here!
 	     * this means that we just added more than a goal's worth
 	     */
-	    if (gap - last_gap > goal) { /*might want a fract (like .8) on that goal val*/
+	    if (gap - last_gap > goal) { 
 		if (do_split || estart >= last_syscall) { 
-		    add_big_part(td, estart,i,goal, s); //add in the big partitions	
+		    gap         = add_big_part(td, estart,i,goal, partitions,s); //add in the big partitions	
 		    total_time -= gap;
 		}
 		else { 
 		    add_kpart(td, estart, last_syscall, s); //add the last piece as an epoch
-
-		    add_big_part(td, last_syscall,i,goal, s); //add in the big partitions
+		    add_big_part(td, last_syscall,i,goal, partitions, s); //add in the big partitions
 		    if(!lowmem){
 			total_time -= estimate_dift(td, estart, last_syscall);
 			total_time -= estimate_dift(td, last_syscall,i);
@@ -440,7 +565,6 @@ static double do_iteration(vector<struct timing_data> &td,
 		    else{
 			total_time -= gap; //we can't look at past est_difts if we're in lowmem mode.
 		    }
-
 		}
 
 		uinsts.clear();
@@ -455,7 +579,6 @@ static double do_iteration(vector<struct timing_data> &td,
 
 
 		goal = total_time / (partitions - s.size());
-		fprintf(stderr, "\tupdated tt %lf, goal %lf, size %u, remaining %u\n",total_time, goal, s.size(), partitions);
 		estart = i;
 	    }
 	    
@@ -492,7 +615,6 @@ static double do_iteration(vector<struct timing_data> &td,
 		    estart = lasti; //signal that we're done 
 		}
 		goal = total_time / (partitions - s.size());
-		fprintf(stderr, "\t(%lu,%lu): (%lf %lf %d) gap %lf, new goal %lf, size %u, remaining %u\n",td[estart].start_clock,td[i].start_clock, td[i].ftiming, td[i].dtiming-td[estart].dtiming,uinsts_cnt, gap, goal, s.size(), partitions);
 
 		//prepare for next round!
 		if (gap > max_est){
@@ -509,7 +631,6 @@ static double do_iteration(vector<struct timing_data> &td,
 	//so... lets see now. 
 	if (td[i].should_track){
 	    if (lowmem && last_attach_point != i && td[i].can_attach) { 
-//		fprintf(stderr, "clearing (%d,%u)\n",last_attach_point,i);
 		clear_pt(td, last_attach_point, i); //clear from the last attach point to this one. 
 		last_attach_point = i;//this is the new last attach point.
 	    }
@@ -519,7 +640,6 @@ static double do_iteration(vector<struct timing_data> &td,
     }while (i < lasti+1 && s.size() < partitions - 1);
 
     if (estart < lasti){//s.size() < partitions) {
-	fprintf(stderr, "\tlast one (%lu,%lu)\n",td[estart].start_clock,td[lasti].start_clock);
 	add_kpart(td, estart, lasti,s);
 	gap = estimate_dift(td,estart,lasti); //doesn't use add_syscall.. it should
 	if (gap > max_est){
@@ -553,6 +673,8 @@ int generate_timings(vector<struct timing_data> td,
 	destroy_pin_trace_iter(pti); //we need to get the first one started! 
     }
 
+    exit(2);
+
     double goal = curr_est / num_parts;
     double min_big = numeric_limits<double>::max();
     vector<struct partition> parts;
@@ -560,17 +682,20 @@ int generate_timings(vector<struct timing_data> td,
     if (do_repartition) fprintf(stderr, "we're doing the repartition!\n");
 
 
-    for (int j = 0; j < 10; ++j){
+    for (int j = 0; j < 30; ++j){
 	parts.clear();
 	if (lowmem) { 
 	    init_pin_trace_iter(pti,pin_dir, pin_epochs);
 	    pin_trace_iter_next(pti); //we need to get the first one started! 
 	}
-//	if (j < 1) curr_est *=2; //a hack to make this thing go faster
+
+	
 	fprintf(stderr, "iteration %d\n",j);
 	double curr_max = do_iteration(td, num_parts, curr_est, parts);       
 	if (lowmem) 
 	    destroy_pin_trace_iter(pti);
+
+	fprintf(stderr, "parts.size() %d\n",parts.size());
 
 	if (curr_max < min_big && j > 5 && parts.size() == num_parts){
 	    min_big = curr_max;
@@ -585,13 +710,8 @@ int generate_timings(vector<struct timing_data> td,
 	curr_est = get_total(td,parts, 0, parts.size());
 	if (lowmem){
 	    destroy_pin_trace_iter(pti); //we need to get the first one started! 
-	}
-    
-
+	}    
 	goal = curr_est / num_parts;
-	fprintf(stderr, "ce %lf, num %u, ave %lf, goal %lf, cm %lf\n",curr_est, parts.size(), curr_est / parts.size(), goal, curr_max);
-
-
     }
     if (lowmem){
 	init_pin_trace_iter(pti,pin_dir, pin_epochs);
