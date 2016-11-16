@@ -278,7 +278,7 @@ int main (int argc, char* argv[])
 	    char agg_host[256];
 	    rc = sscanf (line, "%d %s %s\n", &num_epochs, dift_host, agg_host);
 	    if (rc != 3) {
-		fprintf (stderr, "Unable to parse line of epoch descrtion file: %s\n", line);
+		fprintf (stderr, "Unable to parse line of server config file: %s\n", line);
 		return -1;
 	    }
 	    if (epoch_cnt + num_epochs > conf.epochs.size()) {

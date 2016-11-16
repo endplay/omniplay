@@ -2,21 +2,21 @@
 
 source ~/.omniplay_setup
 
-#ckpts="2171500  3665898  4511476  5617136  7493286  9224486  10865783  13061057  14642644"
-#ckpts="16616000  18502264  20065605  22111454  23835934  25616508  27518668  28924959  30880426"
-#ckpts="32749221  34302276  36502634  38286536  39954366  42013274  43515551  45568447  47324698"
-#ckpts="48910611  51037074  52877727  54859422  57525483  59308964  61328964  62841475  64856273  66506770"
+rec=$1
+ckpts=$(cat $2)
 
-#for ckpt in $ckpts; do
-#    $OMNIPLAY_DIR/test/resume --pthread $MY_RESUME_PTHREAD /replay_logdb/rec_102403 -p --attach_offset=6795,67781845 --ckpt_at=$ckpt&
-#done
+echo $rec
 
-
-
-
-ckpts="6501910  100001604  12983797  19016370  27826340  35496576  36219283  38704852  39151198  40062446  41435530  41904944  42381555  43027302  44417670  47125088  47608776  49287172"
- 
- 
 for ckpt in $ckpts; do
-    $OMNIPLAY_DIR/test/resume --pthread $MY_RESUME_PTHREAD /replay_logdb/rec_61441 --from_ckpt=$(($ckpt+1))
+    $OMNIPLAY_DIR/test/resume --pthread $MY_RESUME_PTHREAD $rec --ckpt_at=$ckpt -p --attach_offset=6789,67781845&
+    echo "finished taking $ckpt"
 done
+
+
+#replay_ckpts=`ls $rec/ckpt.* | awk '{split($0,a,"/"); split(a[4],b,"."); print b[2]}'`
+#echo $replay_ckpts
+
+#for ckpt in $replay_ckpts; do
+#    $OMNIPLAY_DIR/test/resume --pthread $MY_RESUME_PTHREAD $rec --from_ckpt=$ckpt
+#    echo "finished with $ckpt"
+#done

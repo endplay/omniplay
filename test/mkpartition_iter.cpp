@@ -176,6 +176,11 @@ int main (int argc, char* argv[])
 	}
 	else if (!strcmp(argv[i],"-r")){
 	    i++;
+
+	    //these are the reasonable defaults, based on our model
+	    ut_arg = 211;
+	    ui_arg = .08;
+
 	    if (i < argc) {
 		pin_dir = argv[i];
 		i++;
@@ -305,13 +310,15 @@ int main (int argc, char* argv[])
 	gettimeofday(&pinst_tv, NULL);
     }
     
-    if(details) {
-	for (auto t : td) { 
-	    printf ("%d, %lu, %lf\n", t.pid, t.stop_clock, t.ftiming);
+//    if(details) {
+//	for (auto t : td) { 
+//	    printf ("%d, %lu, %lf\n", t.pid, t.stop_clock, t.ftiming);
 //	    if (!t.can_attach) fprintf(stderr,"\t can't attach b/c %d %d\n",t.blocking_syscall, t.blocking_pid);
-	    fflush(stdout);
-	}
-    }
+//	    fflush(stdout);
+//	}
+//    }
+
+//    return 0;
     fprintf(stderr, "starting gen_timings\n");
     printf ("%s\n", argv[1]);
     generate_timings(td, parts, following,pin_dir, pin_epochs);

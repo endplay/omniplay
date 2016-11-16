@@ -51,7 +51,7 @@ int main (int argc, char* argv[])
 
     u_long stop_clock = 0;
     
-    if (argc < 3) {
+    if (argc < 2) {
 	format ();
     }
     following[0] = 0; 
