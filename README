@@ -9,6 +9,9 @@ this distro before proceeeding.
 
 Check the source out from the git repository on endplay.eecs.umich.edu
 $ git clone gitlab@endplay:replay/omniplay.git
+10/5 this below worked for me (Wesley) \/
+$ git clone git@gitlab.endplay.eecs.umich.edu:replay/omniplay.git
+
 
 This will create a number of sub-directories that contain the user-level and kernel source
 for omniplay.
