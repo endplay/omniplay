@@ -112,10 +112,10 @@ long replay_resume_from_disk (char* filename, char** execname, char*** argsp, ch
 
 
 long replay_full_resume_hdr_from_disk (char* filename, __u64* prg_id, int* pclock, u_long* pproc_count, loff_t* ppos);
-long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_thread, long* pretval, loff_t* plogpos, u_long* poutptr, u_long* pconsumed, u_long* pexpclock, u_long* pthreadclock, u_long *ignore_flag, u_long *user_log_addr, u_long *child_tid,u_long *replay_hook, loff_t* ppos);
+long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_thread, long* pretval, loff_t* plogpos, u_long* poutptr, u_long* pconsumed, u_long* pexpclock, u_long* pthreadclock, u_long *ignore_flag, u_long *user_log_addr, u_long *user_log_pos,u_long *child_tid,u_long *replay_hook, loff_t* ppos);
 
-long replay_full_checkpoint_hdr_to_disk (char* filename, __u64 rg_id, int clock, u_long proc_count, struct ckpt_tsk *ct, loff_t* ppos);
-long replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pid_t record_pid, int is_thread, long retval, loff_t logpos, u_long outptr, u_long consumed, u_long expclock, u_long pthread_block_clock, u_long ignore_flag, u_long user_log_addr,u_long replay_hook, loff_t* ppos);
+long replay_full_checkpoint_hdr_to_disk (char* filename, __u64 rg_id, int clock, u_long proc_count, struct ckpt_tsk *ct, struct task_struct *tsk, loff_t* ppos);
+long replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pid_t record_pid, int is_thread, long retval, loff_t logpos, u_long outptr, u_long consumed, u_long expclock, u_long pthread_block_clock, u_long ignore_flag, u_long user_log_addr, u_long user_log_pos,u_long replay_hook, loff_t* ppos);
 
 
 /* Helper functions for checkpoint/resotre */
@@ -127,8 +127,12 @@ int checkpoint_ckpt_tsks_header(struct ckpt_tsk *ct, int parent_pid, int is_thre
 int restore_ckpt_tsks_header(u_long num_procs, struct file *cfile, loff_t *ppos);
 int checkpoint_sysv_mappings (struct task_struct* tsk, struct file* cfile, loff_t* ppos);
 int restore_sysv_mappings (struct file* cfile, loff_t* ppos);
+int add_sysv_shm(u_long addr, u_long len);
 
-long get_ckpt_state (pid_t pid);
+long get_ckpt_state (pid_t pid); //huh? 
+
+int checkpoint_task_xray_monitor(struct task_struct *tsk, struct file* cfile, loff_t* ppos);
+int restore_task_xray_monitor(struct task_struct *tsk, struct file* cfile, loff_t* ppos);
 
 /* Optional stats interface */
 #define REPLAY_STATS

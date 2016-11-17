@@ -127,4 +127,113 @@ int xray_monitor_remove_fd(struct xray_monitor* monitor, int fd) {
 	return 0;
 }
 
+int checkpoint_xray_monitor(struct xray_monitor *monitor, struct file *cfile, loff_t *ppos) { 
+	
+	int copyed, cnt = 0;
+	struct fd_struct* fds; 
+
+
+	list_for_each_entry (fds, &monitor->fds, list) { 
+		cnt++; 
+	}
+	
+	copyed = vfs_write(cfile, (char *) &cnt, sizeof(cnt), ppos);
+	if (copyed != sizeof(cnt)) {
+		printk ("checkpoint_xray_monitor: tried to write count, got rc %d\n", copyed);
+		return -EINVAL;
+	}
+
+
+	list_for_each_entry (fds, &monitor->fds, list) {		
+		copyed = vfs_write(cfile, (char *) &fds->fd, sizeof(fds->fd), ppos);
+		if (copyed != sizeof(fds->fd)) {
+			printk ("checkpoint_xray_monitor tried to write fd, got rc %d\n", copyed);
+			return -EINVAL;
+		}
+		copyed = vfs_write(cfile, (char *) &fds->type, sizeof(fds->type), ppos);
+		if (copyed != sizeof(fds->type)) {
+			printk ("checkpoint_xray_monitor tried to write type, got rc %d\n", copyed);
+			return -EINVAL;
+		}
+		copyed = vfs_write(cfile, (char *) &fds->data, sizeof(fds->data), ppos);
+		if (copyed != sizeof(fds->data)) {
+			printk ("checkpoint_xray_monitor tried to write data, got rc %d\n", copyed);
+			return -EINVAL;
+		}
+
+		if (fds->channel) {
+			cnt = strlen(fds->channel);
+			copyed = vfs_write(cfile, (char *)&cnt, sizeof(cnt), ppos);
+			if (copyed != sizeof(strlen(fds->channel))) { 
+				printk ("checkpoint_xray_monitor tried to write data, got rc %d\n", copyed);
+				return -EINVAL;
+			}		       
+			copyed = vfs_write(cfile, fds->channel, cnt, ppos);
+			if (copyed != cnt) { 
+				printk ("checkpoint_xray_monitor can't write channel, got rc %d\n", copyed);
+				return -EINVAL;
+			}
+		}
+		else { 
+			cnt = 0;
+			copyed = vfs_write(cfile, (char *)&cnt, sizeof(cnt), ppos);
+			if (copyed != sizeof(int)) { 
+				printk ("checkpoint_xray_monitor tried to write zero, got rc %d\n", copyed);
+				return -EINVAL;
+			}
+		}
+	}
+
+	return 0;	
+}
+
+
+int restore_xray_monitor(struct xray_monitor *monitor, struct file *cfile, loff_t *ppos) { 
+
+	int copyed, cnt, fd, type, data, size, i;
+	char channel[256]; 
+
+	copyed = vfs_read(cfile, (char *) &cnt, sizeof(cnt), ppos);
+	if (copyed != sizeof(cnt)) {
+		printk ("restore_replay_cache_files: tried to read count, got rc %d\n", copyed);
+		return copyed;
+	}
+	for (i = 0; i < cnt; i++) {
+
+		copyed = vfs_read(cfile, (char *) &fd, sizeof(fd), ppos);
+		if (copyed != sizeof(fd)) {
+			printk ("restore_xray_monitor: tried to read fd, got rc %d\n", copyed);
+			return copyed;
+		}
+		copyed = vfs_read(cfile, (char *) &type, sizeof(fd), ppos);
+		if (copyed != sizeof(type)) {
+			printk ("restore_xray_monitor: can't read type, got rc %d\n", copyed);
+			return copyed;
+		}
+		copyed = vfs_read(cfile, (char *) &data, sizeof(fd), ppos);
+		if (copyed != sizeof(data)) {
+			printk ("restore_xray_monitor: can't read data, got rc %d\n", copyed);
+			return copyed;
+		}
+		copyed = vfs_read(cfile, (char *) &size, sizeof(size), ppos);
+		if (copyed != sizeof(size)) {
+			printk ("restore_xray_monitor: can't read chsize, got rc %d\n", copyed);
+			return copyed;
+		}
+
+		if (size > 0) { 
+			copyed = vfs_read(cfile, channel, size, ppos);
+			if (copyed != size) {
+				printk ("restore_xray_monitor: can't read channel, got rc %d\n", copyed);
+				return copyed;
+			}
+			channel[size] = '\0';
+			
+		}		
+		
+		xray_monitor_add_fd(monitor,fd,type, data, channel);
+	}	       
+	return 0;
+}
+
 #endif 

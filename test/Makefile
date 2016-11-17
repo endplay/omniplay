@@ -80,7 +80,7 @@ mkpartition: libutil.a mkpartition.cpp
 mkpartition_utils.o: mkpartition_utils.cpp mkpartition_utils.h
 	c++ -std=c++0x mkpartition_utils.cpp -o mkpartition_utils.o -c -O8
 
-mkpart_iter: mkpartition_utils.o libutil.a generate_splits.cpp
+mkpart_iter: mkpartition_utils.o libutil.a generate_splits.cpp mkpartition_iter.cpp
 	c++ -std=c++0x mkpartition_utils.o libutil.a generate_splits.cpp mkpartition_iter.cpp -o mkpart_iter -O8
 
 sync_files: sync_files.cpp streamserver.h parseklib.o streamnw.cpp streamnw.h

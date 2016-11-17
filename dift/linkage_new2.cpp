@@ -161,14 +161,16 @@ map<pid_t,struct thread_data*> active_threads;
 u_long* ppthread_log_clock = NULL;
 u_long filter_outputs_before = 0;  // Only trace outputs starting at this value
 #ifdef RECORD_TRACE_INFO
-bool record_trace_info = false;
+bool record_trace_info = true;
 static u_long trace_total_count = 0;
 static u_long trace_inst_total_count = 0;
 #endif
 
 //added for multi-process replay
 const char* fork_flags = NULL;
-int fork_flags_index = 0;
+u_int fork_flags_index = 0;
+bool produce_output = true; 
+
 
 #ifdef OUTPUT_FILENAMES
 FILE* filenames_f = NULL; // Mapping of all opened filenames
@@ -305,6 +307,7 @@ const char* retaint;
 char* retaint_str;
 u_long retaint_next_clock = 0;
 u_long retaint_us = 0;
+
 #endif
 
 static int terminated = 0;
@@ -330,7 +333,12 @@ u_long taint_debug_inst = 0;
 struct timeval begin_tv, end_tv;
 u_long inst_instrumented = 0;
 u_long traces_instrumented = 0;
+u_long mm_len = 0;
 uint64_t instrument_time = 0;
+
+u_long collisions = 0;
+u_long hash_flushes = 0;
+//u_long entries = 0;
 FILE* stats_f;
 #endif
 
@@ -428,10 +436,17 @@ static int dift_done ()
 	fprintf (stats_f, "Traces instrumented: %ld\n", traces_instrumented);
 #ifdef RECORD_TRACE_INFO
 	fprintf (stats_f, "Traces executed: %ld\n", trace_total_count/sizeof(u_long));
+	fprintf (stats_f, "collisions: %lu us\n", collisions);
+	fprintf (stats_f, "has_flushes: %lu us\n", hash_flushes);
 #endif
 	fprintf (stats_f, "Instrument time: %lld us\n", instrument_time);
+
 	fprintf (stats_f, "DIFT began at %ld.%06ld\n", begin_tv.tv_sec, begin_tv.tv_usec);
 	fprintf (stats_f, "DIFT ended at %ld.%06ld\n", end_tv.tv_sec, end_tv.tv_usec);
+
+	fprintf (stats_f, "mmap_len %lu\n",mm_len);
+
+//	fprintf (stats_f, "MM time %.3f seconds\n",mm_time);
 #ifdef RETAINT
 	float retaint_time = end_tv.tv_sec - begin_tv.tv_sec;
 	retaint_time += (float) (end_tv.tv_usec - begin_tv.tv_usec)/1000000.0;
@@ -797,6 +812,8 @@ static void sys_mmap_start(struct thread_data* tdata, u_long addr, int len, int 
 static void sys_mmap_stop(int rc)
 {
     struct mmap_info* mmi = (struct mmap_info*) current_thread->save_syscall_info;
+//    struct timeval mm_st, mm_end; 
+
     SYSCALL_DEBUG(stderr, "mmap file fd %d rc 0x%x @ %ld %d\n", mmi->fd, rc, *ppthread_log_clock , mmi->prot & PROT_EXEC);
 #ifdef MMAP_INPUTS
     // If global_syscall_cnt == 0, then handled in previous epoch
@@ -832,8 +849,12 @@ static void sys_mmap_stop(int rc)
     current_thread->save_syscall_info = 0;
     SYSCALL_DEBUG (stderr, "sys_mmap_stop done\n");
 #else
-    // Need to at least clear these taints 
-    clear_mem_taints (rc, mmi->length);
+    mm_len += mmi->length;
+    //if there are taints to be cleared, and we aren't a splice_output
+    if (!splice_output && taint_num > 1) {
+	clear_mem_taints (rc, mmi->length);
+    }
+
 #endif
 }
 
@@ -899,7 +920,9 @@ static inline void sys_write_stop(int rc)
 	    tci.fileno = channel_fileno;
 	    
 	    LOG_PRINT ("Output buffer result syscall %ld, %#lx\n", tci.syscall_cnt, (u_long) wi->buf);
-	    output_buffer_result (wi->buf, rc, &tci, outfd);
+	    if (produce_output) { 
+		output_buffer_result (wi->buf, rc, &tci, outfd);
+	    }
 	}
     }
 }
@@ -947,14 +970,18 @@ static inline void sys_writev_stop(int rc)
 		if (!monitor_has_fd(open_x_fds, wvi->fd)) {
 		    for (int i = 0; i < wvi->count; i++) {
 			struct iovec* vi = (wvi->vi + i);
-			output_buffer_result(vi->iov_base, vi->iov_len, &tci, outfd);
+			if (produce_output) { 
+			    output_buffer_result(vi->iov_base, vi->iov_len, &tci, outfd);
+			}
 			tci.offset += vi->iov_len;
 		    }
 		}
 	    } else {
 		for (int i = 0; i < wvi->count; i++) {
 		    struct iovec* vi = (wvi->vi + i);
-		    output_buffer_result(vi->iov_base, vi->iov_len, &tci, outfd);
+		    if (produce_output) { 
+			output_buffer_result(vi->iov_base, vi->iov_len, &tci, outfd);
+		    }
 		    tci.offset += vi->iov_len;
 		}
 	    }
@@ -1256,7 +1283,9 @@ static void sys_sendmsg_stop(int rc)
 	    
 	    for (i = 0; i < smi->msg->msg_iovlen; i++) {
 		struct iovec* vi = (smi->msg->msg_iov + i);
-		output_buffer_result(vi->iov_base, vi->iov_len, &tci, outfd);
+		if (produce_output) { 
+		    output_buffer_result(vi->iov_base, vi->iov_len, &tci, outfd);
+		}
 		tci.offset += vi->iov_len;
 	    }
 	}
@@ -1316,7 +1345,9 @@ static void sys_send_stop(int rc)
 	    tci.fileno = channel_fileno;
 	    
 	    LOG_PRINT ("Output buffer result syscall %u, %#lx\n", tci.syscall_cnt, (u_long) si->buf);
-	    output_buffer_result (si->buf, rc, &tci, outfd);
+	    if (produce_output) { 
+		output_buffer_result (si->buf, rc, &tci, outfd);
+	    }
 	}
     }
     free(si);
@@ -1571,7 +1602,8 @@ void instrument_syscall(ADDRINT syscall_num,
 
 #define MAX_TRACE_INST_SIZE 0x1000000
 #define MAX_TRACE_SIZE 0x40000000
-#define TRACE_ENTRIES (1024*1024)
+#define TRACE_ENTRIES (1024*1024 * 2)
+
 #define TRACE_BUF_SIZE (TRACE_ENTRIES*sizeof(u_long))
 static u_long* trace_buf;
 static u_long* trace_inst_buf;
@@ -1580,7 +1612,9 @@ int trace_inst_fd = -1;
 u_long trace_cnt = 0;
 u_long trace_inst_cnt = 0;
 
-#define TRACE_HASH_ENTRIES 65536
+
+//make this bigger, see what happens!
+#define TRACE_HASH_ENTRIES 2048
 u_long trace_hash[TRACE_HASH_ENTRIES];
 
 static void init_trace_buf (void)
@@ -1633,7 +1667,6 @@ static void init_trace_buf (void)
 	fprintf (stderr, "could not map trace buffer, errno=%d\n", errno);
 	assert (0);
     }
-
 }
 
 static void term_trace_buf()
@@ -1705,20 +1738,19 @@ static void flush_trace_inst_buf (void)
 
 static inline void flush_trace_hash (int sysnum)
 {
-    memset (trace_hash, 0, sizeof(trace_hash));
+#ifdef TAINT_STATS
+    hash_flushes++;
+#endif
+    memset (trace_hash, 0, sizeof(trace_hash)); //maybe smaller would actually help? 
     trace_buf[trace_cnt++] = 0; // Denote new system call by writing 0 and syscall # to the log
     if (trace_cnt == TRACE_ENTRIES) flush_trace_buf();
-    trace_buf[trace_cnt++] = get_record_pid(); //global_syscall_cnt; //Changed this to the clock
+    trace_buf[trace_cnt++] = get_record_pid();
     if (trace_cnt == TRACE_ENTRIES) flush_trace_buf();
-    trace_buf[trace_cnt++] = *ppthread_log_clock; //global_syscall_cnt; //Changed this to the clock
+    trace_buf[trace_cnt++] = *ppthread_log_clock;
     if (trace_cnt == TRACE_ENTRIES) flush_trace_buf();
-    trace_buf[trace_cnt++] = sysnum; //global_syscall_cnt; //Changed this to the clock
-
+    trace_buf[trace_cnt++] = sysnum;
     if (trace_cnt == TRACE_ENTRIES) flush_trace_buf();
-
-    trace_buf[trace_cnt++] = get_num_merges(); //global_syscall_cnt; //Changed this to the clock
-//    if (trace_cnt == TRACE_ENTRIES) flush_trace_buf();
-//    trace_buf[trace_cnt++] = get_num_merges_saved(); //global_syscall_cnt; //Changed this to the clock
+    trace_buf[trace_cnt++] = get_num_merges();
     if (trace_cnt == TRACE_ENTRIES) flush_trace_buf();
 
 
@@ -1730,8 +1762,9 @@ static void syscall_after_redo (ADDRINT ip)
 {
 #ifdef RECORD_TRACE_INFO
     if (record_trace_info) {
-	if (trace_hash[ip%TRACE_HASH_ENTRIES] != ip) {
-	    trace_hash[ip%TRACE_HASH_ENTRIES] = ip;
+	u_int index = ip ^ (ip >> 11); //fold ourself!
+	if (trace_hash[index%TRACE_HASH_ENTRIES] != ip) {
+	    trace_hash[index%TRACE_HASH_ENTRIES] = ip;
 	    trace_buf[trace_cnt++] = ip;
 	    if (trace_cnt == TRACE_ENTRIES) flush_trace_buf();
 	}
@@ -14688,6 +14721,19 @@ void AfterForkInChild(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
     }
     else { 
 	PRINTX(stderr, "\tfollowing child\n");
+
+	//logic to figure out if this is the child we actually want to track: 
+	//fork_flags + fork_flags_index is a pointer to the rest of fork_flags
+
+	//if we've reached the end of fork_flags, or there are no more 1's in fork_flags, 
+	//start producing output
+	if (fork_flags_index >= strlen(fork_flags) || 
+	    !strstr((fork_flags + fork_flags_index), "1")) { 
+
+	    produce_output = true;
+	}
+
+
     }
 #else
     /* grab the old file descriptors for things that we're going to have to copy
@@ -14758,6 +14804,9 @@ void AfterForkInParent(THREADID threadid, const CONTEXT* ctxt, VOID* arg)
     PRINTX(stderr, "\t fork_flags char %d\n",fork_flags[fork_flags_index] - '0');
     if(fork_flags && fork_flags[fork_flags_index++] - '0' ) { 
 	PRINTX(stderr, "\t not following parent\n");
+
+	//no produce_output logic here, it will be dealt with by the last followed
+	//fork, or will never be set if forks aren't supposed to be followed
 
 #ifdef USE_NW      
 	//close the sockets and assign them to some garbage. 
@@ -15182,6 +15231,22 @@ int main(int argc, char** argv)
     record_trace_info = KnobRecordTraceInfo.Value();
 #endif
     fork_flags_index = 0;   
+
+    /*
+     * if there are fork_flags (non-null and len > 0), 
+     * and there is a 1 in the fork_flags, we shouldn't start 
+     * producing output right away (until we get to the point where
+     * we stop following forks). 
+     */
+
+    if (fork_flags && strlen(fork_flags) &&
+	strstr(fork_flags, "1")) { 
+
+	produce_output = false;
+    }
+
+
+
 
     if (KnobMergeEntries.Value() > 0) {
 	num_merge_entries = KnobMergeEntries.Value();

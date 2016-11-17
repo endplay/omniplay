@@ -19,6 +19,9 @@
 #include <asm/desc.h>
 #include <asm/ptrace.h>
 #include <asm/elf.h>
+#include <asm/processor.h>
+#include <asm/i387.h>
+#include <asm/fpu-internal.h>
 #include <linux/proc_fs.h>
 #include <linux/replay.h>
 #include <linux/replay_maps.h>
@@ -30,6 +33,12 @@ extern int replay_debug, replay_min_debug;
 
 #define KMALLOC kmalloc
 #define KFREE kfree
+
+#define WRITABLE_MMAPS "/run/shm/replay_mmap_%d"
+#define WRITABLE_MMAPS_LEN 21
+//#define WRITABLE_MMAPS_LEN 17
+//#define WRITABLE_MMAPS "/tmp/replay_mmap_%d"
+
 
 /* Prototypes not in header files */
 void set_tls_desc(struct task_struct *p, int idx, const struct user_desc *info, int n); /* In tls.c */
@@ -73,6 +82,7 @@ struct ckpt_proc_data {
 	u_long pthreadclock;
 	u_long p_ignore_flag; //this is really just a memory address w/in the vma
 	u_long p_user_log_addr;
+	u_long user_log_pos;
 	u_long p_clear_child_tid;
 	u_long p_replay_hook;
 //	u_long rss_stat_counts[NR_MM_COUNTERS]; //the counters from the checkpointed task
@@ -116,6 +126,21 @@ print_vmas (struct task_struct* tsk)
 	up_read (&tsk->mm->mmap_sem);
 }
 
+void print_fpu_state(struct fpu *f, pid_t record_pid) 
+{
+	//first byte and last byte of the thread_xstate in the struct fpu
+	unsigned char *c = (unsigned char *)f->state;
+	unsigned char *last = c + sizeof(union thread_xstate);
+
+	printk("%d fpu state:\n", record_pid);
+	printk("\tlast_cpu %u\n",f->last_cpu);
+	printk("\thas_fpu %u\n",f->has_fpu);
+	while (c < last) { 
+		printk("%02x ",*c);
+		c++;
+	} 
+	printk("\n");
+}
 
 
 // File format:
@@ -539,8 +564,7 @@ get_replay_mmap (struct btree_head32 *replay_mmap_btree, char *filename)
 { 
 	int key, newkey, inserted = 0; 
 
-	sscanf(filename, "/tmp/replay_mmap_%d",&key); // get the key
-	
+	sscanf(filename, WRITABLE_MMAPS ,&key); // get the key	
 	newkey = (int)btree_lookup32(replay_mmap_btree, key);
 	if (newkey == 0) { 
 		//we need to create a new key! 
@@ -548,14 +572,14 @@ get_replay_mmap (struct btree_head32 *replay_mmap_btree, char *filename)
 		btree_insert32(replay_mmap_btree, (u32)key,(void*)newkey,GFP_KERNEL);
 		inserted = 1;
 	}
-	sprintf(filename, "/tmp/replay_mmap_%d",newkey);
+	sprintf(filename, WRITABLE_MMAPS,newkey);
 	return inserted;
 }
 
 
 // This function writes the global checkpoint state to disk
 long 
-replay_full_checkpoint_hdr_to_disk (char* filename, __u64 rg_id, int clock, u_long proc_count, struct ckpt_tsk *ct, loff_t* ppos)
+replay_full_checkpoint_hdr_to_disk (char* filename, __u64 rg_id, int clock, u_long proc_count, struct ckpt_tsk *ct, struct task_struct *tsk,loff_t* ppos)
 {
 	mm_segment_t old_fs = get_fs();
 	struct file* file = NULL;
@@ -587,6 +611,9 @@ replay_full_checkpoint_hdr_to_disk (char* filename, __u64 rg_id, int clock, u_lo
 
 	rc = checkpoint_ckpt_tsks_header(ct, -1, 0, file, ppos); 	
 
+	//this is part of the replay_group, so do it here instead of for each proc: 
+	rc = checkpoint_task_xray_monitor (tsk, file, ppos);
+	
 exit:
 	if (file) fput(file);
 	if (fd >= 0)  {
@@ -599,7 +626,11 @@ exit:
 
 // This function writes the process state to a disk file
 long 
-replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pid_t record_pid, int is_thread, long retval, loff_t logpos, u_long outptr, u_long consumed, u_long expclock, u_long pthread_block_clock, u_long ignore_flag, u_long user_log_addr,u_long replay_hook, loff_t* ppos)
+replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pid_t record_pid, 
+				     int is_thread, long retval, loff_t logpos, u_long outptr, 
+				     u_long consumed, u_long expclock, u_long pthread_block_clock, 
+				     u_long ignore_flag, u_long user_log_addr, u_long user_log_pos,
+				     u_long replay_hook, loff_t* ppos)
 {
 	mm_segment_t old_fs = get_fs();
 	int fd = -1, rc, copied, i;
@@ -614,8 +645,9 @@ replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pi
 	struct ckpt_proc_data cpdata;
 	long nr_pages = 0;
 	struct page** ppages = NULL;  
+	struct fpu *fpu = &(tsk->thread.fpu); 
 
-	printk ("Pid %d enters replay_full_checkpoint_proc_to_disk: filename %s\n", tsk->pid, filename);
+	char fpu_is_allocated;
 
 	set_fs(KERNEL_DS);
 	fd = sys_open (filename, O_WRONLY|O_APPEND, 0);
@@ -636,6 +668,7 @@ replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pi
 	cpdata.pthreadclock = pthread_block_clock;
 	cpdata.p_ignore_flag  = ignore_flag;
 	cpdata.p_user_log_addr = user_log_addr;
+	cpdata.user_log_pos = user_log_pos; 
 	cpdata.p_clear_child_tid = (u_long)tsk->clear_child_tid; //ah, not having this messes up our replay on exit
 	cpdata.p_replay_hook = replay_hook;
 
@@ -657,9 +690,52 @@ replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pi
 	//this is a part of the replay_thrd, so we do it regardless of thread / process
 	checkpoint_sysv_mappings (tsk, file, ppos);
 
+	// Write out the floating point registers: 
+	if (current == tsk) { 
+		//force the fpu to flush to the task_struct's data structures
+		unlazy_fpu(tsk);
+	}
+	fpu = &(tsk->thread.fpu);
+
+	fpu_is_allocated = fpu_allocated(fpu);
+	copied = vfs_write(file, &(fpu_is_allocated), sizeof(char), ppos);
+	if (copied != sizeof(char)) {
+		printk ("replay_full_checkpoint_proc_to_disk: tried to write last_cpu, got rc %d\n", copied);
+		rc = copied;
+		goto exit;
+	}	
+
+	if (fpu_is_allocated){
+		copied = vfs_write(file, (char *) &(fpu->last_cpu), sizeof(unsigned int), ppos);
+		if (copied != sizeof(unsigned int)) {
+			printk ("replay_full_checkpoint_proc_to_disk: tried to write last_cpu, got rc %d\n", copied);
+			rc = copied;
+			goto exit;
+		}
+		copied = vfs_write(file, (char *) &(fpu->has_fpu), sizeof(unsigned int), ppos);
+		if (copied != sizeof(unsigned int)) {
+			printk ("replay_full_checkpoint_proc_to_disk: tried to write has_fpu, got rc %d\n", copied);
+			rc = copied;
+			goto exit;
+		}
+
+		//thread_xstate's actual size is stored by this variable
+
+		copied = vfs_write(file, (char *) fpu->state, xstate_size, ppos);
+		if (copied != sizeof(union thread_xstate)) {
+			printk ("replay_full_checkpoint_proc_to_disk: tried to write thread_xstate, got rc %d\n", copied);
+			rc = copied;
+			goto exit;
+		}
+	}
+
+	
+
+	//this is part of the replay_thrd, so we do it regardless of thread / process
+	checkpoint_sysv_mappings (tsk, file, ppos);
 	if (!is_thread) { 
 		// Write out the replay cache state
-		checkpoint_replay_cache_files (tsk, file, ppos);
+		checkpoint_replay_cache_files (tsk, file, ppos);		
 		down_read (&tsk->mm->mmap_sem);
 
 		// Next - number of VM area
@@ -711,7 +787,7 @@ replay_full_checkpoint_proc_to_disk (char* filename, struct task_struct* tsk, pi
 
 			if (!(pvmas->vmas_flags & VM_READ) || 
 			    ((pvmas->vmas_flags&VM_MAYSHARE) && 
-			     strncmp(pvmas->vmas_file, "/tmp/replay_mmap_",17))) {
+			     strncmp(pvmas->vmas_file, WRITABLE_MMAPS,WRITABLE_MMAPS_LEN))) { //why is this in here...? 
 				continue;
 			}
 			
@@ -881,6 +957,7 @@ long replay_full_resume_hdr_from_disk (char* filename, __u64* prg_id, int* pcloc
 	*pproc_count = cdata.proc_count;
 
 	rc = restore_ckpt_tsks_header(*pproc_count, file, ppos); 	
+	rc = restore_task_xray_monitor (current, file, ppos);
 
 	MPRINT ("replay_full_resume_hdr_from_disk done\n");
 
@@ -893,9 +970,12 @@ exit:
 	return rc;
 }
 
-
-
-long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_thread, long* pretval, loff_t* plogpos, u_long* poutptr, u_long* pconsumed, u_long* pexpclock, u_long* pthreadclock, u_long *ignore_flag, u_long *user_log_addr, u_long *child_tid,u_long *replay_hook, loff_t* ppos)
+long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_thread, 
+					long* pretval, loff_t* plogpos, u_long* poutptr, 
+					u_long* pconsumed, u_long* pexpclock, 
+					u_long* pthreadclock, u_long *ignore_flag, 
+					u_long *user_log_addr, ulong *user_log_pos,
+					u_long *child_tid,u_long *replay_hook, loff_t* ppos)
 {
 	mm_segment_t old_fs = get_fs();
 	int rc = 0, fd, exe_fd, copied, i, map_count, key, shmflg=0, id, premapped = 0, new_file = 0;
@@ -909,8 +989,9 @@ long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_
 	struct user_desc desc;
 	int flags;
 	struct btree_head32 replay_mmap_btree;
-	
+	struct fpu *fpu = NULL;
 
+	char fpu_is_allocated;
 	MPRINT ("pid %d enters replay_full_resume_proc_from_disk: filename %s\n", current->pid, filename);
 
 	set_fs(KERNEL_DS);
@@ -939,6 +1020,7 @@ long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_
 	*pthreadclock = cpdata.pthreadclock;
 	*ignore_flag = cpdata.p_ignore_flag;
 	*user_log_addr = cpdata.p_user_log_addr;
+	*user_log_pos  = cpdata.user_log_pos;
 	*child_tid = cpdata.p_clear_child_tid; 
 	*replay_hook = cpdata.p_replay_hook;
 
@@ -948,6 +1030,47 @@ long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_
 		printk ("replay_full_resume_proc_from_disk: tried to read regs, got rc %d\n", copied);
 		rc = copied;
 		goto exit;
+	}
+
+	//this is a part of the replay_thrd, so we do it regardless of thread / process
+	restore_sysv_mappings (file, ppos);
+
+	// Restore the floating point registers: 
+	fpu = &(current->thread.fpu);
+
+	copied = vfs_read(file, &(fpu_is_allocated), sizeof(char), ppos);
+	if (copied != sizeof(char)) {
+		printk ("replay_full_checkpoint_proc_to_disk: tried to read fpu_is_allocated, got rc %d\n", copied);
+		rc = copied;
+		goto exit;
+	}	
+
+	if (fpu_is_allocated) { 
+
+		//allocate the new fpu if we need it and it isn't setup
+		if (!fpu_allocated(fpu)) {
+			printk("allocating fpu\n");
+			fpu_alloc(fpu);
+		}
+
+		copied = vfs_read(file, (char *) &(fpu->last_cpu), sizeof(unsigned int), ppos);
+		if (copied != sizeof(unsigned int)) {
+			printk ("replay_full_resume_proc_from_disk: tried to read last cpu, got rc %d\n", copied);
+			rc = copied;
+			goto exit;
+		}
+		copied = vfs_read(file, (char *) &(fpu->has_fpu), sizeof(unsigned int), ppos);
+		if (copied != sizeof(unsigned int)) {
+			printk ("replay_full_resume_proc_from_disk: tried to read has_fpu, got rc %d\n", copied);
+			rc = copied;
+			goto exit;
+		}
+		copied = vfs_read(file, (char *) fpu->state, xstate_size, ppos);
+		if (copied != sizeof(union thread_xstate)) {
+			printk ("replay_full_resume_proc_from_disk: tried to read thread_xstate, got rc %d\n", copied);
+			rc = copied;
+			goto exit;
+		}
 	}
 
 	//this is a part of the replay_thrd, so we do it regardless of thread / process
@@ -1005,7 +1128,7 @@ long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_
 						MPRINT ("special uclock vma\n");
 						sprintf (pvmas->vmas_file, "/run/shm/uclock%d", clock_pid);
 					}
-					if (!strncmp(pvmas->vmas_file, "/tmp/replay_mmap_",17)) { 
+					if (!strncmp(pvmas->vmas_file,WRITABLE_MMAPS,WRITABLE_MMAPS_LEN)) { 
 						new_file = get_replay_mmap(&replay_mmap_btree, pvmas->vmas_file);
 						if (new_file) { 
 							flags = O_CREAT|O_RDWR;					
@@ -1053,6 +1176,15 @@ long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_
 						}
 
 						addr = sys_shmat(id, (char __user *)pvmas->vmas_start, shmflg); 
+						
+						rc = add_sysv_shm((u_long)pvmas->vmas_start, 
+							     (u_long)(pvmas->vmas_end - pvmas->vmas_start));
+						if (rc < 0) { 
+							printk("whoops... add_sysv_shm returns negative?\n");
+							goto freemem;
+						}
+
+
 						premapped = 1;
 						map_file = NULL; //just to be sure something weird doesn't happen
 					}
@@ -1099,7 +1231,7 @@ long replay_full_resume_proc_from_disk (char* filename, pid_t clock_pid, int is_
 			if (!strncmp(pvmas->vmas_file, "/dev/zero", 9)) continue; /* Skip writing this one */
 			if (!(pvmas->vmas_flags&VM_READ) || 
 			    ((pvmas->vmas_flags&VM_MAYSHARE) && 
-			     strncmp(pvmas->vmas_file, "/tmp/replay_mmap_",17))) {
+			     strncmp(pvmas->vmas_file,WRITABLE_MMAPS,WRITABLE_MMAPS_LEN))) {
 				continue;  // Not in checkpoint - so skip writing this one
 			}				
 			if (!(pvmas->vmas_flags&VM_WRITE)){

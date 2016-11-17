@@ -11,10 +11,6 @@ setupfile=$(sudo -H -u $user echo $HOME/.omniplay_setup)
 
 source $setupfile
 
-./whoami.sh
-sudo -H -u $user ./whoami.sh
-
-
 function do_make() {
 	local rc;
 	sudo -H -u $user KCONFIG_CONFIG=.config make -j$build_parallel 2>&1 | tee errlog

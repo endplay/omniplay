@@ -46,8 +46,8 @@ using namespace std;
 typedef PagedBitmap<MAX_TAINTS, PAGE_BITS> bitmap;
 
 
-//#define DEBUG(x) ((x)==0x8 || (x)==0x20cd459)
-//#define TRACE
+#define DEBUG(x) ((x)==0xc44127 || (x)==0x40ed92 || (x)==0xdcf1bd || (x)==0x40e430)
+#define TRACE
 #define USE_CACHE
 
 #define STATS
@@ -245,6 +245,9 @@ bucket_init ()
 static void inline 
 bucket_push (uint32_t val, struct taintq_hdr* qh, uint32_t*& qb, int qfd, uint32_t& bucket_cnt, uint32_t& bucket_stop)
 {
+
+    //why do pre and post checking here? 
+
     if (bucket_cnt == bucket_stop) {
 	// Get next bucket 
 	pthread_mutex_lock(&(qh->lock));
@@ -335,13 +338,18 @@ bucket_push2 (uint32_t val1, uint32_t val2, struct taintq_hdr* qh, uint32_t*& qb
 static void inline bucket_term (struct taintq_hdr* qh, uint32_t*& qb, int qfd, uint32_t& bucket_cnt, uint32_t& bucket_stop)
 {
     if (bucket_cnt == bucket_stop) return;  // Have not grabbed a bucket yet - so nothing to do
+
     if (bucket_cnt && QEND(qb[bucket_cnt-1])) { 
 	qb[bucket_stop-1] = TERM_VAL; // Mark last bucket for network processing
     }
     else {
 	qb[bucket_stop-1] = 0; // Mark as *NOT* last bucket for network processing
-    }
-    qb[bucket_cnt++] = BUCKET_TERM_VAL;  // Mark bucket as done
+    }   
+    
+    if (bucket_stop - 1 != bucket_cnt)
+	qb[bucket_cnt++] = BUCKET_TERM_VAL;  // Mark bucket as done
+
+
     bucket_stop = bucket_cnt;  // Force new bucket
     pthread_mutex_lock(&(qh->lock));
     uint32_t bucket_index = (bucket_cnt-1)/TAINTBUCKETENTRIES;
@@ -839,7 +847,7 @@ read_inputs (int port, char*& token_log, char*& output_log, taint_t*& ts_log, ta
     char group_directory[256];
 
 #ifdef TRACE
-    fprintf (stderr, "read_inputs begins\n");
+    fprintf (stderr, "%d read_inputs begins\n", getpid());
 #endif
 
     if (setup_shmem(port, group_directory) < 0) return -1;
@@ -3045,6 +3053,10 @@ make_new_live_set (taint_t* p, taint_t* pend, u_long lsvalues, bitmap &live_set,
 
     // Last bit written to this location
     uint32_t wbucket_cnt = (parallelize-1)*(TAINTENTRIES/parallelize) + inputq_buf[parallelize-1];
+#ifdef TRACE
+    fprintf (stderr, "%d wbucket_cnt %u, write_index %lu\n", getpid(),wbucket_cnt, inputq_hdr->write_index);
+#endif    
+    
 #ifdef LS_DETAIL
     char filename[256];
     sprintf (filename, "%s/liveset", dirname);
@@ -4021,6 +4033,9 @@ long make_rev_index (const char* dirname, u_long mdatasize, taint_entry* ts_log,
     }
 
     PUT_QVALUEB(TERM_VAL, inputq_hdr, inputq_buf, iqfd, write_cnt, write_stop);
+#ifdef TRACE
+    fprintf(stderr, "%d write_cnt %u, write_stop %u \n", getpid(), write_cnt, write_stop);
+#endif
     bucket_term (inputq_hdr, inputq_buf, iqfd, write_cnt, write_stop);
 
     prindex_free ();
@@ -4361,7 +4376,7 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	bucket_init();
     }
 #ifdef TRACE
-    fprintf (stderr, "preprune done\n");
+    fprintf (stderr, "%d preprune done\n",getpid());
 #endif
 
     if (!low_memory && !finish_flag) build_map_tid = spawn_map_thread (&address_map, ts_log, adatasize);
@@ -4381,7 +4396,11 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	    gettimeofday(&revindex_merge_build_done_tv, NULL);
 	    gettimeofday(&revindex_addr_build_done_tv, NULL);
 #endif
-	    uint32_t val, rbucket_cnt = 0, rbucket_stop = 0;
+
+#ifdef TRACE
+	    fprintf (stderr, "%d recindex build done\n", getpid());
+#endif
+    uint32_t val, rbucket_cnt = 0, rbucket_stop = 0;
 	    GET_QVALUEB(val, outputq_hdr, outputq_buf, iqfd, rbucket_cnt, rbucket_stop);
 	    while (val != TERM_VAL) {
 		live_set.set(val);
@@ -4391,6 +4410,9 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	    gettimeofday(&revindex_done_tv, NULL);
 #endif
 
+#ifdef TRACE
+	    fprintf (stderr, "%d recindex build done\n", getpid());
+#endif
 	}
 	if (!start_flag) {
 #ifdef STATS
@@ -4450,13 +4472,13 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 #endif
     
 #ifdef TRACE
-    fprintf (stderr, "liveset done\n");
+    fprintf (stderr, "%d liveset done\n", getpid());
 #endif
     bucket_write_init();
 
     output_token = process_outputs (output_log, output_log + odatasize, &live_set, dirname, do_outputs_seq);
 #ifdef TRACE
-    fprintf (stderr, "outputs done\n");
+    fprintf (stderr, "%d outputs done\n", getpid());
 #endif
     if (!finish_flag) {
 
@@ -4473,6 +4495,10 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	gettimeofday(&index_wait_end_tv, NULL);
 #endif
 
+#ifdef TRACE
+	fprintf (stderr, "%d index wait done\n", getpid());
+#endif
+
 	if (!finish_flag) {
 #ifdef STATS
 	    gettimeofday(&send_wait_start_tv, NULL);
@@ -4482,7 +4508,16 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
 	    gettimeofday(&send_wait_end_tv, NULL);
 #endif	    
 	}
+
+#ifdef TRACE
+	fprintf (stderr, "%d finished waiting: processing addrs\n", getpid());
+#endif
+
 	bucket_read_init();
+
+#ifdef TRACE
+	fprintf (stderr, "%d index wait done\n", getpid());
+#endif
 
 	if (low_memory) {
 	    process_addresses_binsearch (output_token, ts_log, adatasize);
@@ -4499,7 +4534,9 @@ long seq_epoch (const char* dirname, int port, int do_preprune)
     } else {
 	flush_alloutbufs();
     }
-
+#ifdef TRACE
+	fprintf (stderr, "finishing!\n");
+#endif
 #ifdef STATS
     gettimeofday(&finish_start_tv, NULL);
 #endif
