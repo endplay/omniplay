@@ -12247,10 +12247,12 @@ void instrument_movx (INS ins)
         instrument_taint_reg2reg(ins, dst_reg, src_reg, 1);
     } else if (op1reg && op2mem) {
         assert(INS_IsMemoryRead(ins) == 1);
+        REG dst_reg = INS_OperandReg(ins, 0);
+
 #ifdef COPY_ONLY
         instrument_taint_mem2reg(ins, dst_reg, 1);
 #else
-        REG dst_reg = INS_OperandReg(ins, 0);
+
         REG index_reg = INS_OperandMemoryIndexReg(ins, 1);
         REG base_reg = INS_OperandMemoryBaseReg(ins, 1);
  #ifndef LINKAGE_DATA_OFFSET
