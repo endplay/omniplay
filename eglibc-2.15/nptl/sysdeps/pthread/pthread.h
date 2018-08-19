@@ -740,7 +740,13 @@ extern unsigned int pthread_log__sync_sub_and_fetch_uint(unsigned int* val, unsi
 #ifdef uint64_t
 extern uint64_t pthread_log__sync_add_and_fetch_uint64(uint64_t* val, uint64_t x);
 extern uint64_t pthread_log__sync_sub_and_fetch_uint64(uint64_t* val, uint64_t x);
+
+/* For rdtscp  */
+extern uint64_t pthread_log__rdtscp(void);
+
 #endif
+
+
 
 /* Mutex handling.  */
 

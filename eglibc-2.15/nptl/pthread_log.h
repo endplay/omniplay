@@ -193,6 +193,12 @@ struct pthread_extra_log_head {
 /* Special operation to insert syscalls */
 #define FAKE_SYSCALLS                        127
 
+
+/* RDTSCP calls*/
+#define RDTSCP_HIGH                          128
+#define RDTSCP_LOW                           129
+
+
 extern struct pthread_log_head * allocate_log (void);
 #ifdef USE_EXTRA_DEBUG_LOG
 extern struct pthread_extra_log_head * allocate_extra_log (void);

@@ -12,8 +12,8 @@
 #include <shlib-compat.h>
 
 // Turns debugging on and off
-//#define DPRINT pthread_log_debug
-#define DPRINT(x,...)
+#define DPRINT pthread_log_debug
+//#define DPRINT(x,...)
 
 // Globals for user-level replay
 int pthread_log_status = PTHREAD_LOG_NONE;
@@ -582,7 +582,7 @@ pthread_log_replay (unsigned long type, unsigned long check)
 	}
 #endif
 	(*ppthread_log_clock)++;
-	DPRINT ("Replay clock auto-incremented (1) to %d\n", *ppthread_log_clock);
+	DPRINT ("Roeplay clock auto-incremented (1) to %d\n", *ppthread_log_clock);
 	head->num_expected_records--;
 	return 0;
     } 
@@ -2887,3 +2887,33 @@ void pthread_app_value (u_long* pval, u_long check)
     }								   
 }
 
+inline __attribute__((always_inline)) 
+void rdtscp(unsigned int *high, unsigned int *low)
+{  
+  asm volatile("rdtscp" : "=a" (*low), "=d" (*high) :: "rcx");  
+}
+
+uint64_t pthread_log__rdtscp(void)
+{
+  struct pthread_log_head* head;
+  unsigned int low, high;
+
+  if (is_recording()) { 
+
+    rdtscp(&high, &low);
+
+    pthread_log_record (high, RDTSCP_HIGH, 0, 0); 
+    pthread_log_record (low, RDTSCP_LOW, 0,  0); 
+
+  } else if (is_replaying()) {
+
+    high = pthread_log_replay (RDTSCP_HIGH, 0);
+    low = pthread_log_replay (RDTSCP_LOW, 0);
+
+  } else {
+    rdtscp(&high, &low);
+  }
+
+  return low | ((uint64_t) high) << 32; 
+
+}
