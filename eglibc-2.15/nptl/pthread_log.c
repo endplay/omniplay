@@ -12,8 +12,8 @@
 #include <shlib-compat.h>
 
 // Turns debugging on and off
-#define DPRINT pthread_log_debug
-//#define DPRINT(x,...)
+//#define DPRINT pthread_log_debug
+#define DPRINT(x,...)
 
 // Globals for user-level replay
 int pthread_log_status = PTHREAD_LOG_NONE;
@@ -845,14 +845,18 @@ __pthread_mutex_destroy (mutex)
 
   if (is_recording()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) mutex);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    mutex = (pthread_mutex_t *) THREAD_GETMEM(THREAD_SELF, stackswitch1);
     rc = __pthread_mutex_destroy_rec (mutex);
     RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) mutex);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    mutex = (pthread_mutex_t *) THREAD_GETMEM(THREAD_SELF, stackswitch1);
     rc = __pthread_mutex_destroy_rep (mutex);
     RESET_OLD_STACKP(); 
   } else {
@@ -941,14 +945,20 @@ __pthread_mutex_lock (mutex)
 
   if (is_recording()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) mutex);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    mutex = (pthread_mutex_t *) THREAD_GETMEM(THREAD_SELF, stackswitch1);
+
     rc = __pthread_mutex_lock_rec (mutex);
     RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) mutex);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    mutex = (pthread_mutex_t *) THREAD_GETMEM(THREAD_SELF, stackswitch1);
+
     rc = __pthread_mutex_lock_rep (mutex);
     RESET_OLD_STACKP(); 
   } else {
@@ -1042,15 +1052,27 @@ pthread_mutex_timedlock (mutex, abstime)
   int rc;
 
   if (is_recording()) {
+
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) mutex);
+    THREAD_SETMEM (THREAD_SELF, stackswitch2, (u_long) abstime);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    mutex = (pthread_mutex_t *) THREAD_GETMEM(THREAD_SELF, stackswitch1);
+    abstime = (const struct timespec *) THREAD_GETMEM(THREAD_SELF, stackswitch2);
+
     rc = pthread_mutex_timedlock_rec (mutex, abstime);
     RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) mutex);
+    THREAD_SETMEM (THREAD_SELF, stackswitch2, (u_long) abstime);
     GET_OLD_STACKP();
-    SET_NEW_STACKP();
+    SET_NEW_STACKP();    
+    mutex = (pthread_mutex_t *) THREAD_GETMEM(THREAD_SELF, stackswitch1);
+    abstime = (const struct timespec *) THREAD_GETMEM(THREAD_SELF, stackswitch2);
+
+
     rc = pthread_mutex_timedlock_rep (mutex, abstime);
     RESET_OLD_STACKP(); 
   } else {
@@ -1086,14 +1108,20 @@ __pthread_mutex_trylock (mutex)
 
   if (is_recording()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) mutex);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    mutex = (pthread_mutex_t *) THREAD_GETMEM (THREAD_SELF, stackswitch1);
+
     rc = __pthread_mutex_trylock_rec (mutex);
     RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) mutex);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    mutex = (pthread_mutex_t *) THREAD_GETMEM (THREAD_SELF, stackswitch1);
+
     rc = __pthread_mutex_trylock_rep (mutex);
     RESET_OLD_STACKP(); 
   } else {
@@ -1131,14 +1159,20 @@ __pthread_mutex_unlock (mutex)
 
   if (is_recording()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) mutex);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    mutex = (pthread_mutex_t *) THREAD_GETMEM (THREAD_SELF, stackswitch1);
+
     rc = __pthread_mutex_unlock_rec (mutex);
     RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) mutex);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    mutex = (pthread_mutex_t *) THREAD_GETMEM (THREAD_SELF, stackswitch1);
+
     rc = __pthread_mutex_unlock_rep (mutex);
     RESET_OLD_STACKP(); 
   } else {
@@ -1265,14 +1299,20 @@ __pthread_cond_broadcast (cond)
 
   if (is_recording()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) cond);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    cond = (pthread_cond_t *) THREAD_GETMEM (THREAD_SELF, stackswitch1);
+
     rc = __pthread_cond_broadcast_rec (cond);
     RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) cond);
     GET_OLD_STACKP();
-    SET_NEW_STACKP(); 
+    SET_NEW_STACKP();
+    cond = (pthread_cond_t *) THREAD_GETMEM (THREAD_SELF, stackswitch1);
+
     rc = __pthread_cond_broadcast_rep (cond);
     RESET_OLD_STACKP(); 
   } else {
@@ -1357,14 +1397,20 @@ __pthread_cond_signal (cond)
 
   if (is_recording()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) cond);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    cond = (pthread_cond_t *) THREAD_GETMEM (THREAD_SELF, stackswitch1);
+
     rc = __pthread_cond_signal_rec (cond);
     RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) cond);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    cond = (pthread_cond_t *) THREAD_GETMEM (THREAD_SELF, stackswitch1);
+
     rc = __pthread_cond_signal_rep (cond);
     RESET_OLD_STACKP(); 
   } else {
@@ -1409,14 +1455,28 @@ __pthread_cond_timedwait (cond, mutex, abstime)
 
   if (is_recording()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) cond);
+    THREAD_SETMEM (THREAD_SELF, stackswitch2, (u_long) mutex);
+    THREAD_SETMEM (THREAD_SELF, stackswitch3, (u_long) abstime);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    abstime = (const struct timespec *) THREAD_GETMEM (THREAD_SELF, stackswitch3); 
+    mutex = (pthread_mutex_t *) THREAD_GETMEM (THREAD_SELF, stackswitch2); 
+    cond = (pthread_cond_t *) THREAD_GETMEM (THREAD_SELF, stackswitch1);
+
     rc = __pthread_cond_timedwait_rec (cond, mutex, abstime);
     RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) cond);
+    THREAD_SETMEM (THREAD_SELF, stackswitch2, (u_long) mutex);
+    THREAD_SETMEM (THREAD_SELF, stackswitch3, (u_long) abstime);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    abstime = (const struct timespec *) THREAD_GETMEM (THREAD_SELF, stackswitch3); 
+    mutex = (pthread_mutex_t *) THREAD_GETMEM (THREAD_SELF, stackswitch2); 
+    cond = (pthread_cond_t *) THREAD_GETMEM (THREAD_SELF, stackswitch1);
+
     rc = __pthread_cond_timedwait_rep (cond, mutex, abstime);
     RESET_OLD_STACKP(); 
   } else {
@@ -1458,14 +1518,22 @@ __pthread_cond_wait (cond, mutex)
 
   if (is_recording()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
-    GET_OLD_STACKP();
-    SET_NEW_STACKP();
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) cond); 
+    THREAD_SETMEM (THREAD_SELF, stackswitch2, (u_long) mutex); 
+    GET_OLD_STACKP(); 
+    SET_NEW_STACKP(); 
+    mutex = (pthread_mutex_t *) THREAD_GETMEM (THREAD_SELF, stackswitch2); 
+    cond = (pthread_cond_t *) THREAD_GETMEM (THREAD_SELF, stackswitch1);
     rc = __pthread_cond_wait_rec (cond, mutex);
     RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
-    GET_OLD_STACKP();
-    SET_NEW_STACKP();
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) cond); 
+    THREAD_SETMEM (THREAD_SELF, stackswitch2, (u_long) mutex); 
+    GET_OLD_STACKP(); 
+    SET_NEW_STACKP(); 
+    mutex = (pthread_mutex_t *) THREAD_GETMEM (THREAD_SELF, stackswitch2); 
+    cond = (pthread_cond_t *) THREAD_GETMEM (THREAD_SELF, stackswitch1);
     rc = __pthread_cond_wait_rep (cond, mutex);
     RESET_OLD_STACKP(); 
   } else {
@@ -1504,14 +1572,21 @@ __pthread_rwlock_rdlock (rwlock)
 
   if (is_recording()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) rwlock);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    rwlock = (pthread_rwlock_t *) THREAD_GETMEM (THREAD_SELF, stackswitch1);
+
+
     rc = __pthread_rwlock_rdlock_rec (rwlock);
     RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) rwlock);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    rwlock = (pthread_rwlock_t *) THREAD_GETMEM (THREAD_SELF, stackswitch1);
+
     rc = __pthread_rwlock_rdlock_rep (rwlock);
     RESET_OLD_STACKP(); 
   } else {
@@ -1551,14 +1626,20 @@ __pthread_rwlock_wrlock (rwlock)
 
   if (is_recording()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) rwlock);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    rwlock = (pthread_rwlock_t *) THREAD_GETMEM (THREAD_SELF, stackswitch1);
+
     rc = __pthread_rwlock_wrlock_rec (rwlock);
     RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) rwlock);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    rwlock = (pthread_rwlock_t *) THREAD_GETMEM (THREAD_SELF, stackswitch1);
+
     rc = __pthread_rwlock_wrlock_rep (rwlock);
     RESET_OLD_STACKP(); 
   } else {
@@ -1601,14 +1682,25 @@ pthread_rwlock_timedrdlock (rwlock, abstime)
 
   if (is_recording()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) rwlock);
+    THREAD_SETMEM (THREAD_SELF, stackswitch2, (u_long) abstime);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    abstime = (const struct timespec *) THREAD_GETMEM (THREAD_SELF, stackswitch2);
+    rwlock = (pthread_rwlock_t *) THREAD_GETMEM (THREAD_SELF, stackswitch1);
+
     rc = pthread_rwlock_timedrdlock_rec (rwlock, abstime);
     RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) rwlock);
+    THREAD_SETMEM (THREAD_SELF, stackswitch2, (u_long) abstime);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    abstime = (const struct timespec *) THREAD_GETMEM (THREAD_SELF, stackswitch2);
+    rwlock = (pthread_rwlock_t *) THREAD_GETMEM (THREAD_SELF, stackswitch1);
+
+
     rc = pthread_rwlock_timedrdlock_rep (rwlock, abstime);
     RESET_OLD_STACKP(); 
   } else {
@@ -1648,14 +1740,26 @@ pthread_rwlock_timedwrlock (rwlock, abstime)
 
   if (is_recording()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) rwlock);
+    THREAD_SETMEM (THREAD_SELF, stackswitch2, (u_long) abstime);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    abstime = (const struct timespec *) THREAD_GETMEM (THREAD_SELF, stackswitch2);
+    rwlock = (pthread_rwlock_t *) THREAD_GETMEM (THREAD_SELF, stackswitch1);
+
+
     rc = pthread_rwlock_timedwrlock_rec (rwlock, abstime);
     RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) rwlock);
+    THREAD_SETMEM (THREAD_SELF, stackswitch2, (u_long) abstime);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    abstime = (const struct timespec *) THREAD_GETMEM (THREAD_SELF, stackswitch2);
+    rwlock = (pthread_rwlock_t *) THREAD_GETMEM (THREAD_SELF, stackswitch1);
+
+
     rc = pthread_rwlock_timedwrlock_rep (rwlock, abstime);
     RESET_OLD_STACKP(); 
   } else {
@@ -1692,14 +1796,20 @@ __pthread_rwlock_tryrdlock (rwlock)
 
   if (is_recording()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) rwlock);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    rwlock = (pthread_rwlock_t *) THREAD_GETMEM (THREAD_SELF, stackswitch1);
+
     rc = __pthread_rwlock_tryrdlock_rec (rwlock);
     RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) rwlock);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    rwlock = (pthread_rwlock_t *) THREAD_GETMEM (THREAD_SELF, stackswitch1);
+
     rc = __pthread_rwlock_tryrdlock_rep (rwlock);
     RESET_OLD_STACKP(); 
   } else {
@@ -1738,14 +1848,20 @@ __pthread_rwlock_trywrlock (rwlock)
 
   if (is_recording()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) rwlock);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    rwlock = (pthread_rwlock_t *) THREAD_GETMEM (THREAD_SELF, stackswitch1);
+
     rc = __pthread_rwlock_trywrlock_rec (rwlock);
     RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) rwlock);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    rwlock = (pthread_rwlock_t *) THREAD_GETMEM (THREAD_SELF, stackswitch1);
+
     rc = __pthread_rwlock_trywrlock_rep (rwlock);
     RESET_OLD_STACKP(); 
   } else {
@@ -1781,14 +1897,20 @@ __pthread_rwlock_unlock (pthread_rwlock_t *rwlock)
 
   if (is_recording()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) rwlock);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    rwlock = (pthread_rwlock_t *) THREAD_GETMEM (THREAD_SELF, stackswitch1);
+
     rc = __pthread_rwlock_unlock_rec (rwlock);
     RESET_OLD_STACKP(); 
   } else if (is_replaying()) {
     struct pthread_log_head* head = THREAD_GETMEM (THREAD_SELF, log_head);
+    THREAD_SETMEM (THREAD_SELF, stackswitch1, (u_long) rwlock);
     GET_OLD_STACKP();
     SET_NEW_STACKP();
+    rwlock = (pthread_rwlock_t *) THREAD_GETMEM (THREAD_SELF, stackswitch1);
+
     rc = __pthread_rwlock_unlock_rep (rwlock);
     RESET_OLD_STACKP(); 
   } else {
@@ -2893,7 +3015,7 @@ void rdtscp(unsigned int *high, unsigned int *low)
   asm volatile("rdtscp" : "=a" (*low), "=d" (*high) :: "rcx");  
 }
 
-uint64_t pthread_log__rdtscp(void)
+unsigned long long pthread_log__rdtscp(void)
 {
   struct pthread_log_head* head;
   unsigned int low, high;
@@ -2914,6 +3036,6 @@ uint64_t pthread_log__rdtscp(void)
     rdtscp(&high, &low);
   }
 
-  return low | ((uint64_t) high) << 32; 
+  return low | ((unsigned long long) high) << 32; 
 
 }

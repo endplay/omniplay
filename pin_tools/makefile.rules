@@ -26,7 +26,7 @@ MY_OBJS=$(OBJDIR)xray_token$(OBJ_SUFFIX)
 # This defines tests which run tools of the same name.  This is simply for convenience to avoid
 # defining the test name twice (once in TOOL_ROOTS and again in TEST_ROOTS).
 # Tests defined here should not be defined in TOOL_ROOTS and TEST_ROOTS.
-TEST_TOOL_ROOTS := print_instructions race_checker get_fork_flags
+TEST_TOOL_ROOTS := print_instructions race_checker print_output
 
 # This defines the tests to be run that were not already defined in TEST_TOOL_ROOTS.
 TEST_ROOTS :=
@@ -164,8 +164,8 @@ $(OBJDIR)confaid$(OBJ_SUFFIX): linkage.cpp
 	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) -lglib-2.0
 
 
-$(OBJDIR)get_fork_flags$(OBJ_SUFFIX): get_fork_flags.cpp
+$(OBJDIR)print_output$(OBJ_SUFFIX): print_output.cpp
 	$(CXX) $(TOOL_CXXFLAGS) $(COMP_OBJ)$@ $< 
 
-$(OBJDIR)get_fork_flags$(PINTOOL_SUFFIX): $(OBJDIR)get_fork_flags$(OBJ_SUFFIX)
+$(OBJDIR)print_output$(PINTOOL_SUFFIX): $(OBJDIR)print_output$(OBJ_SUFFIX)
 	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $^ $(TOOL_LPATHS) $(TOOL_LIBS) -lglib-2.0

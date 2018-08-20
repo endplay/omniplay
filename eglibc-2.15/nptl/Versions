@@ -123,6 +123,9 @@ libpthread {
     pthread_log__sync_add_and_fetch_uint64;
     pthread_log__sync_sub_and_fetch_uint64;
 
+    #who knows what this does?
+    pthread_log__rdtscp;
+
     # The error functions.
     __errno_location; __h_errno_location;
 
