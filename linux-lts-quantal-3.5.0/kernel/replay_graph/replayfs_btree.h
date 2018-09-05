@@ -29,22 +29,10 @@
  * number of keys and values (N) is geo->no_pairs.
  */
 
-struct replayfs_btree_key {
-	loff_t offset;
-	loff_t size;
-};
-
 extern struct replayfs_btree_value replayfs_zero_value;
 
 struct replayfs_btree_in_value {
 	loff_t extent_pos;
-};
-
-struct replayfs_btree_value {
-	struct replayfs_syscache_id id;
-
-	/* ... I hate this field */
-	size_t buff_offs;
 };
 
 /**
@@ -60,6 +48,7 @@ struct replayfs_btree_head {
 	//mempool_t *mempool;
 	struct replayfs_diskalloc *allocator;
 	int height;
+	int size;
 };
 
 /* FIXME: #define out to nothing after debugging */

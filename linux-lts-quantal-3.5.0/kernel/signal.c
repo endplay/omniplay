@@ -1779,34 +1779,32 @@ static void do_notify_parent_cldstop(struct task_struct *tsk,
 	info.si_utime = cputime_to_clock_t(tsk->utime);
 	info.si_stime = cputime_to_clock_t(tsk->stime);
 
- 	info.si_code = why;
- 	switch (why) {
- 	case CLD_CONTINUED:
- 		info.si_status = SIGCONT;
- 		break;
- 	case CLD_STOPPED:
- 		info.si_status = tsk->signal->group_exit_code & 0x7f;
- 		break;
- 	case CLD_TRAPPED:
- 		info.si_status = tsk->exit_code & 0x7f;
- 		break;
- 	default:
- 		BUG();
- 	}
+	info.si_code = why;
+	switch (why) {
+	case CLD_CONTINUED:
+		info.si_status = SIGCONT;
+		break;
+	case CLD_STOPPED:
+		info.si_status = tsk->signal->group_exit_code & 0x7f;
+		break;
+	case CLD_TRAPPED:
+		info.si_status = tsk->exit_code & 0x7f;
+		break;
+	default:
+		BUG();
+	}
 
 	sighand = parent->sighand;
 	spin_lock_irqsave(&sighand->siglock, flags);
 	if (sighand->action[SIGCHLD-1].sa.sa_handler != SIG_IGN &&
-	    !(sighand->action[SIGCHLD-1].sa.sa_flags & SA_NOCLDSTOP))
+		!(sighand->action[SIGCHLD-1].sa.sa_flags & SA_NOCLDSTOP))
 	{
 		/* Begin REPLAY */
 		// Current process and parent are replay threads, so
 		// don't send SIGCHLD
-		if (!tsk->replay_thrd && !tsk->parent->replay_thrd) {
-			if (tsk->replay_thrd) {
-				printk("Pid %d replay thread but parent is not?\n", current->pid);
-			}
-		/* End REPLAY */
+		if ((!tsk->replay_thrd && !tsk->parent->replay_thrd) ||
+			for_ptracer) {
+			/* End REPLAY */
 			__group_send_sig_info(SIGCHLD, &info, parent);
 		}
 	}
@@ -2160,8 +2158,10 @@ static void do_jobctl_trap(void)
 
 	if (current->ptrace & PT_SEIZED) {
 		if (!signal->group_stop_count &&
-		    !(signal->flags & SIGNAL_STOP_STOPPED))
+		    !(signal->flags & SIGNAL_STOP_STOPPED)) {
+
 			signr = SIGTRAP;
+		}
 		WARN_ON_ONCE(!signr);
 		ptrace_do_notify(signr, signr | (PTRACE_EVENT_STOP << 8),
 				 CLD_STOPPED);
@@ -2172,7 +2172,8 @@ static void do_jobctl_trap(void)
 	}
 }
 
-static int ptrace_signal(int signr, siginfo_t *info,
+/* REPLAY */ //static
+int ptrace_signal(int signr, siginfo_t *info,
 			 struct pt_regs *regs, void *cookie)
 {
 	ptrace_signal_deliver(regs, cookie);
@@ -2186,6 +2187,9 @@ static int ptrace_signal(int signr, siginfo_t *info,
 	 * comment in dequeue_signal().
 	 */
 	current->jobctl |= JOBCTL_STOP_DEQUEUED;
+	if (current->replay_thrd) {
+		//printk("ptrace_stop entry: ptrace_signal\n");
+	}
 	ptrace_stop(signr, CLD_TRAPPED, 0, info);
 
 	/* We're back.  Did the debugger cancel the sig?  */
@@ -2313,7 +2317,7 @@ relock:
 			}
 #ifdef REP_SIG_DEBUG
 			printk ("Replaying pid %d gets signal %d\n", current->pid, signr);
-#endif									
+#endif
 		}
 		if (signr == 0) {
 			if (current->record_thrd && replay_has_pending_signal()) {
@@ -2323,7 +2327,9 @@ relock:
 				signr = dequeue_signal(current, &current->blocked, info);
 				/* Begin REPLAY (again) */
 				if (current->replay_thrd && signr) {
+#ifdef REP_SIG_DEBUG
 					printk ("Replaying pid %d dequeues signal %d\n", current->pid, signr);
+#endif
 				}
 			}
 			if (current->record_thrd && signr > 0) {

@@ -1,6 +1,10 @@
 #ifndef __PARSEKLIB_H
 #define __PARSEKLIB_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/times.h>
@@ -44,8 +48,6 @@
 
 #define NR_SYSCALLS 511
 
-//#define USE_HPC
-
 #ifdef TRACE_READ_WRITE
 struct replayfs_syscache_id {
 	loff_t unique_id : 48; 
@@ -82,6 +84,7 @@ struct replayfs_filemap_entry {
 #endif
 #define IS_RECORDED_FILE (1<<3)
 #define READ_NEW_CACHE_FILE (1<<4)
+#define NORMAL_FILE (1<<5)
 
 
 struct repsignal {
@@ -262,7 +265,7 @@ struct wait4_retvals {
 };
 
 struct waitid_retvals {
-	struct siginfo info;
+        siginfo_t info;
 	struct rusage  ru;
 };
 
@@ -285,10 +288,6 @@ struct name_to_handle_at_retvals {
 };
 
 struct syscall_result {
-#ifdef USE_HPC
-	unsigned long long	hpc_begin;	// Time-stamp counter value when system call started
-	unsigned long long	hpc_end;	// Time-stamp counter value when system call finished
-#endif
 	short			sysnum;		// system call number executed
 	u_char			flags;          // See defs above
 };
@@ -331,12 +330,6 @@ struct klogfile {
 
 	loff_t cur_idx;
 
-#ifdef USE_HPC
-	struct timeval tv1;
-	unsigned long long hpc2;
-	struct timeval tv2;
-#endif
-
 	loff_t expected_clock;
 
 	loff_t active_start_idx;
@@ -377,6 +370,10 @@ static inline void parseklog_default_print(FILE *out, struct klog_result *res) {
 }
 
 int klog_print(FILE *out, struct klog_result *result);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
 

@@ -6,6 +6,8 @@
 //#define REPLAYFS_DEBUG_MAPPINGS
 //#define REPLAYFS_DEBUG_PAGEALLOC
 
+#define REPLAYFS_KEEP_MAPPED
+
 #ifdef REPLAYFS_DEBUG_PAGEALLOC
 void pagealloc_print_status(struct page *page);
 
@@ -22,17 +24,30 @@ void __pagealloc_get(struct page *page, const char *function, int line);
 
 
 #ifdef  REPLAYFS_DEBUG_MAPPINGS
+
+#  ifdef REPLAYFS_KEEP_MAPPED
+#    error "KEEP_MAPPED cannot be defined along with debug mappings!"
+#  endif
+
 #define replayfs_kmap(X) __replayfs_kmap(X, __func__, __LINE__)
 #define replayfs_kunmap(X) __replayfs_kunmap(X, __func__, __LINE__)
 void *__replayfs_kmap(struct page *page, const char *func, int line);
 void __replayfs_kunmap(struct page *page, const char *func, int line);
+
+#elif defined(REPLAYFS_KEEP_MAPPED)
+
+#define replayfs_kmap(X) page_address(X)
+#define replayfs_kunmap(X)
+
 #else
 #define replayfs_kmap(X) kmap(X)
 #define replayfs_kunmap(X) kunmap(X)
 #endif
 
 #if defined(REPLAYFS_DEBUG_PAGEALLOC) || defined(REPLAYFS_DEBUG_MAPPINGS)
+
 #  define BUILD_KMAP
+
 void replayfs_kmap_init(void);
 void replayfs_kmap_destroy(void);
 #else

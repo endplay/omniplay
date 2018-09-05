@@ -2,21 +2,10 @@
 #define __REPLAY_CONFIG_H
 
 /*
- * Enables read compression, sourcing reads of a file from another uncompressed file.
- * This will have potential data size and performance implications on both recorded/replayed files
- * AND non-record/replay reads from files whose creations were recorded.
- *
- * It may (however) drastically reduce the size of recorded reads by recording the origin of data, instead of its contents.
- *
- * This automatically disables TRACE_*
+ * Includes information in the log allowing all writes to be totally ordered.
+ * Intended use is versioned FS applicaiton
  */
-//#define REPLAY_COMPRESS_READS
-
-/* 
- * Double checks to make sure the data that comes out of a REPLAY_COMPRESS_READS
- * file is the expected data...
- */
-//#define VERIFY_COMPRESSED_DATA
+#define ORDER_WRITES
 
 /* 
  * Enables replay-graph tracking for file, pipe, and socket IO respectively.

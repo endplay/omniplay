@@ -79,6 +79,7 @@ void replay_cache_destroy(void) {
 
 }
 
+extern atomic_t other_kmallocs;
 /* XXX NOTE: cache.lock must be held! */
 void replay_desc_destroy(struct replay_desc *replay);
 static struct replay_desc *replay_desc_init(loff_t replay_unique_id) {
@@ -90,6 +91,7 @@ static struct replay_desc *replay_desc_init(loff_t replay_unique_id) {
 		ret = ERR_PTR(-ENOMEM);
 		goto out;
 	}
+	atomic_inc(&other_kmallocs);
 
 	/* Initialize the descriptor */
 	debugk("%s %d: Creating process with unique_id of %lld\n", __func__, __LINE__, replay_unique_id);

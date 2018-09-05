@@ -130,23 +130,6 @@ static int read_psr_chunk(struct klogfile *log) {
 	struct syscall_result *psrs;
 
 	/* Read header */
-	/* Start with HPC stuff.... if anyone ever uses that ever again */
-#ifdef USE_HPC
-	rc = read (log->fd, &hpc1, sizeof(unsigned long long));
-	if (rc == 0) { // should have reached the end of the log(s) here
-		break;
-	}
-	rc = read (log->fd, &log->tv1, sizeof(struct timeval));
-	rc = read (log->fd, &log->hpc2, sizeof(unsigned long long));
-	rc = read (log->fd, &log->tv2, sizeof(struct timeval));
-	double usecs1 = (double)tv1.tv_sec * 1000000 + (double)tv1.tv_usec;
-	double usecs2 = (double)tv2.tv_sec * 1000000 + (double)tv2.tv_usec;
-	/*
-	printf ("%Lu ticks = %f usecs\n", hpc1, usecs1);
-	printf ("%Lu ticks = %f usecs\n", hpc2, usecs2);
-	*/
-#endif
-
 	debugf("Reading count\n");
 	/* Now get how many records there are here */
 	rc = read(log->fd, &count, sizeof(count));
@@ -525,29 +508,6 @@ int parseklog_write_chunk(struct klogfile *log, int destfd) {
 	long rc;
 
 	/* Write the header */
-#ifdef USE_HPC
-	rc = write(destfd, &log->hpc1, sizeof(unsigned long long));
-	if (rc != sizeof(unsigned long long)) {
-		fprintf(stderr, "Couldn't record hpc1\n");
-		return -1;
-	}
-	rc = write(destfd, &log->tv1, sizeof(struct timeval));
-	if (rc != sizeof(struct timeval)) {
-		fprintf(stderr, "Couldn't record tv1\n");
-		return -1;
-	}
-	rc = write(destfd, &log->hpc2, sizeof(unsigned long long));
-	if (rc != sizeof(unsigned long long)) {
-		fprintf(stderr, "Couldn't record hpc2\n");
-		return -1;
-	}
-	rc = write(destfd, &log->tv2, sizeof(struct timeval));
-	if (rc != sizeof(struct timeval)) {
-		fprintf(stderr, "Couldn't record tv2\n");
-		return -1;
-	}
-#endif
-
 	rc = parseklog_do_write_chunk(log->active_num_psrs, log->active_psrs, destfd);
 
 	return rc;
@@ -678,11 +638,34 @@ static u_long getretparams_read(struct klogfile *log,
 
 static u_long getretparams_write(struct klogfile *klog,
 		struct klog_result *res) {
-#ifdef TRACE_PIPE_READ_WRITE
-	return 4;
-#else
-	return 0;
-#endif
+	long return_pos;
+	long rc;
+	u_long size = 0;
+	int is_shared;
+
+	return_pos = lseek(klog->fd, 0, SEEK_CUR);
+
+	size += sizeof(int);
+	rc = read(klog->fd, &is_shared, sizeof(int));
+	if (rc != sizeof(int)) {
+		fprintf(stderr, "cannot read \"write\" value\n");
+		return -1;
+	}
+
+	switch (is_shared) {
+		case NORMAL_FILE:
+			size += sizeof(int64_t);
+			break;
+		default:
+			size += sizeof(int);;
+	}
+
+	if (lseek(klog->fd, return_pos, SEEK_SET) == (off_t)-1) {
+		fprintf(stderr, "lseek failed to go to return_pos in write\n");
+		return -1;
+	}
+
+	return size;
 }
 
 static u_long getretparams_getgroups(struct klogfile *klog,
@@ -769,6 +752,7 @@ static u_long getretparams_socketcall(struct klogfile *log,
 			}
 #endif
 		case SYS_ACCEPT: 
+		case SYS_ACCEPT4:
 		case SYS_GETSOCKNAME:
 		case SYS_GETPEERNAME: {
 			struct accept_retvals avr;

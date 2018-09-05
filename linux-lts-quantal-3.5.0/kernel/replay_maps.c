@@ -25,6 +25,12 @@
 
 #define DPRINT(x,...)
 
+//linux actually just has a symlink from /dev/shm -> /run/shm
+#define WRITABLE_MMAPS "/run/shm/replay_mmap_%d"
+//#define WRITABLE_MMAPS "/tmp/replay_mmap_%d"
+
+//#define DPRINT printk
+
 char cache_dir[] = "/replay_cache";
 #define COPY_CHUNK 4096
 
@@ -67,9 +73,9 @@ int add_file_to_cache (struct file* vm_file, dev_t* pdev, unsigned long* pino, s
 			return 0;
 		} else {
 			// file not up to date, so we need a new version - save this old version
-			printk("%s %d: Versioning file %x_%lx_%lu_%u @ %lu\n", __func__, __LINE__,
-					inode->i_sb->s_dev, inode->i_ino, st.st_mtime, st.st_mtime_nsec,
-					get_clock_value());
+			DPRINT("%s %d: Versioning file %x_%lx_%lu_%u @ %lu\n", __func__, __LINE__,
+			       inode->i_sb->s_dev, inode->i_ino, st.st_mtime, st.st_mtime_nsec,
+			       get_clock_value());
 			sprintf (nname, "%s/%x_%lx_%lu_%u", cache_dir, inode->i_sb->s_dev, inode->i_ino, st.st_mtime, st.st_mtime_nsec);
 			rc = sys_rename (cname, nname);
 		}
@@ -123,8 +129,7 @@ int add_file_to_cache (struct file* vm_file, dev_t* pdev, unsigned long* pino, s
 			}
 		}
 	} while (copyed > 0);
-	printk("%s %d: Creating file %s @ %lu\n", __func__, __LINE__, cname,
-			get_clock_value());
+	DPRINT("%s %d: Creating file %s @ %lu\n", __func__, __LINE__, cname, get_clock_value());
 
 	rc = sys_rename (tname, cname);
 	if (rc < 0) printk ("add_file_to_cache: atomic rename from %s to %s failed, rc = %d\n", tname, cname, rc);
@@ -210,6 +215,8 @@ int open_cache_file (dev_t dev, u_long ino, struct timespec mtime, int flags)
 	return fd;
 }
 
+static atomic_t counter = {0};
+
 int open_mmap_cache_file (dev_t dev, u_long ino, struct timespec mtime, int is_write)
 {
 	char cname[CACHE_FILENAME_SIZE], tname[CACHE_FILENAME_SIZE];
@@ -218,7 +225,6 @@ int open_mmap_cache_file (dev_t dev, u_long ino, struct timespec mtime, int is_w
 	int fd, tfd, rc, copyed;
 	struct file* tfile, *cfile;
 	loff_t ipos = 0, opos = 0;
-	static u_long counter = 0;
 	char* buffer;
 
         // check if most recent cache file is still valid
@@ -249,7 +255,10 @@ int open_mmap_cache_file (dev_t dev, u_long ino, struct timespec mtime, int is_w
 
 	if (is_write) {
 		// For writeable mmaps, we need to create a copy just for this replay
-		sprintf (tname, "/tmp/replay_mmap_%lu", counter++);
+
+		int c_val = atomic_inc_return(&counter);
+		sprintf (tname, WRITABLE_MMAPS, c_val);
+		printk("%d: mmaped %s for %s/%x_%lx_%lu_%lu\n",current->pid, tname, cache_dir, dev, ino, mtime.tv_sec, mtime.tv_nsec);
 		tfd = sys_open (tname, O_CREAT|O_TRUNC|O_RDWR, 0600);
 		if (tfd < 0) {
 			printk ("open_cache_file: cannot create temp file %s, rc=%d\n", tname, tfd);
@@ -292,3 +301,9 @@ int open_mmap_cache_file (dev_t dev, u_long ino, struct timespec mtime, int is_w
 
 	return fd;
 }
+
+
+int get_next_mmap_file(void) { 
+	int c_val = atomic_inc_return(&counter);
+	return c_val;
+}	

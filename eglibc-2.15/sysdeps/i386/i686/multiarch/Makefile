@@ -6,7 +6,7 @@ endif
 ifeq ($(subdir),string)
 gen-as-const-headers += locale-defines.sym
 sysdep_routines += bzero-sse2 memset-sse2 memcpy-ssse3 mempcpy-ssse3 \
-		   memmove-ssse3 memcpy-ssse3-rep mempcpy-ssse3-rep \
+		   memmove-ssse3 memcpy-ssse3-rep memcpy-ssse3-rep-shim mempcpy-ssse3-rep \
 		   memmove-ssse3-rep bcopy-ssse3 bcopy-ssse3-rep \
 		   memset-sse2-rep bzero-sse2-rep strcmp-ssse3 \
 		   strcmp-sse4 strncmp-c strncmp-ssse3 strncmp-sse4 \

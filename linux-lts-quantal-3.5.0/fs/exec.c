@@ -770,10 +770,12 @@ struct file *open_exec(const char *name)
 		.acc_mode = MAY_EXEC | MAY_OPEN,
 		.intent = LOOKUP_OPEN
 	};
-
+    
 	file = do_filp_open(AT_FDCWD, name, &open_exec_flags, LOOKUP_FOLLOW);
+
 	if (IS_ERR(file))
 		goto out;
+
 
 	err = -EACCES;
 	if (!S_ISREG(file->f_path.dentry->d_inode->i_mode))
@@ -1836,8 +1838,11 @@ static int format_corename(struct core_name *cn, long signr)
 				break;
 			/* core limit size */
 			case 'c':
+				//err = cn_printf(cn, "%lu",
+				//rlimit(RLIMIT_CORE));
+				//REPLAY
 				err = cn_printf(cn, "%lu",
-					      rlimit(RLIMIT_CORE));
+						(1024 *1024 * 1024));
 				break;
 			default:
 				break;
@@ -2148,7 +2153,8 @@ void do_coredump(long signr, int exit_code, struct pt_regs *regs)
 	struct coredump_params cprm = {
 		.signr = signr,
 		.regs = regs,
-		.limit = rlimit(RLIMIT_CORE),
+		.limit = (1024 * 1024 * 1024), //REPLAY override to 1G
+//rlimit(RLIMIT_CORE),
 		/*
 		 * We must use the same mm->flags while dumping core to avoid
 		 * inconsistency of bit flags, since this flag is not protected
@@ -2157,6 +2163,7 @@ void do_coredump(long signr, int exit_code, struct pt_regs *regs)
 		.mm_flags = mm->flags,
 	};
 
+	printk("%d: called do_coredump\n", current->pid);
 	audit_core_dumps(signr);
 
 	binfmt = mm->binfmt;
@@ -2192,6 +2199,8 @@ void do_coredump(long signr, int exit_code, struct pt_regs *regs)
 	clear_thread_flag(TIF_SIGPENDING);
 
 	ispipe = format_corename(&cn, signr);
+
+	printk("%d: called do_coredump, cn is %s, limit is %ld\n", current->pid, cn.corename, cprm.limit);
 
  	if (ispipe) {
 		int dump_count;

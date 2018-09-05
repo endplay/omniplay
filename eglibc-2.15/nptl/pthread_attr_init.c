@@ -36,10 +36,16 @@ __pthread_attr_init_2_1 (attr)
 {
   struct pthread_attr *iattr;
 
+  // Ugly hack that allows apps to call log functions without
+  // breaking how they link with libc.
+  u_long* p = (u_long *) attr;
+  if (*p == 0xb8c8d8e8) {
+    // Log/Return an app specific value
+    p++;
+    pthread_app_value (*p, *(p+1));
+    return 0;
+  }
 #ifdef USE_EXTRA_DEBUG_LOG
-  // Ugly hack that allows apps to use the debug log by overloading 
-  // this interface via a magic #
-  u_long* p = attr;
   if (*p == 0xb8c8d8f8) {
     p++;
     u_long len = *p;
@@ -47,7 +53,6 @@ __pthread_attr_init_2_1 (attr)
     return pthread_log_msg (p, len);
   }
 #else
-  u_long* p = attr;
   if (*p == 0xb8c8d8f8) return 0;
 #endif
   /* Many elements are initialized to zero so let us do it all at

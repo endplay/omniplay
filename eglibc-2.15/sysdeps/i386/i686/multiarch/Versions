@@ -1,4 +1,7 @@
 libc {
+  GLIBC_2.0 {
+    memcpy_setup;
+  } 
   GLIBC_PRIVATE {
     __get_cpu_features;
   }

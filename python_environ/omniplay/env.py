@@ -10,6 +10,9 @@ import tempfile
 import subprocess
 import collections
 
+import gdbscripts
+import logdb
+
 LogCkpt = collections.namedtuple('LogCheckpoint',
         ['pid', 'group_id', 'parent_group_id', 'exe', 'args', 'env'])
 
@@ -125,7 +128,7 @@ class OmniplayEnvironment(object):
                 run_pin = '/'.join([self.scripts_dir, "run_pin.sh"])
             )
 
-        
+
         self.test_dir = ''.join([self.omniplay_location, "/test"])
 
         self.bins = binaries(
@@ -137,6 +140,9 @@ class OmniplayEnvironment(object):
                 getstats = '/'.join([self.test_dir, "getstats"]),
                 pin = '/'.join([self.pin_root, "pin"])
             )
+
+        self.gdbscripts_dir = ''.join([self.omniplay_location, "/gdb_tools"])
+        self.gdblaunchpad = '/'.join([self.gdbscripts_dir, "gdblaunchpad.py"])
 
         self.setup_system()
 
@@ -172,7 +178,7 @@ class OmniplayEnvironment(object):
         returns None
         """
         run_shell(self.scripts.insert)
-        
+
     def record(self, cmd, stin=None, stout=None, sterr=None):
         """
         Spawns a new process and records it
@@ -239,13 +245,14 @@ class OmniplayEnvironment(object):
 
         return ckptinfo
 
-    def replay(self, replay_dir, pipe_log=None, pin=False, follow=False):
+    def replay(self, replay_dir, pipe_log=None, pin=False, gdb=False, follow=False):
         '''
         Replays a recording, returning the replaying subprocess - Does NOT wait for the process to finish
 
         @param replay_dir Directory of recording
         @param pipe_log Output redirection for stdout/stderr
         @param pin will pin be attached?
+        @param gdb Wait for gdb to attach
         @param follow Follow the execution?
 
         @returns the subprocess of the replaying process
@@ -257,6 +264,8 @@ class OmniplayEnvironment(object):
 
         if pin:
             cmd += " -p"
+        if gdb:
+            cmd += " -g"
         if follow:
             cmd += " -f"
 
@@ -291,6 +300,63 @@ class OmniplayEnvironment(object):
         process = subprocess.Popen(shlex.split(cmd), shell=False, stdout=pipe_output)
         return process
 
+    def _get_program_name(self, groupId, logdbInst=None):
+        """
+        Gets just the executable name for the replay group
+        """
+        if logdbInst == None:
+            logdbInst = logdb.ReplayLogDB(self)
+            logdbInst.updatedb()
+
+        programArgs = logdbInst.get_program_args(groupId)
+        programName = shlex.split(programArgs)[0]
+        return programName
+
+    def attach_gdb(self, group_id, pid, script_path=None, pipe_output=None, script_args=None):
+        """
+        Attaches gdb to a replaying process.
+
+        If script_path is None, gdb will be started in interactive mode, otherwise it will run the
+            specified python script.
+
+        NOTE: Usually you want to use 'run_gdb_interactive' or 'run_gdb_script'
+        This does not wait for the process to finish.
+
+        @param group_id The replay group id of the replaying process.
+        @param pid The pid of the replaying process to attach to
+        @param script_path Specifies the path of the script that gdb should run. If this is None, gdb will be interactive.
+        @param pipe_output Where to pipe the output of the script to. This is ignored if no script is specified. Note
+            that gdb will output any errors it encounters to stderr like normal. But it will not output anything else.
+        @param script_args A dictionary of arguments to pass to the script. The script can retrieve these through
+            the gdbscripts.ScripUtilities class.
+        @returns The subprocess of the gdb process
+        """
+        progName = self._get_program_name(group_id)
+
+        cmd = "gdb %s %i" % (progName, pid)
+
+        if script_path != None:
+            cmd += " -batch-silent -x %s" % self.gdblaunchpad
+
+        if self.verbose:
+            print(cmd)
+
+        prep = gdbscripts.ScriptPreparer(group_id)
+
+        if script_path != None:
+            if pipe_output != None:
+                prep.set_redirect_file(pipe_output)
+
+            if script_args != None:
+                script_args["SCRIPT"] = script_path
+            else:
+                script_args = { "SCRIPT" : script_path }
+            prep.set_script_args(script_args)
+
+        gdb_proc = subprocess.Popen(shlex.split(cmd), shell=False)
+
+        return gdb_proc
+
     def run_tool(self, binary, tool, flags="", output="/tmp/stderr_log", toolout="/tmp/tool_log"):
         '''
         Starts a replay, then attaches a pin tool with flags
@@ -317,6 +383,31 @@ class OmniplayEnvironment(object):
 
         attach_process.wait()
         replay_process.wait()
+
+    def run_gdb_interactive(self, group_id):
+        """
+        Starts a replay and then attaches gdb to it in interactive mode.
+        """
+
+        replay_dir = self.get_record_dir(group_id)
+
+        replay_proc = self.replay(replay_dir, gdb=True)
+        gdb_proc = self.attach_gdb(group_id, replay_proc.pid)
+
+        gdb_proc.wait()
+        replay_proc.wait()
+
+    def run_gdb_script(self, group_id, script_path, pipe_output=None, script_args=None):
+        """
+        Starts a replay and then attaches gdb to it, which runs the given script
+        """
+        replay_dir = self.get_record_dir(group_id)
+
+        replay_proc = self.replay(replay_dir, gdb=True)
+        gdb_proc = self.attach_gdb(group_id, replay_proc.pid, script_path=script_path, pipe_output=pipe_output)
+
+        gdb_proc.wait()
+        replay_proc.wait()
 
     def filemap(self, filename, filemap_output="/tmp/filemap_output"):
         """

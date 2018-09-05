@@ -10,4 +10,5 @@ from .env import LogCkpt
 import logdb
 import parseklog
 import dmesg
+import gdbscripts
 

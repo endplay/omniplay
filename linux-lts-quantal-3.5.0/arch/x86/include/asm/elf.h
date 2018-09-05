@@ -333,6 +333,9 @@ extern int arch_setup_additional_pages(struct linux_binprm *bprm,
 extern int x32_setup_additional_pages(struct linux_binprm *bprm,
 				      int uses_interp);
 
+extern int arch_restore_additional_pages(void* addr); /* REPLAY */
+extern int arch_restore_sysenter_return(void* addr); /* REPLAY */
+
 extern int syscall32_setup_pages(struct linux_binprm *, int exstack);
 #define compat_arch_setup_additional_pages	syscall32_setup_pages
 
