@@ -10,7 +10,7 @@
 #
 #source $OMNIPLAY_DIR/scripts/common.sh
 
-function do_spec_setup() {
+function ensure_system_setup() {
 	if [[ ! -e /replay_cache ]]; then
 			sudo mkdir /replay_cache
 			sudo chmod a+rwx /replay_cache
@@ -21,6 +21,12 @@ function do_spec_setup() {
 			sudo chmod a+rwx /replay_logdb
 	fi
 
+	echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope &> /dev/null
+}
+
+function do_spec_setup() {
+  ensure_system_setup
+
 	sudo /sbin/insmod $OMNIPLAY_DIR/test/dev/spec.ko || {
 		echo "Unable to insert spec!"
 		return 1
@@ -30,8 +36,6 @@ function do_spec_setup() {
 			sudo mknod /dev/spec0 c 149 0
 			sudo chmod 777 /dev/spec0
 	fi
-
-	echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope &> /dev/null
 
 	return 0
 }
