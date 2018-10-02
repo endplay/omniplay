@@ -14,6 +14,7 @@ if [[ "$#" -lt "1" ]]; then
 fi
 
 # Make sure spec is setup
+ensure_system_setup
 setup_spec
 
 # If we're recording... exit

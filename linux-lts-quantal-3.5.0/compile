@@ -1,12 +1,16 @@
 #!/bin/bash
 
-if [[ $(whoami) != "root" ]]; then
+if [[ $EUID -ne 0 ]]; then
     echo "Must be run as root!"
     exit 1
 fi
 
 #stuff to setup OMNIPLAY_DIR
-user=$(who am i | awk '{print $1}')
+user=$SUDO_USER
+if [[ -z $SUDO_USER ]]; then
+  user=$(who am i | awk '{print $1}')
+fi
+
 setupfile=$(sudo -H -u $user echo $HOME/.omniplay_setup) 
 
 source $setupfile

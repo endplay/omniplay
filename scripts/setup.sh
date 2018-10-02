@@ -1,12 +1,15 @@
 #!/bin/bash
 
 
-if [[ $(whoami) -ne "root" ]]; then
+if [[ $EUID -ne 0 ]]; then
     echo "Must be run as root!"
     exit 1
 fi
 
-user=$(who am i | awk '{print $1}')
+user=$SUDO_USER
+if [[ -z $SUDO_USER ]]; then
+  user=$(who am i | awk '{print $1}')
+fi
 
 
 custom_omniplay=0
