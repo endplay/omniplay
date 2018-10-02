@@ -4913,8 +4913,8 @@ get_record_pending_signal (siginfo_t* info)
 }
 
 // Don't use standard debugging by default here because a printk could deadlock kernel
-//#define SIGPRINT(x,...)
-#define SIGPRINT printk
+#define SIGPRINT(x,...)
+//#define SIGPRINT printk
 
 static int defer_signal (struct record_thread* prt, int signr, siginfo_t* info)
 {
@@ -4999,8 +4999,6 @@ record_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 	int ignore_flag, need_fake_calls = 1;
 	int sysnum = syscall_get_nr(current, get_pt_regs(NULL));
 
-  printk("In record signal delivery\n");
-
 	if (prt->rp_ignore_flag_addr) {
 		get_user (ignore_flag, prt->rp_ignore_flag_addr);
 	} else {
@@ -5028,12 +5026,10 @@ record_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 	} else if (!sig_fatal(current,signr) && sysnum != psr->sysnum && sysnum != 0 /* restarted syscall */
       // We don't ignore the signal if we have a custom signal handler for a syncrhonous sync signal 
       && !(has_custom_handler(ka) && is_sync_signal(signr))) {
-		printk ("record_signal_delivery: this should have been handled!!!\n");
 		return -1;
 	}
 
 	if (sig_fatal(current,signr) && sysnum != psr->sysnum && sysnum != 0 /* restarted syscall */) {
-    printk("sig_fatal\n");
 		struct pthread_log_head __user* phead = (struct pthread_log_head __user *) prt->rp_user_log_addr;
 		// Sweet! There is always guaranteed to be allocated space for a record - also, we do not need to write out a full log since we are always the last record
 #ifdef USE_DEBUG_LOG
@@ -5041,7 +5037,6 @@ record_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 		MPRINT ("Pid %d: after signal, user code will not run again, so the kernel needs to insert a fake call for replay\n", current->pid);
 		get_user (pdata, &phead->next);
 		if (pdata) {
-      printk("pdata\n");
 			put_user (need_fake_calls, &pdata->retval); // Add the record - akin to what pthread_log.c in eglibc does
 			put_user (FAKE_SYSCALLS, &pdata->type);
 			pdata++;
@@ -5057,7 +5052,6 @@ record_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 		MPRINT ("Pid %d: after signal, user code will not run again, so the kernel needs to insert a fake call for replay\n", current->pid);
 		get_user (pnext, &phead->next);
 		if (pnext) {
-      printk("head_pointer\n");
 			get_user (entry, &phead->num_expected_records); 
 			entry |= FAKE_CALLS_FLAG;
 			put_user (entry, (u_long __user *) pnext);  
@@ -5079,7 +5073,6 @@ record_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
 			new_syscall_exit (SIGNAL_WHILE_SYSCALL_IGNORED, NULL);
 			psr = &prt->rp_log[(prt->rp_in_ptr-1)]; 
 		}
-    printk("end fatal\n");
 	}
 
   if (has_custom_handler(ka) && is_sync_signal(signr)) {
@@ -5087,7 +5080,6 @@ record_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
   } else {
     MPRINT ("Pid %d: recording and delivering signal\n", current->pid);
     psignal = ARGSKMALLOC(sizeof(struct repsignal), GFP_ATOMIC); 
-    printk("PSIGNAL MALLOC\n");
     if (psignal == NULL) {
       printk ("Cannot allocate replay signal\n");
       return 0;  // Replay broken - but might as well let recording proceed
@@ -5110,7 +5102,6 @@ record_signal_delivery (int signr, siginfo_t* info, struct k_sigaction* ka)
     if (ka->sa.sa_handler > SIG_IGN) {
       // Also save context from before signal
       pcontext = KMALLOC (sizeof(struct repsignal_context), GFP_ATOMIC);
-      printk("ATOMIC MALLOC\n");
       pcontext->ignore_flag = ignore_flag;
       pcontext->next = prt->rp_repsignal_context_stack;
       prt->rp_repsignal_context_stack = pcontext;
@@ -13007,7 +12998,6 @@ replay_rt_sigaction (int sig, const struct sigaction __user *act, struct sigacti
 
     // Run sigaction anyway, that way if we get a user-level handled synchronous
     //   signal its handled properly by the kernel signal delivery functions
-    printk("replay sigaction for sig: %d\n", sig);
 		retval = sys_rt_sigaction (sig, act, oact, sigsetsize);
 
 		if (rc != retval) {
