@@ -1,38 +1,35 @@
-OMNIPLAY
+# OMNIPLAY
 
-1) Get the required software
+### 1) Get the required software
 
 Omniplay runs on the 12.04.2 LTS Ubuntu Linux 32-bit distribution.  You should install
 this distro before proceeeding.
 
-2) Obtain the omniplay source code
-
-Check the source out from the git repository on endplay.eecs.umich.edu
-$ git clone gitlab@endplay:replay/omniplay.git
-10/5 this below worked for me (Wesley) \/
-$ git clone git@gitlab.endplay.eecs.umich.edu:replay/omniplay.git
-
+### 2) Obtain the omniplay source code
+```
+$ git clone git@github.com:endplay/omniplay.git
+```
 
 This will create a number of sub-directories that contain the user-level and kernel source
 for omniplay.
 
-Make sure you have your private key uploaded to gitlab or you won't have
-permission to clone the directory.
-
-3) Build and install
+### 3) Build and install
 
 Assuming that <omniplay> is the root directory where you installed the source:
 
-3.0) One-time setup
-
+One-time setup
+```
 $ cd <omniplay>/scripts
 $ ./setup.sh
 $ source $HOME/.omniplay_setup
+```
 
-3.1) Build the Omniplay kernel 
+#### 3.1) Build the Omniplay kernel 
 
 Two method:
-Option 1:
+
+#### Option 1:
+```
 $ cd $OMNIPLAY_DIR/linux-lts-quantal-3.5.0
 $ # The following two setps need be done only once
 $ wget http://web.eecs.umich.edu/~ddevec/omniplay.config
@@ -41,18 +38,22 @@ $ # End once only steps
 $ ./compile
 $ sudo make modules_install
 $ sudo reboot
+```
 
+```
 $ cd $OMNIPLAY_DIR/linux-lts-quantal-3.5.0
 $ make menuconfig
 $ sudo make modules_install
 $ sudo make install
 $ sudo make headers_install INSTALL_HDR_PATH=$OMNIPLAY_DIR/test/replay_headers
 $ sudo reboot
+```
 
 After rebooting, you should be running the Omniplay kernel.
-j        
-3.2) Build glibc
+
+#### 3.2) Build glibc
 Dependencies: (ubuntu 12.04) - gawk texinfo (for makeinfo) autoconf gettext (for msgfmt)
+```
 $ cd $OMNIPLAY_DIR/eglibc-2.15/
 $ mkdir build
 $ mkdir prefix
@@ -64,37 +65,42 @@ $ chown <user> /var/db
 $ mkdir ../prefix/etc
 $ touch ../prefix/etc/ld.so.conf
 $ make install
+```
 
 This installs the Omniplay glibc in eglibc-2.15/prefix.  This is a bit
 of a kludge that allows us to develop code with the standard glibc and
 test with the Omniplay glibc.  There are a few complications, though,
 that we need to fix:
 
+```
 $ cd $OMNIPLAY_DIR/eglibc-2.15/prefix
 $ ln -s /usr/lib/locale
+```
 
-3.3) Build the tools
-
+#### 3.3) Build the tools
+```
 $ cd $OMNIPLAY_DIR/test/dev
 $ make
 $ cd ..
 $ make
+```
 
-4) Record and replay
-
+### 4) Record and replay
 After each reboot, you need to load the Omniplay kernel module and do some setup work:
 
 Two methods:
 Preferred:
-$ $OMNIPLAY_DIR/scripts/insert_spec.sh
+```$ $OMNIPLAY_DIR/scripts/insert_spec.sh```
 
 Basic
+```
 $ cd $OMNIPLAY_DIR/test
 $ ./setup.sh
+```
 
 Now you can record programs.  You will need to know your dynamic link path.  You can
-look in /etc/ld.so.conf.d/ to figure this out.  A typical path might be:
-/lib/i386-linux-gnu:/usr/lib/i386-linux-gnu:/usr/local/lib:/usr/lib:/lib
+look in ``/etc/ld.so.conf.d/`` to figure this out.  A typical path might be:
+``/lib/i386-linux-gnu:/usr/lib/i386-linux-gnu:/usr/local/lib:/usr/lib:/lib``
 
 One you determine this, you can record a program by knowing its fully-qualified pathname
 
